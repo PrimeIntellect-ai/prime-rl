@@ -9,7 +9,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, platform_links
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
 from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -253,11 +253,8 @@ def rl_local(config: RLConfig):
         )
 
         logger.success("Launcher complete")
-        prime = config.orchestrator.monitors.prime
-        log_run_links(
-            dashboard_url,
-            platform_links(config.run_dir, log_dir, 1, lambda: bool(processes.error_queue)) if prime else None,
-        )
+        monitors = {"prime": config.orchestrator.monitors.prime, "wandb": config.orchestrator.monitors.wandb}
+        log_run_links(dashboard_url, run_links(config.run_dir, log_dir, monitors, lambda: bool(processes.error_queue)))
 
         # Trainer and orchestrator completion is the successful stop condition.
         processes.wait("trainer", "orchestrator")

@@ -26,7 +26,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Log Files](#log-files)
   - [Console Output](#console-output)
   - [Weights & Biases](#weights--biases)
-  - [Platform Monitoring](#platform-monitoring)
+  - [Prime Monitoring](#prime-monitoring)
 - [Rules of Thumb](#rules-of-thumb)
 
 ## Entrypoints
@@ -74,7 +74,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Platform monitoring](#platform-monitoring). |
+| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime monitoring](#prime-monitoring). |
 
 **Run management:**
 
@@ -211,7 +211,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
-The run streams to the Prime Intellect platform by default — see [Platform Monitoring](#platform-monitoring).
+The run streams to the Prime Intellect platform by default — see [Prime Monitoring](#prime-monitoring).
 
 ### Online Evals
 
@@ -427,9 +427,9 @@ The trainer and orchestrator log into a **single shared W&B run**, so all metric
 
 prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, every training run (RL and SFT) gets an **auto-created `overview` saved view** curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
-### Platform Monitoring
+### Prime Monitoring
 
-Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the platform link next to the local dashboard link once the run registers. Turn it off with `--no-monitors.prime`:
+Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers. Turn it off with `--no-monitors.prime`:
 
 ```bash
 uv run rl @ rl.toml --no-monitors.prime
@@ -447,7 +447,7 @@ The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeInte
 
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
 
-The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Without a key, or when registration fails (no team, a team outside the allowlist), the run logs a warning and trains untracked. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 
 ## Rules of Thumb
 

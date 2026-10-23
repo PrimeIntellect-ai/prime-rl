@@ -22,7 +22,7 @@ Every dashboard instance serves the dirs it was started with plus every dir in t
 
 ## Finding, stopping, restarting
 
-The port can differ from 7788 (a taken port bumps to the next free one), so read the discovery file and hand the researcher its `url`; launcher logs also end with a `Dashboard · <url>` banner.
+The port can differ from 7788 (a taken port bumps to the next free one), so read the discovery file and hand the researcher its `url`; launcher logs also end with a `Dashboard · <url>` banner, followed by a `Prime · <url>` and a `W&B · <url>` line for each monitor that opened a run page.
 
 ```bash
 cat ~/.cache/prime-rl/dashboard/daemon.json                   # {"pid": ..., "url": "http://localhost:<port>"}

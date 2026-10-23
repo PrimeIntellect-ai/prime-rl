@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import fcntl
-import functools
 import os
-import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable
 
-import orjson
 import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
 
@@ -18,8 +13,9 @@ from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorC
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.links import publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
+from prime_rl.utils.record import read_record, update_record, write_record
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -27,9 +23,10 @@ if TYPE_CHECKING:
 
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
-# Stamped on each link in the platform record, so the launcher can tell this
-# attempt's links from a previous attempt's.
-ATTEMPT_VAR = "PRL_ATTEMPT_LOG_DIR"
+# Keys of the train and eval monitors' entries in the links record: an SFT run's
+# trainer and online-eval process share one run dir.
+TRAIN_LINKS = "prime"
+EVAL_LINKS = "prime/eval"
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
@@ -38,82 +35,22 @@ FINISH_TIMEOUT = 60.0
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
     """Leave the run's platform identity in the run directory for the dashboard's
-    "view on platform" link (atomic replace: a reader never sees a torn file).
-    The tmp file is pid-suffixed: the trainer and the online-eval process
-    share the run directory, and two writers sharing one tmp path can tear
-    each other's staged file mid-write."""
-    path = get_platform_run_path(output_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".json.tmp.{os.getpid()}")
-    try:
-        tmp.write_bytes(orjson.dumps(record, option=orjson.OPT_INDENT_2))
-        tmp.replace(path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    "view on platform" link."""
+    write_record(get_platform_run_path(output_dir), record)
 
 
 def read_platform_record(output_dir: Path) -> dict[str, Any] | None:
-    path = get_platform_run_path(output_dir)
-    return orjson.loads(path.read_bytes()) if path.is_file() else None
-
-
-# Bounded wait for the record lock: a blocking flock(LOCK_EX) would stall the
-# async event-loop thread for as long as the other writer holds the lock.
-RECORD_LOCK_TIMEOUT = 10.0
-RECORD_LOCK_POLL = 0.05
-
-
-@contextmanager
-def _platform_record_lock(output_dir: Path) -> Iterator[None]:
-    """Cross-process read-modify-write lock for the platform record: the
-    trainer and the online-eval process merge into the SAME run.json, and an
-    unlocked read-modify-write lets one clobber the other's snapshot. POSIX
-    flock on a sibling .lock file. The lock file is NEVER unlinked: a waiting
-    writer can still hold the unlinked inode's lock while a new writer
-    creates and locks a fresh file — two simultaneous "exclusive" locks and
-    a lost merge; a stable lock inode is the whole guarantee. Acquisition is
-    BOUNDED (`RECORD_LOCK_TIMEOUT`), retried with non-blocking flock so the
-    async event-loop thread never blocks; `TimeoutError` past the bound.
-    Storage errors that make locking impossible (e.g. ENOLCK) raise
-    immediately instead of retrying."""
-    path = get_platform_run_path(output_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with open(lock_path, "a+b") as lock_file:
-        deadline = time.monotonic() + RECORD_LOCK_TIMEOUT
-        while True:
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"platform record lock at {lock_path} still held after {RECORD_LOCK_TIMEOUT}s")
-                time.sleep(RECORD_LOCK_POLL)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return read_record(get_platform_run_path(output_dir))
 
 
 def _merge_platform_record(
     output_dir: Path,
     merge: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> None:
-    """Best-effort locked read-modify-write of the platform record: run
-    `merge` on the current record under the record lock and atomically
-    replace the file. The record only backs the dashboard's "view on
-    platform" link, so a lock or storage failure (TimeoutError, ENOLCK, ...)
-    is logged and SKIPPED, never fatal to training; the dashboard just misses
-    the link for that run."""
-    try:
-        with _platform_record_lock(output_dir):
-            write_platform_record(output_dir, merge(read_platform_record(output_dir) or {}))
-    except OSError:
-        get_logger().warning(
-            f"Failed to persist the platform record at {get_platform_run_path(output_dir)} "
-            f"(lock or storage error); the dashboard's platform link may be missing. "
-            f"Training continues."
-        )
+    """Locked read-modify-write of the platform record: the trainer and the
+    online-eval process merge into the SAME run.json. Best-effort, see
+    ``update_record``."""
+    update_record(get_platform_run_path(output_dir), merge)
 
 
 def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
@@ -124,22 +61,19 @@ def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
     _merge_platform_record(output_dir, lambda record: {**record, **update})
 
 
-def platform_mode() -> str:
-    """$PRIME_RUNS_MODE when set, else online with a Prime API key and disabled without
-    one: the monitor is on by default, so a run without a key goes untracked instead of
-    failing."""
+OFF_HINT = "turn the monitor off with --no-monitors.prime"
+
+
+def prime_mode() -> str:
+    """$PRIME_RUNS_MODE when set, else online. Like the W&B monitor, a configured
+    monitor without credentials fails the run instead of leaving it untracked."""
     if mode := os.getenv(pr.MODE_ENV):
         return mode
-    return "online" if os.getenv("PRIME_API_KEY") or PrimeConfig().api_key else "disabled"
-
-
-def _mode() -> str:
-    mode = platform_mode()
-    if mode == "disabled" and not os.getenv(pr.MODE_ENV):
-        get_logger().warning(
-            "No Prime API key found (set PRIME_API_KEY or run `prime login`) - the run is not tracked on the Prime platform"
+    if not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
+        raise RuntimeError(
+            f"The prime monitor found no Prime API key. Authenticate with `prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
         )
-    return mode
+    return "online"
 
 
 def _base_url() -> str | None:
@@ -213,34 +147,36 @@ class PrimeTrainMonitor(Monitor):
             # pre-SDK register sent for a config-less init.
             init_kwargs = {"name": self.config.name, "model": "unknown"}
 
-        init = functools.partial(
-            pr.init, kind="train", base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs
-        )
+        mode = prime_mode()
         try:
-            self.run = await asyncio.to_thread(init, mode=_mode())
+            self.run = await asyncio.to_thread(
+                pr.init, kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs
+            )
         except (pr.ConfigurationError, pr.APIError) as e:
-            # An attached run is the launcher's: it must be tracked. Registering a new one
-            # fails without a team or for a team outside the external-runs allowlist,
-            # which must not stop a run that has the monitor on by default.
+            # Registering fails without a team, or for a team outside the external-runs
+            # allowlist. An attached run's error is the launcher's to explain.
             if "id" in init_kwargs:
                 raise
-            self.logger.warning(f"Failed to register the platform run, training untracked: {type(e).__name__}: {e}")
-            self.run = await asyncio.to_thread(init, mode="disabled")
+            raise RuntimeError(
+                f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
+                f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
+            ) from e
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
-            self.logger.info(f"Logging metrics and episodes to platform run {self.run.id} ({self.run.url}){attached}")
-            if output_dir is not None:
-                # Merge, not overwrite: a concurrent eval process (SFT
-                # online evals share the trainer's run dir) may already
-                # have written its evaluations record. Off the event
-                # loop: the flock retry must not stall it.
-                await asyncio.to_thread(
-                    update_platform_record,
-                    output_dir,
-                    {"kind": "train", "id": self.run.id, "url": self.run.url, "attempt": os.getenv(ATTEMPT_VAR)},
-                )
+            self.logger.info(f"Logging metrics and episodes to Prime run {self.run.id} ({self.run.url}){attached}")
         else:
-            self.logger.info("Platform run disabled")
+            self.logger.info("Prime run disabled")
+        if output_dir is not None:
+            # Off the event loop: the flock retry must not stall it.
+            await asyncio.to_thread(self._record, output_dir)
+
+    def _record(self, output_dir: Path) -> None:
+        register_links(output_dir, TRAIN_LINKS, 1 if self.run.url else 0)
+        if self.run.url:
+            # Merge, not overwrite: a concurrent eval process (SFT online evals share
+            # the trainer's run dir) may already have written its evaluations record.
+            update_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
+            publish_link(output_dir, TRAIN_LINKS, "run", self.run.url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # The SDK also drops non-finite values, but silently; sanitize first so
@@ -285,7 +221,7 @@ class PrimeEvalMonitor(Monitor):
     config: PrimeEvalMonitorConfig
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
-        self.mode = _mode()
+        self.mode = prime_mode()
         self.model: str = config.model if config is not None else "unknown"
         self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
         self.run_id = os.getenv("PRL_RUN_ID")
@@ -319,7 +255,10 @@ class PrimeEvalMonitor(Monitor):
                 # Off the event loop: the flock retry must not stall it.
                 await asyncio.to_thread(_merge_platform_record, output_dir, _eval_init_update)
         else:
-            self.logger.info("Platform evaluations disabled")
+            self.logger.info("Prime evaluations disabled")
+        if output_dir is not None:
+            expected = len(self.sources) if self.mode == "online" else 0
+            await asyncio.to_thread(register_links, output_dir, EVAL_LINKS, expected)
 
     def _attach_parent(self) -> pr.Run | None:
         """The parent training run this eval process belongs to, for metrics only.
@@ -401,27 +340,29 @@ class PrimeEvalMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to open the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
                 self.runs[key] = None
+                if self.output_dir is not None:
+                    await asyncio.to_thread(publish_link, self.output_dir, EVAL_LINKS, env_name, None)
                 return None
             self.runs[key] = run
         if run.url:
             attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
             self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
-            if self.output_dir is not None:
-
-                def _eval_epoch_update(record: dict[str, Any]) -> dict[str, Any]:
-                    record.setdefault("kind", "eval")
-                    record.setdefault("run_id", self.run_id)
-                    record.setdefault("evaluations", {})[env_name] = {
-                        "step": step,
-                        "id": run.id,
-                        "url": run.url,
-                        "attempt": os.getenv(ATTEMPT_VAR),
-                    }
-                    return record
-
-                # Off the event loop: the flock retry must not stall it.
-                await asyncio.to_thread(_merge_platform_record, self.output_dir, _eval_epoch_update)
+        if self.output_dir is not None:
+            # Off the event loop: the flock retry must not stall it.
+            await asyncio.to_thread(self._record, env_name, step, run)
         return run
+
+    def _record(self, env_name: str, step: int, run: pr.Run) -> None:
+        if run.url:
+
+            def update(record: dict[str, Any]) -> dict[str, Any]:
+                record.setdefault("kind", "eval")
+                record.setdefault("run_id", self.run_id)
+                record.setdefault("evaluations", {})[env_name] = {"step": step, "id": run.id, "url": run.url}
+                return record
+
+            _merge_platform_record(self.output_dir, update)
+        publish_link(self.output_dir, EVAL_LINKS, env_name, run.url)
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
         await self.run_for(env_name, step, expected)

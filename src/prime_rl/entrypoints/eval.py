@@ -120,7 +120,7 @@ def main():
     config = cli(EvalConfig)
     sys.argv = [sys.argv[0], *argv]
 
-    from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, platform_links
+    from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
     from prime_rl.utils.logger import setup_logger
     from prime_rl.utils.pathing import (
         format_config_message,
@@ -191,13 +191,12 @@ def main():
     # Like the rl/sft launchers, the console stays quiet while the eval runs: results
     # live in the dashboard and the log file, only errors surface here.
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
-    # Each source's platform evaluation opens once the eval counts its tasks, so the
+    # Each source's Prime evaluation opens once the eval counts its tasks, so the
     # banner waits for the links next to the running eval.
     eval_done = threading.Event()
-    platform = (
-        platform_links(config.run_dir, log_dir, len(config.source), eval_done.is_set) if config.monitors.prime else None
-    )
-    banner = threading.Thread(target=log_run_links, args=(dashboard_url, platform), daemon=True)
+    monitors = {"prime/eval": config.monitors.prime, "wandb": config.monitors.wandb}
+    links = run_links(config.run_dir, log_dir, monitors, eval_done.is_set)
+    banner = threading.Thread(target=log_run_links, args=(dashboard_url, links), daemon=True)
     banner.start()
     try:
         asyncio.run(run_eval(config))

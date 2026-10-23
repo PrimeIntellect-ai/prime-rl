@@ -42,6 +42,8 @@ def prime_init(monkeypatch):
 
     monkeypatch.setattr("prime_rl.monitors.prime.pr.init", fake_init)
     monkeypatch.delenv("RUN_ID", raising=False)
+    monkeypatch.delenv("PRIME_RUNS_MODE", raising=False)
+    monkeypatch.setenv("PRIME_API_KEY", "test-key")
     return calls
 
 
@@ -236,13 +238,14 @@ def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
     sequential.)"""
     import os
 
-    from prime_rl.monitors.prime import _platform_record_lock, update_platform_record
+    from prime_rl.monitors.prime import update_platform_record
     from prime_rl.utils.pathing import get_platform_run_path
+    from prime_rl.utils.record import record_lock
 
     lock_path = get_platform_run_path(tmp_path).with_suffix(".json.lock")
     inodes = []
     for _ in range(2):
-        with _platform_record_lock(tmp_path):
+        with record_lock(get_platform_run_path(tmp_path)):
             # The lock file exists DURING the critical section, always.
             assert lock_path.is_file()
             inodes.append(os.stat(lock_path).st_ino)
@@ -287,14 +290,14 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
     assert threading.get_ident() not in seen_threads, "record merge ran on the caller thread"
 
     # All three async write sites (train init, eval init, eval epoch) go
-    # through to_thread; only the sync helper stays callable directly.
+    # through to_thread; only the sync helpers stay callable directly.
     import re
 
     import prime_rl
 
     src = Path(prime_rl.__path__[0], "monitors", "prime.py").read_text()
-    assert len(re.findall(r"asyncio\.to_thread\(\s*_merge_platform_record", src)) == 2
-    assert re.search(r"asyncio\.to_thread\(\s*update_platform_record", src)
+    assert len(re.findall(r"asyncio\.to_thread\(\s*_merge_platform_record", src)) == 1
+    assert len(re.findall(r"asyncio\.to_thread\(\s*self\._record", src)) == 2
 
     from prime_rl.monitors.prime import read_platform_record
 
@@ -310,15 +313,17 @@ def test_platform_record_lock_acquisition_is_bounded(tmp_path, monkeypatch):
     hanging."""
     import fcntl
 
-    import prime_rl.monitors.prime as prime_module
+    import prime_rl.utils.record as record_module
+    from prime_rl.utils.pathing import get_platform_run_path
 
-    monkeypatch.setattr(prime_module, "RECORD_LOCK_TIMEOUT", 0.2)
-    lock_path = prime_module.get_platform_run_path(tmp_path).with_suffix(".json.lock")
+    monkeypatch.setattr(record_module, "RECORD_LOCK_TIMEOUT", 0.2)
+    path = get_platform_run_path(tmp_path)
+    lock_path = path.with_suffix(".json.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a+b") as held:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX)
         with pytest.raises(TimeoutError, match="still held"):
-            with prime_module._platform_record_lock(tmp_path):
+            with record_module.record_lock(path):
                 pass
 
 
@@ -329,11 +334,12 @@ def test_platform_record_persistence_is_best_effort(tmp_path, monkeypatch):
     import errno
 
     import prime_rl.monitors.prime as prime_module
+    import prime_rl.utils.record as record_module
 
     def enolck(fd, op):
         raise OSError(errno.ENOLCK, "No locks available")
 
-    monkeypatch.setattr(prime_module.fcntl, "flock", enolck)
+    monkeypatch.setattr(record_module.fcntl, "flock", enolck)
     # Must not raise: the platform record is best-effort.
     prime_module.update_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
     assert prime_module.read_platform_record(tmp_path) is None

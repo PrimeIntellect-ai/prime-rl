@@ -9,7 +9,7 @@ from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, platform_links
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -431,11 +431,8 @@ def sft_local(config: SFTConfig):
         )
 
         logger.success("Launcher complete")
-        prime = config.monitors.prime
-        log_run_links(
-            dashboard_url,
-            platform_links(config.run_dir, log_dir, 1, lambda: bool(processes.error_queue)) if prime else None,
-        )
+        monitors = {"prime": config.monitors.prime, "wandb": config.monitors.wandb}
+        log_run_links(dashboard_url, run_links(config.run_dir, log_dir, monitors, lambda: bool(processes.error_queue)))
 
         # Wait for the trainer (and the online-eval process, which drains its final evals
         # after the trainer's last checkpoint) while surfacing any process failure.
