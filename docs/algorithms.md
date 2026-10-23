@@ -184,7 +184,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss), [REINFORCE](#reinforce-loss) or a [custom loss](#custom-loss), each with [score centering and an optional KL](#score-centering-and-kl). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -242,45 +242,44 @@ ratio_high = 5.0
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
-### IcePop with Score Centering
+### REINFORCE Loss
 
-Enable [score centering](https://arxiv.org/abs/2609.20807) on IcePop:
+`type = "reinforce"` uses no importance weight (`w = 1`): the plain policy gradient
+`-tau_A * A_t * log pi(y_t)`. It is meant to be combined with score centering and the KL below.
 
-```toml
-[trainer.loss]
-type = "icepop"
-score_centering = true
-score_centering_topk = 128
+### Score Centering and KL
+
+All three loss types (`ipo`, `icepop`, `reinforce`) share one per-token objective; only the weight `w_v`
+differs (IPO: `1[|p_v - q_v| <= eps] * min(p_v/q_v, max_importance_ratio)`, IcePop:
+`1[ratio_low <= p_v/q_v <= ratio_high] * p_v/q_v`, REINFORCE: `1`):
+
+```
+loss_t = -tau_A * A_t * (w_a * log p(a) - sum_v sg[q_v * w_v] * log p_v) + beta_t * KL(q || p)
 ```
 
-Training sampling requires positive temperature. With untruncated sampling
-(`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
-and the trainer approximates the remaining sampler mass as proportional to its own tail.
+`q` is the sampler and `p` the trainer distribution over the token's support. The centering term
+([score centering](https://arxiv.org/abs/2609.20807)) has zero mean under the sampler, so it removes variance
+without biasing the weighted gradient; it applies even when the sampled token is rejected.
 
-With bounded top-k (optionally combined with top-p), the launcher captures at least
-`top_k` probabilities and enables sampling replay. The renderer retains the complete
-recorded support; the trainer normalizes over that same support and computes exact
-centering on it, without a tail approximation. `score_centering_topk` only controls
-the captured head for untruncated sampling. The existing sampling-replay limits and
-eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
+The support is chosen per token:
 
-With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is
-`A * (w_a * grad(log p_a) - sum_v q_v*w_v*grad(log p_v))`. The correction applies
-even when the sampled action is rejected. All centering coefficients are detached.
-The modeled tail has a constant importance ratio, so all tail actions are accepted
-or rejected together. Both tail masses are floored at `1e-6` for stability.
-This is an approximation to the unknown sampler tail, not exact full-distribution
-centering. The IcePop ratio band remains `[0.2, 5]` by default.
+- **Sampling replay** (truncated sampling, `top_k` and/or `top_p`): the replayed sampling mask with its
+  sampler probabilities. `p` and `q` are both normalized over it, so centering and the KL are exact.
+- **Untruncated sampling**: a captured top-`score_centering_topk` sampler head plus the remaining tail,
+  modeled with trainer probabilities proportional to the sampler's. Tail tokens then share one ratio and
+  are accepted or rejected together. Capturing the head makes generation markedly slower.
 
-The launcher configures probability capture automatically. Standalone inference
-servers need `processed_logprobs` and `max_logprobs >= sampling.logprobs + 2`.
-The renderer requests two extra candidates to recover a head independent of the
-sampled action, excluding ties at the head boundary. Missing heads fail explicitly.
-Compact HTTP transport packs token IDs and probabilities into binary buffers.
+| Knob | Default | What it does |
+|---|---|---|
+| `score_centering` | `"auto"` | `auto`: center replayed tokens exactly, leave untruncated tokens uncentered. `true`: also center untruncated tokens over the top-k head + tail. `false`: off. |
+| `score_centering_topk` | 128 | Captured head size for untruncated sampling. |
+| `kl_coeff` | 0.0 | KL coefficient `beta_0`; 0 disables the KL. |
+| `kl_staleness` | `"none"` | `none`: `beta_t = beta_0`. `inv_sqrt`: `beta_t = 0` at token age 0, `beta_0 / sqrt(age)` otherwise. |
 
-Metrics report captured sampler `score_centering/head_mass`, modeled
-`score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
-baseline's logit-gradient L1 norm before advantage scaling).
+Token age is the trainer step minus the policy step whose weights sampled the token, from the inference
+engines' per-token weight-version labels. The launcher enables sampler probability capture whenever the
+loss needs it. Metrics: `uncentered`, sampler `tail_mass`, trainer `head_mass`, `mask_tv` (total variation
+between `p` and `q` on the support), and with the KL `kl`, `beta`, `age0`.
 
 ### Custom Loss
 
