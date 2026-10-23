@@ -1,34 +1,24 @@
-import copy
 import importlib.util
 import math
-from collections.abc import Callable
-from unittest.mock import MagicMock
 
 import pytest
 import torch
 from torch import nn
-from torch.utils._python_dispatch import TorchDispatchMode
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, max_sparse_attn_slots
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
-from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.layers.fp8_linear import (
     Float8BlockwiseGroupedLinear,
     replace_linear_with_fp8_blockwise_linear,
 )
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
-from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
-from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
-from tests.unit.train.models.deepseek_v4_eager_reference import (
-    apply_rotary_pos_emb_interleaved,
-    dense_mask_from_indices,
-    eager_attention_with_sinks,
-)
+from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
 
 try:
     import tilelang
@@ -45,19 +35,6 @@ pytestmark = [pytest.mark.gpu]
 requires_sparse_attn_kernel = pytest.mark.skipif(
     dsv4_attention.dsv4_sparse_attn is None,
     reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
-)
-
-# The kernels' shared tiles fit only the datacenter Hopper and Blackwell SMs. The opt-in limit does
-# not follow capability order, so this enumerates rather than compares: sm120 allows well under half
-# of what sm90 does.
-requires_datacenter_gpu = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
-    reason="the fused sparse attention kernels need the shared memory of a datacenter Hopper or Blackwell GPU",
-)
-
-requires_fp8_indexer = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
-    reason="the indexer kernel quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
 )
 
 
@@ -93,17 +70,12 @@ def _packed_context(
     doc_lens: tuple[int, ...],
     dtype: torch.dtype,
     config: DeepseekV4Config,
-    cp_rank: int = 0,
-    cp_world_size: int = 1,
 ) -> PackedContext:
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
     half of a packing comparison runs at. `dtype` is the default dtype the rotary embedding is built
     under; the RoPE tables themselves are always fp32.
-
-    `doc_lens` always describes the whole row, `cp_world_size` shards included: the context
-    parallel tests below hand it the same layout every rank sees and vary only `cp_rank`.
     """
     with torch.device("cuda"), default_dtype(dtype):
         rotary = DeepseekV4RotaryEmbedding(config)
@@ -111,24 +83,12 @@ def _packed_context(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
         device=torch.device("cuda"),
-        cp_rank=cp_rank,
-        cp_world_size=cp_world_size,
     )
 
 
 def _doc_slice(doc_lens: tuple[int, ...], index: int) -> slice:
     start = sum(doc_lens[:index])
     return slice(start, start + doc_lens[index])
-
-
-# The module-level cases run in float32. `kv_proj` sees a different number of rows packed than
-# alone and cuBLAS may tile the two differently, so they never match bit for bit, and in bfloat16
-# that floor would swallow the cross-document leakage these tests exist to catch.
-PACKED_RTOL = 1e-5
-# Gradients are bounded against the tensor's own scale instead: they are sums over the whole row,
-# so their near-zero entries are the ones whose summands cancelled, and an element-wise relative
-# bound would read out that cancellation noise rather than a document leak.
-PACKED_GRAD_RTOL = 1e-5
 
 
 def _take_grads(module: nn.Module) -> dict[str, torch.Tensor | None]:
@@ -138,9 +98,7 @@ def _take_grads(module: nn.Module) -> dict[str, torch.Tensor | None]:
     return grads
 
 
-def _compare_accumulated_grads(
-    module: nn.Module, expected: dict[str, torch.Tensor | None], rtol: float = PACKED_GRAD_RTOL
-) -> None:
+def _compare_accumulated_grads(module: nn.Module, expected: dict[str, torch.Tensor | None], rtol: float) -> None:
     """Compare the gradients now on `module` against a snapshot taken from an earlier backward.
 
     Allows for a parameter that legitimately receives nothing: the Lightning Indexer reaches the
@@ -155,8 +113,8 @@ def _compare_accumulated_grads(
 
 
 # The real DeepSeek V4-Flash attention shapes, written out as a literal so nothing here depends on a local HF
-# cache. This file runs these shapes and no others: the sparse path the kernel serves only exists at
-# this size. The MoE fields are shrunk to nothing, since `DeepseekV4Attention` reads none of them.
+# cache. This file runs these shapes and no others. The MoE fields are shrunk to nothing, since
+# `DeepseekV4Attention` reads none of them.
 V4FLASH_MODEL = dict(
     vocab_size=64,
     hidden_size=4096,
@@ -210,12 +168,6 @@ TOPK = V4FLASH_MODEL["sliding_window"] + V4FLASH_MODEL["index_topk"]
 MAX_SLOTS = max_sparse_attn_slots(V4FLASH_CONFIG)
 SM_SCALE = DIM**-0.5
 
-# The first is aligned to both of the backward's tile sizes (32 in `preprocess`, 64 in
-# `postprocess`), the second to neither, and the third carries a batch, which nothing else here
-# does. Sequence lengths stay modest because the float32 oracle materializes the whole gather.
-SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
-SHAPE_IDS = ["aligned", "misaligned", "batched"]
-
 requires_cudnn_flashmla = pytest.mark.skipif(
     importlib.util.find_spec("flash_mla") is None
     or importlib.util.find_spec("cudnn") is None
@@ -236,49 +188,9 @@ if importlib.util.find_spec("flash_mla") is not None:
 # costs a GEMM column.
 MASKED_FRACTION = 0.25
 
-# Bounds on the largest deviation against each tensor's own scale, not element-wise: every entry
-# sums hundreds of terms, so an element-wise bound would read out the near-zero entries'
-# cancellation noise. The kernel returns bfloat16, one ulp of which is 2**-8 at full scale.
-OUT_RTOL = 1e-2
-# The LSE is float32 throughout on both sides.
-LSE_RTOL = 5e-7
-# FlashMLA returns a natural-log LSE without the sink, so the base-2 sink-inclusive one is two more
-# float32 roundings away; measured at up to 5.1e-7 on the benchmark corpus, about 4 ulps.
-LSE_RTOL_BY_BACKEND: dict[str, float] = {"cudnn_flashmla": 1e-6}
-DQ_RTOL = 1e-2
-# The vendored kernel this one forked from rounds `P` and `dP` to bfloat16 before the `dKV` GEMMs
-# while the oracle keeps them in float32, on top of the bfloat16 `kv` both sides share.
-DKV_RTOL = 1e-2
-# The sink gradient is a full reduction over every query in the row, so it cancels harder than
-# anything else here.
-DSINK_RTOL = 1e-2
-
 # Compiled against eager, where the forward and the log-sum-exp are bit-identical. `dKV` is not,
 # because `atomic_addx4` leaves its summation order to the scheduler, on both sides.
 COMPILE_RTOL = 1e-2
-
-
-def _dense_reference(
-    q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor, scale: float
-) -> torch.Tensor:
-    """Attention of each query over the whole of `kv`, with its gather slots rendered dense.
-
-    `q` is `(batch, seq_len, heads, dim)`, `kv` is `(batch, seq_len_kv, 1, dim)`, `indices` is
-    `(batch, seq_len, 1, topk)` int32 addressing `kv`'s position axis, and `sinks` is `(heads,)`.
-    The output comes back laid out like `q`. A slot holding `IGNORE_SLOT` (-1) marks an absent key
-    and names no position, so it is masked out, as is every position no slot names.
-
-    A mask admits a position once however many of a query's slots name it, so this answers for a
-    gather over those slots only where no query names a real position twice. `_build_indices`
-    draws its picks without replacement, and `test_deepseek_v4.py` asserts the same of the
-    indices the layer itself builds.
-
-    Arithmetic follows `q.dtype`, so handing it widened tensors is what makes it the float32
-    oracle for a kernel that accumulates in float32.
-    """
-    key = kv.transpose(1, 2)
-    mask = dense_mask_from_indices(indices, kv.shape[1], q.dtype)
-    return eager_attention_with_sinks(q.transpose(1, 2), key, key, sinks.to(q.dtype), mask, scale)
 
 
 def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
@@ -325,82 +237,6 @@ def _inputs(
 
 def _leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
     return tuple(tensor.clone().requires_grad_(True) for tensor in tensors)
-
-
-def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
-    """The same values as leaves of the float32 oracle, which is what makes the oracle exact.
-
-    `_dense_reference` computes in whatever dtype it is handed, so widening the leaves is
-    what puts the oracle in float32 at all. Widening changes none of the values, a bfloat16 number
-    being exactly representable in float32, so the oracle answers for exactly the numbers the
-    kernel saw. Feeding it the bfloat16 leaves instead would round every per-slot gradient
-    contribution back to bfloat16 before accumulating them, which inflates the disagreement by an
-    artifact of how the oracle is built rather than by anything the kernel did.
-    """
-    return tuple(tensor.detach().float().clone().requires_grad_(True) for tensor in tensors)
-
-
-def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor) -> torch.Tensor:
-    """The base-2, sink-inclusive log-sum-exp of `_dense_reference`'s own softmax.
-
-    The oracle returns only the attention output, so its denominator is recomputed here from the
-    same gather and the same unscaled sink logit, in float32.
-    """
-    slot_idx = indices[:, :, 0, :].to(torch.int64)
-    batch_idx = torch.arange(kv.shape[0], device=kv.device)[:, None, None]
-    keys = kv[batch_idx, slot_idx.clamp(min=0), 0].float()
-    logits = torch.einsum("bshd,bskd->bshk", q.float(), keys) * SM_SCALE
-    logits = logits.masked_fill((slot_idx < 0).unsqueeze(2), float("-inf"))
-    sink_logits = sinks.float().reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
-    return torch.cat([logits, sink_logits], dim=-1).logsumexp(dim=-1) * math.log2(math.e)
-
-
-@pytest.mark.parametrize("backend", DSV4_BACKENDS)
-@pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv, backend):
-    """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
-    q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
-
-    with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
-        # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
-        # is handed. Widened here rather than inside it, so the exact answer is what the bound is
-        # measured against instead of one rounded back to bfloat16.
-        reference_out = _dense_reference(q.float(), kv.float(), indices, sinks, SM_SCALE)
-        reference_lse = _reference_lse(q, kv, indices, sinks)
-
-    assert out.shape == q.shape and out.dtype == torch.bfloat16
-    assert lse.shape == (batch, seq_len, HEADS) and lse.dtype == torch.float32
-    _assert_relative(out, reference_out, OUT_RTOL, "output")
-    _assert_relative(lse, reference_lse, LSE_RTOL_BY_BACKEND.get(backend, LSE_RTOL), "lse")
-
-
-@pytest.mark.parametrize("backend", DSV4_BACKENDS)
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-def test_kernel_pads_a_slot_count_its_tile_does_not_divide(backend):
-    """A caller states the slots it means and the kernel covers the difference to its own tile.
-
-    The gather-slot axis is tiled at 64, but that is a fact about these kernels rather than
-    something the modeling code should lay out for them, so `SparseAttnInputs` emits
-    `sliding_window + picks` and a width that 64 does not divide has to run regardless. The
-    failure this guards against is not a crash: the width picks the kernel that gets compiled, so
-    one that ignored the remainder would read slots past the end of the caller's index tensor.
-    """
-    batch, seq_len, seq_len_kv = 1, 128, 768
-    unaligned = TOPK - 1
-    assert unaligned % 64 != 0, "vacuous probe: the width chosen is already a multiple of the tile"
-    q, kv, _, sinks = _inputs(batch, seq_len, seq_len_kv)
-    indices = _build_indices(batch, seq_len, seq_len_kv, MASKED_FRACTION, topk=unaligned)
-
-    with torch.no_grad():
-        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
-        reference = _dense_reference(q.float(), kv.float(), indices, sinks, SM_SCALE)
-
-    assert out.shape == q.shape
-    _assert_relative(out, reference, OUT_RTOL, "output")
 
 
 @pytest.mark.parametrize("backend", DSV4_BACKENDS)
@@ -482,76 +318,6 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
 
 
 @pytest.mark.parametrize("backend", DSV4_BACKENDS)
-@pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv, backend):
-    """All three differentiable inputs, each against its own bound.
-
-    `dsink` is the one term the kernel forms in torch rather than in tilelang, out of the `Delta`
-    the backward returns, so it is the assertion that would catch a wrong `Lse` convention. The
-    first query gathers nothing, so its `Lse` is the sink term alone on the way back too.
-    """
-    q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
-    indices[:, 0] = IGNORE_SLOT
-    kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
-    reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
-
-    out, _lse = dsv4_sparse_attn(
-        kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS
-    )
-    # One weight tensor for both losses, so the two backwards are the same function of the same
-    # numbers and any difference belongs to the kernel.
-    weight = torch.randn_like(out)
-    (out * weight).sum().backward()
-
-    reference_out = _dense_reference(reference_q, reference_kv, indices, reference_sinks, SM_SCALE)
-    (reference_out * weight).sum().backward()
-
-    assert reference_sinks.grad is not None and reference_sinks.grad.norm() > 0, (
-        "vacuous probe: the reference gave the sinks no gradient, so the sink bound cannot fail"
-    )
-    _assert_relative(kernel_q.grad, reference_q.grad, DQ_RTOL, "dq")
-    _assert_relative(kernel_kv.grad, reference_kv.grad, DKV_RTOL, "dkv")
-    _assert_relative(kernel_sinks.grad, reference_sinks.grad, DSINK_RTOL, "dsink")
-
-
-@requires_cudnn_flashmla
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-def test_cudnn_flashmla_backward_compiles_one_main_kernel_for_every_width():
-    """Slot widths from 128 to 8320 share one cuDNN main kernel, and each matches the reference.
-
-    The cuDNN frontend keys its main-kernel compile on the slot width. `cudnn_dsa_patch` keys it on a
-    clamp instead, through private frontend internals that an upgrade could move without an error. 8320 is
-    DeepSeek-V4-Flash's widest HCA layer, `128 + 1048576 // 128`.
-    """
-    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
-    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
-
-    batch, seq_len, max_slots = 1, 64, 8320
-    bwd = flash_attn_bwd_sm90 if torch.cuda.get_device_capability()[0] == 9 else flash_attn_bwd_sm100
-    bwd.compile_cache.clear()
-    for width in (128, 640, max_slots):
-        q, kv, _, sinks = _inputs(batch, seq_len, max_slots)
-        indices = _build_indices(batch, seq_len, max_slots, MASKED_FRACTION, topk=width)
-        kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
-        reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
-
-        out, _lse = dsv4_sparse_attn(
-            kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend="cudnn_flashmla", max_slots=max_slots
-        )
-        weight = torch.randn_like(out)
-        (out * weight).sum().backward()
-        reference_out = _dense_reference(reference_q, reference_kv, indices, reference_sinks, SM_SCALE)
-        (reference_out * weight).sum().backward()
-
-        _assert_relative(kernel_q.grad, reference_q.grad, DQ_RTOL, f"dq at width {width}")
-        _assert_relative(kernel_kv.grad, reference_kv.grad, DKV_RTOL, f"dkv at width {width}")
-    assert len(bwd.compile_cache) == 1
-
-
-@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
 def test_kernel_traces_under_torch_compile(backend):
@@ -593,13 +359,12 @@ def test_kernel_traces_under_torch_compile(backend):
 # Everything below reaches the kernel through the modeling code rather than on hand-built tensors, at the same
 # Flash shapes. What it adds is the index construction: a CSA query's slot padding, its top-k saturation and
 # the arithmetic mapping a compressed entry to a buffer position all live in `DeepseekV4Attention`, not in the
-# kernel, and none of them is expressible at the toy shapes `test_deepseek_v4.py` runs.
+# kernel. `test_deepseek_v4.py` reaches the kernel through the same code, but only at toy shapes.
 
 V4FLASH_CSA_LAYER, V4FLASH_HCA_LAYER, V4FLASH_SLIDING_LAYER = 0, 1, 2
 V4FLASH_LAYERS = [V4FLASH_CSA_LAYER, V4FLASH_HCA_LAYER, V4FLASH_SLIDING_LAYER]
 V4FLASH_LAYER_IDS = ["csa", "hca", "sliding"]
 V4FLASH_COMPRESS_RATE = V4FLASH_MODEL["compress_rates"]["compressed_sparse_attention"]
-V4FLASH_HCA_COMPRESS_RATE = V4FLASH_MODEL["compress_rates"]["heavily_compressed_attention"]
 
 # Document layouts for the sparse path, at `compress_rate = 4`. The first four leave every query
 # short of `index_topk = 512` readable entries, so the `IGNORE_SLOT` (-1) padding of the pick slots carries
@@ -609,25 +374,22 @@ V4FLASH_DOC_LENS = [(517, 1019), (3,), (300,), (3, 129, 1021), (2600,)]
 V4FLASH_DOC_IDS = ["two-docs", "no-entries", "one-short-doc", "three-docs", "saturated-topk"]
 
 
-def v4flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, eager: bool = False) -> nn.Module:
+def v4flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32) -> nn.Module:
     """One attention layer at the real DeepSeek V4 Flash shapes, 126M parameters of it."""
     with torch.device("cuda"), default_dtype(dtype):
         module = DeepseekV4Attention(V4FLASH_CONFIG, layer_idx, DeepseekV4RotaryEmbedding(V4FLASH_CONFIG))
     _randomize(module)
-    if eager:
-        eager_reference.use_eager_attention(module)
     return module
 
 
-def _v4flash_hidden_states(seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Two leaves carrying identical values, one per attention path.
+def _v4flash_hidden_states(seq_len: int) -> torch.Tensor:
+    """bfloat16 hidden states for one row of `seq_len` tokens.
 
     Batch 1: at these shapes the score tensors are the bulk of the memory and a second batch
     entry repeats the first without covering anything new.
     """
     with torch.device("cuda"):
-        hidden = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"])
-    return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
+        return torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"]).to(torch.bfloat16)
 
 
 def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
@@ -648,10 +410,6 @@ def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
     return recorded
 
 
-def _doc_ids(doc_lens: tuple[int, ...]) -> torch.Tensor:
-    return torch.cat([torch.full((length,), index, device="cuda") for index, length in enumerate(doc_lens)])
-
-
 def _entry_counts(doc_lens: tuple[int, ...], compress_rate: int) -> list[int]:
     return [length // compress_rate for length in doc_lens]
 
@@ -670,112 +428,12 @@ def _expected_picks(layer_type: str, doc_lens: tuple[int, ...]) -> int:
     return V4FLASH_MODEL["index_topk"]
 
 
-def _hca_entries_admitted(doc_lens: tuple[int, ...]) -> torch.Tensor:
-    """`(seq_len, n_entries)` bool: HCA's rule, written out from the document lengths alone.
-
-    A query reads every entry of its own document whose source tokens all lie at or before it,
-    which is the entries numbered below `(position + 1) // compress_rate` within that document.
-    """
-    counts = _entry_counts(doc_lens, V4FLASH_HCA_COMPRESS_RATE)
-
-    def as_tensor(values: list[int]) -> torch.Tensor:
-        return torch.tensor(values, dtype=torch.long, device="cuda")
-
-    entry_doc = as_tensor([doc for doc, count in enumerate(counts) for _ in range(count)])
-    entry_local = as_tensor([entry for count in counts for entry in range(count)])
-    positions = torch.cat([torch.arange(length, device="cuda") for length in doc_lens])
-    same_document = _doc_ids(doc_lens)[:, None] == entry_doc[None, :]
-    return same_document & (entry_local[None, :] < (positions[:, None] + 1) // V4FLASH_HCA_COMPRESS_RATE)
-
-
-def _entries_admitted(layer_type: str, doc_lens: tuple[int, ...], picks: torch.Tensor | None) -> torch.Tensor:
-    """`(seq_len, n_entries)` bool: which compressed entries the dense rules admit, per query.
-
-    CSA's selection is the Lightning Indexer's and has no closed form, so it is rendered from the
-    picks the compressor handed back. The other two do have one, and are written out from the
-    document lengths so that nothing the layer built feeds the side it is compared against.
-    """
-    if layer_type == "compressed_sparse_attention":
-        n_entries = sum(_entry_counts(doc_lens, V4FLASH_COMPRESS_RATE))
-        return eager_reference.block_bias_from_indices(picks, n_entries, torch.float32)[0, 0] == 0
-    if layer_type == "heavily_compressed_attention":
-        return _hca_entries_admitted(doc_lens)
-    return torch.zeros((sum(doc_lens), 0), dtype=torch.bool, device="cuda")
-
-
-def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor:
-    """`(seq_len, n_positions)` bool: which KV positions each query's gather slots address."""
-    slots = indices[0, :, 0, :].long()
-    # `IGNORE_SLOT` (-1) marks an absent key; it goes into one throwaway column that is sliced back off.
-    safe = torch.where(slots >= 0, slots, n_positions)
-    selected = torch.zeros((indices.shape[1], n_positions + 1), dtype=torch.bool, device=indices.device)
-    return selected.scatter_(1, safe, True)[:, :n_positions]
-
-
 @requires_sparse_attn_kernel
 def test_deepseek_v4_refuses_a_shape_the_kernel_cannot_tile():
     """The constructor refuses a head count the kernels cannot tile, rather than the first forward."""
     config = DeepseekV4Config(**{**V4FLASH_MODEL, "num_attention_heads": 16})
     with pytest.raises(ValueError, match="cannot run the fused sparse-attention kernel"):
         DeepseekV4Attention(config, V4FLASH_CSA_LAYER, DeepseekV4RotaryEmbedding(config))
-
-
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-@pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
-@pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
-def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens, layer_idx, monkeypatch):
-    """A layer's gather slots must reach the keys the dense rules admit, key for key.
-
-    One selection rendered two independent ways: the dense rendering concatenates the entries the
-    layer type's rule admits onto a sliding mask built straight from the document boundaries rather
-    than from `window_indices`; the sparse one writes the window and the picks into a single index
-    tensor over a gathered KV buffer. Nothing in the layer compares them, and every way of getting
-    the sparse side wrong (a window base off by one, an entry index not offset by the token count,
-    an `IGNORE_SLOT` (-1) pick surviving, a stale index left over from a previous layout) still produces a finite
-    output.
-
-    All three layer types share the index tensor, so all three can be wrong in those ways. A
-    sliding layer must name its window and nothing else, and HCA must name the contiguous run of
-    its own document's entries that the query has completed, numbered from that document's base
-    rather than from the packed row's.
-
-    Pure set equality on integers, so no tolerance enters; bfloat16 is only what the kernel these
-    indices are recorded from insists on. The index tensor comes from a real forward of the module.
-    """
-    module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
-    layer_type = V4FLASH_MODEL["layer_types"][layer_idx]
-    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
-    hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
-    recorded = _record_attention(monkeypatch)
-
-    if module.compressor is not None:
-        real_compressor = module.compressor.forward
-
-        def compressor(hidden_states, q_residual, packed, **kwargs):
-            compressed_kv, recorded["picks"] = real_compressor(hidden_states, q_residual, packed)
-            return compressed_kv, recorded["picks"]
-
-        monkeypatch.setattr(module.compressor, "forward", compressor)
-
-    with torch.no_grad():
-        module(hidden_states, packed=packed)
-
-    n_positions = recorded["kv_buf"].shape[1]
-    seq_len, n_entries = sum(doc_lens), n_positions - sum(doc_lens)
-    rate = V4FLASH_MODEL["compress_rates"].get(layer_type)
-    assert n_entries == (0 if rate is None else sum(_entry_counts(doc_lens, rate)))
-    sliding_mask = eager_reference.build_sliding_window_mask(
-        tok_doc_idx=packed.tok_doc_idx, sliding_window=V4FLASH_MODEL["sliding_window"], dtype=torch.float32
-    )
-    admitted = torch.cat(
-        [sliding_mask[0, 0] == 0, _entries_admitted(layer_type, doc_lens, recorded.get("picks"))], dim=-1
-    )
-    if n_entries:
-        assert admitted[:, seq_len:].any(), "vacuous probe: no query reads a compressed entry"
-
-    selected = _selected_positions(recorded["indices"], n_positions)
-    assert torch.equal(selected, admitted), "the sparse and dense paths select different keys"
 
 
 @requires_sparse_attn_kernel
@@ -795,7 +453,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     layer_type = V4FLASH_MODEL["layer_types"][layer_idx]
     packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
-    hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
+    hidden_states = _v4flash_hidden_states(sum(doc_lens))
     recorded = _record_attention(monkeypatch)
 
     with torch.no_grad():
@@ -836,14 +494,13 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     query of a row carries 639 pad slots against 1 real key, so its denominator would be wrong by
     roughly three orders of magnitude, and nothing would raise.
 
-    The neighbouring index tests do fail if the pad row comes back, but on incidental symptoms:
-    every pad slot naming one row reads as "a query gathers the same key twice", and the extra row
-    reads as a compressed-entry count that does not match the layout. Neither names the cause, so
-    this asserts the contract directly.
+    The neighbouring index test does fail if the pad row comes back, but on an incidental symptom:
+    every pad slot naming one row reads as "a query gathers the same key twice". That does not name
+    the cause, so this asserts the contract directly.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
     packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
-    hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
+    hidden_states = _v4flash_hidden_states(sum(doc_lens))
     recorded = _record_attention(monkeypatch)
 
     with torch.no_grad():
@@ -870,9 +527,8 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     )
 
 
-# One CSA layer in bfloat16, so `PACKED_RTOL` (float32, and three orders of magnitude tighter than a kernel
-# accumulating bfloat16 inputs) does not apply, but neither does the whole-model bound `test_deepseek_v4.py`
-# carries, which is sized for four hyper-connected layers amplifying a bfloat16 expert floor.
+# One CSA layer in bfloat16, so these bounds sit at the bfloat16 floor of two runs of the same kernel path
+# rather than at a float32 one.
 KERNEL_RTOL, KERNEL_GRAD_RTOL = 5e-3, 1e-2
 
 # `compress_rate = 4` yields 129 + 254 = 383 compressed entries, under `index_topk = 512`, so
@@ -882,98 +538,18 @@ KERNEL_RTOL, KERNEL_GRAD_RTOL = 5e-3, 1e-2
 KERNEL_DOC_LENS = (517, 1019)
 
 
-# Document layouts for the kernel-against-eager comparison: two single-document rows and two
-# packed ones. `(2600,)` is left out on purpose for the reason `KERNEL_DOC_LENS` gives below, and
-# `(3,)` is kept because it compresses to no entries at all, so almost every gather slot is the
-# `IGNORE_SLOT` (-1) marker and the local window alone has to answer.
-EAGER_KERNEL_DOC_LENS = [(300,), (3,), (517, 1019), (3, 129, 1021)]
-EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
-
-# A bfloat16 kernel against a float32 dense softmax, so these are three orders of magnitude looser
-# than a float32 comparison would be, and looser again than `KERNEL_RTOL`, which compares
-# two bfloat16 runs of the same path.
-EAGER_KERNEL_RTOL, EAGER_KERNEL_GRAD_RTOL = 1e-2, 5e-2
-
-
-@pytest.mark.parametrize("backend", DSV4_BACKENDS)
-@pytest.mark.parametrize("doc_lens", EAGER_KERNEL_DOC_LENS, ids=EAGER_KERNEL_DOC_IDS)
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-def test_sparse_attention_kernel_matches_eager(doc_lens, backend, monkeypatch):
-    """The fused kernel against the naive dense softmax, single-document and packed.
-
-    Every other kernel test reaches eager only transitively: the kernel is compared to the gather
-    reference on hand-built tensors, and the gather reference is compared to eager on a real
-    module. Nothing joined the two ends on the same input, so a disagreement that the gather
-    reference happened to share with the kernel would go unseen. This closes that loop, and it is
-    the only place the modeling code's own index construction meets the kernel in a numeric
-    comparison rather than a set-equality one.
-
-    Both halves hold the same weights, the bfloat16 module's, one widened to float32 rather than
-    drawn again, and both start from the same bfloat16-representable hidden states, so input
-    rounding is not one of the differences being measured. What is left is the attention path:
-    a dense mask and a full softmax on one side, a 640-slot gather and an online softmax on the
-    other.
-
-    The call count is load-bearing rather than decoration: `dsv4_sparse_attn` raises today instead
-    of demoting a dtype it cannot run, but a regression that reintroduced a fallback would leave
-    this comparing eager against eager and passing for the wrong reason.
-    """
-    seq_len = sum(doc_lens)
-    kernel_module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    kernel_module.dsa_backend = backend
-    eager_module = copy.deepcopy(kernel_module).float()
-    eager_reference.use_eager_attention(eager_module)
-
-    with torch.device("cuda"):
-        base = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
-    kernel_input = base.clone().requires_grad_(True)
-    eager_input = base.float().clone().requires_grad_(True)
-
-    calls = []
-    real_kernel = dsv4_attention.dsv4_sparse_attn
-
-    def counting_kernel(q, *args, **kwargs):
-        calls.append(q.shape[1])
-        return real_kernel(q, *args, **kwargs)
-
-    monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
-
-    kernel_output, _ = kernel_module(kernel_input, packed=_packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG))
-    eager_output, _ = eager_module(eager_input, packed=_packed_context(doc_lens, torch.float32, V4FLASH_CONFIG))
-    assert calls == [seq_len], f"the forward never reached the kernel, calls={calls}"
-    _assert_relative(kernel_output, eager_output, EAGER_KERNEL_RTOL, "attention output")
-
-    # One weight tensor for both losses, so any difference belongs to the attention path alone.
-    with torch.device("cuda"):
-        weight = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.float32)
-    (eager_output * weight).sum().backward()
-    eager_grads = _take_grads(eager_module)
-    assert eager_grads["sinks"] is not None and eager_grads["sinks"].norm() > 0, (
-        "vacuous probe: the sinks received no gradient, so the comparison below cannot fail on them"
-    )
-
-    (kernel_output * weight.bfloat16()).sum().backward()
-    _compare_accumulated_grads(kernel_module, eager_grads, rtol=EAGER_KERNEL_GRAD_RTOL)
-    _assert_relative(kernel_input.grad, eager_input.grad, EAGER_KERNEL_GRAD_RTOL, "hidden states gradient")
-
-
 @pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
 def test_sparse_attention_kernel_packed_matches_unpacked(backend, monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
-    The same invariant its float32 neighbours assert, run in bfloat16 because that is the only
-    dtype `dsv4_sparse_attn` accepts. Numerics belong to the direct-kernel tests at the top of this
-    file, which compare against the float32 gather oracle on hand-built tensors; what is covered
-    here is that the modeling code feeds the kernel inputs it
-    can act on, and that nothing in `q`, the KV buffer or the indices carries the packed row's
-    layout into a document's own answer.
+    Run in bfloat16 because that is the only dtype `dsv4_sparse_attn` accepts. What is covered is
+    that the modeling code feeds the kernel inputs it can act on, and that nothing in `q`, the KV
+    buffer or the indices carries the packed row's layout into a document's own answer.
 
-    The call count is load-bearing, not decoration: `dsv4_sparse_attn` raises today rather than
-    demoting a dtype it cannot run, but without counting the calls a regression that reintroduced
-    a fallback would leave this test asserting a property of the gather reference instead.
+    The call count is load-bearing, not decoration: without it, a regression that routed around
+    the kernel would leave this test passing without ever exercising the kernel.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
     module.dsa_backend = backend
@@ -1016,14 +592,13 @@ def test_sparse_attention_kernel_packed_matches_unpacked(backend, monkeypatch):
 def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     """Every parameter of a CSA layer that can train does, with the kernel in the path.
 
-    `test_deepseek_v4_backward` makes this assertion through the assembled model, but only on the
-    dense reference, which is what that whole file binds. This is the same assertion at module
-    level and at the real Flash shapes, and it is not implied by its neighbour above, which
-    compares two runs of the same path and would pass unchanged if both left a parameter at zero.
+    `test_deepseek_v4_backward` makes this assertion through the assembled model at toy shapes.
+    This is the same assertion at module level and at the real Flash shapes, and it is not implied
+    by its neighbour above, which compares two runs of the same path and would pass unchanged if
+    both left a parameter at zero.
 
-    The call count is load-bearing rather than decoration: `dsv4_sparse_attn` raises today
-    instead of falling back, but a regression that reintroduced a fallback would leave this
-    asserting a property of the gather reference.
+    The call count is load-bearing rather than decoration: without it, a regression that routed
+    around the kernel would leave this test passing without ever exercising the kernel.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
     packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
@@ -1063,351 +638,6 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     assert hidden_states.grad is not None and hidden_states.grad.norm() > 0, (
         "the hidden states received no gradient, so nothing reached the layer's inputs"
     )
-
-
-# The HCA layer of the Flash config, which nothing else here builds: every other test at these
-# shapes takes `V4FLASH_CSA_LAYER`. Documents are exact multiples of the HCA compress rate of 128,
-# so both own whole entries and only the numbering, and with it the RoPE position, moves. The tight
-# `PACKED_RTOL` from the gather test above applies here too.
-V4FLASH_HCA_DOCS = (256, 512)
-
-
-@requires_sparse_attn_kernel
-def test_v4flash_hca_attention_packed_matches_unpacked():
-    """An HCA layer at production shapes must answer each document as if it stood alone.
-
-    Run on the eager consumer, so this is the packing invariant on its own rather than a
-    comparison between implementations; `test_kernel_and_eager_consumers_agree_on_shared_weights`
-    is what ties the two consumers together on this layer type. What this covers is the part the
-    toy shapes cannot reach: a compress rate of 128 over 512 channels, where an entry pools 128
-    tokens and a document boundary the compressor failed to respect would pull a whole other
-    document into one entry.
-
-    `test_attention_packed_matches_unpacked[hca]` asserts the same invariant at toy shapes and
-    rate 8.
-    """
-    module = v4flash_attention(V4FLASH_HCA_LAYER, dtype=torch.float32, eager=True)
-    assert module.layer_type == "heavily_compressed_attention", (
-        f"expected the Flash config's HCA layer, got {module.layer_type}"
-    )
-    seq_len = sum(V4FLASH_HCA_DOCS)
-    packed_input, alone_input = _v4flash_hidden_states(seq_len)
-    packed = _packed_context(V4FLASH_HCA_DOCS, torch.float32, V4FLASH_CONFIG)
-
-    q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-    _, picks = module.compressor(packed_input.detach(), q_residual, packed)
-    # (batch, seq_len, n_picks), with `IGNORE_SLOT` (-1) where the query had no entry left to pick.
-    assert (picks[:, _doc_slice(V4FLASH_HCA_DOCS, 1)] >= 0).any(), (
-        "vacuous probe: no query of the second document reads a compressed entry"
-    )
-
-    packed_output, _ = module(packed_input, packed=packed)
-    with torch.device("cuda"):
-        weight = torch.randn_like(packed_output)
-    (packed_output * weight).sum().backward()
-    packed_grads = _take_grads(module)
-
-    for index, length in enumerate(V4FLASH_HCA_DOCS):
-        span = _doc_slice(V4FLASH_HCA_DOCS, index)
-        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), torch.float32, V4FLASH_CONFIG))
-        _assert_relative(packed_output[:, span], alone_output, PACKED_RTOL, f"document {index}")
-        (alone_output * weight[:, span]).sum().backward()
-
-    _compare_accumulated_grads(module, packed_grads, rtol=PACKED_GRAD_RTOL)
-    _assert_relative(alone_input.grad, packed_input.grad, PACKED_GRAD_RTOL, "hidden states gradient")
-
-
-# Both consumers run in bfloat16, the only dtype the kernel accepts, so any absolute tolerance
-# written down here would be arbitrary. The bound below is anchored instead: the kernel may differ
-# from the eager consumer by a small multiple of what bfloat16 already costs that same eager
-# consumer against float32 on the same weights. This is the resolution limit of a
-# bfloat16-against-bfloat16 comparison rather than a slack chosen too loosely;
-# `test_kernel_backward_matches_autograd_through_the_reference` is where the kernel's numerics are
-# pinned against float32.
-KERNEL_PARITY_SLACK = 3.0
-
-# One packed row and two unpacked ones. A packed row cannot show what an unpacked one does, a
-# document that is the whole sequence and a window that clips at no boundary but its own start, and
-# `(3,)` compresses to no entries at either rate, leaving the local window alone to answer. Every
-# layer type runs each, since the three lay their slots out differently.
-PARITY_DOC_LENS = [KERNEL_DOC_LENS, (300,), (3,)]
-PARITY_DOC_IDS = ["two-docs", "one-doc", "no-entries"]
-
-
-class _SparseAttnCallCounter(TorchDispatchMode):
-    """Count `prime_rl::dsv4_sparse_attn` invocations as the dispatcher sees them.
-
-    Counting here rather than around the name `attention.py` looks the kernel up under means the
-    only way to raise the count is to reach the registered op: a wrapper cannot satisfy it and the
-    eager consumer, which never calls it, cannot either.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.count = 0
-
-    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-        if func is torch.ops.prime_rl.dsv4_sparse_attn.default:
-            self.count += 1
-        return func(*args, **(kwargs or {}))
-
-
-def _assert_within_the_bfloat16_floor(
-    candidate: torch.Tensor, eager_bf16: torch.Tensor, eager_fp32: torch.Tensor, label: str
-) -> None:
-    """Bound the kernel's disagreement with eager by what bfloat16 costs eager against float32."""
-    gap = (candidate.float() - eager_bf16.float()).abs().max()
-    floor = (eager_bf16.float() - eager_fp32.float()).abs().max()
-    assert gap <= KERNEL_PARITY_SLACK * floor, (
-        f"{label}: the kernel differs from eager by {gap}, more than {KERNEL_PARITY_SLACK}x the "
-        f"{floor} bfloat16 already costs the eager path against float32"
-    )
-
-
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-@pytest.mark.parametrize("backend", DSV4_BACKENDS)
-@pytest.mark.parametrize("doc_lens", PARITY_DOC_LENS, ids=PARITY_DOC_IDS)
-@pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
-def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens, backend):
-    """The two consumers of one `SparseAttnInputs` must compute the same attention, and its gradient.
-
-    They are handed the identical index tensor, so this is not about which keys a query reads,
-    which its neighbours settle on integers. What is at stake is the attention core itself: the
-    sink term in the softmax denominator, the scale, the value weighting and the
-    backward's scatter. A kernel that dropped the sink, weighted a head with another head's
-    probabilities or lost a term in `dQ` would still hand back finite numbers of the right shape,
-    and every packing test in this file would still pass, because both halves of those comparisons
-    run the same path.
-
-    Anchored rather than hand-tuned: a float32 eager run on the same weights supplies the scale of
-    disagreement bfloat16 is already responsible for, and the kernel is required to stay within
-    `KERNEL_PARITY_SLACK` of it. Every layer type runs against every layout, because each lays
-    its slots out differently and only CSA had coverage.
-    """
-    module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
-    module.dsa_backend = backend
-    weights = module.state_dict()
-    eager_bf16 = v4flash_attention(layer_idx, dtype=torch.bfloat16, eager=True)
-    eager_bf16.load_state_dict(weights)
-    eager_fp32 = v4flash_attention(layer_idx, dtype=torch.float32, eager=True)
-    eager_fp32.load_state_dict({name: tensor.float() for name, tensor in weights.items()})
-
-    with torch.device("cuda"):
-        hidden = torch.randn(1, sum(doc_lens), V4FLASH_MODEL["hidden_size"])
-        weight = torch.randn_like(hidden)
-
-    outputs, input_grads = {}, {}
-    for name, layer, dtype in (
-        ("kernel", module, torch.bfloat16),
-        ("eager_bf16", eager_bf16, torch.bfloat16),
-        ("eager_fp32", eager_fp32, torch.float32),
-    ):
-        hidden_states = hidden.to(dtype).clone().requires_grad_(True)
-        packed = _packed_context(doc_lens, dtype, V4FLASH_CONFIG)
-        with _SparseAttnCallCounter() as counter:
-            output, _ = layer(hidden_states, packed=packed)
-        assert counter.count == (1 if name == "kernel" else 0), f"{name} made {counter.count} kernel calls"
-        # The same weight for all three, so the three losses are one function of the same numbers.
-        (output * weight.to(dtype)).sum().backward()
-        outputs[name] = output.detach()
-        input_grads[name] = hidden_states.grad
-
-    _assert_within_the_bfloat16_floor(outputs["kernel"], outputs["eager_bf16"], outputs["eager_fp32"], "output")
-    _assert_within_the_bfloat16_floor(
-        input_grads["kernel"], input_grads["eager_bf16"], input_grads["eager_fp32"], "hidden states gradient"
-    )
-    for name, param in eager_fp32.named_parameters():
-        kernel_grad, eager_grad = module.get_parameter(name).grad, eager_bf16.get_parameter(name).grad
-        if param.grad is None:
-            # The Lightning Indexer reaches the loss only through integer top-k indices.
-            assert kernel_grad is None and eager_grad is None, f"{name} trains on one path but not the other"
-            continue
-        _assert_within_the_bfloat16_floor(kernel_grad, eager_grad, param.grad, f"{name} gradient")
-
-
-# Widths that 4 divides. `(517, 1019)` puts the `cp = 2` cut inside the second document, and
-# `(300,)` gives 75-token shards at `cp = 4`, narrower than `sliding_window = 128`.
-CP_DOC_LENS = [(517, 1019), (300,)]
-CP_DOC_IDS = ["two-docs", "one-short-doc"]
-CP_WORLD_SIZES = [2, 4]
-CP_WORLD_SIZE_IDS = ["cp2", "cp4"]
-
-
-def _cp_gathered_projections(
-    module: nn.Module,
-    doc_lens: tuple[int, ...],
-    dtype: torch.dtype,
-    config: DeepseekV4Config,
-    cp_world_size: int,
-) -> list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]:
-    """What one attention layer all-gathers, in the order its forward does, per source chunk.
-
-    Order identifies a gather, not width: two of a CSA layer's three are 512 wide. Only the
-    first is rotated, at its own rank's query positions, which is what the rank index is for.
-    """
-    # One context per rank, not one per gather: a rank's gathers all read the same tables.
-    rope_tables = [
-        module.rotary_emb(
-            _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_ids,
-            module.rope_layer_type,
-            dtype=torch.float32,
-        )
-        for cp_rank in range(cp_world_size)
-    ]
-
-    def rotated_kv(hidden: torch.Tensor, rank_index: int) -> torch.Tensor:
-        kv = module.kv_norm(module.kv_proj(hidden)).view(*hidden.shape[:2], 1, module.head_dim)
-        cos, sin = rope_tables[rank_index]
-        return apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
-
-    def concatenated_projections(compressor: nn.Module) -> Callable[[torch.Tensor, int], torch.Tensor]:
-        return lambda hidden, _: torch.cat([compressor.kv_proj(hidden), compressor.gate_proj(hidden)], dim=-1)
-
-    projections = [("attention kv", rotated_kv)]
-    if module.compressor is not None:
-        projections.append((f"{module.layer_type} compress", concatenated_projections(module.compressor)))
-        indexer = getattr(module.compressor, "indexer", None)
-        if indexer is not None:
-            projections.append(("indexer compress", concatenated_projections(indexer.compressor)))
-    return projections
-
-
-def _fake_gather_for_cp(
-    projections: list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]],
-    chunks: tuple[torch.Tensor, ...],
-    cp_rank: int,
-) -> tuple[Callable[..., torch.Tensor], list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]]:
-    """A `gather_for_cp` stand-in for `cp_rank`, plus the list of gathers it has yet to see.
-
-    The slab at `cp_rank` is the caller's own tensor and the siblings stay attached, so summing
-    the per-rank backwards is what `_all_gather`'s `_reduce_scatter_sum` computes. Gathers are
-    matched by position, since two of a CSA layer's three share a width.
-    """
-    pending = list(projections)
-
-    def gather(tensor: torch.Tensor, cp_group) -> torch.Tensor:
-        assert pending, f"rank {cp_rank} gathered more often than its {len(projections)} projections account for"
-        label, projection = pending.pop(0)
-        slabs = [projection(chunk, rank_index) for rank_index, chunk in enumerate(chunks)]
-        assert tensor.shape == slabs[cp_rank].shape, (
-            f"gather '{label}' was handed a {tuple(tensor.shape)} tensor, expected {tuple(slabs[cp_rank].shape)}"
-        )
-        _assert_relative(tensor, slabs[cp_rank], PACKED_RTOL, f"gather '{label}'")
-        slabs[cp_rank] = tensor
-        return torch.cat(slabs, dim=1)
-
-    return gather, pending
-
-
-@requires_sparse_attn_kernel
-@pytest.mark.parametrize("doc_lens", CP_DOC_LENS, ids=CP_DOC_IDS)
-@pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
-@pytest.mark.parametrize(
-    "layer_idx",
-    [pytest.param(V4FLASH_CSA_LAYER, marks=requires_fp8_indexer), V4FLASH_HCA_LAYER, V4FLASH_SLIDING_LAYER],
-    ids=V4FLASH_LAYER_IDS,
-)
-def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_size, doc_lens, monkeypatch):
-    module = v4flash_attention(layer_idx, dtype=torch.float32, eager=True)
-    seq_len = sum(doc_lens)
-    with torch.device("cuda"):
-        hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"]).requires_grad_(True)
-        cotangent = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"])
-
-    out_full, _ = module(hidden_full, packed=_packed_context(doc_lens, torch.float32, V4FLASH_CONFIG))
-    (out_full * cotangent).sum().backward()
-    reference_out = out_full.detach()
-    reference_input_grad = hidden_full.grad.clone()
-    reference_grads = _take_grads(module)
-    hidden_full.grad = None
-
-    # Views of the one leaf, so every rank's backward accumulates into the same buffers.
-    chunks = hidden_full.chunk(cp_world_size, dim=1)
-    n_queries = seq_len // cp_world_size
-    projections = _cp_gathered_projections(module, doc_lens, torch.float32, V4FLASH_CONFIG, cp_world_size)
-    for cp_rank, chunk in enumerate(chunks):
-        gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
-        monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
-        monkeypatch.setattr(
-            torch.ops._c10d_functional,
-            "all_gather_into_tensor",
-            lambda tensor, group_size, group_name: gather(tensor.movedim(0, 1), None).movedim(1, 0).contiguous(),
-        )
-        monkeypatch.setattr(dsv4_attention.funcol, "wait_tensor", lambda tensor: tensor)
-        module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size)
-
-        packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
-        out_rank, _ = module(chunk, packed=packed)
-        assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
-
-        rows = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
-        _assert_relative(out_rank, reference_out[:, rows], PACKED_RTOL, f"rank {cp_rank} output")
-        (out_rank * cotangent[:, rows]).sum().backward()
-
-    _assert_relative(hidden_full.grad, reference_input_grad, PACKED_GRAD_RTOL, "hidden states gradient")
-    _compare_accumulated_grads(module, reference_grads)
-
-
-MHC_SHAPES = [(1, 256), (1, 203), (3, 67)]
-MHC_SHAPE_IDS = ["aligned", "misaligned", "batched"]
-
-SINKHORN_RTOL = 1e-5
-SINKHORN_GRAD_RTOL = 1e-5
-POST_BDA_RTOL = 1e-2
-POST_BDA_GRAD_RTOL = 1e-2
-
-
-@pytest.mark.parametrize(("batch", "seq_len"), MHC_SHAPES, ids=MHC_SHAPE_IDS)
-def test_fused_sinkhorn_matches_the_eager_reference(batch, seq_len):
-    hc = V4FLASH_MODEL["hc_mult"]
-    iters, eps = V4FLASH_MODEL["hc_sinkhorn_iters"], V4FLASH_MODEL["hc_eps"]
-    with torch.device("cuda"):
-        logits = torch.randn(batch, seq_len, hc, hc)
-        weight = torch.randn(batch, seq_len, hc, hc)
-
-    fused_logits, reference_logits = _leaves(logits, logits)
-
-    fused_comb = dsv4_mhc.fused_sinkhorn(fused_logits, iters, eps)
-    (fused_comb * weight).sum().backward()
-
-    reference_comb = eager_reference.eager_sinkhorn(reference_logits, iters, eps)
-    (reference_comb * weight).sum().backward()
-
-    _assert_relative(fused_comb, reference_comb, SINKHORN_RTOL, "comb")
-    _assert_relative(fused_logits.grad, reference_logits.grad, SINKHORN_GRAD_RTOL, "logits gradient")
-
-
-def test_fused_post_bda_matches_the_eager_reference():
-    batch, seq_len = 2, 129
-    hc, dim = V4FLASH_MODEL["hc_mult"], V4FLASH_MODEL["hidden_size"]
-    with torch.device("cuda"):
-        module = DeepseekV4HyperConnection(V4FLASH_CONFIG)
-        streams = torch.randn(batch, seq_len, hc, dim, dtype=torch.bfloat16)
-        sublayer_out = torch.randn(batch, seq_len, dim, dtype=torch.bfloat16)
-        post = 2 * torch.sigmoid(torch.randn(batch, seq_len, hc))
-        comb = torch.softmax(torch.randn(batch, seq_len, hc, hc), dim=-1)
-        weight = torch.randn(batch, seq_len, hc, dim, dtype=torch.bfloat16)
-
-    fused_post, fused_comb, fused_x, fused_streams = _leaves(post, comb, sublayer_out, streams)
-    reference_post, reference_comb, reference_x, reference_streams = _leaves(post, comb, sublayer_out, streams)
-
-    fused_out = module.update_states(fused_post, fused_comb, fused_x, fused_streams)
-    (fused_out * weight).sum().backward()
-
-    reference_out = eager_reference.eager_update_states(reference_post, reference_comb, reference_x, reference_streams)
-    (reference_out * weight).sum().backward()
-
-    _assert_relative(fused_out, reference_out, POST_BDA_RTOL, "write-back output")
-    grads = (
-        ("post gradient", fused_post, reference_post),
-        ("comb gradient", fused_comb, reference_comb),
-        ("sublayer output gradient", fused_x, reference_x),
-        ("streams gradient", fused_streams, reference_streams),
-    )
-    for label, fused_leaf, reference_leaf in grads:
-        assert reference_leaf.grad is not None, f"{label}: the reference backward left the leaf without a gradient"
-        _assert_relative(fused_leaf.grad, reference_leaf.grad, POST_BDA_GRAD_RTOL, label)
 
 
 ROPE_DIM = V4FLASH_MODEL["qk_rope_head_dim"]

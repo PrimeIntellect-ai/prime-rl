@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
+def to_local(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
 class ExpertCompute(Protocol):
     token_group_alignment: int
 
@@ -23,6 +27,25 @@ class ExpertCompute(Protocol):
 
     def __call__(
         self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor
+    ) -> torch.Tensor: ...
+
+
+class FusedDispatchExpertCompute(Protocol):
+    """Expert compute that also dispatches tokens to their experts and combines the results.
+
+    It takes this rank's undispatched tokens and their routing, paired with a ``FusedTokenDispatcher``.
+    """
+
+    token_group_alignment: int
+
+    def validate(self, experts: "GroupedExperts") -> None: ...
+
+    def __call__(
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
     ) -> torch.Tensor: ...
 
 
@@ -55,9 +78,6 @@ class GroupedGemmExpertCompute:
 
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         assert x.dim() == 2
-
-        def to_local(tensor: torch.Tensor) -> torch.Tensor:
-            return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         x_bf16 = x.bfloat16()

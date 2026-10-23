@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
@@ -10,8 +9,9 @@ from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
+from prime_rl.utils.links import PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -21,9 +21,10 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    launcher_attempt_env,
     prepare_attempt_dirs,
+    prepare_run,
     resolve_latest_ckpt_step,
-    validate_run_dir,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -296,7 +297,7 @@ def sft_slurm(config: SFTConfig):
         sys.exit(1)
 
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
-    log_dashboard_url(logger, dashboard_url)
+    log_run_links(dashboard_url)
 
 
 def sft_local(config: SFTConfig):
@@ -410,6 +411,7 @@ def sft_local(config: SFTConfig):
             **DEFAULT_TRAINER_ENV_VARS,
             **config.env_vars,
             **wandb_shared_env,
+            **launcher_attempt_env(config_dir, log_dir),
         }
         if config.eval is not None:
             trainer_env["LOGURU_FORCE_COLORS"] = "1"
@@ -430,7 +432,8 @@ def sft_local(config: SFTConfig):
         )
 
         logger.success("Launcher complete")
-        log_dashboard_url(logger, dashboard_url)
+        monitors = {PRIME_LINKS: config.monitors.prime, WANDB_LINKS: config.monitors.wandb}
+        log_run_links(dashboard_url, run_links(config.run_dir, log_dir, monitors, lambda: bool(processes.error_queue)))
 
         # Wait for the trainer (and the online-eval process, which drains its final evals
         # after the trainer's last checkpoint) while surfacing any process failure.
@@ -461,22 +464,7 @@ def sft(config: SFTConfig):
             "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
         )
 
-    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
-    # the vehicle for runtime info between processes, and every spawned process inherits
-    # them. Components launched standalone have no run identity.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    resuming = config.resume is not None
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(
-        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
-    )
-    config.run_dir.mkdir(parents=True, exist_ok=True)
-    if ckpt_output_dir is not None:
-        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_run(config, config.ckpt.output_dir if config.ckpt else None)
 
     if config.eval is not None and not config.dry_run:
         clean_stale_eval_artifacts(config)

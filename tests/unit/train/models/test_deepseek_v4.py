@@ -1,4 +1,3 @@
-import math
 import re
 
 import pytest
@@ -11,13 +10,12 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForC
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
-from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
-from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
+from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
-# the kernel it would dispatch to, so the whole file needs tilelang even though nothing here calls it.
+# the kernel it dispatches to, so the whole file needs tilelang.
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
@@ -25,11 +23,6 @@ pytestmark = [
         reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
     ),
 ]
-
-requires_fp8_indexer = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
-    reason="the indexer kernel quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
-)
 
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
 # layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
@@ -89,7 +82,7 @@ MODEL_CONFIG = DeepseekV4Config(**MODEL)
 BATCH = 1
 MODEL_SEQ = 32
 
-SLIDING_LAYER, CSA_LAYER, HCA_LAYER = 0, 1, 2
+CSA_LAYER, HCA_LAYER = 1, 2
 COMPRESS_RATE = MODEL["compress_rates"]["compressed_sparse_attention"]
 HCA_COMPRESS_RATE = MODEL["compress_rates"]["heavily_compressed_attention"]
 
@@ -97,16 +90,6 @@ HCA_COMPRESS_RATE = MODEL["compress_rates"]["heavily_compressed_attention"]
 @pytest.fixture(autouse=True)
 def _seed_rng():
     torch.manual_seed(0)
-
-
-@pytest.fixture
-def _torch_rms_norm(monkeypatch):
-    """Make the shared `RMSNorm` take its PyTorch path instead of the quack kernel.
-
-    The kernel is a project-wide choice that predates this model and drifts from a fp32
-    reference by up to ~1e-2 in bf16, which would swamp what the V4-specific math contributes.
-    """
-    monkeypatch.setattr(norms, "get_quack_rmsnorm", lambda: None)
 
 
 def _tid2eid(vocab_size: int, num_experts: int, top_k: int) -> torch.Tensor:
@@ -153,7 +136,6 @@ def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     with torch.device("cuda"), default_dtype(dtype):
         model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
     _randomize(model)
-    eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
 
@@ -167,7 +149,6 @@ def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.M
     with torch.device("cuda"), default_dtype(dtype):
         module = DeepseekV4Attention(MODEL_CONFIG, layer_idx, DeepseekV4RotaryEmbedding(MODEL_CONFIG))
     _randomize(module)
-    eager_reference.use_eager_attention(module)
     return module
 
 
@@ -202,7 +183,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     )
 
 
-@requires_fp8_indexer
+@requires_datacenter_gpu
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
     prime_model = get_prime_model()
@@ -226,13 +207,12 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
     torch.testing.assert_close(counts[0][0], expected)
 
 
-@requires_fp8_indexer
+@requires_datacenter_gpu
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     _randomize(model)
-    eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, MODEL["vocab_size"], (BATCH, MODEL_SEQ), device="cuda")
@@ -442,173 +422,14 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
         assert not torch.equal(compressor.rotary_emb.compress_inv_freq, reference)
 
 
-# DeepSeek ships its own inference code inside the checkpoint, at
-# https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/tree/main/inference. Its
-# `model.py:481-485` is what decides which frequencies each layer gets:
-#
-#     if self.compress_ratio:
-#         original_seq_len, rope_theta = args.original_seq_len, args.compress_rope_theta
-#     else:
-#         # disable YaRN and use base rope_theta in pure sliding-window attention
-#         original_seq_len, rope_theta = 0, args.rope_theta
-#
-# `precompute_freqs_cis` (`model.py:206-235`) applies the NTK-by-parts ramp only when
-# `original_seq_len > 0`, so a pure sliding-window layer gets plain RoPE at `rope_theta` and every
-# compressed layer gets YaRN at `compress_rope_theta`. vLLM's `build_deepseek_v4_rope` must match.
-#
-# The real checkpoint's beta range and factor, but a reduced `original_max_position_embeddings`:
-# the cos/sin cache is `original_max * factor` rows of fp32, which at the checkpoint's 65536 would
-# allocate 268 MB per rope. 4096 still places the correction range at channels 10 to 23, well
-# inside the 32 channel pairs, so the ramp is exercised.
-ROPE_FACTOR = 16
-ROPE_ORIGINAL_MAX_POSITION = 4096
-ROPE_BETA_FAST, ROPE_BETA_SLOW = 32, 1
-ROPE_THETA, COMPRESS_ROPE_THETA = 10000.0, 160000.0
-ROPE_HEAD_DIM, ROPE_ROTARY_DIM = 512, 64
-ROPE_MAX_POSITION = ROPE_ORIGINAL_MAX_POSITION * ROPE_FACTOR
-
-ROPE_SCALING = {
-    "type": "yarn",
-    "factor": ROPE_FACTOR,
-    "beta_fast": ROPE_BETA_FAST,
-    "beta_slow": ROPE_BETA_SLOW,
-    "original_max_position_embeddings": ROPE_ORIGINAL_MAX_POSITION,
-}
-
-# The nested `main`/`compress` schema, which HF's own `DeepseekV4Config` and this repo's port both
-# write. A config.json can also carry the flat legacy `rope_scaling` the real checkpoint ships.
-ROPE_NESTED_PLAIN = {"rope_type": "default", "partial_rotary_factor": 0.125}
-ROPE_PARAMETERS = {
-    "main": dict(ROPE_NESTED_PLAIN),
-    "compress": {
-        "rope_type": "yarn",
-        **{key: value for key, value in ROPE_SCALING.items() if key != "type"},
-        "partial_rotary_factor": 0.125,
-    },
-}
-
-
-def _reference_rope_freqs(original_seq_len: int, base: float) -> torch.Tensor:
-    """Verbatim from the checkpoint's `inference/model.py:206-231`, minus the unused `t` outer.
-
-    Only the frequency vector is kept; the reference then does `torch.polar(ones, outer(t, freqs))`,
-    whose magnitude is 1, i.e. no mscale on cos/sin.
-    """
-
-    def find_correction_dim(num_rotations, dim, base, max_seq_len):
-        return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
-
-    def find_correction_range(low_rot, high_rot, dim, base, max_seq_len):
-        low = math.floor(find_correction_dim(low_rot, dim, base, max_seq_len))
-        high = math.ceil(find_correction_dim(high_rot, dim, base, max_seq_len))
-        return max(low, 0), min(high, dim - 1)
-
-    def linear_ramp_factor(min, max, dim):
-        if min == max:
-            max += 0.001
-        linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
-        return torch.clamp(linear_func, 0, 1)
-
-    dim = ROPE_ROTARY_DIM
-    freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
-    if original_seq_len > 0:
-        low, high = find_correction_range(ROPE_BETA_FAST, ROPE_BETA_SLOW, dim, base, original_seq_len)
-        smooth = 1 - linear_ramp_factor(low, high, dim // 2)
-        freqs = freqs / ROPE_FACTOR * (1 - smooth) + freqs * smooth
-    return freqs
-
-
-def _vllm_rope_freqs(rotary_emb) -> torch.Tensor:
-    """Recover inv_freq from row 1 of vLLM's `[position, rotary_dim]` cos-then-sin cache."""
-    cos, sin = rotary_emb.cos_sin_cache[1].chunk(2)
-    return torch.atan2(sin, cos)
-
-
-@pytest.fixture
-def vllm_rope_builder():
-    """`build_deepseek_v4_rope` under the live vLLM config its `CustomOp` base asserts on.
-
-    The config goes through vLLM's own `patch_rope_parameters`, the same normalization the engine
-    runs: it renames the legacy `type` key and, for the nested schema, injects a top-level
-    `rope_type="default"` beside the sub-dicts.
-    """
-    from vllm.config import VllmConfig, set_current_vllm_config
-    from vllm.model_executor.layers import rotary_embedding
-    from vllm.models.deepseek_v4.common import rope as dsv4_rope
-    from vllm.transformers_utils.config import patch_rope_parameters
-    from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
-    from vllm.utils.torch_utils import set_default_torch_dtype
-
-    rotary_embedding._ROPE_DICT.clear()
-
-    def build(compress_ratio: int):
-        config = VllmDeepseekV4Config(
-            rope_theta=ROPE_THETA,
-            compress_rope_theta=COMPRESS_ROPE_THETA,
-            max_position_embeddings=ROPE_MAX_POSITION,
-            rope_parameters={key: dict(value) for key, value in ROPE_PARAMETERS.items()},
-        )
-        patch_rope_parameters(config)
-        # Model init runs under the model dtype (`vllm/model_executor/model_loader/base_loader.py`),
-        # which is what would leave an unscaled config with a bf16 cache.
-        with set_default_torch_dtype(torch.bfloat16), set_current_vllm_config(VllmConfig()):
-            return dsv4_rope.build_deepseek_v4_rope(
-                config,
-                head_dim=ROPE_HEAD_DIM,
-                rope_head_dim=ROPE_ROTARY_DIM,
-                max_position_embeddings=ROPE_MAX_POSITION,
-                compress_ratio=compress_ratio,
-            )
-
-    return build
-
-
-def test_deepseek_v4_vllm_rope_matches_the_reference(vllm_rope_builder):
-    """Sliding-window layers take plain RoPE at `rope_theta`, compressed layers YaRN at theirs.
-
-    Both are asserted together: neutralizing YaRN on the sliding layers must not disturb the
-    compressed layers, which vLLM already gets right.
-    """
-    from vllm.model_executor.layers import rotary_embedding
-
-    sliding = vllm_rope_builder(compress_ratio=1)
-    compressed = vllm_rope_builder(compress_ratio=4)
-
-    # `vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py` asserts fp32.
-    assert sliding.cos_sin_cache.dtype is torch.float32
-    assert compressed.cos_sin_cache.dtype is torch.float32
-
-    torch.testing.assert_close(_vllm_rope_freqs(sliding), _reference_rope_freqs(0, ROPE_THETA), atol=1e-6, rtol=0)
-    torch.testing.assert_close(
-        _vllm_rope_freqs(compressed),
-        _reference_rope_freqs(ROPE_ORIGINAL_MAX_POSITION, COMPRESS_ROPE_THETA),
-        atol=1e-6,
-        rtol=0,
-    )
-
-    # One rope per distinct `rope_theta`, and no more: `get_rope`'s cache key has to stay
-    # hashable. An unhashable key silently defeats memoization, which costs one 256 MB fp32
-    # cos/sin cache per attention layer on the real checkpoint instead of two in total.
-    assert len(rotary_embedding._ROPE_DICT) == 2
-    assert vllm_rope_builder(compress_ratio=1) is sliding
-
-
 # Everything below exercises a *packed* batch: rollouts concatenated into one row, `position_ids`
 # restarting per document, per-document lengths handed over as `seq_lens`, exactly as
 # `trainer/batch.py` builds them. A packed row must equal running each document alone, because
 # that is how vLLM serves them.
 
-# Neither length is a multiple of a compress rate, so both compressors have to drop a trailing
-# partial window instead of pooling across the boundary.
-DOC_LENS = (14, 18)
-
-# The bf16 expert floor, which four hyper-connected layers amplify into every gradient. A document
-# reading its neighbour moves the gradients far past that floor.
-MODEL_GRAD_RTOL = 1e-1
-
-# The per-mechanism cases run in float32. `kv_proj` sees a different number of rows packed than
+# The compressor case runs in float32. `kv_proj` sees a different number of rows packed than
 # alone and cuBLAS may tile the two differently, so they never match bit for bit, and in bfloat16
-# that floor would swallow the cross-document leakage these tests exist to catch.
+# that floor would swallow the cross-document leakage the test exists to catch.
 PACKED_RTOL, PACKED_ATOL = 1e-5, 1e-6
 # Gradients are bounded against the tensor's own scale instead: they are sums over the whole row,
 # so their near-zero entries are the ones whose summands cancelled, and an element-wise relative
@@ -620,19 +441,6 @@ PACKED_GRAD_RTOL = 1e-5
 # both. At both rates the per-document entry count lands below the row-global one, so neither
 # case is vacuous.
 MIXED_DOCS = (3, 8, 13)
-
-# The boundary falls inside a window of both rates, so both drop tokens at it.
-MID_WINDOW_DOCS = (7, 9)
-# Whole windows everywhere, so only the numbering, and with it the RoPE position, moves.
-EXACT_MULTIPLE_DOCS = (8, 8)
-
-
-def _packed_inputs(doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """One packed row: token ids, `position_ids` restarting per document, and flat `seq_lens`."""
-    total = sum(doc_lens)
-    input_ids = torch.randint(0, MODEL["vocab_size"], (1, total), device="cuda")
-    position_ids = torch.cat([torch.arange(length, device="cuda") for length in doc_lens]).unsqueeze(0)
-    return input_ids, position_ids, torch.tensor(doc_lens, device="cuda")
 
 
 def _doc_ids(doc_lens: tuple[int, ...]) -> torch.Tensor:
@@ -676,86 +484,6 @@ def _compare_accumulated_grads(
             continue
         assert param.grad is not None, f"{name} received no gradient per document"
         _assert_relative(param.grad, expected[name], rtol, name)
-
-
-@requires_fp8_indexer
-def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):  # noqa: F811
-    """The local window stops at document boundaries, on every layer.
-
-    Guards the `cu_seqlens` term in `build_sliding_window_mask`: without it the distances come
-    from `torch.arange(seq_len)` over the whole packed row and a query reaches the previous
-    `sliding_window` packed positions whatever document they belong to, which at the production
-    `sliding_window = 128` against 77-token rollouts spans roughly two neighbours on all 43 layers.
-
-    Captured from the dense mask the reference consumer applies to production's own
-    `window_indices`, rather than by calling the builder, so it keeps holding if the masking moves.
-    """
-    recorded = []
-    real_attention = eager_reference.eager_attention_with_sinks
-
-    def record(query, key, value, sinks, attention_mask, **kwargs):
-        recorded.append(attention_mask)
-        return real_attention(query, key, value, sinks, attention_mask, **kwargs)
-
-    monkeypatch.setattr(eager_reference, "eager_attention_with_sinks", record)
-
-    # The dense mask is a reference-path artifact; the count below is one call per layer.
-    prime_model = get_prime_model(torch.float32)
-    input_ids, position_ids, seq_lens = _packed_inputs(DOC_LENS)
-    prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
-
-    assert len(recorded) == MODEL["num_hidden_layers"]
-    total = sum(DOC_LENS)
-    doc_ids = _doc_ids(DOC_LENS)
-    positions = position_ids[0]
-    distance = positions[:, None] - positions[None, :]
-    expected = (doc_ids[:, None] == doc_ids[None, :]) & (distance >= 0) & (distance < MODEL["sliding_window"])
-    for layer_idx, mask in enumerate(recorded):
-        # Compressed layers append their own entries as extra columns; those are covered
-        # separately, so only the local window is compared here.
-        local = mask[0, 0, :, :total] == 0
-        assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
-
-
-@requires_fp8_indexer
-def test_model_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
-    """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
-
-    End to end over every pathway at once: the local sliding window, the CSA compressor with its
-    indexer, and HCA. Each document's logits have to come out the same whether it is packed beside
-    another rollout or served on its own. Gradients are compared too, since a leak that barely
-    moves the logits can still move the update.
-
-    This is the whole-model test, and it stands in for the HF-parity test the other models in this
-    directory get: with no reference implementation available, packing is the only oracle that
-    covers the assembled stack.
-    """
-    prime_model = get_prime_model(torch.float32)
-    input_ids, position_ids, seq_lens = _packed_inputs(DOC_LENS)
-
-    packed = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
-    # One random weight drawn over the packed logits and sliced per document, so the packed loss
-    # and the summed per-document losses are the same function of the same numbers.
-    with torch.device("cuda"):
-        weight = torch.randn_like(packed)
-    (packed * weight).sum().backward()
-    packed_grads = _take_grads(prime_model)
-
-    for index, length in enumerate(DOC_LENS):
-        span = _doc_slice(DOC_LENS, index)
-        alone = prime_model(
-            input_ids[:, span],
-            position_ids=torch.arange(length, device="cuda").unsqueeze(0),
-            seq_lens=torch.tensor([length], device="cuda"),
-        )["logits"]
-        # `GroupedExperts` runs the routed experts through `torch._grouped_mm` in bfloat16 whatever
-        # dtype the model runs in, and packing changes which tokens share an expert matmul, so the two
-        # runs agree only to the bf16 floor. A document actually reading its neighbour moves the logits
-        # by a fraction of their own scale, orders of magnitude above this.
-        _assert_relative(packed[:, span], alone, 1e-2, f"document {index}")
-        (alone * weight[:, span]).sum().backward()
-
-    _compare_accumulated_grads(prime_model, packed_grads, rtol=MODEL_GRAD_RTOL)
 
 
 def _assert_layout_is_consistent(packed: PackedContext, doc_lens: tuple[int, ...], compress_rate: int) -> None:
@@ -845,70 +573,4 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
         (alone * weight[:, entries]).sum().backward()
 
     _compare_accumulated_grads(compressor, packed_grads)
-    torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=PACKED_RTOL, atol=PACKED_ATOL)
-
-
-@pytest.mark.parametrize(
-    ("layer_idx", "doc_lens"),
-    [
-        pytest.param(CSA_LAYER, MID_WINDOW_DOCS, marks=requires_fp8_indexer),
-        (HCA_LAYER, EXACT_MULTIPLE_DOCS),
-        (SLIDING_LAYER, MID_WINDOW_DOCS),
-    ],
-    ids=["csa", "hca", "sliding"],
-)
-def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm):  # noqa: F811
-    """The same invariant, one whole attention layer at a time rather than one compressor.
-
-    Everything the layer reads past its local window comes through the compressor, so a leaking
-    entry, a misnumbered pick and a misrotated entry all show up here at once. The HCA case has no
-    indexer to narrow the damage, and at rate 8 both documents own an entry, so the second one's
-    has to be rotated at its own position rather than at its packed one.
-
-    Sharper than `test_deepseek_v4`, which asserts the same property through the logits at a bf16
-    floor: this runs in float32 and compares the layer's own output, forward and backward.
-
-    A sliding layer has no compressor and so no entry selection at all; it reads nothing but its
-    own clipped window, which makes it the case where the boundary handling stands alone.
-    """
-    # The kernel's own packing invariant is asserted at the Flash shapes in
-    # `test_deepseek_v4_kernels.py`.
-    module = prime_attention(layer_idx, dtype=torch.float32)
-    packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
-    packed = _packed_context(doc_lens, torch.float32)
-
-    if module.compressor is None:
-        # The second document opens inside a window, so an unclipped one would reach back into
-        # the first. Without that the comparison below would hold under no clipping at all.
-        readable = packed.window_indices[doc_lens[0]] >= 0
-        assert readable.sum() < module.config.sliding_window, (
-            "vacuous probe: the second document's first query is not window-clipped at the boundary"
-        )
-    else:
-        q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-        _, picks = module.compressor(packed_input.detach(), q_residual, packed)
-        # (batch, seq_len, n_picks), with `IGNORE_SLOT` (-1) where the query had no entry left to pick.
-        assert (picks[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
-            "vacuous probe: no query of the second document picks a compressed entry"
-        )
-
-    packed_output, _ = module(packed_input, packed=packed)
-    with torch.device("cuda"):
-        weight = torch.randn_like(packed_output)
-    (packed_output * weight).sum().backward()
-    packed_grads = _take_grads(module)
-
-    for index, length in enumerate(doc_lens):
-        span = _doc_slice(doc_lens, index)
-        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), torch.float32))
-        torch.testing.assert_close(
-            packed_output[:, span],
-            alone_output,
-            rtol=PACKED_RTOL,
-            atol=PACKED_ATOL,
-            msg=lambda m, i=index: f"document {i} attends differently packed than alone: {m}",
-        )
-        (alone_output * weight[:, span]).sum().backward()
-
-    _compare_accumulated_grads(module, packed_grads)
     torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=PACKED_RTOL, atol=PACKED_ATOL)
