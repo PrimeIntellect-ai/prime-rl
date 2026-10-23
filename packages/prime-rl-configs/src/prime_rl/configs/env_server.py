@@ -23,6 +23,9 @@ class EnvServerConfig(BaseConfig):
     servers they spawn, so the address never has to be agreed on up front (``serve.address``
     unset binds an OS-assigned port)."""
 
+    sandbox_labels: list[str] = []
+    """Labels added to every Prime sandbox, after the run labels."""
+
     log: LogConfig = LogConfig()
 
     output_dir: Path = Field(default_factory=default_output_dir)

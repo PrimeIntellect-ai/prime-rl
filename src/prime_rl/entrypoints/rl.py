@@ -37,6 +37,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.sandboxes import run_label, stable_run_id, sweep_on_exit, sweep_previous_run
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -156,7 +157,8 @@ def rl_local(config: RLConfig):
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
-    with ProcessGroup() as processes:
+    # Exits after the processes stop: a component killed by SIGKILL skips its own sweep.
+    with sweep_on_exit(run_label()), ProcessGroup() as processes:
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
@@ -328,6 +330,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=True,
             run_name=config.run.name,
+            stable_run_id=os.environ["PRL_STABLE_RUN_ID"],
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -374,6 +377,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=False,
             run_name=config.run.name,
+            stable_run_id=os.environ["PRL_STABLE_RUN_ID"],
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -482,7 +486,12 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     # TODO: fetch the run id from the Prime SDK once runs are registered there.
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    if config.clean and not os.environ.get("NEVER_CLEAN") and config.resume is None:
+        sweep_previous_run(config.run_dir)
     prepare_run(config, ckpt_output_dir)
+    # Unlike $PRL_RUN_ID (one per launch), this id is shared by every launch of the run
+    # dir; the run's sandboxes are labeled and swept by it.
+    os.environ["PRL_STABLE_RUN_ID"] = stable_run_id(config.run_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
