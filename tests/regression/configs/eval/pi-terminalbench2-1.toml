@@ -11,6 +11,9 @@ model = "internal/deepseek-v4.1-flash-1017-ht"
 group_size = 1
 dashboard = false
 
+# Start at most 20 rollouts a minute: the sandbox API rate-limits a burst of 82.
+dispatch_per_minute = 20
+
 # Rollouts have no timeout, and the tasks' own agent and verifier timeouts are
 # dropped, so a slow endpoint shows up as time to finish, not as failed tasks.
 [[source]]
