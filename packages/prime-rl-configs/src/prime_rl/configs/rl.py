@@ -535,18 +535,22 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
+        """Score centering and the KL need the sampler distribution over each token's support: the full
+        replayed support of truncated sampling (``auto`` or on), or a top-k head of untruncated sampling
+        (only when explicitly on)."""
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        if loss.type not in ("ipo", "icepop", "reinforce") or not loss.needs_sampler_support:
             return self
         samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
-        if not samplings:
-            raise ValueError("Score centering requires a policy-sampled training source")
+        explicit = loss.score_centering is True or loss.kl_coeff > 0
         requested = []
         for sampling in samplings:
+            if not (sampling.truncates_distribution() or explicit):
+                continue
             if sampling.temperature <= 0:
-                raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
+                raise ValueError("Score centering and the KL require stochastic sampling (temperature > 0)")
             k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
             if k is None:
                 raise ValueError("Truncated score centering requires a bounded top_k")
@@ -554,6 +558,8 @@ class RLConfig(BaseConfig):
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
             requested.append(sampling.logprobs + 2)
+        if not requested:
+            return self
         if self.inference is not None:
             if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
                 raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
