@@ -34,10 +34,11 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
-    trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
-    sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
-    topk_valid: Bool[Tensor, "seq head"] | None = None
-    sampler_support_complete: Bool[Tensor, " seq"] | None = None
+    # Per-token sampler support: replayed rows hold the sampling mask (no tail), other rows the top-k head.
+    trainer_support_logprobs: Float[Tensor, "seq head"] | None = None
+    sampler_support_logprobs: Float[Tensor, "seq head"] | None = None
+    support_valid: Bool[Tensor, "seq head"] | None = None
+    sampler_tail_mass: Float[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -166,12 +167,16 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
 
 
 def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
-    if inputs.trainer_topk_logprobs is None or inputs.sampler_topk_logprobs is None or inputs.topk_valid is None:
+    if (
+        inputs.trainer_support_logprobs is None
+        or inputs.sampler_support_logprobs is None
+        or inputs.support_valid is None
+    ):
         raise ValueError("Score centering requires sampler top logprobs on every RL token")
     mask = inputs.loss_mask
-    trainer = inputs.trainer_topk_logprobs[mask]
-    valid = inputs.topk_valid[mask]
-    sampler = inputs.sampler_topk_logprobs[mask].detach()
+    trainer = inputs.trainer_support_logprobs[mask]
+    valid = inputs.support_valid[mask]
+    sampler = inputs.sampler_support_logprobs[mask].detach()
     if not bool(valid.any(-1).all()):
         raise ValueError("Score centering is missing sampler heads on RL tokens")
     return trainer, sampler, valid
@@ -261,9 +266,9 @@ class IcePopLoss:
                 tail_log_ratio = -rho.log()
                 # The proportional tail has one ratio; MIS accepts all or none.
                 alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
-                if inputs.sampler_support_complete is not None:
-                    # Replay covers the entire distribution, so there is no modeled tail.
-                    alpha = alpha.masked_fill(inputs.sampler_support_complete[inputs.loss_mask], 0.0)
+                if inputs.sampler_tail_mass is not None:
+                    # Replayed rows carry the complete support: no modeled tail.
+                    alpha = alpha.masked_fill(inputs.sampler_tail_mass[inputs.loss_mask] == 0, 0.0)
                 mass = mass - alpha.unsqueeze(-1) * p
                 centering_metrics["score_centering/tail_scale"] = alpha
                 centering_metrics["score_centering/head_mass"] = q.sum(-1)
@@ -450,10 +455,10 @@ def compute_loss(
     rl_scale: float,
     ce_scale: float,
     ref_kl_scale: float,
-    trainer_topk_logprobs: list[Tensor] | None = None,
-    sampler_topk_logprobs: list[Tensor] | None = None,
-    topk_valid: list[Tensor] | None = None,
-    sampler_support_complete: list[Tensor] | None = None,
+    trainer_support_logprobs: list[Tensor] | None = None,
+    sampler_support_logprobs: list[Tensor] | None = None,
+    support_valid: list[Tensor] | None = None,
+    sampler_tail_mass: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -502,11 +507,10 @@ def compute_loss(
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
 
-    trainer_topk_logprobs = trainer_topk_logprobs if trainer_topk_logprobs is not None else [None] * n
-    sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
-    topk_valid = topk_valid if topk_valid is not None else [None] * n
-
-    sampler_support_complete = sampler_support_complete if sampler_support_complete is not None else [None] * n
+    trainer_support_logprobs = trainer_support_logprobs if trainer_support_logprobs is not None else [None] * n
+    sampler_support_logprobs = sampler_support_logprobs if sampler_support_logprobs is not None else [None] * n
+    support_valid = support_valid if support_valid is not None else [None] * n
+    sampler_tail_mass = sampler_tail_mass if sampler_tail_mass is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -521,7 +525,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, complete in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, tail in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -530,10 +534,10 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
-        trainer_topk_logprobs,
-        sampler_topk_logprobs,
-        topk_valid,
-        sampler_support_complete,
+        trainer_support_logprobs,
+        sampler_support_logprobs,
+        support_valid,
+        sampler_tail_mass,
         strict=True,
     ):
 
@@ -545,10 +549,10 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
-                trainer_topk_logprobs=t_head,
-                sampler_topk_logprobs=q_head,
-                topk_valid=valid,
-                sampler_support_complete=complete,
+                trainer_support_logprobs=t_head,
+                sampler_support_logprobs=q_head,
+                support_valid=valid,
+                sampler_tail_mass=tail,
             )
 
         if rl_w is None:

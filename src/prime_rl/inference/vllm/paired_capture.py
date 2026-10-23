@@ -15,11 +15,6 @@ def pack_support_logprobs(tensors, logits, cu_num_logits, paired):
     values = logits[rows.unsqueeze(-1), ids].float().masked_fill(~valid, -torch.inf)
     # Complete bounded supports let us normalize K gathered logits, not V.
     values = values.log_softmax(-1)
-    # The capture kernel emits ascending IDs; stable sorting preserves ID ties.
-    # Sort after normalization: distinct logits can round to equal logprobs.
-    order = values.argsort(dim=-1, descending=True, stable=True)
-    ids = ids.gather(-1, order)
-    values = values.gather(-1, order)
     bits = values.contiguous().view(torch.int32) ^ NEG_INF_BITS
     enabled = torch.as_tensor(paired, device=logits.device).unsqueeze(-1)
     packed_ids = torch.where(enabled, ids, tensors.token_ids.long())
