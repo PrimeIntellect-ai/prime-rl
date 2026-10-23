@@ -13,6 +13,7 @@ FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
 KEY_ALIGNMENT = 16
+LOGITS_CHUNK_BYTES = 1 << 30
 
 
 @triton.jit
@@ -202,45 +203,43 @@ def fp8_indexer(
     q_scales = q_scales.view(S_q, H)
     w = w * q_scales
 
-    logits = torch.empty(S_q, S_k_aligned, dtype=torch.float32, device=device)
-
-    BLOCK_M, BLOCK_N = 64, 128
-    grid = (triton.cdiv(S_q, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
-    _triton_fp8_indexer_kernel[grid](
-        q_fp8,
-        k_fp8,
-        k_scales,
-        w,
-        logits,
-        ks,
-        ke,
-        S_q,
-        S_k_aligned,
-        q_fp8.stride(0),
-        q_fp8.stride(1),
-        k_fp8.stride(0),
-        w.stride(0),
-        H=H,
-        D=D,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        num_warps=4,
-        num_stages=2,
-    )
-
     actual_topk = min(topk, S_k)
-    _, indices = torch.topk(logits, actual_topk, dim=-1)
-    if actual_topk < topk:
-        padding = torch.full((S_q, topk - actual_topk), S_k, dtype=indices.dtype, device=device)
-        indices = torch.cat([indices, padding], dim=-1)
+    indices = torch.full((S_q, topk), S_k, dtype=torch.int32, device=device)
+    BLOCK_M, BLOCK_N = 64, 128
+    chunk_rows = max(BLOCK_M, LOGITS_CHUNK_BYTES // (4 * S_k_aligned) // BLOCK_M * BLOCK_M)
+    for start in range(0, S_q, chunk_rows):
+        end = min(start + chunk_rows, S_q)
+        rows = end - start
+        logits = torch.empty(rows, S_k_aligned, dtype=torch.float32, device=device)
+        grid = (triton.cdiv(rows, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
+        _triton_fp8_indexer_kernel[grid](
+            q_fp8[:, start:end],
+            k_fp8,
+            k_scales,
+            w[start:end],
+            logits,
+            ks[start:end],
+            ke[start:end],
+            rows,
+            S_k_aligned,
+            q_fp8.stride(0),
+            q_fp8.stride(1),
+            k_fp8.stride(0),
+            w.stride(0),
+            H=H,
+            D=D,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            num_warps=4,
+            num_stages=2,
+        )
+        chunk_indices = torch.topk(logits, actual_topk, dim=-1).indices
+        del logits
+        # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
+        out_of_range = (chunk_indices < ks[start:end, None]) | (chunk_indices >= ke[start:end, None])
+        indices[start:end, :actual_topk] = chunk_indices.masked_fill_(out_of_range, S_k)
 
-    # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
-    ks_exp = ks.unsqueeze(1).expand_as(indices)
-    ke_exp = ke.unsqueeze(1).expand_as(indices)
-    out_of_range = (indices < ks_exp) | (indices >= ke_exp)
-    indices = indices.masked_fill(out_of_range, S_k)
-
-    return indices.to(torch.int32)
+    return indices
 
 
 @fp8_indexer.register_fake
