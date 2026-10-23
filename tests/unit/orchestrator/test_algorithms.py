@@ -207,14 +207,16 @@ def _make_episode() -> vf.Episode:
     return episode
 
 
-@pytest.mark.parametrize("failure", ["participant", "untrainable_participant", "environment"])
+@pytest.mark.parametrize("failure", ["participant", "untrainable_participant", "environment", "dropped"])
 def test_trainable_traces_exclude_failed_episodes_without_changing_verdicts(failure):
     good = _make_episode()
     good.errors = [vf.Error(type="RecoveredError", message="Previous attempt failed")]
     good.traces[0].errors = list(good.errors)
     failed = _make_episode()
-    failed.ok = False
-    if failure == "environment":
+    failed.ok = failure == "dropped"
+    if failure == "dropped":
+        failed.traces[0].drop("judge: outcome=task_defect")
+    elif failure == "environment":
         failed.errors = [vf.Error(type="EnvError", message="Finalization failed")]
     else:
         sibling = failed.traces[0].model_copy(deep=True)
