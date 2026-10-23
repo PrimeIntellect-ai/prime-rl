@@ -3,7 +3,11 @@ import copy
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.fusions import apply_model_fusions, get_model_packed_parameters
+from prime_rl.trainer.models.fusions import (
+    apply_model_fusions,
+    get_model_packed_parameters,
+    write_back_loaded_packed_parameters,
+)
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
@@ -100,3 +104,17 @@ def test_qkv_projections_match_the_unpacked_ones():
 def test_unsupported_fusions_are_skipped():
     assert apply_model_fusions(build_experts(), ["qkv"]) == {}
     assert apply_model_fusions(build_experts(expert_type="non_gated"), ["gate_up"]) == {}
+
+
+def test_write_back_of_a_partial_state_dict_leaves_other_packed_parameters_unchanged():
+    model = nn.ModuleDict({"experts": build_experts(), "attention": build_attention(attention_bias=False)})
+    apply_model_fusions(model, ["gate_up", "qkv"])
+    qkv_before = model.attention.qkv_proj.weight.clone()
+    state_dict = {
+        fqn: torch.zeros_like(tensor) for fqn, tensor in model.state_dict().items() if fqn.startswith("experts.")
+    }
+
+    write_back_loaded_packed_parameters(model, state_dict)
+
+    assert torch.equal(model.experts.gate_up_proj, torch.zeros_like(model.experts.gate_up_proj))
+    assert torch.equal(model.attention.qkv_proj.weight, qkv_before)

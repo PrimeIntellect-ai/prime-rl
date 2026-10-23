@@ -2,7 +2,7 @@ import json
 import re
 import warnings
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Collection, cast
 
 import torch
 import torch.distributed as dist
@@ -159,7 +159,9 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
-def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+def gather_weights_parallel(
+    model: nn.Module, dtype: torch.dtype = torch.bfloat16, skip: Collection[str] = ()
+) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
@@ -174,16 +176,19 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     ``fn``/``base``/``scale`` are fp32, and its loader silently casts a bf16 tensor
     back up rather than failing, so a downcast here shows up as lost mantissa in a
     Sinkhorn normalization rather than as an error.
+
+    Keys in ``skip`` are left out.
     """
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
+    state_dict = {key: value for key, value in model.state_dict().items() if key not in skip}
+    owners = partition_weights(state_dict, world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        for key, value in model.state_dict().items():
+        for key, value in state_dict.items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
                 target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)

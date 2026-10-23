@@ -321,6 +321,9 @@ class ModelConfig(BaseModelConfig):
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
+    freeze_ngram_embedding: bool | Literal["auto"] = "auto"
+    """Freeze the n-gram embedding tables of Qwen3.8-Flash-Next (no-op for other models). ``auto`` (default): ``True`` for RL, ``False`` for SFT. A frozen table gets no gradients or optimizer state, is not sent to the inference engines (they keep the copy they loaded from ``name``) and is not saved in checkpoints (a resume loads it from ``name``)."""
+
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 
@@ -608,6 +611,7 @@ class BaseTrainerConfig(BaseConfig):
     """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
+    auto_freeze_ngram_embedding: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
 
     model: ModelConfig = ModelConfig()
@@ -654,6 +658,8 @@ class BaseTrainerConfig(BaseConfig):
     def resolve_auto_defaults(self):
         if self.model.freeze_moe_router == "auto":
             self.model.freeze_moe_router = self.auto_freeze_moe_router
+        if self.model.freeze_ngram_embedding == "auto":
+            self.model.freeze_ngram_embedding = self.auto_freeze_ngram_embedding
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = self.auto_weight_decay
         return self
@@ -723,6 +729,8 @@ class BaseTrainerConfig(BaseConfig):
 class TrainerConfig(BaseTrainerConfig):
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
+    # RL keeps the pretrained n-gram tables; training them needs fp32 masters and AdamW state for ~51B parameters.
+    auto_freeze_ngram_embedding = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.
     auto_weight_decay = 0.0
 

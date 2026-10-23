@@ -32,7 +32,7 @@ from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
-from prime_rl.trainer.ckpt import AppState
+from prime_rl.trainer.ckpt import AppState, check_frozen_weights_not_trained
 from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
@@ -161,6 +161,7 @@ def load_and_convert(ckpt_dir: Path):
     model = setup_model(model_config, parallel_dims, loading_from_checkpoint_later=True)
 
     logger.info(f"Loading DCP checkpoint from {dcp_dir}")
+    check_frozen_weights_not_trained(model, dcp_dir)
     dcp_load(state_dict={"app": AppState(model, [], None, None)}, checkpoint_id=dcp_dir)
 
     logger.info("Gathering and converting weights")
