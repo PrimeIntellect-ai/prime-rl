@@ -11,7 +11,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
-from torch.distributed.tensor import DTensor
+from torch.distributed.tensor import DTensor, Replicate, Shard
 from transformers.utils import (
     ADAPTER_SAFE_WEIGHTS_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
@@ -159,14 +159,38 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
+def resolve_row_chunk(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor:
+    """Gather only this row interval, rather than the complete embedding table."""
+    if not isinstance(value, DTensor):
+        return value[start:stop].to(dtype)
+    mesh = value.device_mesh
+    active_dims = [
+        i for i, placement in enumerate(value.placements) if mesh.size(i) > 1 and not isinstance(placement, Replicate)
+    ]
+    if not active_dims:
+        return value.to_local()[start:stop].to(dtype)
+    if len(active_dims) != 1 or value.placements[active_dims[0]] != Shard(0):
+        raise ValueError("Embedding transfer requires replicated weights or a single row-sharding dimension")
+    mesh_dim = active_dims[0]
+    rows_per_rank = (value.shape[0] + mesh.size(mesh_dim) - 1) // mesh.size(mesh_dim)
+    offset = min(rows_per_rank * mesh.get_local_rank(mesh_dim), value.shape[0])
+    local = value.to_local()
+    chunk = torch.zeros((stop - start, *value.shape[1:]), dtype=dtype, device=value.device)
+    left, right = max(start, offset), min(stop, offset + local.shape[0])
+    if left < right:
+        chunk[left - start : right - start].copy_(local[left - offset : right - offset])
+    # Each element has exactly one owner in this group; adding zero is exact.
+    dist.all_reduce(chunk, group=mesh.get_group(mesh_dim))
+    return chunk
+
+
 def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
-    Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
-    collective and materializes the full tensor on all ranks anyway), but instead of
-    only the master keeping everything, each rank copies its owned slice to CPU —
-    so the D2H traffic and the shard writes are split across ranks. The copies are
-    plain blocking transfers; no stream-ordering assumptions.
+    Ngram tables are reconstructed one HF fragment at a time, with fragments spread
+    across writers. Other distributed tensors use per-tensor all-gathers, with each
+    rank retaining its assigned weights on CPU. The copies are plain blocking
+    transfers; no stream-ordering assumptions.
 
     Parameters the model reports via ``keep_in_fp32_for_weight_transfer`` skip the
     downcast. Those lists exist because the inference engine's kernels require fp32
@@ -175,15 +199,39 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     back up rather than failing, so a downcast here shows up as lost mantissa in a
     Sinkhorn normalization rather than as an error.
     """
+    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+    from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import NGramEmbeddingWeights
+
+    state_dict = model.state_dict()
+    embedding_ops = (
+        {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, NGramEmbeddingWeights)}
+        if isinstance(model, PreTrainedModelPrimeRL)
+        else {}
+    )
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
+    owners = partition_weights(state_dict, world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        for key, value in model.state_dict().items():
+        for key, value in state_dict.items():
+            op = embedding_ops.get(resolve_fqn(model, key)) if embedding_ops else None
+            if op is not None:
+                shard_rows = (value.shape[0] + op.shard_count - 1) // op.shard_count
+                target_dtype = (
+                    resolve_wire_dtype(keep_in_fp32, key, dtype) if isinstance(value, DTensor) else value.dtype
+                )
+                for index in range(op.shard_count):
+                    start = min(index * shard_rows, value.shape[0])
+                    stop = min(start + shard_rows, value.shape[0])
+                    chunk = resolve_row_chunk(value, start, stop, target_dtype)
+                    # Spread HF fragments across writers instead of keeping the table on one host.
+                    if (owners[key] + index) % world.world_size == world.rank:
+                        partial[f"{op.checkpoint_prefix}.shard_{index}.weight"] = chunk.to("cpu")
+                    del chunk
+                continue
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
                 target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)

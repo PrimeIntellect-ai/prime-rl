@@ -188,7 +188,7 @@ def prepare_micro_batch(
         if processor is None or mm_adapter is None:
             raise ValueError("Received multimodal samples but [model.vlm] is not set")
         materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-        micro_batch["mm_kwargs"] = materialized.kwargs
+        micro_batch["mm_kwargs"] = {key: value.pin_memory() for key, value in materialized.kwargs.items()}
         micro_batch["mm_forward_policy"] = materialized.forward_policy
         micro_batch["mm_refs"] = None
     return micro_batch

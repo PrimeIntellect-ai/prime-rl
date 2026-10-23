@@ -118,7 +118,33 @@ def permute_for_grouped_gemm(
 
     x = torch.vstack((x, x.new_zeros((1, x.shape[-1]))))
     state = PermutationState(input_shape=x.shape, permuted_indices=permuted_indices)
-    return x[permuted_indices], num_tokens_per_expert, state
+    return _GatherPermutedRows.apply(x, permuted_indices), num_tokens_per_expert, state
+
+
+class _GatherPermutedRows(torch.autograd.Function):
+    """Computes `x[permuted_indices]` for indices that permute the real rows and fill padding slots with the zero row.
+
+    Each real row appears exactly once, so the gather's backward is a gather by the inverse permutation:
+    every real row reads its gradient from its one slot, and the constant zero row gets none.
+    Autograd's `index` backward cannot assume this and scatter-adds, serializing on the zero row's repeats.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, permuted_indices: torch.Tensor) -> torch.Tensor:
+        inverse_permutation = permuted_indices.new_empty(x.shape[0])
+        inverse_permutation[permuted_indices] = torch.arange(
+            permuted_indices.numel(), device=permuted_indices.device, dtype=permuted_indices.dtype
+        )
+        ctx.save_for_backward(inverse_permutation[:-1])
+        return x[permuted_indices]
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        (real_row_inverse_permutation,) = ctx.saved_tensors
+        grad_x = torch.cat(
+            (grad_output[real_row_inverse_permutation], grad_output.new_zeros((1, grad_output.shape[-1])))
+        )
+        return grad_x, None
 
 
 def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> torch.Tensor:

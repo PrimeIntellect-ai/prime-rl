@@ -53,7 +53,7 @@ class WandbMonitor(Monitor):
         )
         if shared_mode:
             # W&B's native run-id var, set by the launcher to $PRL_RUN_ID.
-            run_id = os.environ.get("WANDB_RUN_ID")
+            run_id = os.environ.get("PRIME_RL_WANDB_RUN_ID") or os.environ.get("WANDB_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
             primary_label = os.environ.get("WANDB_SHARED_PRIMARY", "orchestrator")
             primary = label == primary_label
@@ -155,7 +155,7 @@ class WandbMonitor(Monitor):
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")
         t0 = time.perf_counter()
         # Explicit finish: in (experimental) shared mode the SDK's atexit finish does

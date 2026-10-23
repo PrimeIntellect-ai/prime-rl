@@ -27,16 +27,23 @@ class Curriculum:
             AdvRangeGateConfig,
             CurriculumConfig,
             DifficultyPoolSamplerConfig,
+            InverseContributionSamplerConfig,
             StandardSamplerConfig,
         )
         from prime_rl.orchestrator.curriculum.gates import AdvRangeGate
-        from prime_rl.orchestrator.curriculum.samplers import DifficultyPoolSampler, StandardSampler
+        from prime_rl.orchestrator.curriculum.samplers import (
+            DifficultyPoolSampler,
+            InverseContributionSampler,
+            StandardSampler,
+        )
 
         config = CurriculumConfig() if config is None else config
         if isinstance(config.sampler, StandardSamplerConfig):
             self.sampler: TaskSampler = StandardSampler(tasks)
         elif isinstance(config.sampler, DifficultyPoolSamplerConfig):
             self.sampler = DifficultyPoolSampler(config.sampler, tasks)
+        elif isinstance(config.sampler, InverseContributionSamplerConfig):
+            self.sampler = InverseContributionSampler(config.sampler, tasks)
         else:
             raise TypeError(f"Unsupported task sampler config: {type(config.sampler).__name__}")
 

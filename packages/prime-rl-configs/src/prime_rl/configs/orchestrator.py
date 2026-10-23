@@ -15,6 +15,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -154,6 +155,30 @@ class StandardSamplerConfig(BaseConfig):
     type: Literal["standard"] = "standard"
 
 
+class InverseContributionSamplerConfig(BaseConfig):
+    type: Literal["inverse_contribution"] = "inverse_contribution"
+
+    exponent: float = Field(default=1.0, ge=0, le=1, allow_inf_nan=False)
+    """Sample tasks with weight (1 + contributing_groups) ** -exponent."""
+
+    allow_exponent_change_on_resume: bool = False
+    """Restore sampler history while using a different configured exponent."""
+
+    seed: int = 42
+
+    fully_solved_group_size: int | None = Field(default=None, ge=1)
+    """Also count complete all-pass groups once. Must match the environment's group size."""
+
+    cycle_until_first_pass: bool = False
+    """Cycle over never-solved tasks within their combined weight; a clean reward of 1 leaves this pool."""
+
+    initial_counts_path: Path | None = None
+    """JSON mapping of task keys to retained contribution counts, for migration from a standard sampler."""
+
+    initial_solved_path: Path | None = None
+    """JSON list of task keys with an observed full pass, required for cycling when changing samplers on resume."""
+
+
 class DifficultyPoolConfig(BaseConfig):
     threshold: float
     """Inclusive maximum reward assigned to this pool."""
@@ -191,7 +216,7 @@ class DifficultyPoolSamplerConfig(BaseConfig):
 
 
 TaskSamplerConfig: TypeAlias = Annotated[
-    StandardSamplerConfig | DifficultyPoolSamplerConfig,
+    StandardSamplerConfig | DifficultyPoolSamplerConfig | InverseContributionSamplerConfig,
     Field(discriminator="type"),
 ]
 
@@ -460,6 +485,11 @@ class ConcurrencyConfig(BaseConfig):
 TRAIN_TOP_K_BOUND = 512
 
 
+class OrchestratorControlConfig(ControlConfig):
+    port: int = Field(8041, ge=1, le=65535)
+    """Port the control API listens on, next to the trainer's 8040 on a single node."""
+
+
 class OrchestratorConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
@@ -538,6 +568,10 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: OrchestratorControlConfig | None = None
+    """Serve the orchestrator's control API (pause at a step the trainer accepted). If None, it
+    takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

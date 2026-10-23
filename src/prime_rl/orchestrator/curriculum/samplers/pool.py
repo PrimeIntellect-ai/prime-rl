@@ -43,6 +43,7 @@ class DifficultyPoolSampler(TaskSampler):
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
         self._ordered_pools = tuple(ordered)
         self.task_rewards: dict[str, float] = {}
+        self.solved: set[str] = set()
 
     def task_pool(self, task_key: str) -> str | None:
         """Return the task's current pool, or ``None`` until it has a score."""
@@ -63,7 +64,20 @@ class DifficultyPoolSampler(TaskSampler):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
+    def observe_episode(self, episode: vf.Episode) -> None:
+        if not episode.ok or not any(
+            not trace.has_error and trace.agent.trainable and trace.num_turns > 0 and trace.reward == 1.0
+            for trace in episode.traces
+        ):
+            return
+        key = episode.task.key
+        if key not in self.tasks_by_key:
+            raise ValueError(f"Unknown solved task key: {key}")
+        self.solved.add(key)
+
     def observe(self, group: list[vf.Episode]) -> None:
+        for episode in group:
+            self.observe_episode(episode)
         rewards = [
             trace.reward
             for episode in group
@@ -81,11 +95,16 @@ class DifficultyPoolSampler(TaskSampler):
         return {
             "rng": self.rng.getstate(),
             "task_rewards": dict(self.task_rewards),
+            "solved": sorted(self.solved),
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        solved = set(state_dict.get("solved", []))
+        if solved - self.tasks_by_key.keys():
+            raise ValueError("Solved checkpoint task keys do not match this taskset")
         self.rng.setstate(state_dict["rng"])
         self.task_rewards = dict(state_dict["task_rewards"])
+        self.solved = solved
 
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.pools, 0)
@@ -94,6 +113,7 @@ class DifficultyPoolSampler(TaskSampler):
             if pool is not None:
                 occupancy[pool] += 1
         return {
+            "sampling/never_solved": float(len(self.tasks_by_key) - len(self.solved)),
             "pool/unseen": float(len(self.tasks_by_key) - len(self.task_rewards)),
             **{f"pool/{name}": float(count) for name, count in occupancy.items()},
         }

@@ -186,6 +186,9 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        # Policy versions repeat after a resume, with weights that can differ from the
+        # previous attempt's, and engines or a KV offload pool may outlive that attempt.
+        self.cache_salt_prefix = uuid.uuid4().hex[:8]
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
@@ -560,7 +563,7 @@ class Dispatcher:
         env = env_collection.get(group.env_name)
         # Only endpoints receiving policy weight updates need a cache salt.
         if live_sourced and self.policy_weights_change:
-            cache_salt = str(group.policy_version_at_start)
+            cache_salt = f"{self.cache_salt_prefix}-{group.policy_version_at_start}"
         else:
             cache_salt = None
 
@@ -699,6 +702,8 @@ class Dispatcher:
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
+                if group.kind == "train" and self.train_source is not None:
+                    self.train_source.release_group(str(meta.group_id))
         return policy_version
 
     async def emit_episode(
@@ -775,6 +780,8 @@ class Dispatcher:
 
         if claimed:
             await safe_cancel_all([task for task, _ in claimed])
+        if group is not None and group.kind == "train" and self.train_source is not None:
+            self.train_source.release_group(str(group_id))
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
@@ -786,6 +793,10 @@ class Dispatcher:
             self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
+        if self.train_source is not None:
+            for gid, group in self.groups.items():
+                if group.kind == "train":
+                    self.train_source.release_group(str(gid))
         self.groups.clear()
         if tasks:
             await safe_cancel_all(tasks)
@@ -833,6 +844,9 @@ class Dispatcher:
                     reason="shutdown",
                 )
             cancelled_by_group[meta.group_id].count += 1
+        if self.train_source is not None:
+            for gid in cancelled_by_group:
+                self.train_source.release_group(str(gid))
         if train_tasks:
             await safe_cancel_all(train_tasks)
         return [cancellation for cancellation in cancelled_by_group.values() if cancellation.count]

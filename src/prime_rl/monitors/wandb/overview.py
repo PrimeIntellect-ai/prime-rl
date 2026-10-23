@@ -183,6 +183,12 @@ def build_sections(
     else:
         # Env names unknown (e.g. SFT): one regex section matching any eval env.
         sections.append(eval_section("eval", ".*"))
+    sections.append(
+        section(
+            "curriculum",
+            metrics=[f"curriculum/{env}/sampler/sampling/never_solved" for env in ("agg", *train_envs)],
+        )
+    )
     sections.append(section("stability", metrics=STABILITY_METRICS))
     sections.append(inference_section())
     sections.append(section("performance", metrics=PERFORMANCE_METRICS))

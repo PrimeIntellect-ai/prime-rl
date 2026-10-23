@@ -37,10 +37,12 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.control.controller import Controller
+from prime_rl.control.server import ControlServer
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
-from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
@@ -99,6 +101,8 @@ class Orchestrator:
     last_batch_at: float | None
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
+    controller: Controller | None
+    shipped_state: tuple[int, dict] | None
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
@@ -136,6 +140,10 @@ class Orchestrator:
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+        self.controller = None
+        self.control_requested = asyncio.Event()
+        # The state as of shipping the last step, which a pause at that step saves.
+        self.shipped_state = None
         self.policy = Policy(version=0, model_name="")
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
@@ -397,6 +405,14 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        if config.control is not None:
+            loop = asyncio.get_running_loop()
+            self.controller = Controller(
+                requires_step=True,
+                on_submit=lambda: loop.call_soon_threadsafe(self.control_requested.set),
+            )
+            ControlServer(self.controller, config.control).start()
+            self.component_tasks.append(asyncio.create_task(self.serve_control(), name="control"))
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
@@ -533,6 +549,7 @@ class Orchestrator:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
+            self.train_source.on_episode(episode)
             train_batch = await self.train_sink.add(episode)
             await self.handle_train_result(train_batch)
 
@@ -652,8 +669,12 @@ class Orchestrator:
         send_start_time = time.perf_counter()
         send_batch_time = await self.sender.send(micro_batch_grid)
         wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.train_source.on_train_batch(effective_episodes)
         self.progress.step += 1
         self.update_dispatch_gate()
+        if self.controller is not None:
+            self.shipped_state = (step, build_state(self.progress, self.train_source))
+            self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
@@ -745,7 +766,10 @@ class Orchestrator:
         if self.resume_step == step and self.config.eval is not None and not self.config.eval.retrigger_on_resume:
             return
         is_final = self.config.max_steps is not None and step >= self.config.max_steps
-        fired, _ = self.eval_source.trigger(step, force=is_final)
+        is_resume_eval = (
+            self.resume_step == step and self.config.eval is not None and self.config.eval.retrigger_on_resume
+        )
+        fired, _ = self.eval_source.trigger(step, force=is_final or is_resume_eval)
         if not fired:
             return
         self.eval_triggered_steps.add(step)
@@ -927,6 +951,24 @@ class Orchestrator:
         # event loop keeps the dispatcher from mutating TrainSource mid-save
         self.ckpt_manager.save(self.progress, self.train_source, step)
         return time.perf_counter() - t
+
+    def apply_control(self) -> None:
+        """Save the state as of shipping the last step if a pause is due at it. A trainer paused
+        there never requests the next step, so this stays the last shipped step."""
+        if self.shipped_state is None:
+            return
+        step, state = self.shipped_state
+        if self.controller.update(step):
+            self.ckpt_manager.save_state(state, step)
+            self.controller.mark_saved(step)
+            get_logger().info(f"Paused at step {step}, saved its state")
+
+    async def serve_control(self) -> None:
+        """Apply each submitted pause on the event loop, also while a send blocks on the trainer."""
+        while True:
+            await self.control_requested.wait()
+            self.control_requested.clear()
+            self.apply_control()
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs

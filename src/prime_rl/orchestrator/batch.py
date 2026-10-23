@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from transformers import AutoConfig
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.trainer.models import AutoConfig
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
 from prime_rl.utils.logger import get_logger
 
