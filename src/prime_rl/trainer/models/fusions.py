@@ -193,9 +193,12 @@ def write_back_loaded_packed_parameters(model: nn.Module, state_dict: dict[str, 
 
     Loading into ``model.state_dict()`` in place only reaches a packed parameter through
     entries that alias it, so the entries that are copies are packed and written back here.
+    Packed parameters whose entries are not in a partial state dict are left unchanged.
     """
     with torch.no_grad():
         for packed_info in get_model_packed_parameters(model):
+            if packed_info.logical_fqns[0] not in state_dict:
+                continue
             packed_info.parameter.copy_(
                 packed_info.spec.pack_logical_tensors([state_dict[fqn] for fqn in packed_info.logical_fqns])
             )
