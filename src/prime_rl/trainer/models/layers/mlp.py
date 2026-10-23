@@ -3,7 +3,8 @@ from typing import Literal
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.layers.activations import Activation, ActivationDispatch, ActivationType
+from prime_rl.trainer.models.layers.activations import Activation, ActivationDispatch, ActivationType, ClampedSilu
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear, fp8_clamped_swiglu_mlp
 
 ExpertType = Literal["gated", "non_gated"]
 
@@ -27,6 +28,10 @@ class FeedForward(nn.Module):
         self.activation = ActivationDispatch[activation] if isinstance(activation, str) else activation
 
     def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+        if isinstance(self.activation, ClampedSilu) and all(
+            isinstance(proj, Float8BlockwiseLinear) for proj in (self.gate_proj, self.up_proj, self.down_proj)
+        ):
+            return fp8_clamped_swiglu_mlp(x, self.gate_proj, self.up_proj, self.down_proj, self.activation.limit)
         gate = self.gate_proj(x) if self.gate_proj is not None else None
         up = self.up_proj(x)
         return self.down_proj(self.activation.apply(gate, up))

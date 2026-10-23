@@ -100,11 +100,15 @@ class DeepseekV41HyperConnection(nn.Module):
 
     @staticmethod
     def update_states(
-        post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, mhc_states: torch.Tensor
+        post: torch.Tensor,
+        comb: torch.Tensor,
+        sublayer_out: torch.Tensor,
+        mhc_states: torch.Tensor,
+        sublayer_out2: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`, both
-        fp32 as vLLM applies them."""
-        return dsv4_mhc.fused_post_bda(comb, mhc_states, post, sublayer_out)
+        """Broadcast the sublayer output (`sublayer_out + sublayer_out2` when it comes in two parts, summed in the
+        kernel) over the streams via `post` and remix them via `comb`, both fp32 as vLLM applies them."""
+        return dsv4_mhc.fused_post_bda(comb, mhc_states, post, sublayer_out, sublayer_out2)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)

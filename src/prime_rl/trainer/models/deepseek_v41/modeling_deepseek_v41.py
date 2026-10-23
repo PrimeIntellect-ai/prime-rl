@@ -97,8 +97,11 @@ class DeepseekV41DecoderLayer(nn.Module):
                 return (mhc_states, attn_pre, *state.as_tuple())
 
         ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
-        mlp_out = self.mlp(self.post_attention_layernorm(ffn_in).to(dtype), routed_experts=routed_experts)
-        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, streams)
+        # The routed and shared experts' outputs are summed by the write-back kernel.
+        mlp_out, shared_out = self.mlp(
+            self.post_attention_layernorm(ffn_in).to(dtype), routed_experts=routed_experts, split_shared_output=True
+        )
+        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, streams, shared_out)
         return (mhc_states, ffn_pre, *state.as_tuple())
 
 

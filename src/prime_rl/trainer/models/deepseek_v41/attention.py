@@ -45,7 +45,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import VLLM_SWA_KV_AMAX_FLOOR, dsv4_kv_fake_quant
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_linear_rope, dsv4_rope, dsv4_rope_inplace
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
 from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
     IndexerSegments,
@@ -53,6 +53,7 @@ from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
     dsv41_index_topk_cudnn,
 )
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -427,8 +428,7 @@ class DeepseekV41Attention(nn.Module):
             )
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))
-        q = self.q_b_proj(q_residual).view(*input_shape, self.num_heads, self.head_dim)
-        q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
+        q = self._query(q_residual, cos_sin_cache, packed.position_ids)
 
         if self.compress_ratio:
             latent = None
@@ -460,10 +460,26 @@ class DeepseekV41Attention(nn.Module):
             backend=self.dsa_backend,
             max_slots=self.max_slots,
         )
-        # Values are the rotated keys; the conjugate rotation at the query position cancels that.
-        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
+        # Values are the rotated keys; the conjugate rotation at the query position cancels that. The attention
+        # backward reads its output, so only the gradient (fresh from `o_a_proj`) rotates in place.
+        attn_output = dsv4_rope_inplace(
+            attn_output, cos_sin_cache, packed.position_ids, inverse=True, in_place_forward=False
+        )
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
         return self.o_b_proj(grouped), state
+
+    def _query(self, q_residual: Tensor, cos_sin_cache: Tensor, position_ids: Tensor) -> Tensor:
+        """The rotated `(b, t, heads, head_dim)` query, projected and rotated in one op when the projection
+        is a plain or blockwise-FP8 linear (other wrappers, e.g. LoRA, project then rotate a copy)."""
+        if type(self.q_b_proj) is Float8BlockwiseLinear:
+            return dsv4_linear_rope(
+                q_residual, self.q_b_proj.weight, cos_sin_cache, position_ids, self.head_dim, self.q_b_proj.block_size
+            )
+        if type(self.q_b_proj) is nn.Linear:
+            return dsv4_linear_rope(q_residual, self.q_b_proj.weight, cos_sin_cache, position_ids, self.head_dim, 0)
+        q = self.q_b_proj(q_residual).view(*q_residual.shape[:-1], self.num_heads, self.head_dim)
+        # Selective checkpointing saves the projection's output, so only the query gradient rotates in place.
+        return dsv4_rope_inplace(q, cos_sin_cache, position_ids, in_place_forward=False)
 
     def init_weights(self, init_std: float) -> None:
         # `init_std` is unused: the sinks are the only parameter this owns outright and they start at zero.

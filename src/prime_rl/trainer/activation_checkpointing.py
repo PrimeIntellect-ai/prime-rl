@@ -71,8 +71,11 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "aten::linear",
         "aten::mm",
         "prime_rl::dsv4_sparse_attn",
+        "prime_rl::dsv4_linear_rope",
         "prime_rl::fp8_blockwise_bmm",
         "prime_rl::fp8_blockwise_mm",
+        # The shared expert's gate and up projections as one GEMM.
+        "prime_rl::fp8_gate_up_mm",
         "prime_rl::mega_moe_forward",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",

@@ -3,6 +3,7 @@ import os
 import time
 import zlib
 from collections.abc import Callable, Iterator
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -58,7 +59,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear, replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
@@ -628,6 +629,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     )
     model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
+    if isinstance(config.quantization, FP8Config) and config.quantization.accumulate_wgrad_fp32:
+        # Dense FP8 linears accumulate their weight gradients straight into FSDP's fp32 buffers.
+        for module in model.modules():
+            if isinstance(module, FSDPModule):
+                for group in module._get_fsdp_state()._fsdp_param_groups:
+                    for fsdp_param in group.fsdp_params:
+                        if isinstance(fsdp_param._module_info.module, Float8BlockwiseLinear):
+                            fsdp_param._module_info.module.accumulate_wgrad_fp32(
+                                partial(_fp32_grad_accumulator, fsdp_param)
+                            )
+                            _reduce_accumulated_grads_uniformly(group)
+
     if not parallel_dims.ep_enabled:
         return
 
@@ -788,6 +801,34 @@ def _random_init_(model: nn.Module, std: float = 0.02) -> None:
             local.fill_(1.0)
         else:
             local.zero_()
+
+
+def _fp32_grad_accumulator(fsdp_param) -> torch.Tensor:
+    """The local fp32 buffer FSDP reduce-scatters as `fsdp_param`'s gradient, created at the first
+    micro-batch of a step."""
+    if fsdp_param.unsharded_accumulated_grad is None:
+        fsdp_param.unsharded_accumulated_grad = torch.zeros_like(fsdp_param.unsharded_param, dtype=torch.float32)
+    grad = fsdp_param.unsharded_accumulated_grad
+    return grad.to_local() if isinstance(grad, DTensor) else grad
+
+
+def _reduce_accumulated_grads_uniformly(group) -> None:
+    """Before a reducing post-backward, give every parameter of `group` an fp32 accumulated gradient. Dense FP8
+    linears with `accumulate_wgrad_fp32` already hold theirs in fp32, and FSDP's reduce-scatter needs one gradient
+    dtype per group; when the reduce is deferred FSDP converts the others itself."""
+    if getattr(group, "_uniform_grad_dtype", False):
+        return
+    group._uniform_grad_dtype = True
+    post_backward = group.post_backward
+
+    def uniform_post_backward(*args, **kwargs):
+        if group.reduce_grads:
+            for fsdp_param in group.fsdp_params:
+                if fsdp_param.unsharded_accumulated_grad is None:
+                    fsdp_param.to_accumulated_grad_if_needed()
+        return post_backward(*args, **kwargs)
+
+    group.post_backward = uniform_post_backward
 
 
 def reshard_module(model: nn.Module):

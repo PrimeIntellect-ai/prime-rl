@@ -8,13 +8,8 @@ from deep_ep import Buffer
 from deep_ep.utils import EventHandle, EventOverlap
 from torch.distributed import ProcessGroup
 
-from prime_rl.trainer.distributed.token_dispatcher import (
-    ExpertFunction,
-    PermutationState,
-    TokenDispatcherBase,
-    permute_for_grouped_gemm,
-    unpermute_from_grouped_gemm,
-)
+from prime_rl.trainer.distributed.token_dispatcher import ExpertFunction, TokenDispatcherBase
+from prime_rl.trainer.models.kernels.moe_permute import PairLayout, build_pair_layout, gather_pairs, reduce_pairs
 
 _buffer: Buffer | None = None
 _handle_cache: dict[int, object] = {}
@@ -213,38 +208,10 @@ def get_buffer(group: ProcessGroup, hidden_bytes: int) -> Buffer:
         or _buffer.num_nvl_bytes < num_nvl_bytes
         or _buffer.num_rdma_bytes < num_rdma_bytes
     ):
-        _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes)
+        # Internode kernels need at least one RDMA queue pair per SM (DeepEP's default is 24).
+        _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes, num_qps_per_rank=max(24, Buffer.num_sms))
 
     return _buffer
-
-
-def _permute_tokens(
-    hidden_states: torch.Tensor,
-    dispatched_indices: torch.Tensor,
-    dispatched_scores: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    mask = dispatched_indices != -1
-    valid_expert_ids = dispatched_indices[mask]
-    valid_scores = dispatched_scores[mask]
-
-    sort_order = torch.argsort(valid_expert_ids, stable=True)
-    permuted_indices = torch.arange(len(hidden_states), device=hidden_states.device).repeat_interleave(mask.sum(dim=1))[
-        sort_order
-    ]
-    permuted_hidden_states = hidden_states.index_select(0, permuted_indices)
-    permuted_scores = valid_scores[sort_order]
-    return permuted_hidden_states, permuted_scores, permuted_indices
-
-
-def _unpermute_tokens(
-    permuted_hidden_states: torch.Tensor,
-    permuted_indices: torch.Tensor,
-    num_tokens: int,
-) -> torch.Tensor:
-    hidden_dim = permuted_hidden_states.shape[1]
-    output_hidden_states = permuted_hidden_states.new_zeros((num_tokens, hidden_dim))
-    output_hidden_states.scatter_add_(0, permuted_indices.unsqueeze(1).expand(-1, hidden_dim), permuted_hidden_states)
-    return output_hidden_states
 
 
 @dataclass
@@ -302,10 +269,8 @@ def dispatch_tokens_async(
 @dataclass(frozen=True)
 class DeepEPDispatchState:
     handle_id: torch.Tensor
-    deep_ep_permuted_indices: torch.Tensor
-    num_received_tokens: int
+    layout: PairLayout
     scores_after_experts: torch.Tensor | None
-    grouped_gemm_permutation: PermutationState
 
 
 class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
@@ -317,6 +282,7 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         group: ProcessGroup,
         num_sms: int,
         token_chunk_size: int | None,
+        hidden_size: int,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.num_local_experts = num_experts // group.size()
@@ -328,40 +294,30 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         self._concatenate_stream: torch.cuda.Stream | None = None
         self._output_event: torch.cuda.Event | None = None
         configure_num_sms(num_sms)
+        # Create the communication buffer now: created lazily, it would be built inside the first
+        # activation-checkpointed forward, whose recompute then replays every later cached op
+        # off by the collectives and tensors the creation ran.
+        get_buffer(group, hidden_size * 2)
 
     def _finalize_dispatch(
         self, pending_state: _PendingDispatchState
     ) -> tuple[torch.Tensor, torch.Tensor, DeepEPDispatchState]:
         _sync_dispatch(pending_state.handle_id)
 
-        hidden_states = pending_state.hidden_states
-        num_received_tokens = hidden_states.shape[0]
-        hidden_states, permuted_scores, deep_ep_permuted_indices = _permute_tokens(
-            hidden_states,
+        layout, num_tokens_per_expert = build_pair_layout(
             pending_state.dispatched_indices,
-            pending_state.dispatched_scores,
+            pending_state.num_tokens_per_expert.tolist(),
+            self.token_group_alignment,
         )
-        num_tokens_per_expert = pending_state.num_tokens_per_expert.to(hidden_states.device)
-
+        scores = pending_state.dispatched_scores
         if pending_state.score_before_experts:
-            hidden_states = (hidden_states.float() * permuted_scores.float().reshape(-1, 1)).to(hidden_states.dtype)
+            hidden_states = gather_pairs(pending_state.hidden_states, layout, scores)
             scores_after_experts = None
         else:
-            scores_after_experts = permuted_scores
-
-        hidden_states, num_tokens_per_expert, grouped_gemm_permutation = permute_for_grouped_gemm(
-            hidden_states,
-            num_tokens_per_expert,
-            experts_per_rank=self.num_local_experts,
-            num_ranks=1,
-            alignment=self.token_group_alignment,
-        )
+            hidden_states = gather_pairs(pending_state.hidden_states, layout)
+            scores_after_experts = scores
         state = DeepEPDispatchState(
-            handle_id=pending_state.handle_id,
-            deep_ep_permuted_indices=deep_ep_permuted_indices,
-            num_received_tokens=num_received_tokens,
-            scores_after_experts=scores_after_experts,
-            grouped_gemm_permutation=grouped_gemm_permutation,
+            handle_id=pending_state.handle_id, layout=layout, scores_after_experts=scores_after_experts
         )
         return hidden_states, num_tokens_per_expert, state
 
@@ -384,18 +340,8 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         return self._finalize_dispatch(pending_state)
 
     def combine(self, routed_output: torch.Tensor, state: DeepEPDispatchState) -> torch.Tensor:
-        routed_output = unpermute_from_grouped_gemm(routed_output, state.grouped_gemm_permutation)
-        if state.scores_after_experts is not None:
-            routed_output = (routed_output.float() * state.scores_after_experts.float().reshape(-1, 1)).to(
-                routed_output.dtype
-            )
-        routed_output = _unpermute_tokens(
-            routed_output,
-            state.deep_ep_permuted_indices,
-            state.num_received_tokens,
-        )
-        combined = torch.ops.deepep.combine(routed_output, state.handle_id, self._dispatcher_id)
-        return combined
+        routed_output = reduce_pairs(routed_output, state.layout, state.scores_after_experts)
+        return torch.ops.deepep.combine(routed_output, state.handle_id, self._dispatcher_id)
 
     def _run_dispatched_chunk(
         self,
