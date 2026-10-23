@@ -268,7 +268,7 @@ def train(config: SFTConfig):
         # Labels without a temperature make the LM head return the summed cross-entropy directly.
         labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
 
-        with maybe_activation_offloading(config.model.ac_offloading):
+        with maybe_activation_offloading(config.model.ac_offloading, model):
             out = forward(
                 model,
                 input_ids,
