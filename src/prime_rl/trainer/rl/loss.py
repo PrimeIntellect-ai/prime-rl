@@ -34,7 +34,6 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
-    # Per-token sampler support: replayed rows hold the sampling mask (no tail), other rows the top-k head.
     trainer_support_logprobs: Float[Tensor, "seq head"] | None = None
     sampler_support_logprobs: Float[Tensor, "seq head"] | None = None
     support_valid: Bool[Tensor, "seq head"] | None = None
@@ -267,7 +266,6 @@ class IcePopLoss:
                 # The proportional tail has one ratio; MIS accepts all or none.
                 alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
                 if inputs.sampler_tail_mass is not None:
-                    # Replayed rows carry the complete support: no modeled tail.
                     alpha = alpha.masked_fill(inputs.sampler_tail_mass[inputs.loss_mask] == 0, 0.0)
                 mass = mass - alpha.unsqueeze(-1) * p
                 centering_metrics["score_centering/tail_scale"] = alpha

@@ -76,7 +76,6 @@ class FusedOutputLinear(torch.nn.Linear):
             support = sampling_mask.reshape(b * s, sampling_mask.shape[-1]).long().contiguous()
             replay = sampling_replay_mask(support, labels)
         if topk_ids is not None:
-            # Replayed rows of topk_ids hold their mask ids, so one gather serves replay and the head.
             support = topk_ids.reshape(b * s, topk_ids.shape[-1]).long().contiguous()
         logprobs, entropy, topk_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
             hidden_states, self.weight, labels, inv_t, self.chunk_size, support, replay, topk_ids is not None
