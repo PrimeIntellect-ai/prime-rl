@@ -1,6 +1,6 @@
 ---
 name: hosted-training
-description: Launch and monitor prime-rl runs on Model Factory or Prime Hosted Training with prime train. Use for requests such as "run this on model factory" or "run this on prime hosted training", including custom code revisions, private datasets, credentials, and team setup. Explicit local or SLURM jobs use start-run.
+description: Launch and monitor prime-rl runs on Model Factory or Prime Hosted Training with prime train, and retrieve their traces. Use for requests such as "run this on model factory" or "run this on prime hosted training", including custom code revisions, private datasets, credentials, and team setup. Explicit local or SLURM jobs use start-run.
 ---
 
 # Model Factory / Prime Hosted Training
@@ -174,6 +174,13 @@ with `-f` or filter with `--search` / `--level ERROR` when needed. Confirm compl
 training steps and inspect rollout/eval infrastructure errors; `RUNNING` alone
 does not establish progress. Export needed component logs while pods still exist.
 
+Uploaded traces persist separately from pods and can be retrieved after the run
+ends. For rollout inspection or trace downloads, read
+[retrieving traces](references/traces.md): list by run ID with `prime traces list`,
+then save raw documents with `prime traces get --raw --dest`. Listing summaries
+alone does not download the traces. The reference covers whole-run pagination,
+per-step episodes, separate eval run IDs, and missing-upload checks.
+
 Queued and image-pull states can be normal. After an ambiguous dispatch timeout,
 check `prime train list` for the submitted run before retrying; do not create
 duplicates. Deterministic config, import, credential, or sandbox setup errors
@@ -188,4 +195,5 @@ prime train get "$RUN_ID" --plain -o json
 
 Verify terminal state, wait for volume sync, and retrieve requested checkpoints
 with `prime volumes get`. Report the run ID/link, actual completed steps, outcome,
-and artifact location. Follow-up runs need to remain within the user's request.
+and checkpoint/trace artifact locations. Follow-up runs need to remain within the
+user's request.
