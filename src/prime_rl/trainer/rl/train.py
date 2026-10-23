@@ -129,7 +129,9 @@ def train(config: TrainerConfig):
     # Check for checkpoint to resume from
     checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
+    ckpt_manager = setup_ckpt_manager(
+        config.output_dir, config.ckpt, resume=config.resume, with_orchestrator=config.data.fake is None
+    )
 
     if config.resume is not None:
         if config.resume.dir is not None:
@@ -137,7 +139,7 @@ def train(config: TrainerConfig):
         else:
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ckpt_manager.with_orchestrator)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

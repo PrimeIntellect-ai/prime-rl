@@ -1,11 +1,15 @@
 import pytest
 
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     create_attempt_dirs,
+    get_all_ckpt_steps,
     get_batch_dir,
     get_broadcast_dir,
+    get_ckpt_dir,
     get_step_path,
+    resolve_latest_ckpt_step,
     validate_run_dir,
 )
 
@@ -117,3 +121,39 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+def test_abandon_future_ckpts_moves_them_out_of_resume(tmp_path):
+    ckpt_dir = get_ckpt_dir(tmp_path)
+    for step in (1, 2, 3):
+        get_step_path(ckpt_dir, step).mkdir(parents=True)
+
+    abandon_future_ckpts(ckpt_dir, resume_step=1)
+
+    assert get_all_ckpt_steps(ckpt_dir) == [1]
+    assert sorted(path.name for path in (ckpt_dir / "abandoned").glob("*/step_*")) == ["step_2", "step_3"]
+
+
+def test_resolve_latest_ckpt_step_picks_the_newest_complete_step(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    # step -> files on disk: 25 has no orchestrator checkpoint, 30 no trainer one, 40 a half-written trainer one
+    layout = {
+        10: ["trainer/.metadata", "orchestrator/progress.pt"],
+        20: ["trainer/.metadata", "orchestrator/progress.pt"],
+        25: ["trainer/.metadata"],
+        30: ["orchestrator/progress.pt"],
+        40: ["trainer/__0_0.distcp", "orchestrator/progress.pt"],
+    }
+    for step, files in layout.items():
+        for file in files:
+            path = get_step_path(ckpt_dir, step) / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    assert resolve_latest_ckpt_step(ckpt_dir, with_orchestrator=True) == 20
+    assert resolve_latest_ckpt_step(ckpt_dir, with_orchestrator=False) == 25
+    assert resolve_latest_ckpt_step(tmp_path / "missing", with_orchestrator=True) is None
+    # Steps exist but none is complete: raise instead of starting from scratch
+    get_step_path(tmp_path / "incomplete", 10).mkdir(parents=True)
+    with pytest.raises(FileNotFoundError):
+        resolve_latest_ckpt_step(tmp_path / "incomplete", with_orchestrator=False)

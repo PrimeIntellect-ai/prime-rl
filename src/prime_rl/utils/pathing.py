@@ -323,17 +323,39 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
-def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    steps = get_all_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
+def get_complete_ckpt_steps(ckpt_dir: Path, with_orchestrator: bool) -> list[int]:
+    """Steps whose trainer checkpoint is complete (DCP writes ``.metadata`` last, after every
+    rank's shards) and, ``with_orchestrator``, whose orchestrator checkpoint exists (written by
+    atomic rename)."""
+    return [
+        step
+        for step in get_all_ckpt_steps(ckpt_dir)
+        if (get_step_path(ckpt_dir, step) / "trainer" / ".metadata").exists()
+        and (not with_orchestrator or (get_step_path(ckpt_dir, step) / "orchestrator" / "progress.pt").exists())
+    ]
+
+
+def resolve_latest_ckpt_step(ckpt_dir: Path, with_orchestrator: bool) -> int | None:
+    """Gets the latest complete checkpoint step (``get_complete_ckpt_steps``). Incomplete steps
+    (a save killed mid-write, or the orchestrator checkpoint of a step the trainer never reached)
+    are skipped. Returns None if there are no checkpoints; raises if there are checkpoints but
+    none is complete."""
+    logger = get_logger()
+    all_steps = get_all_ckpt_steps(ckpt_dir)
+    if len(all_steps) == 0:
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
         return None
-    latest_step = steps[-1]
-    logger = get_logger()
-    logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
-    return latest_step
+    steps = get_complete_ckpt_steps(ckpt_dir, with_orchestrator)
+    if len(steps) == 0:
+        parts = "trainer/.metadata" + (" and orchestrator/progress.pt" if with_orchestrator else "")
+        raise FileNotFoundError(
+            f"No checkpoint step in {ckpt_dir} ({all_steps}) is complete: each lacks {parts}. "
+            "Pass --resume.step explicitly to resume from one anyway. If this run set ckpt.output_dir before "
+            "orchestrator checkpoints followed it, move the step_N/orchestrator dirs from <run_dir>/checkpoints "
+            "into the matching step dirs here first."
+        )
+    logger.info(f"Found latest complete checkpoint in {ckpt_dir}: {steps[-1]}")
+    return steps[-1]
 
 
 def has_checkpoints(output_dir: Path) -> bool:
@@ -443,6 +465,20 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
         )
         for step in steps_to_delete:
             shutil.rmtree(get_step_path(directory, step))
+
+
+def abandon_future_ckpts(ckpt_dir: Path, resume_step: int) -> None:
+    """Move the checkpoints past ``resume_step`` to ``abandoned/<UTC time>/`` in ``ckpt_dir``.
+    After a rollback they belong to the abandoned run, and a later bare ``--resume`` would
+    pick them. ``get_all_ckpt_steps`` does not look inside ``abandoned/``."""
+    steps = [step for step in get_all_ckpt_steps(ckpt_dir) if step > resume_step]
+    if not steps:
+        return
+    abandoned_dir = ckpt_dir / "abandoned" / time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    abandoned_dir.mkdir(parents=True)
+    get_logger().warning(f"Moving checkpoints past step {resume_step} ({','.join(map(str, steps))}) to {abandoned_dir}")
+    for step in steps:
+        get_step_path(ckpt_dir, step).rename(get_step_path(abandoned_dir, step))
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
