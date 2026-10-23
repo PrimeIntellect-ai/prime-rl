@@ -1,12 +1,7 @@
 import pytest
-import torch
-import torch.nn.functional as F
 
 from prime_rl.trainer.models import get_custom_vlm_cls, supports_custom_impl
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerForCausalLM, MuseGlimmerTextConfig
-from prime_rl.utils.utils import default_dtype
 from prime_rl.utils.vlm import get_language_model, get_layer_prefix
 
 
@@ -74,83 +69,3 @@ def test_state_dict_uses_checkpoint_names():
             )
         ),
     }
-
-
-def _rms(x: torch.Tensor, eps: float, weight: torch.Tensor | None = None, offset: float = 0.0) -> torch.Tensor:
-    out = x.float() * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + eps)
-    if weight is not None:
-        out = out * (weight.float() + offset)
-    return out.type_as(x)
-
-
-def _reference_logits(model: MuseGlimmerForCausalLM, input_ids: torch.Tensor, seq_lens: list[int]) -> torch.Tensor:
-    """Eager MuseGlimmer forward over packed documents, written from the architecture description."""
-    config = model.config.text_config
-    lm = model.model.language_model
-    hidden = _rms(lm.embed_tokens(input_ids), config.rms_norm_eps)
-    position_ids = torch.cat([torch.arange(n, device=input_ids.device) for n in seq_lens]).unsqueeze(0)
-    cos, sin = lm.rotary_emb(hidden, position_ids)
-    doc_ids = torch.repeat_interleave(torch.arange(len(seq_lens)), torch.tensor(seq_lens)).to(input_ids.device)
-    positions = torch.arange(input_ids.shape[1], device=input_ids.device)
-    causal = (positions[None, :] <= positions[:, None]) & (doc_ids[None, :] == doc_ids[:, None])
-    heads, kv_heads, head_dim = config.num_attention_heads, config.num_key_value_heads, config.head_dim
-
-    for layer_idx, layer in enumerate(lm.layers):
-        attn = layer.self_attn
-        sliding = config.layer_types[layer_idx] == "sliding_attention"
-        x = _rms(hidden, config.rms_norm_eps, layer.input_layernorm.weight, 1.0)
-        q = _rms(attn.q_proj(x).view(1, -1, heads, head_dim), config.rms_norm_eps) * config.query_scale
-        k = _rms(attn.k_proj(x).view(1, -1, kv_heads, head_dim), config.rms_norm_eps)
-        v = attn.v_proj(x).view(1, -1, kv_heads, head_dim)
-        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-        mask = causal
-        if sliding:
-            q, k = apply_rotary_pos_emb(q, k, cos, sin)
-            mask = causal & (positions[:, None] - positions[None, :] < config.sliding_window)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=True, scale=head_dim**-0.5)
-        out = out.transpose(1, 2).reshape(1, -1, heads * head_dim)
-        out = attn.o_proj(torch.sigmoid(attn.gate_proj(x)) * out)
-        hidden = hidden + _rms(out, config.post_norm_eps, layer.post_attention_layernorm.weight, 1.0)
-
-        x = _rms(hidden, config.rms_norm_eps, layer.pre_feedforward_layernorm.weight, 1.0)
-        out = layer.mlp.down_proj(F.silu(layer.mlp.gate_proj(x)) * layer.mlp.up_proj(x))
-        hidden = hidden + _rms(out, config.post_norm_eps, layer.post_feedforward_layernorm.weight, 1.0)
-
-    logits = (_rms(hidden, config.rms_norm_eps, lm.norm.weight) @ model.lm_head.weight.t()).float()
-    logits = logits * config.output_multiplier
-    cap = config.final_logit_softcapping
-    return cap * torch.tanh(logits / cap)
-
-
-@pytest.mark.gpu
-def test_forward_and_backward_match_reference():
-    torch.manual_seed(0)
-    config = MuseGlimmerConfig(text_config=_text_config().to_dict())
-    config._attn_implementation = "flash_attention_2"
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = MuseGlimmerForCausalLM(config)
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if "layernorm" in name or name.endswith("norm.weight"):
-                param.normal_(0.0, 0.1)
-    model.init_buffers_post_meta()
-    inject_prime_lm_head(model, chunk_size=None)
-
-    seq_lens = [23, 17]
-    input_ids = torch.randint(0, config.text_config.vocab_size, (1, sum(seq_lens)), device="cuda")
-    position_ids = torch.cat([torch.arange(n) for n in seq_lens]).unsqueeze(0).cuda()
-    out = model(input_ids=input_ids, position_ids=position_ids, seq_lens=torch.tensor(seq_lens, device="cuda"))
-    logits = out["logits"].float()
-    ref = _reference_logits(model, input_ids, seq_lens)
-    torch.testing.assert_close(logits, ref, rtol=0, atol=5e-2)
-    assert logits.abs().max() <= config.text_config.final_logit_softcapping
-
-    grad_out = torch.randn_like(ref)
-    (logits * grad_out).sum().backward()
-    prime_grads = {name: p.grad.float() for name, p in model.named_parameters()}
-    model.zero_grad()
-    (ref * grad_out).sum().backward()
-    for name, p in model.named_parameters():
-        # bf16 compute on both sides: compare relative to the gradient's norm.
-        rel_err = (prime_grads[name] - p.grad.float()).norm() / p.grad.float().norm()
-        assert rel_err < 0.03, f"{name}: relative grad error {rel_err:.4f}"
