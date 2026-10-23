@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -32,6 +31,7 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
+    RUN_FINISHER_VAR,
     ProcessGroup,
     partition_gpus,
     set_proc_title,
@@ -70,16 +70,6 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
-    """The online-eval process's monitors: same W&B and file config as the trainer's,
-    with the platform monitor switched to the evaluation flavor under the same name."""
-    return EvalMonitorsConfig(
-        wandb=monitors.wandb,
-        file=monitors.file,
-        prime=PrimeEvalMonitorConfig(name=monitors.prime.name) if monitors.prime is not None else None,
-    )
-
-
 def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env servers itself; the
@@ -100,7 +90,7 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         # by directory separation.
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-        monitors=build_online_eval_monitors(config.monitors),
+        monitors=config.monitors,
     )
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
@@ -353,6 +343,8 @@ def sft_local(config: SFTConfig):
             "WANDB_PROGRAM": "uv run sft",
             "WANDB_ARGS": json.dumps(sys.argv),
         }
+    # The online-eval process outlives the trainer, so it finishes the shared Prime run.
+    shared_run_env = {RUN_FINISHER_VAR: "online-eval"} if config.eval is not None else {}
 
     with ProcessGroup() as processes:
         # Optionally, start the inference server for online evals
@@ -398,6 +390,7 @@ def sft_local(config: SFTConfig):
                     "PRL_ATTEMPT_LOG_DIR": str(log_dir),
                     "PRL_LOG_DIR": str(log_dir),
                     **wandb_shared_env,
+                    **shared_run_env,
                     "WANDB_SHARED_LABEL": "online-eval",
                 },
                 log_path=log_dir / "eval.log",
@@ -411,6 +404,7 @@ def sft_local(config: SFTConfig):
             **DEFAULT_TRAINER_ENV_VARS,
             **config.env_vars,
             **wandb_shared_env,
+            **shared_run_env,
             **launcher_attempt_env(config_dir, log_dir),
         }
         if config.eval is not None:

@@ -6,21 +6,20 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import wandb
 from wandb.errors import CommError, UsageError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.monitors import WandbMonitorConfig
-from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.base import Monitor
 from prime_rl.monitors.wandb.overview import ensure_overview_view
-from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import WANDB_LINKS, publish_link, register_links
 from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
+    pass
 
 
 class WandbMonitor(Monitor):
@@ -28,14 +27,8 @@ class WandbMonitor(Monitor):
 
     config: WandbMonitorConfig
 
-    async def init(
-        self,
-        output_dir: Path,
-        config: BaseConfig | None = None,
-        train_env_names: list[str] | None = None,
-        eval_env_names: list[str] | None = None,
-        overview_flavor: Literal["rl", "sft", "eval"] = "rl",
-    ) -> None:
+    async def init(self) -> None:
+        output_dir, config = self.context.output_dir, self.context.run_config
         # W&B reads the start command off sys.argv; the launcher passes the original
         # command to subprocesses via $WANDB_ARGS.
         wandb_args = os.environ.get("WANDB_ARGS")
@@ -135,9 +128,9 @@ class WandbMonitor(Monitor):
                 url = ensure_overview_view(
                     self.wandb.entity,
                     self.wandb.project,
-                    train_envs=train_env_names or [],
-                    eval_envs=eval_env_names or [],
-                    flavor=overview_flavor,
+                    train_envs=self.context.train_env_names,
+                    eval_envs=self.context.eval_env_names,
+                    flavor=self.context.overview_flavor,
                 )
                 if url:
                     self.logger.info(f"Created W&B overview view - {url}")
@@ -165,9 +158,6 @@ class WandbMonitor(Monitor):
             wandb.log({**metrics, "_timestamp": time.time()})
         else:
             wandb.log({**metrics, "step": step, "_timestamp": time.time()})
-
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        pass
 
     async def finalize(self, paused: bool = False) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")

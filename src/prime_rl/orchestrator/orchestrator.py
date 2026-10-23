@@ -558,7 +558,7 @@ class Orchestrator:
             kind = episode.run.work.type
             step = episode.run.work.step if kind == "eval" else self.progress.step
             stamp_arrival([episode], kind, step)
-            await monitors.log([episode], step, kind, "all")
+            await monitors.log([episode], step, kind)
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -679,8 +679,6 @@ class Orchestrator:
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
         effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
-        # Monitors may retain the list for asynchronous upload after publication.
-        await monitors.log(effective_episodes.copy(), step, "train", "effective")
         annotations = await asyncio.to_thread(stamp_batch, effective_episodes, step)
         await monitors.log_annotations(annotations)
 
@@ -911,11 +909,9 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        # The non-errored subset is logged on epoch completion (multiple eval envs share the
-        # step's trace file — each epoch appends its cohort once, and every record carries
-        # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
+        # Every episode was logged on arrival; the non-errored subset is annotated on epoch
+        # completion.
         if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
             await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
         policy_spans = [eval_work(episode).policy for episode in batch.episodes]
         if any(span is None for span in policy_spans):

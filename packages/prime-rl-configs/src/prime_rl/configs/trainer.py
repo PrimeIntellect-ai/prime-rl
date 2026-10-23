@@ -5,7 +5,7 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from prime_rl.configs.monitors import MonitorsConfig
+from prime_rl.configs.monitors import TrainerMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ControlConfig,
@@ -740,7 +740,7 @@ class TrainerConfig(BaseTrainerConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
-    monitors: MonitorsConfig = MonitorsConfig()
+    monitors: TrainerMonitorsConfig = TrainerMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     output_dir: Path = Field(default_factory=default_output_dir)

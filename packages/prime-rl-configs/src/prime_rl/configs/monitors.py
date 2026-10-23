@@ -43,17 +43,14 @@ class FileMonitorConfig(BaseConfig):
     not the records, so this only trades record size against overlay precision."""
 
 
-class PrimeTrainMonitorConfig(BaseConfig):
+class PrimeMonitorConfig(BaseConfig):
     name: str | None = None
-    """Run name shown on the platform. Inherits ``run.name`` when unset."""
+    """Run or evaluation name shown on Prime. Inherits ``run.name`` when unset."""
 
 
-class PrimeEvalMonitorConfig(BaseConfig):
-    name: str | None = None
-    """Evaluation name shown on the platform. Inherits ``run.name`` when unset."""
+class TrainerMonitorsConfig(BaseConfig):
+    """The RL trainer's monitors: its metrics reach Prime through the orchestrator's run."""
 
-
-class MonitorsConfig(BaseConfig):
     wandb: WandbMonitorConfig | None = None
     """Log metrics to Weights & Biases. Off by default; enable with ``--monitors.wandb``."""
 
@@ -61,13 +58,7 @@ class MonitorsConfig(BaseConfig):
     """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""
 
 
-class TrainMonitorsConfig(MonitorsConfig):
-    prime: PrimeTrainMonitorConfig | None = PrimeTrainMonitorConfig()
-    """Log metrics and episodes to the Prime Intellect platform. On by default and
-    needs a Prime API key; disable with ``--no-monitors.prime``."""
-
-
-class EvalMonitorsConfig(MonitorsConfig):
-    prime: PrimeEvalMonitorConfig | None = PrimeEvalMonitorConfig()
-    """Upload every eval source's epoch as an evaluation on the Prime Intellect platform. On by
-    default and needs a Prime API key; disable with ``--no-monitors.prime``."""
+class MonitorsConfig(TrainerMonitorsConfig):
+    prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
+    """Log metrics and episodes to Prime. On by default and needs a Prime API key;
+    disable with ``--no-monitors.prime``."""

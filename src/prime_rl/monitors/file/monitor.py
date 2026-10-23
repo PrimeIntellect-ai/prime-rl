@@ -11,7 +11,7 @@ import orjson
 from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.configs.monitors import FileMonitorConfig
-from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.base import Kind, Monitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
@@ -36,9 +36,9 @@ class FileMonitor(Monitor):
     config: FileMonitorConfig
     file: TextIO
 
-    async def init(self, output_dir: Path, producer: str | None = None) -> None:
-        self.output_dir = output_dir
-        self.producer = producer
+    async def init(self) -> None:
+        output_dir = self.output_dir = self.context.output_dir
+        self.producer = self.context.producer
         index = get_index_path(get_trace_stream(output_dir))
         # a relaunch appends to the stream it finds, so the numbering carries on
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
@@ -138,14 +138,12 @@ class FileMonitor(Monitor):
             self._streams[directory] = (stream, open(get_index_path(directory), "ab"))
         return self._streams[directory]
 
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind) -> None:
         """Append each episode to the trace stream as it completes — every episode is
         serialized exactly once, in arrival order, whatever its kind, so an in-progress
         run can be tailed. Episode-level failures are preserved even when no trace was
-        produced. The shipped cohort writes no second copy: what it learns arrives as
-        annotations that readers fold back onto the stream."""
-        if subset == "effective":
-            return
+        produced. What the shipped cohort learns arrives as annotations that readers fold
+        back onto the stream."""
 
         def write() -> None:
             stream, index = self._stream(get_trace_stream(self.output_dir))

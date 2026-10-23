@@ -5,8 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 import prime_rl.monitors.prime as prime_module
-from prime_rl.configs.monitors import PrimeTrainMonitorConfig
-from prime_rl.monitors.prime import PrimeTrainMonitor
+from prime_rl.configs.monitors import PrimeMonitorConfig
+from prime_rl.monitors.base import MonitorContext
+from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.utils.links import ATTEMPT_VAR, publish_link, register_links, wait_for_links
 
 
@@ -19,16 +20,16 @@ def attempt(tmp_path, monkeypatch):
 
 def test_waits_for_every_registered_link(tmp_path, attempt):
     register_links(tmp_path, "prime", 0)
-    register_links(tmp_path, "prime/eval", 2)
+    register_links(tmp_path, "other", 2)
     register_links(tmp_path, "wandb", 1)
     publish_link(tmp_path, "wandb", "run", "https://wandb.ai/run")
-    publish_link(tmp_path, "prime/eval", "gsm8k", "https://prime/ev-1")
+    publish_link(tmp_path, "other", "gsm8k", "https://prime/ev-1")
     # A page that failed to open publishes None, which resolves the wait without a link.
-    publish_link(tmp_path, "prime/eval", "aime", None)
+    publish_link(tmp_path, "other", "aime", None)
     start = time.monotonic()
-    assert wait_for_links(tmp_path, attempt, ["prime", "prime/eval", "wandb"], lambda: False, timeout=5.0) == {
+    assert wait_for_links(tmp_path, attempt, ["prime", "other", "wandb"], lambda: False, timeout=5.0) == {
         "prime": {},
-        "prime/eval": {"gsm8k": "https://prime/ev-1"},
+        "other": {"gsm8k": "https://prime/ev-1"},
         "wandb": {"run": "https://wandb.ai/run"},
     }
     assert time.monotonic() - start < 1.0
@@ -48,4 +49,4 @@ def test_prime_monitor_without_credentials_fails_informatively(tmp_path, monkeyp
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.setattr(prime_module, "PrimeConfig", lambda: SimpleNamespace(api_key=None))
     with pytest.raises(RuntimeError, match=r"prime login.*--no-monitors\.prime"):
-        asyncio.run(PrimeTrainMonitor(PrimeTrainMonitorConfig()).init(config=None, output_dir=tmp_path))
+        asyncio.run(PrimeMonitor(PrimeMonitorConfig(), MonitorContext(tmp_path)).init())

@@ -16,10 +16,8 @@ from prime_rl.utils.record import read_record, update_record
 # The launcher exports it to every component: entries stamped with another attempt are
 # a previous launch's.
 ATTEMPT_VAR = "PRL_ATTEMPT_LOG_DIR"
-# Monitor keys in the links record. An SFT run's trainer (train monitor) and
-# online-eval process (eval monitor) share one run dir, so the Prime monitors differ.
+# Monitor keys in the links record.
 PRIME_LINKS = "prime"
-PRIME_EVAL_LINKS = "prime/eval"
 WANDB_LINKS = "wandb"
 LINK_TIMEOUT_S = 300.0
 LINK_POLL_S = 0.5

@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, WANDB_LINKS
+from prime_rl.utils.links import PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import CACHE_DIR
 
@@ -118,7 +118,7 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     return None
 
 
-LINK_NAMES = {PRIME_LINKS: "Prime", PRIME_EVAL_LINKS: "Prime", WANDB_LINKS: "W&B"}
+LINK_NAMES = {PRIME_LINKS: "Prime", WANDB_LINKS: "W&B"}
 
 
 def log_run_links(dashboard_url: str | None, links: Callable[[], dict[str, dict[str, str]]] | None = None) -> None:
