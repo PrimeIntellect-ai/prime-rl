@@ -249,10 +249,11 @@ class RLLoss:
 
         head_mass = p.detach().sum(-1)
         metrics = {
-            "uncentered": 1.0 - centered.float(),
-            "tail_mass": q_tail,
-            "head_mass": head_mass,
-            "mask_tv": 0.5 * ((p.detach() - q).abs().sum(-1) + (q_tail - (1.0 - head_mass).clamp_min(0.0)).abs()),
+            "score_centering/uncentered": 1.0 - centered.float(),
+            "score_centering/tail_mass": q_tail,
+            "score_centering/head_mass": head_mass,
+            "score_centering/mask_tv": 0.5
+            * ((p.detach() - q).abs().sum(-1) + (q_tail - (1.0 - head_mass).clamp_min(0.0)).abs()),
         }
         if config.kl_coeff == 0:
             return loss, metrics
@@ -268,9 +269,9 @@ class RLLoss:
             beta = torch.where(ages >= 1, config.kl_coeff * ages.clamp_min(1).float().rsqrt(), 0.0)
         else:
             beta = torch.full_like(kl, config.kl_coeff)
-        metrics |= {"kl": kl.detach(), "beta": beta}
+        metrics |= {"kl": kl.detach(), "kl/beta": beta}
         if ages is not None:
-            metrics["age0"] = (ages == 0).float()
+            metrics["kl/age0"] = (ages == 0).float()
         return loss + beta * kl, metrics
 
 

@@ -112,7 +112,7 @@ def test_kl_matches_dense_kl(replay, kl_staleness):
     torch.testing.assert_close(
         torch.autograd.grad(result.loss, logits, retain_graph=True)[0], torch.autograd.grad(reference, logits)[0]
     )
-    assert torch.equal(result.metrics["beta"], beta)
+    assert torch.equal(result.metrics["kl/beta"], beta)
 
 
 def _main_icepop_score_centering(config, inputs):
@@ -175,7 +175,7 @@ def test_score_centering_auto_centers_only_replayed_tokens():
     torch.testing.assert_close(
         torch.autograd.grad(result.loss, logits, retain_graph=True)[0], torch.autograd.grad(uncentered, logits)[0]
     )
-    assert bool((result.metrics["uncentered"] == 1).all())
+    assert bool((result.metrics["score_centering/uncentered"] == 1).all())
 
 
 def test_grpo_loss():

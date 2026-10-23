@@ -278,8 +278,8 @@ The support is chosen per token:
 
 Token age is the trainer step minus the policy step whose weights sampled the token, from the inference
 engines' per-token weight-version labels. The launcher enables sampler probability capture whenever the
-loss needs it. Metrics: `uncentered`, sampler `tail_mass`, trainer `head_mass`, `mask_tv` (total variation
-between `p` and `q` on the support), and with the KL `kl`, `beta`, `age0`.
+loss needs it. Metrics: `score_centering/{uncentered,tail_mass,head_mass,mask_tv}` (sampler tail mass, trainer mass on the
+head, total variation between `p` and `q`), and with the KL `kl`, `kl/beta`, `kl/age0`.
 
 ### Custom Loss
 
