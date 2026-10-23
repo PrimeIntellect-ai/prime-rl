@@ -10,6 +10,8 @@ from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain as
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaPreTrainedModel
 from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
 from prime_rl.trainer.models.minimax_m2.modeling_minimax_m2 import MiniMaxM2PreTrainedModel
+from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import conversion_chain as nemotron_h_conversion_chain
+from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHPreTrainedModel
 
 
 def _afmoe_state_dict() -> dict[str, torch.Tensor]:
@@ -91,3 +93,21 @@ def test_current_hf_moe_conversion_roundtrip(model_cls, operations, hf_state_dic
     assert hf_state_dict.keys() == original.keys()
     for name, tensor in original.items():
         torch.testing.assert_close(hf_state_dict[name], tensor, rtol=0, atol=0)
+
+
+def test_nemotron_h_adapter_modules_match_checkpoint_names():
+    hf_names = {
+        "model.layers.0.mixer.in_proj.weight",
+        "model.layers.1.mixer.q_proj.weight",
+        "model.layers.2.mixer.shared_experts.up_proj.weight",
+        "model.layers.2.mixer.shared_experts.down_proj.weight",
+    }
+    state_dict = {name: torch.zeros(1) for name in hf_names}
+    apply_hf_to_prime(
+        state_dict, nemotron_h_conversion_chain(SimpleNamespace(layer_types=["mamba", "attention", "moe"]))
+    )
+
+    adapter = {name.removesuffix(".weight") + ".lora_A.weight": torch.zeros(1) for name in state_dict}
+    exported = NemotronHPreTrainedModel.convert_adapter_to_hf(adapter)
+
+    assert {name.removesuffix(".lora_A.weight") + ".weight" for name in exported} == hf_names
