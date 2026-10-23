@@ -253,10 +253,11 @@ class PrimeTrainMonitor(Monitor):
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """Every train episode ships as it arrives (the ``all`` subset), errored and
-        filtered ones included. The SDK keys each to its dispatch step off
-        ``run.work`` - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
-        if kind != "train" or subset != "all" or not episodes:
+        """Every episode ships whole as it arrives (the ``all`` subset), errored and
+        filtered ones included, online evals too. The SDK keys each to its dispatch
+        step and work type off ``run.work`` - the ``TrainRunInfo`` the dispatcher
+        stamps at emit time."""
+        if subset != "all" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
