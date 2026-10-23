@@ -61,6 +61,8 @@ dist_timeout_seconds = 1800
 skip_optimizer = true
 
 [trainer.model]
+# `model.dsa_backend` defaults to cudnn_flashmla, which is not yet validated against vLLM for this model.
+dsa_backend = "tilelang"
 ep = 8
 # Keeps 16K tokens per GPU at 128K context.
 cp = 8
