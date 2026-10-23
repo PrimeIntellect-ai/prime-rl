@@ -225,6 +225,16 @@ class CurriculumConfig(BaseConfig):
     and a group trains only when every gate admits it."""
 
 
+INFRA_RETRIES = {
+    "rules": [
+        {"type": "ProviderError", "status_code": ["5xx", 408, 429], "max_retries": 2},
+        {"type": "SandboxError", "max_retries": 2},
+        {"type": "InterceptionError", "max_retries": 2},
+        {"type": "TunnelError", "max_retries": 2},
+    ]
+}
+
+
 class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -245,6 +255,17 @@ class TrainSourceConfig(EnvConfig):
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_infra_retries(cls, data: Any) -> Any:
+        """Rerun an episode that failed on infra (an exhausted provider 5xx/408/429, a
+        sandbox, interception or tunnel failure) up to twice per kind, unless
+        ``env.retries`` is set. Errored members are dropped from their group, so without
+        retries long multi-turn rollouts are the ones lost to an outage."""
+        if isinstance(data, dict) and isinstance(data.get("env"), dict):
+            data["env"] = {"retries": INFRA_RETRIES, **data["env"]}
+        return data
 
     @model_validator(mode="after")
     def validate_policy_sampling(self):

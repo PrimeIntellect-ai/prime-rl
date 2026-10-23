@@ -679,6 +679,26 @@ def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, 
         assert TrainSourceConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_train_sources_retry_infra_errors_unless_retries_are_set():
+    def retries(group_env, source_env):
+        train = TrainConfig.model_validate(
+            {"env": group_env, "source": [{"env": {"taskset": {"id": "reverse-text"}, **source_env}}]}
+        )
+        return train.source[0].env.retries
+
+    default = retries({}, {})
+    assert [rule.type for rule in default.rules] == [
+        "ProviderError",
+        "SandboxError",
+        "InterceptionError",
+        "TunnelError",
+    ]
+    assert retries({}, {"retries": {}}) == vf.RetryConfig()
+    assert retries({"retries": {"max_retries": 1}}, {}) == vf.RetryConfig(max_retries=1)
+    evals = EvalSourcesConfig.model_validate({"source": [{"env": {"taskset": {"id": "reverse-text"}}}]})
+    assert evals.source[0].env.retries == vf.RetryConfig()
+
+
 def test_policy_sources_reject_mixed_top_k_capture():
     with pytest.warns(UserWarning, match="defaulting top_k"):
         with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
