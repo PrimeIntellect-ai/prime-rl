@@ -63,7 +63,7 @@ def main() -> None:
     args = parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
-    default_nccl_max_ctas(16)
+    default_nccl_max_ctas(16, num_concurrent=2)
     dist.init_process_group(backend="nccl", device_id=torch.device("cuda", local_rank))
     rank, world_size = dist.get_rank(), dist.get_world_size()
     group = dist.group.WORLD
@@ -114,7 +114,7 @@ def main() -> None:
         intermediate_hidden=args.intermediate,
         group=group,
         max_tokens_per_rank=args.tokens_per_rank,
-        num_sms=reserve_sms_for_comm(16),
+        num_sms=reserve_sms_for_comm(16, num_concurrent=2),
     )
     mega = (FusedTokenDispatcher(), mega_compute)
 

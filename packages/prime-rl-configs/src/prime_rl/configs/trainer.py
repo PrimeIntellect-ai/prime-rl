@@ -232,8 +232,10 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
 
     num_reserved_sms: int = Field(16, ge=2)
-    """SMs left free for concurrent NCCL kernels. FSDP can run two NCCL kernels at once, so ``NCCL_MAX_CTAS`` must be
-    at most half this value; the trainer sets it to half when it is unset."""
+    """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
+    at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
+    a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
 def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
