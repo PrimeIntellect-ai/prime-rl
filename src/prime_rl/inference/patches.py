@@ -38,6 +38,11 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    # Set by `server()` from `[inference] chat_encoding`.
+    if chat_encoding := os.environ.get("PRIME_CHAT_ENCODING"):
+        from prime_rl.inference.vllm.chat_encoding import patch_chat_encoding
+
+        patch_chat_encoding(chat_encoding)
 
 
 @dataclass
