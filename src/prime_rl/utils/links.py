@@ -16,21 +16,32 @@ from prime_rl.utils.record import read_record, update_record
 # The launcher exports it to every component: entries stamped with another attempt are
 # a previous launch's.
 ATTEMPT_VAR = "PRL_ATTEMPT_LOG_DIR"
+# Monitor keys in the links record. An SFT run's trainer (train monitor) and
+# online-eval process (eval monitor) share one run dir, so the Prime monitors differ.
+PRIME_LINKS = "prime"
+PRIME_EVAL_LINKS = "prime/eval"
+WANDB_LINKS = "wandb"
 LINK_TIMEOUT_S = 300.0
 LINK_POLL_S = 0.5
+
+
+def _entry(record: dict[str, Any], monitor: str, expected: int) -> dict[str, Any]:
+    """This attempt's entry for ``monitor``, started over when the record holds a
+    previous attempt's."""
+    attempt = os.getenv(ATTEMPT_VAR)
+    entry = record.get(monitor)
+    if entry is None or entry.get("attempt") != attempt:
+        entry = record[monitor] = {"attempt": attempt, "expected": expected, "links": {}}
+    return entry
 
 
 def register_links(output_dir: Path, monitor: str, expected: int) -> None:
     """Announce that ``monitor`` publishes ``expected`` links in this attempt. Processes
     that share one monitor's page (a shared W&B run) register the same entry."""
-    attempt = os.getenv(ATTEMPT_VAR)
 
     def merge(record: dict[str, Any]) -> dict[str, Any]:
-        entry = record.get(monitor)
-        if entry is None or entry.get("attempt") != attempt:
-            entry = {"attempt": attempt, "expected": expected, "links": {}}
+        entry = _entry(record, monitor, expected)
         entry["expected"] = max(entry["expected"], expected)
-        record[monitor] = entry
         return record
 
     update_record(get_links_path(output_dir), merge)
@@ -38,15 +49,11 @@ def register_links(output_dir: Path, monitor: str, expected: int) -> None:
 
 def publish_link(output_dir: Path, monitor: str, label: str, url: str | None) -> None:
     """One of ``monitor``'s links; ``None`` when the page it was registered for did
-    not open, so the launcher stops waiting for it."""
-    attempt = os.getenv(ATTEMPT_VAR)
+    not open, so the launcher stops waiting for it. A publish before the monitor's
+    registration counts as one expected link."""
 
     def merge(record: dict[str, Any]) -> dict[str, Any]:
-        entry = record.get(monitor)
-        if entry is None or entry.get("attempt") != attempt:
-            entry = {"attempt": attempt, "expected": 1, "links": {}}
-        entry["links"][label] = url
-        record[monitor] = entry
+        _entry(record, monitor, 1)["links"][label] = url
         return record
 
     update_record(get_links_path(output_dir), merge)

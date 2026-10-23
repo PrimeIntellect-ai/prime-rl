@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
+from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import CACHE_DIR
 
@@ -36,8 +37,6 @@ DAEMON_FILE = STATE_DIR / "daemon.json"
 DIRS_FILE = STATE_DIR / "dirs.json"
 DAEMON_LOG = STATE_DIR / "daemon.log"
 SPAWN_TIMEOUT_S = 10.0
-# Banner names of the monitors' entries in the links record.
-LINK_NAMES = {"prime": "Prime", "prime/eval": "Prime", "wandb": "W&B"}
 
 
 @contextmanager
@@ -119,6 +118,9 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     return None
 
 
+LINK_NAMES = {PRIME_LINKS: "Prime", PRIME_EVAL_LINKS: "Prime", WANDB_LINKS: "W&B"}
+
+
 def log_run_links(dashboard_url: str | None, links: Callable[[], dict[str, dict[str, str]]] | None = None) -> None:
     """Banner pointing at the dashboard and each monitor's run pages - meant as the
     launcher's last startup log. ``links`` blocks until the monitors published their
@@ -137,7 +139,7 @@ def log_run_links(dashboard_url: str | None, links: Callable[[], dict[str, dict[
         show("Dashboard", dashboard_url, "")
     for monitor, urls in (links() if links is not None else {}).items():
         for label, url in urls.items():
-            show(LINK_NAMES.get(monitor, monitor), url, f" ({label})" if len(urls) > 1 else "")
+            show(LINK_NAMES[monitor], url, f" ({label})" if len(urls) > 1 else "")
     if printed:
         logger.info("\n")
 
@@ -153,11 +155,9 @@ def run_links(
     from prime_rl.utils.links import wait_for_links
 
     def opens_pages(key: str) -> bool:
-        if key.startswith("prime"):
-            return os.environ.get("PRIME_RUNS_MODE", "online") == "online"
-        if key == "wandb":
+        if key == WANDB_LINKS:
             return os.environ.get("WANDB_MODE") not in ("offline", "disabled")
-        return True
+        return os.environ.get("PRIME_RUNS_MODE", "online") == "online"
 
     waited = [key for key, config in monitors.items() if config is not None and opens_pages(key)]
     if not waited:

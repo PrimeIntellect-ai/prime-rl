@@ -13,7 +13,7 @@ from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorC
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.links import publish_link, register_links
+from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.record import read_record, update_record, write_record
 from prime_rl.utils.utils import sanitize
@@ -23,10 +23,6 @@ if TYPE_CHECKING:
 
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
-# Keys of the train and eval monitors' entries in the links record: an SFT run's
-# trainer and online-eval process share one run dir.
-TRAIN_LINKS = "prime"
-EVAL_LINKS = "prime/eval"
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
@@ -171,12 +167,12 @@ class PrimeTrainMonitor(Monitor):
             await asyncio.to_thread(self._record, output_dir)
 
     def _record(self, output_dir: Path) -> None:
-        register_links(output_dir, TRAIN_LINKS, 1 if self.run.url else 0)
+        register_links(output_dir, PRIME_LINKS, 1 if self.run.url else 0)
         if self.run.url:
             # Merge, not overwrite: a concurrent eval process (SFT online evals share
             # the trainer's run dir) may already have written its evaluations record.
             update_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
-            publish_link(output_dir, TRAIN_LINKS, "run", self.run.url)
+            publish_link(output_dir, PRIME_LINKS, "run", self.run.url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # The SDK also drops non-finite values, but silently; sanitize first so
@@ -258,7 +254,7 @@ class PrimeEvalMonitor(Monitor):
             self.logger.info("Prime evaluations disabled")
         if output_dir is not None:
             expected = len(self.sources) if self.mode == "online" else 0
-            await asyncio.to_thread(register_links, output_dir, EVAL_LINKS, expected)
+            await asyncio.to_thread(register_links, output_dir, PRIME_EVAL_LINKS, expected)
 
     def _attach_parent(self) -> pr.Run | None:
         """The parent training run this eval process belongs to, for metrics only.
@@ -341,7 +337,7 @@ class PrimeEvalMonitor(Monitor):
                 self.logger.warning(f"Failed to open the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
                 self.runs[key] = None
                 if self.output_dir is not None:
-                    await asyncio.to_thread(publish_link, self.output_dir, EVAL_LINKS, env_name, None)
+                    await asyncio.to_thread(publish_link, self.output_dir, PRIME_EVAL_LINKS, env_name, None)
                 return None
             self.runs[key] = run
         if run.url:
@@ -362,7 +358,7 @@ class PrimeEvalMonitor(Monitor):
                 return record
 
             _merge_platform_record(self.output_dir, update)
-        publish_link(self.output_dir, EVAL_LINKS, env_name, run.url)
+        publish_link(self.output_dir, PRIME_EVAL_LINKS, env_name, run.url)
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
         await self.run_for(env_name, step, expected)
