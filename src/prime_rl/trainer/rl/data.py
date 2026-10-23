@@ -240,7 +240,6 @@ class DataLoader:
                     dtype=_torch_dtype(packed_routed_experts.dtype),
                 )
                 .reshape(packed_routed_experts.shape)
-                .to(torch.int32)
                 .unsqueeze(0)
             )
         sampling_mask = None
