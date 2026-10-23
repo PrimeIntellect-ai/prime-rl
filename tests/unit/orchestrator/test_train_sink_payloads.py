@@ -52,7 +52,8 @@ def test_sink_deletes_exactly_the_arrays_it_drops():
     async def run():
         hook = PayloadHook()
         queued = kept(hook)
-        dropped = [kept(hook, advantage=0), kept(hook, ok=False)]
+        dropped = [kept(hook, advantage=0), kept(hook, ok=False), kept(hook)]
+        dropped[-1].drop("judge: outcome=task_defect")
         s = payload_sink()
         await s.add(episode([queued, *dropped]))
         settle(s)
