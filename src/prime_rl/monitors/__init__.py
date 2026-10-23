@@ -70,13 +70,7 @@ async def setup(
 
     monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
     if isinstance(prime, PrimeTrainMonitorConfig):
-        monitors.append(
-            (
-                "prime",
-                PrimeTrainMonitor(prime),
-                dict(config=run_config, output_dir=output_dir),
-            )
-        )
+        monitors.append(("prime", PrimeTrainMonitor(prime), dict(config=run_config, output_dir=output_dir)))
     elif isinstance(prime, PrimeEvalMonitorConfig):
         monitors.append(("prime", PrimeEvalMonitor(prime), dict(config=run_config, output_dir=output_dir)))
     if wandb is not None:

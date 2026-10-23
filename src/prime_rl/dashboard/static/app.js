@@ -296,7 +296,7 @@ function renderPlatformLink(meta) {
     button.hidden = true;
     link.classList.add("disabled");
     link.removeAttribute("href");
-    link.title = "enable the prime monitor (--monitors.prime) to sync this run to the platform";
+    link.title = "the prime monitor was off for this run (--no-monitors.prime)";
     return;
   }
   const targets =
@@ -4340,6 +4340,16 @@ function normalizedCallUsage(usage = {}) {
   };
 }
 
+function modelCallError(call) {
+  if (!call.error) return null;
+  return typeof call.error === "object" ? call.error : { message: String(call.error) };
+}
+
+function modelCallErrorHtml(call) {
+  const error = modelCallError(call);
+  return error ? `<div class="model-call-error">${errorEntryHtml("model call", error)}</div>` : "";
+}
+
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
@@ -4398,12 +4408,17 @@ function renderMessages(ep, trace, branches) {
   }
   const callChipHtml = ({ call, index }) => {
     const fields = [`call ${index + 1}`];
+    const error = modelCallError(call);
+    if (error) {
+      fields.push("failed");
+      if (error.status_code != null) fields.push(`HTTP ${error.status_code}`);
+    }
     if (call.finish_reason) fields.push(call.finish_reason);
     const { input, cached, output } = normalizedCallUsage(call.usage);
     if (input != null) fields.push(`${fmtCompact(input)} in`);
     if (cached != null) fields.push(`${fmtCompact(cached)} cache`);
     if (output != null) fields.push(`${fmtCompact(output)} out`);
-    return `<span class="chip" data-call-index="${index}">${esc(fields.join(" · "))}</span>`;
+    return `<span class="chip${error ? " call-failed" : ""}" data-call-index="${index}">${esc(fields.join(" · "))}</span>`;
   };
   // agent highlights (sticky until the next view command or drawer close)
   const hl =
@@ -4457,6 +4472,7 @@ function renderMessages(ep, trace, branches) {
       ? quoteMarkedHtml(text, contentMarks)
       : showingTokens ? renderTokenNode(node, signal, scales) : esc(signal ? whole : text);
     const subs = [];
+    subs.push(...nodeCalls.map(({ call }) => modelCallErrorHtml(call)));
     // Reasoning is parsed into its own box only in the text view; under a signal the
     // recorded sequence is what is being read, so it stays inline with the message.
     if (reasoning && !signal) subs.push(reasoningBlock(reasoning, reasoningMarks));
@@ -4496,13 +4512,18 @@ function renderMessages(ep, trace, branches) {
   let rendered = currentLive ? entryPath.length : Math.min(entryPath.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
   const unlinkedCallsHtml = indexedCalls
     .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
-    .map(
-      (item) =>
-        `<details class="entry model-call" data-call-index="${item.index}" open>` +
+    .map((item) => {
+      const error = modelCallError(item.call);
+      const description = error ? `${error.type || "Error"}: ${error.message || "No error message"}` : item.call.model || "unlinked call";
+      return (
+        `<details class="entry model-call${error ? " failed" : ""}" data-call-index="${item.index}">` +
         `<summary><span class="entry-num">C${String(item.index + 1).padStart(2, "0")}</span>` +
-        `<span class="entry-role">model call</span><span class="entry-preview">${esc(item.call.model || "unlinked call")}</span>` +
-        `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
-    )
+        `<span class="entry-role">${error ? "failed model call" : "model call"}</span><span class="entry-preview">${esc(description)}</span>` +
+        `${callChipHtml(item)}<span class="entry-chev">›</span></summary>` +
+        modelCallErrorHtml(item.call) +
+        `<pre class="entry-body">${esc(JSON.stringify(item.call, null, 2))}</pre></details>`
+      );
+    })
     .join("");
   container.innerHTML =
     errorsHtml +
@@ -4550,7 +4571,7 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "compaction_failed"]);
+const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"]);
 
 /* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
    length-finished final response */

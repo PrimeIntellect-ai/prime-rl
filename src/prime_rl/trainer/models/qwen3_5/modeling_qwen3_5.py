@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
@@ -23,7 +23,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
-from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
+from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -273,7 +273,6 @@ class Qwen3_5VLMModel(nn.Module):
         )
         if image_grid_thw is not None and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
-            setup_cp_attention_params(position_ids, seq_lens=seq_lens)
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
             if routed_experts is not None:
@@ -308,6 +307,12 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
 
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
+
+    def num_active_params(self) -> int:
+        # The vision encoder runs per image, not per text token.
+        if not self.is_vlm:
+            return super().num_active_params()
+        return super().num_active_params() - count_active_params(self, self.model.visual.parameters())
 
     def forward(
         self,

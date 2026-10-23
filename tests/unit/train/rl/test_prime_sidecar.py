@@ -52,6 +52,9 @@ def prime(monkeypatch):
     monkeypatch.setattr("prime_rl.monitors.prime.pr.init", fake_init)
     monkeypatch.setattr("prime_rl.monitors.prime.atexit.unregister", seen.unregistered.append)
     monkeypatch.delenv("RUN_ID", raising=False)
+    monkeypatch.delenv("PRIME_RUNS_MODE", raising=False)
+    monkeypatch.setenv("PRIME_API_KEY", "test-key")
+    monkeypatch.setenv("PRL_RUN_ID", "current-launch")
     return seen
 
 
@@ -60,7 +63,15 @@ def _init(monitor, tmp_path=None):
 
 
 def _train_record(tmp_path):
-    write_platform_record(tmp_path, {"kind": "train", "id": "run-123", "url": "https://platform/training/run-123"})
+    write_platform_record(
+        tmp_path,
+        {
+            "kind": "train",
+            "id": "run-123",
+            "url": "https://platform/training/run-123",
+            "run_id": os.getenv("PRL_RUN_ID"),
+        },
+    )
 
 
 @pytest.mark.parametrize("paused", [False, True])
@@ -81,8 +92,10 @@ def test_hosted_attach_owns_nothing(prime, monkeypatch, paused):
     assert monitor.run.finishes == []
 
 
-def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path):
+@pytest.mark.parametrize("previous_launch", [None, "previous-launch"])
+def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path, previous_launch):
     monkeypatch.setattr("prime_rl.monitors.prime.time.time", lambda: 100.0)
+    write_platform_record(tmp_path, {"kind": "train", "id": "previous-run", "run_id": previous_launch})
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
     _init(monitor, tmp_path)
     assert monitor.run is None
@@ -90,7 +103,7 @@ def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path):
 
     row = {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0}
     path = get_platform_run_path(tmp_path)
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json")
     asyncio.run(monitor.log_metrics(row, step=1))
     assert row == {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0}  # caller's dict untouched
@@ -152,23 +165,17 @@ def test_slurm_resume_waits_for_current_platform_record(prime, monkeypatch, tmp_
     assert all(call.get("id") != "previous-run" for call in prime.calls)
 
 
-@pytest.mark.parametrize(
-    "config, timings",
-    [
-        (TrainerConfig.model_validate({}), {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0}),
-        (OrchestratorConfig.model_validate({}), {"time/orch_step": 1.0, "time/orch_save_ckpt": 2.0, "optim/lr": 3.0}),
-    ],
-    ids=["trainer", "orchestrator"],
-)
-def test_each_producer_logs_its_own_names(prime, monkeypatch, config, timings):
+@pytest.mark.parametrize("config", [TrainerConfig.model_validate({}), OrchestratorConfig.model_validate({})])
+def test_only_owner_uploads_train_and_eval_arrivals(prime, monkeypatch, config):
     monkeypatch.setenv("RUN_ID", "run-123")  # the attach path skips the registration fields
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
     asyncio.run(monitor.init(config=config, output_dir=None))
 
-    expected = dict(timings)
-    asyncio.run(monitor.log_metrics(timings, step=5))
-    assert monitor.run.metrics == [(expected, 5)]  # each producer's own names, posted as is
-    assert timings == expected  # caller's dict untouched
+    episode = SimpleNamespace()
+    for kind in ("train", "eval"):
+        for subset in ("all", "effective"):
+            asyncio.run(monitor.log_episodes([episode], step=1, kind=kind, subset=subset))
+    assert monitor.run.episodes == ([] if monitor.sidecar else [[episode], [episode]])
 
 
 def test_selfhost_record_missing_warns_once(prime, monkeypatch, tmp_path):
@@ -203,6 +210,8 @@ def test_attach_failure_disables_sink(monkeypatch, tmp_path):
 
     monkeypatch.setattr("prime_rl.monitors.prime.pr.init", fake_init)
     monkeypatch.delenv("RUN_ID", raising=False)
+    monkeypatch.setenv("PRIME_API_KEY", "test-key")
+    monkeypatch.setenv("PRL_RUN_ID", "current-launch")
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
     _init(monitor, tmp_path)
 
@@ -220,12 +229,26 @@ def test_attach_failure_disables_sink(monkeypatch, tmp_path):
 
 def test_disabled_mode_inits_without_record(prime, monkeypatch, tmp_path):
     monkeypatch.setenv("PRIME_RUNS_MODE", "disabled")
+    monkeypatch.delenv("PRL_RUN_ID")
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
     _init(monitor, tmp_path)
 
     (call,) = prime.calls
     assert call["mode"] == "disabled"
     assert "id" not in call
+
+
+def test_standalone_requires_explicit_run_id(prime, monkeypatch, tmp_path):
+    monkeypatch.delenv("PRL_RUN_ID")
+    _train_record(tmp_path)
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    with pytest.raises(RuntimeError, match="needs RUN_ID or a shared PRL_RUN_ID"):
+        _init(monitor, tmp_path)
+    assert prime.calls == []
+
+    monkeypatch.setenv("RUN_ID", "explicit-run")
+    _init(monitor, tmp_path)
+    assert prime.calls[0]["id"] == "explicit-run"
 
 
 @pytest.mark.parametrize("config", [None, SFTConfig.model_validate({})], ids=["unknown", "sft"])

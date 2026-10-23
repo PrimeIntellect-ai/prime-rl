@@ -20,7 +20,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
-from prime_rl.transports.batch.types import RoutedExperts, SamplingMask
+from prime_rl.transports.batch.types import RoutedExperts, SamplingMask, TopLogprobs
 from prime_rl.utils.logger import get_logger
 
 
@@ -99,6 +99,18 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
     return SamplingMask(
         ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
         counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
+    )
+
+
+def _encode_top_logprobs(head: vf.TopLogprobs | None, num_tokens: int) -> TopLogprobs | None:
+    if head is None:
+        return None
+    if len(head.counts) != num_tokens or int(head.counts.sum()) != len(head.ids) or len(head.ids) != len(head.logprobs):
+        raise ValueError("Top logprobs are not aligned to branch tokens")
+    return TopLogprobs(
+        ids=np.ascontiguousarray(head.ids, dtype=np.int32).tobytes(),
+        logprobs=np.ascontiguousarray(head.logprobs, dtype=np.float32).tobytes(),
+        counts=np.ascontiguousarray(head.counts, dtype=np.int32).tobytes(),
     )
 
 
@@ -185,6 +197,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
                 sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
+                top_logprobs=_encode_top_logprobs(branch.top_logprobs, len(token_ids)),
                 trace_id=trace.id,
                 branch_index=branch.index,
             )

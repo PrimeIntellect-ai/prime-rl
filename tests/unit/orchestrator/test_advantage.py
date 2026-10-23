@@ -6,9 +6,10 @@ import verifiers.v1 as vf
 from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
+    LinearSubagentLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -273,6 +274,96 @@ def test_linear_turns_term_penalizes_more_turns():
     )
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("subagent_token_weight", [0.0, 0.7, 1.0])
+@pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
+def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, term):
+    episode = _build_episode(1.0, sampled_lengths=[1])
+    trace = episode.traces[0]
+    trace.nodes.clear()
+    trace.calls.clear()
+
+    def turn(parent, input_tokens, output_tokens, links=()):
+        prompt_id = len(trace.nodes)
+        trace.nodes.append(vf.MessageNode(parent=parent, message=vf.UserMessage(content="q")))
+        node_id = len(trace.nodes)
+        trace.nodes.append(
+            vf.MessageNode(
+                parent=prompt_id,
+                message=vf.AssistantMessage(content="a"),
+                sampled=True,
+                token_ids=[1] * output_tokens,
+                mask=[True] * output_tokens,
+                semantic_parents=[vf.ParentLink(node=source, type=kind) for source, kind in links],
+            )
+        )
+        trace.calls.append(
+            vf.ModelCall(
+                node=node_id,
+                usage=vf.Usage(prompt_tokens=input_tokens - 5, cached_input_tokens=5, completion_tokens=output_tokens),
+            )
+        )
+        return node_id
+
+    root = turn(None, 100, 10)
+    child = turn(None, 115, 20, [(root, "subagent_call")])
+    child_next = turn(child, 142, 30, [(child, "continuation")])
+    summary = turn(None, 200, 40, [(child_next, "compaction_attempt")])
+    resumed = turn(None, 60, 50, [(summary, "compaction")])
+    nested = turn(None, 70, 60, [(resumed, "subagent_call")])
+    root_next = turn(
+        root,
+        125,
+        80,
+        [(root, "continuation"), (resumed, "subagent_return"), (nested, "agent_message"), (child, "vendor:review")],
+    )
+    # A cancel closes a causal loop without changing which agent owns either turn.
+    trace.nodes[child_next].semantic_parents.append(vf.ParentLink(node=root_next, type="subagent_cancel"))
+
+    # Branches have separate physical roots; continued history is not recounted.
+    expected_output = 90 + 200 * subagent_token_weight
+    expected_input = 115 + 452 * subagent_token_weight
+    assert _length_penalty_tokens(trace, subagent_token_weight) == pytest.approx((expected_output, expected_input))
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert _length_penalty_tokens(restored, subagent_token_weight) == pytest.approx((expected_output, expected_input))
+
+    unlabelled = episode.model_copy(deep=True)
+    for node in unlabelled.traces[0].nodes:
+        node.semantic_parents.clear()
+    assert _length_penalty_tokens(unlabelled.traces[0], subagent_token_weight) == pytest.approx((290, 567))
+
+    cfg = LinearSubagentLengthPenaltyConfig(
+        num_output_tokens_weight=0.0,
+        num_input_tokens_weight=0.0,
+        num_turns_weight=0.0,
+        subagent_token_weight=subagent_token_weight,
+    )
+    setattr(cfg, term, 0.25)
+    expected = {"num_output_tokens_weight": expected_output / 290, "num_input_tokens_weight": expected_input / 567}
+    advantage = 0.125 * (1 - expected.get(term, 1.0))
+    assert _grpo([episode, unlabelled], length_penalty=cfg) == pytest.approx([advantage, -advantage], abs=1e-6)
+    assert trace.reward == 1.0
+    assert trace.num_turns == 7
+    assert sum(sum(node.mask) for node in trace.nodes) == 290
+
+    # The plain linear penalty keeps its trace metrics and ignores semantic labels.
+    linear = LinearLengthPenaltyConfig.model_validate(
+        {k: v for k, v in cfg.model_dump().items() if k not in ("type", "subagent_token_weight")}
+    )
+    assert _grpo([episode, unlabelled], length_penalty=linear) == pytest.approx([0.0, 0.0], abs=1e-6)
+    peer = _build_episode(1.0, sampled_lengths=[10])
+    traces = [trace, peer.traces[0]]
+    counts = {
+        "num_output_tokens_weight": [t.num_output_tokens for t in traces],
+        "num_input_tokens_weight": [t.num_total_tokens - t.num_output_tokens for t in traces],
+        "num_turns_weight": [t.num_turns for t in traces],
+    }[term]
+    penalties = [0.25 * count / max(max(counts), 1) for count in counts]
+    mean_penalty = sum(penalties) / len(penalties)
+    assert _grpo([episode, peer], length_penalty=linear) == pytest.approx(
+        [mean_penalty - penalty for penalty in penalties], abs=1e-6
+    )
 
 
 # --------------------------------------------------------------------------
