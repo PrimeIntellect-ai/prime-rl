@@ -21,6 +21,7 @@ def load_weights_checkpoint_layerwise(
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
+    update_glm5_next_indexer_weights(model)
 
 
 @torch.no_grad()
@@ -52,3 +53,17 @@ def update_mla_absorbed_weights(model: Module) -> None:
             module.W_UK_T.copy_(w_uk.permute(1, 2, 0))
 
         logger.debug(f"Updated MLA absorbed weights for module {name}")
+
+
+@torch.inference_mode()
+def update_glm5_next_indexer_weights(model: Module) -> None:
+    """Recompute the fp32 head-gate weight GLM-5.3 Flash's sparse-attention indexer caches on its first forward.
+
+    Writes into the cached tensor because captured CUDA graphs hold its address. vLLM builds it inside a
+    forward, so it is an inference tensor and only takes in-place writes under inference mode.
+    """
+    for name, module in model.named_modules():
+        wp_fp32 = getattr(module, "_wp_fp32", None)
+        if wp_fp32 is not None and hasattr(module, "wk_weights_proj"):
+            wp_fp32.copy_(module.wk_weights_proj.weight[module.head_dim :].t())
+            logger.debug(f"Updated fp32 indexer head-gate weight for module {name}")
