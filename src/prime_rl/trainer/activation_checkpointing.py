@@ -26,8 +26,8 @@ SAC_IGNORED_OPS.update(
 )
 
 # Adapted from TorchTitan's whole-block selective activation checkpointing policy.
-# These targets and the CUDA-to-CPU copy rule are correctness requirements. They
-# must remain active when custom targets replace the default selective targets.
+# These targets are correctness requirements. They must remain active when custom
+# targets replace the default selective targets.
 MANDATORY_SAVE_NAMESPACES = frozenset({"deepep"})
 MANDATORY_SAVE_OPERATIONS = frozenset(
     {
@@ -35,6 +35,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_rl::fp8_indexer",
         "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",
+        "prime_rl::copy_to_host",
     }
 )
 
@@ -84,8 +85,6 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
 
 
-# PyTorch calls checkpoint policies with the dispatched operation's operands.
-# Keyword operands let us distinguish CUDA-to-CPU copies from other _to_copy calls.
 def _mandatory_checkpoint_policy(
     _context: SelectiveCheckpointContext,
     operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
@@ -94,12 +93,6 @@ def _mandatory_checkpoint_policy(
 ) -> CheckpointPolicy:
     if operation.namespace in MANDATORY_SAVE_NAMESPACES or operation.name() in MANDATORY_SAVE_OPERATIONS:
         return CheckpointPolicy.MUST_SAVE
-
-    if operation.name() == "aten::_to_copy":
-        device = kwargs.get("device")
-        if isinstance(device, torch.device) and device.type == "cpu":
-            return CheckpointPolicy.MUST_SAVE
-
     return CheckpointPolicy.PREFER_RECOMPUTE
 
 

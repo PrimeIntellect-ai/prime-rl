@@ -9,6 +9,7 @@ from prime_rl.trainer.activation_checkpointing import (
     _selective_checkpoint_policy,
     get_activation_checkpoint_wrapper,
 )
+from prime_rl.trainer.distributed.token_dispatcher import copy_to_host
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 
 
@@ -18,6 +19,15 @@ class IdentityExperts(nn.Module):
 
     def forward(self, x: torch.Tensor, _token_counts: torch.Tensor) -> torch.Tensor:
         return x
+
+
+class LambdaModule(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fn(x)
 
 
 def test_selective_policy_saves_default_and_custom_targets():
@@ -120,3 +130,23 @@ def test_mandatory_policy_only_retains_non_replayable_ops():
         _mandatory_checkpoint_policy(context, torch.ops.aten._scaled_dot_product_flash_attention.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("mode", ["full", "selective"])
+def test_checkpoint_replays_host_copy_when_recompute_skips_an_operation(mode):
+    forward_only_cache = []
+
+    def block(x: torch.Tensor) -> torch.Tensor:
+        if not forward_only_cache:
+            forward_only_cache.append(x.to(torch.float64))
+        host_copy = copy_to_host(x.detach())
+        weight = x.detach().to(torch.float64)
+        return (x.to(torch.float64) * weight).to(x.dtype) + host_copy.sum().item()
+
+    checkpointed = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode=mode))(LambdaModule(block))
+    hidden_states = torch.randn(8, device="cuda", requires_grad=True)
+
+    checkpointed(hidden_states).sum().backward()
+
+    torch.testing.assert_close(hidden_states.grad, hidden_states.detach())

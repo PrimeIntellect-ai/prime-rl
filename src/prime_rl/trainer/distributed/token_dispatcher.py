@@ -13,6 +13,16 @@ from prime_rl.trainer.distributed.collectives import (
 )
 
 
+@torch.library.custom_op("prime_rl::copy_to_host", mutates_args=())
+def copy_to_host(x: torch.Tensor) -> torch.Tensor:
+    return x.to("cpu", copy=True)
+
+
+@copy_to_host.register_fake
+def _copy_to_host_fake(x: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(x, device="cpu")
+
+
 class ExpertFunction(Protocol):
     def __call__(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor: ...
 
@@ -330,12 +340,14 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         ep_degree = self.group.size()
         with torch.no_grad():
             num_tokens_per_expert_group = all_to_all_single_equal(num_tokens_per_expert, self.group)
-            input_splits, output_splits = torch.stack(
-                (
-                    num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
-                    num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
+            input_splits, output_splits = copy_to_host(
+                torch.stack(
+                    (
+                        num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
+                        num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
+                    )
                 )
-            ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
+            )  # Transfer to CPU now once, so a2a can read this without sync
 
         num_routed_tokens = routed_input.shape[0]
         num_received_tokens = int(output_splits.sum())
