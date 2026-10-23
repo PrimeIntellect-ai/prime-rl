@@ -1,7 +1,6 @@
 import logging
 import os
 import time
-import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -17,13 +16,12 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import _CHECKPOINT_PREFIX
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import DTensor, Shard
+from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -344,11 +342,10 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
-    if model_config.model_type == "deepseek_v4":
-        model_config.kv_precision = config.dsv4_kv_precision
-    elif model_config.model_type == "deepseek_v41":
-        model_config.text_config.kv_precision = config.dsv4_kv_precision
-        model_config.text_config.dsa_backend = config.dsa_backend
+    if model_config.model_type in ("deepseek_v4", "deepseek_v41", "deepseek_v41_text"):
+        text_config = model_config.get_text_config()
+        text_config.kv_precision = config.dsv4_kv_precision
+        text_config.dsa_backend = config.dsa_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -688,7 +685,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        _random_init_(model)
         return
 
     if not Path(config.name).exists():
@@ -761,29 +757,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     write_back_loaded_packed_parameters(model, state_dict)
 
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
-
-
-@torch.no_grad()
-def _random_init_(model: nn.Module, std: float = 0.02) -> None:
-    """Draw every parameter shard: matrices from N(0, std), norm weights and scales one, the rest zero.
-
-    `to_empty` leaves whatever the allocator hands back, so without this a debug run computes on
-    arbitrary values. Each shard is drawn from a seed of its parameter's name and its place in the
-    parameter's mesh, so layouts that shard a parameter alike draw it alike.
-    """
-    for name, param in model.named_parameters():
-        # Activation checkpointing's wrapper is not part of the parameter's identity.
-        name = name.replace(_CHECKPOINT_PREFIX, "")
-        local = param.to_local() if isinstance(param, DTensor) else param
-        if local.ndim >= 2:
-            coordinate = param.device_mesh.get_coordinate() if isinstance(param, DTensor) else []
-            generator = torch.Generator(device=local.device)
-            generator.manual_seed(zlib.crc32(f"{name}:{coordinate}".encode()))
-            local.normal_(mean=0.0, std=std, generator=generator)
-        elif "norm" in name or name.endswith("scale"):
-            local.fill_(1.0)
-        else:
-            local.zero_()
 
 
 def reshard_module(model: nn.Module):

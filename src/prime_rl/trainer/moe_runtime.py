@@ -26,7 +26,6 @@ from prime_rl.trainer.models.layers.expert_compute import (
     BF16ExpertCompute,
     DeepGemmFP8ExpertCompute,
     ExpertCompute,
-    FusedSwigluExpertCompute,
     MXFP8ExpertCompute,
 )
 from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, reserve_sms_for_comm
@@ -43,10 +42,6 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
 
             return SonicMoEExpertCompute()
-        if compute.backend == "prime_kernels":
-            import prime_kernels
-
-            return FusedSwigluExpertCompute(prime_kernels.load("moe_experts"))
         return BF16ExpertCompute()
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         if importlib.util.find_spec("deep_gemm") is None:
@@ -56,10 +51,6 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             raise RuntimeError(
                 f"DeepGEMM FP8 expert compute requires SM90 or SM100, but this device is SM{capability[0]}{capability[1]}."
             )
-        if compute.backend == "prime_kernels":
-            import prime_kernels
-
-            return FusedSwigluExpertCompute(prime_kernels.load("moe_experts"), fp8=True)
         return DeepGemmFP8ExpertCompute()
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels

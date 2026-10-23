@@ -178,6 +178,8 @@ class NCCLBroadcaster:
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = torch.bfloat16
+        # Frozen row-sharded tables never change after their first broadcast, so they are sent once.
+        self.sent_frozen_tables: set[str] = set()
 
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
@@ -196,6 +198,8 @@ class NCCLBroadcaster:
         state_dict = model.state_dict()
         tables = row_sharded_tables(model, state_dict)
         table_weights = {name: state_dict.pop(name) for name in tables}
+        for name in self.sent_frozen_tables:
+            del tables[name], table_weights[name]
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         chunks = {name: table_chunks(table_weights[name], tables[name].rows_per_rank) for name in tables}
@@ -215,6 +219,8 @@ class NCCLBroadcaster:
 
         for name, weight in table_weights.items():
             self._send_table(model, name, weight, tables[name].rows_per_rank, chunks[name])
+            if not tables[name].weight.requires_grad:
+                self.sent_frozen_tables.add(name)
 
     def _send_table(
         self, model: nn.Module, name: str, weight: DTensor, rows_per_rank: int, chunks: list[tuple[int, int, int]]

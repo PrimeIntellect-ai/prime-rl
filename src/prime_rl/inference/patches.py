@@ -37,7 +37,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
-    monkey_patch_deepseek_v41_streaming_weight_update()
+    register_deepseek_v41_text_model()
 
 
 @dataclass
@@ -254,38 +254,13 @@ def _patch_attn_sink_loading(module):
     module.DeepseekV4Model.load_weights = load_weights
 
 
-def monkey_patch_deepseek_v41_streaming_weight_update():
-    """Stream DeepSeek-V4.1 weight updates instead of holding the whole model on the GPU.
+def register_deepseek_v41_text_model():
+    """Serve DeepSeek-V4.1 checkpoints as text-only models (see `DeepseekV41TextForCausalLM`)."""
+    from vllm import ModelRegistry
 
-    The vision-language wrapper's ``load_weights`` sorts every weight before loading any, so the
-    vision and text groups each reach their loader in one piece. A weight update streamed from
-    the trainer arrives as GPU tensors, and sorting it would hold the whole ~1.1 TB update on
-    the GPU. Once the model is loaded, updates carry only text weights, so they go straight to
-    the language model, unsorted.
-    """
-    from vllm.logger import init_logger
-    from vllm.models.deepseek_v41.nvidia import vl_model
-
-    original_load_weights = vl_model.DeepseekV41ForCausalLM.load_weights
-    if getattr(original_load_weights, "_prime_rl_streams_updates", False):
-        return
-
-    def load_weights(self, weights):
-        if not getattr(self, "_weights_finalized", False):
-            return original_load_weights(self, weights)
-
-        def text_weights():
-            for name, weight in self.hf_to_vllm_mapper.apply(weights):
-                prefix, dot, rest = name.partition(".")
-                if prefix != "language_model" or not dot:
-                    raise ValueError(f"DeepSeek-V4.1 weight updates carry only text weights, got {name}")
-                yield rest, weight
-
-        return {f"language_model.{name}" for name in self.language_model.load_weights(text_weights())}
-
-    load_weights._prime_rl_streams_updates = True
-    vl_model.DeepseekV41ForCausalLM.load_weights = load_weights
-    init_logger("vllm.prime_rl.deepseek_v41").info("DeepSeek-V4.1 weight updates stream to the language model.")
+    ModelRegistry.register_model(
+        "DeepseekV41ForCausalLM", "prime_rl.inference.vllm.deepseek_v41:DeepseekV41TextForCausalLM"
+    )
 
 
 def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():

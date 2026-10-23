@@ -1,10 +1,9 @@
 # Full-depth SFT of DeepSeek-V4.1-Flash: EP 8 + FSDP, no context or pipeline parallelism.
-# Compose with a data overlay: base.toml @ math-10k.toml (or @ fake.toml for a dry run).
 clean = true
 
 [model]
 # A PrimeRL-format copy of PrimeIntellect/DeepSeek-V4.1-Flash-bf16 written by
-# tools/convert_deepseek_v41_to_prime.py (see the README).
+# tools/convert_deepseek_v41_to_prime.py.
 name = "/shared/models/DeepSeek-V4.1-Flash-bf16"  # FILL IN
 ep = 8
 # The two engram tables hold ~197B of the model's ~748B parameters. Frozen, they cost only their

@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.ngram import is_prime
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
 MASK64 = (1 << 64) - 1
@@ -15,33 +16,6 @@ def splitmix64(value: int) -> int:
     value = ((value ^ (value >> 30)) * SPLITMIX_MULTIPLIER_1) & MASK64
     value = ((value ^ (value >> 27)) * SPLITMIX_MULTIPLIER_2) & MASK64
     return (value ^ (value >> 31)) & MASK64
-
-
-def is_prime(value: int) -> bool:
-    if value < 2:
-        return False
-    for prime in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
-        if value % prime == 0:
-            return value == prime
-
-    exponent = value - 1
-    shifts = 0
-    while exponent % 2 == 0:
-        exponent //= 2
-        shifts += 1
-    for base in (2, 325, 9375, 28178, 450775, 9780504, 1795265022):
-        if base % value == 0:
-            continue
-        witness = pow(base, exponent, value)
-        if witness in (1, value - 1):
-            continue
-        for _ in range(shifts - 1):
-            witness = pow(witness, 2, value)
-            if witness == value - 1:
-                break
-        else:
-            return False
-    return True
 
 
 def nth_prime_after(start: int, count: int) -> int:

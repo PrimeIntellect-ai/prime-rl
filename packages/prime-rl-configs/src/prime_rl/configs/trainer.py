@@ -178,17 +178,14 @@ class BF16MoEComputeConfig(MoEComputeConfigBase):
     """Run routed experts in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
-    backend: Literal["torch", "sonicmoe", "prime_kernels"] = "torch"
-    """Expert compute implementation. ``prime_kernels`` fuses the clamped SwiGLU into Hopper grouped GEMMs."""
+    backend: Literal["torch", "sonicmoe"] = "torch"
+    """Expert compute implementation."""
 
 
 class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
-    backend: Literal["torch", "prime_kernels"] = "torch"
-    """``prime_kernels`` fuses the FP8 quantization and the clamped SwiGLU into the passes around DeepGEMM's
-    GEMMs (prime-kernels' ``moe_experts``, SM90)."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):

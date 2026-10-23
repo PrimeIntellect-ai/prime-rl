@@ -51,6 +51,11 @@ class FileSystemWeightSender(WeightSender):
                     dropout=self.lora_config.dropout,
                 )
         else:
+            if any(hasattr(module, "rows_per_rank") for module in model.modules()):
+                raise ValueError(
+                    "Row-sharded tables (DeepSeek-V4.1's engram tables) are too large to gather on every rank; "
+                    'use the NCCL weight broadcast (`weight_broadcast.type = "nccl"`).'
+                )
             state_dict = gather_weights_parallel(model)
             state_dict = convert_state_dict_to_hf(model, state_dict)
             self.logger.debug(f"Saving weights to {step_dir}")

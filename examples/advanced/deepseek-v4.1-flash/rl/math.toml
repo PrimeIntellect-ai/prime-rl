@@ -34,7 +34,7 @@ partition = "all"  # FILL IN
 dist_timeout_seconds = 3600
 
 [trainer.model]
-# A PrimeRL-format copy written by tools/convert_deepseek_v41_to_prime.py (see the README).
+# A PrimeRL-format copy written by tools/convert_deepseek_v41_to_prime.py.
 name = "/shared/models/DeepSeek-V4.1-Flash-bf16"  # FILL IN
 ep = 8
 freeze_engram_tables = true

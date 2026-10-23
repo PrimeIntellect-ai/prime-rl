@@ -7,6 +7,9 @@ query `i` reads the first `(q_causal_offsets[b] + i + 1) // ratio` of those entr
 the part of one document whose queries this rank holds, so the same layout serves a whole packed
 row and a context-parallel shard of it.
 
+cuDNN scores in bf16 while vLLM scores in fp8, so the queries and keys are first rounded to the
+values vLLM's fp8 copies hold, which bf16 represents exactly.
+
 It has no counterpart of the two-level candidate filter, so the candidate source layer and the
 layers consuming its candidates stay on `dsv41_index_topk`.
 
@@ -19,6 +22,8 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor
+
+from prime_rl.trainer.models.kernels.fp8_indexer import per_token_group_quant_fp8
 
 try:
     from cudnn.deepseek_sparse_attention import indexer_forward_top_k_wrapper
@@ -89,6 +94,12 @@ class IndexerSegments:
         )
 
 
+def _fp8_round(x: Tensor, amax_floor: float) -> Tensor:
+    """`x` rounded to fp8 e4m3 with one UE8M0 scale per row of its last dim, back in `x`'s dtype."""
+    x_fp8, scales = per_token_group_quant_fp8(x.contiguous(), group_size=x.shape[-1], use_ue8m0=True, eps=amax_floor)
+    return (x_fp8.float() * scales).to(x.dtype)
+
+
 @torch.library.custom_op("prime_rl::dsv41_index_topk_cudnn", mutates_args=())
 def dsv41_index_topk_cudnn(
     q: Tensor,
@@ -101,12 +112,13 @@ def dsv41_index_topk_cudnn(
     compress_rate: int,
     max_seqlen_q: int,
     max_seqlen_k: int,
+    amax_floor: float,
 ) -> Tensor:
     """`q` `(S_q, H, D)`, `k` `(S_k, D)`, `w` `(S_q, H)` -> `(S_q, topk)` int64 entry indices into the
     packed row, -1 where a query has fewer readable entries."""
     out = indexer_forward_top_k_wrapper(
-        q.contiguous(),
-        k.unsqueeze(1).contiguous(),
+        _fp8_round(q, amax_floor),
+        _fp8_round(k, amax_floor).unsqueeze(1).contiguous(),
         w.to(torch.bfloat16).contiguous(),
         top_k=topk,
         ratio=compress_rate,
@@ -126,7 +138,7 @@ def dsv41_index_topk_cudnn(
 
 @dsv41_index_topk_cudnn.register_fake
 def _dsv41_index_topk_cudnn_fake(
-    q, k, w, cu_seqlens_q, cu_seqlens_k, q_causal_offsets, topk, compress_rate, max_seqlen_q, max_seqlen_k
+    q, k, w, cu_seqlens_q, cu_seqlens_k, q_causal_offsets, topk, compress_rate, max_seqlen_q, max_seqlen_k, amax_floor
 ):
     return q.new_empty((q.shape[0], topk), dtype=torch.int64)
 
