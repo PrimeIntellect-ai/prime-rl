@@ -25,7 +25,6 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from copy import copy
 from typing import Any
@@ -116,9 +115,7 @@ class _PackedOutputs:
                 elif self._compact:
                     assert output.logprobs is not None, "Did not output logprobs"
                     assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
-                    fields["compact_logprobs"] = serialize_compact_logprobs(
-                        output.logprobs, self._num_logprobs, drop_filtered=output.sampling_mask is not None
-                    )
+                    fields["compact_logprobs"] = serialize_compact_logprobs(output.logprobs, self._num_logprobs)
                     output.logprobs = None
                     self._request.sampling_params.logprobs = None
                 elif isinstance(output.logprobs, FlatLogprobs) and (self._num_logprobs or 0) <= 1:
@@ -155,22 +152,15 @@ class PrimeRlServingTokens(ServingTokens):
         raw_request: Request | None = None,
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
-        if (sampling_params.extra_args or {}).get("prl_compact_logprobs", False):
+        extra_args = sampling_params.extra_args or {}
+        if extra_args.get("prl_compact_logprobs", False):
             if request.stream or sampling_params.logprobs is None:
                 return self.create_error_response(
                     "Compact logprobs require a non-streaming request with logprobs enabled"
                 )
-        extra_args = sampling_params.extra_args or {}
-        paired = (
-            not request.stream
-            and extra_args.get("prl_replay", False)
-            and extra_args.get("prl_compact_logprobs", False)
-            and os.environ.get("PRIME_TOP_P_BEFORE_TOP_K") == "1"
-        )
-        sampling_params.extra_args = {**extra_args, "prl_paired_capture": paired}
-        if paired:
-            # Full support evidence supplies both sampled and candidate logprobs.
-            sampling_params.logprobs = None
+            if extra_args.get("prl_replay", False):
+                sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
+                sampling_params.logprobs = None
         if not request.stream:
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
