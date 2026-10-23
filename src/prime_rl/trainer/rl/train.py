@@ -1,3 +1,8 @@
+import os
+
+# The torchrun agent, read before the slow imports below (see die_with_parent in main)
+PARENT_PID = os.getppid()
+
 import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
@@ -73,7 +78,7 @@ from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
-from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.process import die_with_parent, set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
@@ -781,6 +786,8 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
     set_proc_title("Trainer")
+    # torchrun starts its workers in their own sessions; tie them to the agent
+    die_with_parent(PARENT_PID)
     train(cli(TrainerConfig))
 
 
