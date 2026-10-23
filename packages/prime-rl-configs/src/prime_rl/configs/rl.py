@@ -538,9 +538,9 @@ class RLConfig(BaseConfig):
         loss = self.trainer.loss
         if loss.type != "icepop" or not loss.score_centering:
             return self
-        samplings = [
-            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
-        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        samplings = [env.sampling for env in self.orchestrator.train.source if env.algo.rollout_model == "policy"] or (
+            [self.orchestrator.train.sampling] if not self.orchestrator.train.source else []
+        )
         if not samplings:
             raise ValueError("Score centering requires a policy-sampled training source")
         requested = []
@@ -576,7 +576,7 @@ class RLConfig(BaseConfig):
         on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
         so eval sampling against the same server must set both."""
         policy_samplings = [
-            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
+            env.sampling for env in self.orchestrator.train.source if env.algo.rollout_model == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
         if not any(sampling.truncates_distribution() for sampling in policy_samplings):
             return self
