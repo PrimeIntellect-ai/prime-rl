@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -618,6 +619,29 @@ def check_not_block_fp8_checkpoint(keys: Iterable[str], path: Path) -> None:
         )
 
 
+_PRIME_CONVERSION_CACHE = re.compile(r"prime(-L\d+)?")
+
+
+def is_prime_conversion_cache(path: Path) -> bool:
+    """Whether ``path`` is a PrimeRL conversion cache, which must carry the ``.prime-v1`` marker."""
+    return _PRIME_CONVERSION_CACHE.fullmatch(path.name) is not None
+
+
+def conversion_cache_dir(convert_dir: Path, weight_format: str, num_layers: int | None) -> Path:
+    """The cache a checkpoint converted to ``weight_format`` ("prime" or "hf") is written to and read from.
+
+    A run that drops layers with ``model.debug.num_layers`` converts only the layers it keeps, so it gets its
+    own ``<format>-L<num_layers>`` cache instead of the shared one full-depth runs reuse. A cut run reads a
+    complete full-depth PrimeRL cache when one exists: it holds every key the cut model loads.
+    """
+    full_cache = convert_dir / weight_format
+    if num_layers is None:
+        return full_cache
+    if weight_format == "prime" and (full_cache / ".prime-v1").is_file():
+        return full_cache
+    return convert_dir / f"{weight_format}-L{num_layers}"
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -644,12 +668,19 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     # Only master loads the full state dict when conversion is actually needed.
     source_path = snapshot_path
     convert_dir = config.conversion_dir or source_path
+    cache_num_layers = None
+    if config.debug.num_layers is not None:
+        # Only a value below the checkpoint's depth drops layers: get_model caps it at that depth.
+        checkpoint_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+        num_layers = getattr(model.config, "text_config", model.config).num_hidden_layers
+        if num_layers < getattr(checkpoint_config, "text_config", checkpoint_config).num_hidden_layers:
+            cache_num_layers = num_layers
     snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
     # Every rank reads the keys, so every rank raises here instead of waiting for the master's conversion.
     check_not_block_fp8_checkpoint(snapshot_keys, source_path)
     model_keys = dict.fromkeys(model.state_dict().keys())
 
-    if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():
+    if is_prime_conversion_cache(source_path) and not (source_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {source_path} is missing the required .prime-v1 marker")
 
     snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
@@ -659,7 +690,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         logger.warning(
             "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
         )
-        snapshot_path = convert_dir / "prime"
+        snapshot_path = conversion_cache_dir(convert_dir, "prime", cache_num_layers)
         if not (snapshot_path / ".prime-v1").is_file() and get_world().is_master:
             # The marker is written last, so a cache without it is left over from an interrupted conversion
             if snapshot_path.exists():
@@ -670,6 +701,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             )
             snapshot_state_dict = load_state_dict(source_path)
             model.convert_to_prime(snapshot_state_dict)
+            if cache_num_layers is not None:
+                snapshot_state_dict = {key: value for key, value in snapshot_state_dict.items() if key in model_keys}
             save_state_dict(snapshot_state_dict, snapshot_path)
             (snapshot_path / ".prime-v1").touch()
             del snapshot_state_dict
@@ -678,19 +711,21 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         logger.warning(
             "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
         )
-        snapshot_path = convert_dir / "hf"
+        snapshot_path = conversion_cache_dir(convert_dir, "hf", cache_num_layers)
         if not snapshot_path.exists() and get_world().is_master:
             logger.debug(
                 f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
             snapshot_state_dict = load_state_dict(source_path)
             model.convert_to_hf(snapshot_state_dict)
+            if cache_num_layers is not None:
+                snapshot_state_dict = {key: value for key, value in snapshot_state_dict.items() if key in model_keys}
             save_state_dict(snapshot_state_dict, snapshot_path)
             del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
     wait_for_master(f"model_conversion:{config.name}", timeout=CONVERSION_TIMEOUT_S)
-    if snapshot_path.name == "prime" and not (snapshot_path / ".prime-v1").is_file():
+    if is_prime_conversion_cache(snapshot_path) and not (snapshot_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")

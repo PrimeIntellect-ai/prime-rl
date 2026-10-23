@@ -277,7 +277,7 @@ class ModelConfig(BaseModelConfig):
     """VLM configuration. Setting this enables vision-language model support."""
 
     conversion_dir: Path | None = None
-    """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
+    """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). A run that drops layers with `debug.num_layers` reads a complete `prime` cache when one exists and otherwise writes its own `prime-L<n>`/`hf-L<n>` subdirectory. If not set, we write into the model snapshot directory."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
