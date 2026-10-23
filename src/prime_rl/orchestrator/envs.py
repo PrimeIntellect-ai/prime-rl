@@ -132,9 +132,6 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
-            # Per-token streams as raw-bytes arrays: the orchestrator holds thousands of long
-            # episodes, and per-token lists made its garbage collections take minutes.
-            token_arrays=True,
         )
 
 
