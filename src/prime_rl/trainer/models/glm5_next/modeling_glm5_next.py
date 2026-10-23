@@ -13,7 +13,7 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.configs.trainer import DSABackend
-from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.glm5_next.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
 from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
@@ -149,9 +149,9 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
     _can_compile_fullgraph = False
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
+    def cp_blocker(cls, config, cp: int) -> str | None:
         # KDA, the indexer and sparse MLA all-gather what they need over the CP group themselves.
-        return CPSupport(ALL_CP_STYLES)
+        return None
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
