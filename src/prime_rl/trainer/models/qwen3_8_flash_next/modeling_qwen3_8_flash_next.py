@@ -23,7 +23,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbe
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
 from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel
-from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
+from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -296,12 +296,6 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         )
         if image_grid_thw is not None and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
-            setup_cp_attention_params(
-                position_ids,
-                cp_group=self.cp_context.cp_group,
-                cp_style=self.cp_context.cp_style,
-                seq_lens=seq_lens,
-            )
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
             input_ids = shard_for_cp(input_ids, cp_rank=rank, cp_world_size=world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
