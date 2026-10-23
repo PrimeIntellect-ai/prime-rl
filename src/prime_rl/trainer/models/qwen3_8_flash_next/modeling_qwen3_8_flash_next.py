@@ -136,7 +136,7 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
         return conversion_chain(config)
 
     def frozen_weight_keys(self) -> set[str]:
-        return {
+        return super().frozen_weight_keys() | {
             resolve_fqn(self, f"{name}.ngram_embedding.weight")
             for name, module in self.named_modules()
             if isinstance(module, NGramEmbedding) and not module.ngram_embedding.weight.requires_grad

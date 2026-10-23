@@ -6,6 +6,7 @@ from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.utils.cp import CPContext
+from prime_rl.utils.vlm import get_language_model
 
 
 @runtime_checkable
@@ -79,8 +80,19 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
 
         They keep their values from the base checkpoint for the whole run, so the inference
         engines keep the copy they loaded and a resume loads them from the base checkpoint again.
+        Only whole inference-engine modules may be skipped: the engine re-initializes a module that
+        receives part of its weights. So these are the frozen input embeddings and every decoder
+        layer whose parameters are all frozen, buffers included.
         """
-        return set()
+        language_model = get_language_model(self)
+        embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+        frozen_tensors = {
+            id(tensor)
+            for module in [embed_module, *language_model.layers]
+            if not any(param.requires_grad for param in module.parameters())
+            for tensor in [*module.parameters(), *module.buffers()]
+        }
+        return {key for key, value in self.state_dict(keep_vars=True).items() if id(value) in frozen_tensors}
 
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
