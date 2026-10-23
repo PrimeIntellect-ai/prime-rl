@@ -344,6 +344,9 @@ class ModelConfig(BaseModelConfig):
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
+    fp32_lm_head: bool = False
+    """Opt-in: compute the fused LM head's logits as a bf16 x bf16 -> fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``) instead of rounding them to bf16, on its logprob (forward and backward) and cross-entropy paths. This is the projection vLLM runs with ``inference.enable_fp32_lm_head`` (on by default), so turning this on as well makes the trainer compute its logits the way inference does. Off, the fused head computes its logits in bf16 and upcasts them afterwards. The vanilla LM head (``fused_lm_head_token_chunk_size = "disabled"``) ignores it."""
+
     @model_validator(mode="after")
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:

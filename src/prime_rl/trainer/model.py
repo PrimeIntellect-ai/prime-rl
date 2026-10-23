@@ -882,7 +882,7 @@ def setup_model(
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fp32_logits=config.fp32_lm_head)
 
     apply_quantization(model, config)
 

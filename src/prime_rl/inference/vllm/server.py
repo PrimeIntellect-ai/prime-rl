@@ -212,6 +212,21 @@ vllm.entrypoints.launchers.api_server.entry.build_app = custom_build_app
 vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
+def has_text_config(config: InferenceConfig) -> bool:
+    """Whether the model's HF config keeps its language model under ``text_config``, as composite
+    (e.g. vision-language) configs do."""
+    from transformers import PreTrainedConfig
+    from vllm.transformers_utils.config import get_config
+
+    vllm_args = config.vllm
+    hf_config = get_config(
+        getattr(vllm_args, "hf_config_path", None) or vllm_args.model,
+        trust_remote_code=getattr(vllm_args, "trust_remote_code", False),
+        revision=getattr(vllm_args, "revision", None),
+    )
+    return isinstance(getattr(hf_config, "text_config", None), PreTrainedConfig)
+
+
 # Adapted from vllm/entrypoints/cli/serve.py
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
@@ -226,7 +241,8 @@ def server(config: InferenceConfig):
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
-    namespace = config.to_namespace()
+    fp32_overrides = config.enable_fp32_lm_head or config.enable_fp32_router_logits
+    namespace = config.to_namespace(text_config=fp32_overrides and has_text_config(config))
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

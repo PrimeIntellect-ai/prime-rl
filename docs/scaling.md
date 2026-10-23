@@ -170,6 +170,13 @@ fused_lm_head_token_chunk_size = 8192       # default
 
 Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet).
 
+`model.fp32_lm_head` (off by default) makes the fused head compute each chunk's logits as a bf16 x bf16 -> fp32 GEMM instead of rounding them to bf16. That is the projection vLLM runs with `inference.enable_fp32_lm_head` (on by default), so turning it on makes the trainer compute its logits the way inference does:
+
+```toml
+[trainer.model]
+fp32_lm_head = true
+```
+
 ## Memory-Tight Recipe
 
 The kitchen-sink config for fitting large MoE on limited GPUs at acceptable throughput. AC, AC offloading, compile, fused LM head chunking, optimizer offload, and EP auto-resolution are on by default — only CP needs to be set explicitly (and EP overridden if auto-resolution is not desired):

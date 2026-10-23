@@ -486,10 +486,10 @@ class InferenceConfig(BaseConfig):
     """Forced MoE routing of recomputed prompt positions (router replay on prefill). Off by default."""
 
     enable_fp32_lm_head: bool = True
-    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
+    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``, repeated under ``text_config`` when the model's HF config has one. The trainer computes the same projection with ``trainer.model.fp32_lm_head``, which is off by default."""
 
     enable_fp32_router_logits: bool = True
-    """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
+    """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``, repeated under ``text_config`` when the model's HF config has one. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
 
     # Launcher-only fields
 
@@ -674,8 +674,12 @@ class InferenceConfig(BaseConfig):
         {"chat_template", "tool_call_parser", "reasoning_parser", "lora_target_modules", "quantization", "rope_scaling"}
     )
 
-    def to_namespace(self) -> Namespace:
-        """Dump the server + vllm sections into a vLLM-compatible Namespace."""
+    def to_namespace(self, text_config: bool = False) -> Namespace:
+        """Dump the server + vllm sections into a vLLM-compatible Namespace.
+
+        Pass ``text_config`` when the model's HF config keeps its language model under ``text_config``
+        (composite configs, e.g. vision-language models): the fp32 dtype overrides then also go there.
+        """
         namespace = Namespace(
             host=self.server.host,
             port=self.server.port,
@@ -710,17 +714,20 @@ class InferenceConfig(BaseConfig):
             namespace.enable_scale_out = True
 
         # vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
-        # `moe_router_dtype` off the HF config to pick the router logits dtype.
+        # `moe_router_dtype` off the HF config to pick the router logits dtype, and its
+        # LogitsProcessor reads `head_dtype` to pick the lm_head projection dtype (fp32
+        # runs as a native bf16xbf16 -> fp32 GEMM). vLLM builds the language model of many
+        # composite models from `text_config` alone, which flat overrides never reach.
+        dtype_overrides = {}
         if self.enable_fp32_router_logits:
-            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
-            hf_overrides.setdefault("moe_router_dtype", "float32")
-            namespace.hf_overrides = hf_overrides
-
-        # vLLM's LogitsProcessor reads `head_dtype` off the HF config to pick the
-        # lm_head projection dtype (fp32 runs as a native bf16xbf16 -> fp32 GEMM).
+            dtype_overrides["moe_router_dtype"] = "float32"
         if self.enable_fp32_lm_head:
-            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
-            hf_overrides.setdefault("head_dtype", "float32")
+            dtype_overrides["head_dtype"] = "float32"
+        if dtype_overrides:
+            hf_overrides = {**dtype_overrides, **(getattr(namespace, "hf_overrides", None) or {})}
+            if text_config:
+                flat = {key: hf_overrides[key] for key in dtype_overrides}
+                hf_overrides["text_config"] = {**flat, **(hf_overrides.get("text_config") or {})}
             namespace.hf_overrides = hf_overrides
 
         if self.enable_return_sampling_mask:

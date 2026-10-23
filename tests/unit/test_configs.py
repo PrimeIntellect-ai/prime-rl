@@ -1215,6 +1215,23 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
+def test_fp32_dtype_overrides_repeat_under_text_config():
+    fp32 = {"moe_router_dtype": "float32", "head_dtype": "float32"}
+    assert InferenceConfig().to_namespace().hf_overrides == fp32
+    assert InferenceConfig().to_namespace(text_config=True).hf_overrides == {**fp32, "text_config": fp32}
+
+    explicit = {"head_dtype": "bfloat16", "text_config": {"moe_router_dtype": "bfloat16"}}
+    namespace = InferenceConfig(vllm={"hf_overrides": explicit}).to_namespace(text_config=True)
+    assert namespace.hf_overrides == {
+        "moe_router_dtype": "float32",
+        "head_dtype": "bfloat16",
+        "text_config": {"moe_router_dtype": "bfloat16", "head_dtype": "bfloat16"},
+    }
+
+    config = InferenceConfig(enable_fp32_lm_head=False, enable_fp32_router_logits=False)
+    assert not hasattr(config.to_namespace(text_config=True), "hf_overrides")
+
+
 @pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
 @pytest.mark.parametrize("top_p_first", [None, False, True])
 def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):

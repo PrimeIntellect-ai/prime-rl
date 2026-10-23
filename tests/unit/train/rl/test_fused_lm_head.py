@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models import cast_float_and_contiguous
@@ -159,6 +160,47 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
     vanilla = VanillaOutputLinear(in_features=h, out_features=v, softcap=softcap)
     vanilla.weight = torch.nn.Parameter(weight0.detach().clone())
     torch.testing.assert_close(vanilla(hidden0.detach())["logits"], logits.detach(), rtol=0, atol=1e-6)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+def test_fused_lm_head_fp32_logits(device):
+    """With ``fp32_logits`` the logprob forward, its backward and the summed cross-entropy all use bf16 x bf16
+    logits that are never rounded to bf16. Logits sit near 20 (bf16 spacing 0.125) so rounding them is visible."""
+    torch.manual_seed(0)
+    n, h, v = 6, 16, 37
+    hidden = torch.randn(1, n, h)
+    hidden[..., 0] = 4.0
+    weight = torch.randn(v, h) * 0.5
+    weight[:, 0] = 5.0
+    hidden, weight = hidden.to(device, torch.bfloat16), weight.to(device, torch.bfloat16)
+    labels = torch.randint(0, v, (1, n), device=device)
+    temperature = torch.full((1, n), 0.7, device=device)
+
+    hidden64 = hidden.double().requires_grad_(True)
+    weight64 = weight.double().requires_grad_(True)
+    logits64 = hidden64 @ weight64.t()
+    ref_logprobs = torch.log_softmax(logits64 / temperature.double().unsqueeze(-1), dim=-1)
+    ref_logprobs = ref_logprobs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+    ref_grads = torch.autograd.grad(ref_logprobs.sum(), (hidden64, weight64))
+    ref_loss = F.cross_entropy(logits64.view(-1, v), labels.view(-1), reduction="sum")
+
+    def run(fp32_logits: bool):
+        lm = FusedOutputLinear(h, v, chunk_size=4, fp32_logits=fp32_logits).to(device, torch.bfloat16)
+        lm.weight.data.copy_(weight)
+        x = hidden.detach().clone().requires_grad_(True)
+        logprobs = lm(x, labels, temperature=temperature)["logprobs"]
+        grads = torch.autograd.grad(logprobs.sum(), (x, lm.weight))
+        return logprobs, grads, lm(x, labels)["loss"]
+
+    logprobs, grads, loss = run(fp32_logits=True)
+    torch.testing.assert_close(logprobs.double(), ref_logprobs, rtol=0, atol=1e-4)
+    torch.testing.assert_close(loss.double(), ref_loss, rtol=1e-5, atol=0)
+    for grad, ref in zip(grads, ref_grads, strict=True):  # bf16 gradients: compare on their scale
+        torch.testing.assert_close(grad.double(), ref, rtol=0, atol=2e-2 * ref.abs().max().item())
+
+    bf16_logprobs, _, bf16_loss = run(fp32_logits=False)
+    assert (bf16_logprobs.double() - ref_logprobs).abs().max() > 1e-2
+    assert (bf16_loss.double() - ref_loss).abs() > 1e-2
 
 
 def test_fused_lm_head_requires_labels():
