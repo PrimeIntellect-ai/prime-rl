@@ -25,6 +25,7 @@ from prime_rl.utils.cp import (
     setup_context_parallel,
     setup_cp_params,
     shard_for_cp,
+    validate_cp_seq_lens,
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -367,9 +368,8 @@ def train(config: TrainerConfig):
             ref_kl_weights = (
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
-            routed_experts = (
-                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
-            )
+            # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
+            routed_experts = micro_batch["routed_experts"]
 
             if routed_experts is None and config.enable_router_replay:
                 raise ValueError(
@@ -413,17 +413,12 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
+                validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
                 defer_vlm_cp_to_model = bool(
                     mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
                 )
                 if not defer_vlm_cp_to_model:
-                    input_ids, position_ids = setup_cp_params(
-                        input_ids,
-                        position_ids,
-                        cp_rank,
-                        cp_size,
-                        seq_lens=seq_lens,
-                    )
+                    input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if topk_ids is not None:
@@ -434,6 +429,9 @@ def train(config: TrainerConfig):
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+            if routed_experts is not None:
+                routed_experts = routed_experts.to("cuda").int()
 
             temperatures = micro_batch["temperatures"].to("cuda")
 
@@ -593,6 +591,8 @@ def train(config: TrainerConfig):
             logger.debug(micro_step_message)
 
         annotation_writer.flush()
+        # Free this batch before the next one is received and converted
+        del micro_batches, micro_batch
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -654,6 +654,8 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        # The gathered per-token values hold every rank's tokens; free them before the next batch loads
+        del tensors
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
