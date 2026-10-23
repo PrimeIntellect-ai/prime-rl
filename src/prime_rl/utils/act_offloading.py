@@ -91,6 +91,9 @@ class OffloadActivations(saved_tensors_hooks):
             self.curr_graph_id = None
             self.curr_autograd_node = None
 
+        self._register_hooks()
+
+    def _register_hooks(self) -> None:
         # -------- platform util functions -------- #
         def verify_sufficient_virtual_memory():
             curr_pct = get_cpu_ram_pct()
@@ -169,7 +172,7 @@ class OffloadActivations(saved_tensors_hooks):
                     self.fwd_stash[tensor_id] = (activation, event)
             else:
                 self.tracker[tensor_id] = (
-                    activation,
+                    activation.detach() if activation.grad_fn is not None else activation,
                     False,
                 )  # False = not modified, tensor is as is
 
@@ -310,6 +313,19 @@ class OffloadActivations(saved_tensors_hooks):
 
         unpack_tensor = unpack_tensor_with_streams if self.use_streams else unpack_tensor_single_stream
         super().__init__(pack_tensor, unpack_tensor)
+
+    def __enter__(self) -> None:
+        if self.pack_hook is None or self.unpack_hook is None:
+            self._register_hooks()
+        return super().__enter__()
+
+    def __exit__(self, *args: object) -> None:
+        try:
+            return super().__exit__(*args)
+        finally:
+            # Autograd owns the unpack callback until its saved tensors are released.
+            self.pack_hook = None
+            self.unpack_hook = None
 
 
 def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> OffloadActivations | nullcontext:
