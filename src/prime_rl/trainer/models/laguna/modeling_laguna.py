@@ -16,7 +16,7 @@ from transformers.utils.generic import maybe_autocast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -118,6 +118,14 @@ class LagunaFlashAttention(FlashAttention):
             gate_size = num_heads if self.gate_per_head else num_heads * self.head_dim
             self.g_proj = nn.Linear(config.hidden_size, gate_size, bias=False)
         self.o_proj = nn.Linear(num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = super().muon_head_partitions(heads_per_block)
+        if self.gating:
+            # A per-head gate is one row per head, which Newton-Schulz would only normalize
+            gate = None if self.gate_per_head else head_partitions(self.num_heads, (self.head_dim,), heads_per_block)
+            partitions[self.g_proj.weight] = gate
+        return partitions
 
     def forward(
         self,

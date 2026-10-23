@@ -7,6 +7,7 @@ from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -141,8 +142,16 @@ def _create_muon_optimizer(
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
+    # Depthwise convolutions (gated delta net, Mamba, PLE) hold per-channel filters, not matrices: Muon would
+    # orthogonalize each channel's taps on their own, so they go to AdamW.
+    conv_weights = set()
+    if model is not None:
+        conv_weights = {f"{name}.weight" for name, module in model.named_modules() if isinstance(module, nn.Conv1d)}
+
     def muon_enabled(n, p):
         if p.ndim < 2:
+            return False
+        if n in conv_weights:
             return False
         if "lm_head" in n:
             return False
@@ -219,6 +228,12 @@ def _create_muon_optimizer(
             partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
+        # A grouped linear is n_groups independent matrices stacked along the output rows.
+        for module in model.modules():
+            if isinstance(module, GroupedLinear) and module.weight in muon_params:
+                matrix_partitions[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
+        if config.heads_per_block is not None:
+            matrix_partitions |= muon_head_partitions(model, muon_params, config.heads_per_block)
 
     optimizer = Muon(
         params=param_groups,
@@ -240,3 +255,25 @@ def _create_muon_optimizer(
     if expert_params and parallel_dims.ep_enabled:
         _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer
+
+
+def muon_head_partitions(
+    model: nn.Module, muon_params: set[nn.Parameter], heads_per_block: int
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads_per_block``).
+
+    Each attention module returns its own parameters, partitioned or ``None`` to stay whole, and must account for
+    every Muon parameter it owns. Head partitions refine the packed ``qkv_proj`` partitions, since each head block
+    lies inside one of q, k, v."""
+    partitions = {}
+    for name, module in model.named_modules():
+        if not hasattr(module, "muon_head_partitions"):
+            if name.endswith("self_attn"):
+                raise NotImplementedError(f"optim.heads_per_block does not support {type(module).__name__} ({name})")
+            continue
+        module_partitions = module.muon_head_partitions(heads_per_block)
+        missed = [n for n, p in module.named_parameters() if p in muon_params and p not in module_partitions]
+        if missed:
+            raise ValueError(f"{type(module).__name__} ({name}) does not partition or keep whole: {missed}")
+        partitions |= {p: sizes for p, sizes in module_partitions.items() if sizes is not None and p in muon_params}
+    return partitions

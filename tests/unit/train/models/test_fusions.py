@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.fusions import apply_model_fusions, get_model_packed_parameters
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, head_partitions
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 NUM_EXPERTS, DIM, HIDDEN = 4, 16, 24
@@ -78,6 +78,19 @@ def test_qkv_packs_weights_and_biases():
     assert bias.logical_fqns == ("q_proj.bias", "k_proj.bias", "v_proj.bias")
     # A one-dimensional parameter has no output dimension to partition
     assert bias.spec.muon_matrix_partitions(bias.parameter) is None
+
+
+def test_per_head_muon_partitions_split_packed_qkv_by_heads():
+    fused = build_attention()
+    apply_model_fusions(fused, ["qkv"])
+    q_heads, kv_heads = (HEAD_DIM,) * NUM_HEADS, (HEAD_DIM,) * NUM_KV_HEADS
+    o_proj = {fused.o_proj.weight: None}
+    assert fused.muon_head_partitions(1) == {fused.qkv_proj.weight: q_heads + kv_heads + kv_heads} | o_proj
+    blocks = (2 * HEAD_DIM,) * (NUM_HEADS // 2 + NUM_KV_HEADS)
+    assert fused.muon_head_partitions(2) == {fused.qkv_proj.weight: blocks} | o_proj
+    # MLA's kv_b_proj holds [W_UK; W_UV] per head
+    assert head_partitions(2, (3, 5), 1) == (3, 5, 3, 5)
+    assert head_partitions(4, (3, 5), 2) == (16, 16)
 
 
 def test_qkv_without_bias_packs_only_weights():

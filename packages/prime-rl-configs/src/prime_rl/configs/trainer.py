@@ -468,6 +468,9 @@ class MuonConfig(BaseOptimizerConfig):
     eps: float = Field(1e-8, gt=0)
     """Epsilon for the AdamW sub-optimizer used on non-Muon params."""
 
+    heads_per_block: int | None = Field(None, ge=1)
+    """Orthogonalize attention projections that hold heads along their rows in blocks of this many heads, each block on its own (per-head Muon; ``1`` = per head): query/key/value (GQA key/value by their own heads), per-channel output gates, and the MLA up-projections ``q_b_proj`` and ``kv_b_proj``. At ``1``, matrices packed in one head ([query; gate], MLA [W_UK; W_UV]) are split too. Output projections (heads along columns) and latent projections stay whole. If None, each projection is one matrix."""
+
 
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
@@ -673,6 +676,15 @@ class BaseTrainerConfig(BaseConfig):
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
+        return self
+
+    @model_validator(mode="after")
+    def heads_per_block_incompatible_with_lora(self):
+        if self.model.lora is not None and self.optim.type == "muon" and self.optim.heads_per_block is not None:
+            raise ValueError(
+                "optim.heads_per_block is incompatible with LoRA: Muon then trains only the adapters, "
+                "which are not split by head."
+            )
         return self
 
     @model_validator(mode="after")
