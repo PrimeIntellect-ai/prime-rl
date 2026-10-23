@@ -9,7 +9,7 @@ import pytest
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.filesystem import FileSystemBatchReceiver, FileSystemBatchSender
-from prime_rl.transports.batch.types import MicroBatch, micro_batch_stream
+from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 
 
@@ -90,9 +90,8 @@ def test_step_is_sent_only_after_every_trainer_rank_requests_it(
     sent_before_last_request, received = result
     assert sent_before_last_request is False
     # Streams arrive as raw buffers: compare each rank's tokens with what its data rank was sent
-    assert [[micro_batch_stream(mb, "input_ids").tolist() for mb in batches] for batches in received] == [
-        [micro_batch_stream(mb, "input_ids").tolist() for mb in MICRO_BATCH_GRID[data_rank]]
-        for data_rank in RANK_TO_DATA_RANK
+    assert [[np.frombuffer(mb.input_ids, np.int32).tolist() for mb in batches] for batches in received] == [
+        [mb.input_ids.tolist() for mb in MICRO_BATCH_GRID[data_rank]] for data_rank in RANK_TO_DATA_RANK
     ]
     for transport in [sender, *receivers]:
         transport.close()

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import orjson
-from verifiers.v1.graph import _decode_ndarray
+from verifiers.v1.graph import decode_ndarray
 from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.configs.monitors import FileMonitorConfig
@@ -36,7 +36,7 @@ def _live_value(value: Any) -> Any:
     (a dict of them for `loss_weights`), which orjson writes as lists once decoded."""
     if isinstance(value, dict):
         if value.get("__nd__"):
-            return _decode_ndarray(value)
+            return decode_ndarray(value)
         return {key: _live_value(item) for key, item in value.items()}
     return value
 

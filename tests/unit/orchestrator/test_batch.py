@@ -9,6 +9,29 @@ from prime_rl.orchestrator.batch import (
 )
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample, encode_array
 
+SAMPLE_DTYPES = {
+    "token_ids": np.int32,
+    "mask": np.bool_,
+    "logprobs": np.float32,
+    "temperatures": np.float32,
+    "advantages": np.float32,
+    "ref_logprobs": np.float32,
+    "mm_token_type_ids": np.int32,
+    "rl_weights": np.float32,
+    "ce_weights": np.float32,
+    "ref_kl_weights": np.float32,
+}
+
+
+def _sample(**fields) -> TrainingSample:
+    """A sample with typed per-token streams, as `trace_to_samples` builds it."""
+    return TrainingSample(
+        **{
+            name: np.asarray(value, SAMPLE_DTYPES[name]) if name in SAMPLE_DTYPES and value is not None else value
+            for name, value in fields.items()
+        }
+    )
+
 
 def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training_example):
     import msgspec
@@ -91,7 +114,7 @@ def make_training_example():
         rl_weights: list[float] | None = None,
         env_name: str = "test-env",
     ) -> TrainingSample:
-        return TrainingSample(
+        return _sample(
             token_ids=[1, 2, 3, 4],
             mask=[False, False, True, True],
             logprobs=[0.0, 0.0, -0.1, -0.2],
@@ -108,7 +131,7 @@ def make_training_example():
 def make_sized_training_example(length: int, env_name: str = "test-env") -> TrainingSample:
     assert length >= 1
     prompt_len = length - 1
-    return TrainingSample(
+    return _sample(
         token_ids=[1] * prompt_len + [2],
         mask=[False] * prompt_len + [True],
         logprobs=[0.0] * prompt_len + [-0.1],
@@ -137,7 +160,7 @@ def flop_cost(seq_lens: list[int]) -> int:
 
 def test_training_sample_requires_env_name():
     with pytest.raises(TypeError, match="env_name"):
-        TrainingSample(
+        _sample(
             token_ids=[1, 2, 3, 4],
             mask=[False, False, True, True],
             logprobs=[0.0, 0.0, -0.1, -0.2],
@@ -377,7 +400,7 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
     with the stream defaults (rl 1.0, ce 0.0) on whichever side of the pack
     boundary it lands — a wrong-side backfill silently reroutes tokens between
     components while keeping every array length-aligned."""
-    longer = TrainingSample(
+    longer = _sample(
         token_ids=[1, 2, 3, 4, 5, 6],
         mask=[False, False, False, True, True, True],
         logprobs=[0.0, 0.0, 0.0, -0.1, -0.1, -0.1],
@@ -418,7 +441,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
     must keep ``ref_logprobs`` position-aligned with ``input_ids`` — placeholder
     0.0s on the ref-less tokens, both when the bin gains refs after ref-less
     content (backfill) and when ref-less content lands in a ref-bearing bin."""
-    longer = TrainingSample(
+    longer = _sample(
         token_ids=[1, 2, 3, 4, 5, 6],
         mask=[False, False, False, True, True, True],
         logprobs=[0.0, 0.0, 0.0, -0.1, -0.1, -0.1],
@@ -428,7 +451,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         env_name="test-env",
     )
     shorter = make_training_example()
-    shorter.ref_logprobs = None if refs_on_longer else [-1.5] * 4
+    shorter.ref_logprobs = None if refs_on_longer else np.full(4, -1.5, np.float32)
 
     batches_per_gpu = prepare_batch(
         rollouts=[longer, shorter],
@@ -453,7 +476,7 @@ def test_prepare_sample_with_routed_experts():
     # 4 tokens, 2 layers, topk=2
     routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
     routed_payload = _routed_experts(routed_experts)
-    sample = TrainingSample(
+    sample = _sample(
         token_ids=[1, 2, 3, 4],
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
@@ -473,7 +496,7 @@ def test_prepare_sample_truncates_routed_experts():
     routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
     routed_payload = _routed_experts(routed_experts)
     expected_payload = _routed_experts(routed_experts[:3])
-    sample = TrainingSample(
+    sample = _sample(
         token_ids=[1, 2, 3, 4],
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
@@ -492,7 +515,7 @@ def test_prepare_sample_truncates_routed_experts():
 def test_prepare_sample_truncates_mm_at_image_boundary():
     """Truncation never splits an image's expanded placeholder block."""
     mm_token_type_ids = [0, 1, 1, 0, 1, 1, 0]
-    sample = TrainingSample(
+    sample = _sample(
         token_ids=[10, 11, 12, 13, 14, 15, 16],
         mask=[False, False, False, False, False, True, True],
         logprobs=[0.0] * 7,
@@ -519,7 +542,7 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
 
 
 def test_prepare_batch_packs_multimodal_with_text():
-    mm_sample = TrainingSample(
+    mm_sample = _sample(
         token_ids=[10, 11, 12],
         mask=[False, True, True],
         logprobs=[0.0, -0.1, -0.2],
@@ -529,7 +552,7 @@ def test_prepare_batch_packs_multimodal_with_text():
         mm_token_type_ids=[0, 1, 0],
         mm_refs=MMRefs(images=[MMImageRef(url="data:image/png;base64,image", offset=1, length=1)]),
     )
-    text_sample = TrainingSample(
+    text_sample = _sample(
         token_ids=[20, 21],
         mask=[False, True],
         logprobs=[0.0, -0.3],
@@ -559,7 +582,7 @@ def test_prepare_batch_packs_multimodal_with_text():
 
 def test_split_to_align_splits_multimodal_bins():
     def make_mm_sample(token: int) -> TrainingSample:
-        return TrainingSample(
+        return _sample(
             token_ids=[token, token + 1, token + 2],
             mask=[False, True, True],
             logprobs=[0.0, -0.1, -0.2],
@@ -584,7 +607,7 @@ def test_split_to_align_splits_multimodal_bins():
 
 def test_prepare_sample_none_routed_experts():
     """When routed_experts is None, micro_batch.routed_experts is None."""
-    sample = TrainingSample(
+    sample = _sample(
         token_ids=[1, 2, 3, 4],
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],

@@ -10,7 +10,6 @@ from prime_rl.transports.batch.types import (
     MicroBatch,
     RoutedExperts,
     encode_array,
-    micro_batch_stream,
 )
 
 
@@ -47,10 +46,10 @@ def test_batch_encode_preserves_wire_bytes(sender, count, with_routing):
     assert len(decoded) == count
     for got in decoded:
         # Streams arrive as raw buffers of their wire dtype
-        for name in MICRO_BATCH_DTYPES:
-            want = micro_batch_stream(batch, name)
+        for name, dtype in MICRO_BATCH_DTYPES.items():
+            want = getattr(batch, name)
             assert (want is None) == (getattr(got, name) is None)
             if want is not None:
-                assert np.array_equal(micro_batch_stream(got, name), want)
+                assert np.array_equal(np.frombuffer(getattr(got, name), dtype), want)
         assert got.routed_experts == batch.routed_experts
         assert got.env_names == batch.env_names and got.sequence_lengths == batch.sequence_lengths

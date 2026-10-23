@@ -17,7 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import micro_batch_stream
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 
 
 class TensorMicroBatch(TypedDict):
@@ -271,8 +271,10 @@ class DataLoader:
         def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
             """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
             (which stays read-only) that also widens it to the trainer's dtype."""
-            values = micro_batch_stream(micro_batch, name)
-            return None if values is None else torch.from_numpy(values.astype(dtype)).unsqueeze(0)
+            values = getattr(micro_batch, name)
+            if values is None:
+                return None
+            return torch.from_numpy(np.frombuffer(values, MICRO_BATCH_DTYPES[name]).astype(dtype)).unsqueeze(0)
 
         return TensorMicroBatch(
             input_ids=stream("input_ids", np.int64),

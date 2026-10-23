@@ -96,7 +96,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
 # Per-token streams of a MicroBatch and the dtype each travels as. The orchestrator holds them as
 # numpy arrays and the batch encoder ships each as its raw bytes (`encode_array`); the trainer
-# decodes them as memoryviews into the received frame and reads them with `micro_batch_stream`.
+# decodes them as memoryviews into the received frame and reads each with `np.frombuffer`.
 MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
     "input_ids": np.int32,
     "loss_mask": np.bool_,
@@ -117,18 +117,6 @@ def encode_array(value: object) -> memoryview:
     if isinstance(value, np.ndarray):
         return np.ascontiguousarray(value).data
     raise NotImplementedError(f"cannot encode {type(value).__name__}")
-
-
-def micro_batch_stream(micro_batch: "MicroBatch", name: str) -> np.ndarray | None:
-    """One per-token stream of a micro batch as a numpy array, whether it holds the array (the
-    orchestrator) or its received bytes (the trainer). Views a received frame read-only."""
-    value = getattr(micro_batch, name)
-    if value is None:
-        return None
-    dtype = MICRO_BATCH_DTYPES[name]
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return np.frombuffer(value, dtype=dtype)
-    return np.asarray(value, dtype=dtype)
 
 
 # Orchestrator -> Trainer
