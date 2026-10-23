@@ -30,6 +30,7 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    policy_versions: Int[Tensor, "batch seq"] | None  # Per-token sampling policy version, -1 if unknown
     env_names: list[str]
     sequence_lengths: list[int]
 
@@ -134,6 +135,7 @@ class FakeDataLoader:
             "sequence_lengths": sequence_lengths,
             "trace_ids": None,
             "branch_indices": None,
+            "policy_versions": None,
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
@@ -167,6 +169,7 @@ class FakeDataLoader:
             "sequence_lengths": [self.seq_len],
             "trace_ids": None,
             "branch_indices": None,
+            "policy_versions": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
@@ -287,6 +290,9 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
+            policy_versions=torch.tensor(micro_batch.policy_versions, dtype=torch.long).unsqueeze(0)
+            if micro_batch.policy_versions is not None
+            else None,
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
@@ -308,11 +314,14 @@ class DataLoader:
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
-    """Validate sampler evidence on the CPU before the LM head consumes it."""
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, replayed_only: bool = False) -> None:
+    """Validate sampler evidence on the CPU before the LM head consumes it. ``replayed_only``: only tokens with
+    a sampling mask need it."""
     mask = batch["loss_mask"]
     if batch["rl_weights"] is not None:
         mask = mask & (batch["rl_weights"] != 0)
+    if replayed_only:
+        mask = mask & (batch["sampling_mask"] >= 0).any(-1) if batch["sampling_mask"] is not None else mask & False
     if not mask.any():
         return
     ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]

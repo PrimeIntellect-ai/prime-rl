@@ -270,6 +270,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
 
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
     temperatures = training_example.temperatures
+    policy_versions = training_example.policy_versions
 
     # Ref logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when the algorithm scores against a reference
@@ -294,6 +295,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         position_ids = position_ids[:cut]
         advantages = advantages[:cut]
         temperatures = temperatures[:cut]
+        if policy_versions is not None:
+            policy_versions = policy_versions[:cut]
         if ref_logprobs is not None:
             ref_logprobs = ref_logprobs[:cut]
         if rl_weights is not None:
@@ -369,6 +372,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
+        policy_versions=policy_versions,
     )
 
 
@@ -431,6 +435,7 @@ class _MicroBatchBin:
 def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     has_ref_logprobs = any(sample.ref_logprobs is not None for sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for sample in bin_content.samples)
+    has_policy_versions = any(sample.policy_versions is not None for sample in bin_content.samples)
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for s in bin_content.samples) for name in STREAM_FILL}
@@ -461,6 +466,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
+    policy_versions: list[int] | None = [] if has_policy_versions else None
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -523,6 +529,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                 top_logprobs.counts += head.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
+        if policy_versions is not None:
+            policy_versions.extend(sample.policy_versions or [-1] * sample_len)
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
@@ -549,6 +557,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
+        policy_versions=policy_versions,
     )
 
 
@@ -658,6 +667,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
+    if micro_batch.policy_versions is not None:
+        micro_batch.policy_versions.extend([-1] * padding_size)
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
     # Padding is loss-masked, so no component trains it; fill every stream
@@ -692,6 +703,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "inference_logprobs",
         "position_ids",
         "temperatures",
+        "policy_versions",
         "env_names",
         "ref_logprobs",
         "rl_weights",
