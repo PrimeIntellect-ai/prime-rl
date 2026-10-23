@@ -159,7 +159,6 @@ class PrimeRlServingTokens(ServingTokens):
                     "Compact logprobs require a non-streaming request with logprobs enabled"
                 )
             if extra_args.get("prl_replay", False):
-                # The sampler packs each support id's logprob into the mask, so vLLM computes no logprobs.
                 sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
                 sampling_params.logprobs = None
         if not request.stream:
