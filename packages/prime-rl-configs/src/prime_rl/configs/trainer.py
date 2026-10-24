@@ -510,6 +510,21 @@ class IPOLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Center the combined IPO and ratio-masked score over complete replayed support."""
+
+    ratio_low: float = Field(0.1, gt=0, allow_inf_nan=False)
+    """Lower accepted importance ratio when score_centering is enabled."""
+
+    ratio_high: float = Field(10.0, gt=0, allow_inf_nan=False)
+    """Upper accepted importance ratio when score_centering is enabled."""
+
+    @model_validator(mode="after")
+    def validate_centered_ratio_bounds(self):
+        if self.score_centering and not self.ratio_low <= self.ratio_high <= self.max_importance_ratio:
+            raise ValueError("Centered IPO requires ratio_low <= ratio_high <= max_importance_ratio")
+        return self
+
 
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"

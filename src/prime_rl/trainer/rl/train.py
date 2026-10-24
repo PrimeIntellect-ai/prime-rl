@@ -353,7 +353,7 @@ def train(config: TrainerConfig):
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            score_centering = config.loss.type == "icepop" and config.loss.score_centering
+            score_centering = config.loss.type in ("icepop", "ipo") and config.loss.score_centering
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
                 validate_score_centering_data(micro_batch, vocab_size=vocab_size)

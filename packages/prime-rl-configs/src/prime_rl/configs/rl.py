@@ -536,7 +536,7 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        if loss.type not in ("icepop", "ipo") or not loss.score_centering:
             return self
         samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
@@ -545,6 +545,8 @@ class RLConfig(BaseConfig):
             raise ValueError("Score centering requires a policy-sampled training source")
         requested = []
         for sampling in samplings:
+            if loss.type == "ipo" and not sampling.truncates_distribution():
+                raise ValueError("IPO score centering requires complete bounded sampling-support replay")
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
             k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
