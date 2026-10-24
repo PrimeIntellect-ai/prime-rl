@@ -370,3 +370,23 @@ logprobs together, avoiding a separate full-vocabulary top-logprob extraction.
 The server returns the same compact-logprob and sampling-mask formats. Evaluation
 requests do not enable this capture. Aligned support evidence is encoded directly;
 reordered or mixed evidence still uses support matching and validation.
+
+### Entropy and mismatch metrics
+
+`entropy/*` measures trainer entropy under the distribution used for training:
+renormalized on the recorded rollout support when replay applies, otherwise over
+the full vocabulary. `entropy_full_vocab/*` always measures full-vocabulary
+trainer entropy. Both use the configured sampling temperature and describe the
+trainer, not the rollout model.
+
+`mismatch_kl/*` compares sampled-token logprobs with replay normalization.
+`kl_ent_ratio/mean` divides its mean by mean `entropy` over the same policy-sampled
+tokens. `kl_ent_ratio_full_vocab/mean` uses full-vocabulary entropy on that same
+token population. The denominators are logged as `mismatch_entropy/mean` and
+`mismatch_entropy_full_vocab/mean`. A ratio is omitted when its denominator is
+zero. These ratios are diagnostics, not entropy- or staleness-adjusted KL estimates.
+
+Trainer trace annotations use `trainer_logprobs` and `entropies` for the training
+distribution, and `trainer_logprobs_full_vocab` and `entropies_full_vocab` for the
+full vocabulary. Without replay the two normalizations agree. All fields are null
+outside trained positions and at sequence boundaries.

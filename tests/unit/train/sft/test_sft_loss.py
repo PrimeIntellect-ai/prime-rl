@@ -58,8 +58,12 @@ def test_fused_lm_head_with_temperature_keeps_logprob_path(chunk_size):
     lm_head.weight = torch.nn.Parameter(weight.clone())
     hidden = hidden.clone().requires_grad_(True)
     out = lm_head(hidden, target_ids, temperature=torch.ones(B, S))
-    assert set(out) == {"logprobs", "entropy", "topk_logprobs"}
+    assert set(out) == {"logprobs", "entropy", "topk_logprobs", "logprobs_full_vocab", "entropy_full_vocab"}
     assert out["topk_logprobs"] is None
+    torch.testing.assert_close(out["logprobs_full_vocab"], out["logprobs"])
+    torch.testing.assert_close(out["entropy_full_vocab"], out["entropy"])
+    assert not out["logprobs_full_vocab"].requires_grad
+    assert not out["entropy"].requires_grad
     loss = -out["logprobs"][loss_mask].sum()
     (loss * UPSTREAM).backward()
 

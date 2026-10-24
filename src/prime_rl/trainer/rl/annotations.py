@@ -38,8 +38,12 @@ class AnnotationWriter:
             return
         sequence_lengths = micro_batch["sequence_lengths"]
         loss_mask = [bool(v) for v in micro_batch["loss_mask"].detach().cpu().reshape(-1).tolist()]
-        trainer_logprobs = _tensor_to_floats(model_output["logprobs"], self.float_decimals)
-        entropies = _tensor_to_floats(model_output["entropy"], self.float_decimals)
+        streams = {
+            "trainer_logprobs": _tensor_to_floats(model_output["logprobs"], self.float_decimals),
+            "entropies": _tensor_to_floats(model_output["entropy"], self.float_decimals),
+            "trainer_logprobs_full_vocab": _tensor_to_floats(model_output["logprobs_full_vocab"], self.float_decimals),
+            "entropies_full_vocab": _tensor_to_floats(model_output["entropy_full_vocab"], self.float_decimals),
+        }
 
         start = 0
         for index, (trace_id, branch_index, length) in enumerate(zip(trace_ids, branch_indices, sequence_lengths)):
@@ -53,17 +57,13 @@ class AnnotationWriter:
             if end <= span_start or not any(loss_mask[span_start:end]):
                 continue
             trained = loss_mask[span_start:end]
-            logprob_span = [v if m else None for v, m in zip(trainer_logprobs[span_start:end], trained)]
-            entropy_span = [v if m else None for v, m in zip(entropies[span_start:end], trained)]
-            # After the right shift, a sample's first value crosses the packing boundary.
-            logprob_span[0] = None
-            entropy_span[0] = None
-            self._pending.append(
-                make_update(
-                    trace_id,
-                    branches={branch_index: {"trainer_logprobs": logprob_span, "entropies": entropy_span}},
-                )
-            )
+            spans = {}
+            for name, values in streams.items():
+                span = [v if m else None for v, m in zip(values[span_start:end], trained)]
+                # After the right shift, a sample's first value crosses the packing boundary.
+                span[0] = None
+                spans[name] = span
+            self._pending.append(make_update(trace_id, branches={branch_index: spans}))
 
     def flush(self) -> None:
         """Gather the step's records to rank 0 and log them; collective, so every rank

@@ -12,7 +12,7 @@ from prime_rl.configs.trainer import (
     IPOLossConfig,
     LossConfig,
 )
-from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
+from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask, sampling_support_entropy
 from prime_rl.utils.utils import import_object
 
 
@@ -114,6 +114,16 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
         pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
         entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
     return entropy
+
+
+@torch.no_grad()
+def compute_support_entropy(
+    logits: Tensor, labels: Tensor, sampling_mask: Tensor | None, full_entropy: Tensor
+) -> Tensor:
+    if sampling_mask is None:
+        return full_entropy
+    mask_logits = logits.gather(-1, sampling_mask.clamp_min(0).long()).masked_fill(sampling_mask < 0, -torch.inf)
+    return sampling_support_entropy(mask_logits, sampling_replay_mask(sampling_mask, labels), full_entropy)
 
 
 def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
