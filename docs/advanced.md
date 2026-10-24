@@ -28,6 +28,7 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
+| Muse Glimmer (text only) | `meta-models/Muse-Glimmer-30B` | — | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
