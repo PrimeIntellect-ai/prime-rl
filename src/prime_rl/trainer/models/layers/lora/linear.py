@@ -20,4 +20,4 @@ class LoRALinear(LoRAModule):
         x2d = x.view(-1, x.shape[-1])
         base_out = self.base_layer(x2d)
         lora_out = self.lora_dropout(x2d) @ self.lora_A.T @ self.lora_B.T
-        return (base_out + self.scaling * lora_out).view(*x.shape[:-1], -1)
+        return torch.add(base_out, lora_out, alpha=self.scaling).view(*x.shape[:-1], -1)
