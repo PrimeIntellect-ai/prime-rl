@@ -175,11 +175,9 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
     monitors: EvalMonitorsConfig = EvalMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
 
-    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
-    converts the trainer's ``[monitors.prime]`` into a
-    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
-    type would drop (or forbid) the prime block at the eval.json
-    dump/re-parse boundary."""
+    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the online-eval
+    process logs to the trainer's Prime run, and the base type would drop (or
+    forbid) the prime block at the eval.json dump/re-parse boundary."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):

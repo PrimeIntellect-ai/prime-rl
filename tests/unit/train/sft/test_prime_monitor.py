@@ -2,7 +2,7 @@
 
 ``monitors.prime`` on ``SFTConfig`` must register the run with the dataset-batched
 training fields (no environments, no rollouts) and flow the trainer's metrics and
-finalize through the registered ``PrimeTrainMonitor`` like the RL orchestrator does.
+finalize through the registered ``PrimeMonitor`` like the RL orchestrator does.
 """
 
 import asyncio
@@ -14,13 +14,12 @@ from prime_rl import monitors
 from prime_rl.configs.monitors import (
     EvalMonitorsConfig,
     FileMonitorConfig,
-    PrimeEvalMonitorConfig,
-    PrimeTrainMonitorConfig,
+    PrimeMonitorConfig,
     TrainMonitorsConfig,
     WandbMonitorConfig,
 )
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.monitors.prime import PrimeTrainMonitor
+from prime_rl.monitors.prime import PrimeMonitor
 
 
 @pytest.fixture
@@ -77,10 +76,10 @@ def test_sft_prime_monitor_keeps_explicit_name():
     assert config.monitors.prime.name == "my-experiment"
 
 
-def test_sft_registers_dataset_training_fields(prime_init):
+def test_sft_registers_dataset_training_fields(prime_init, tmp_path):
     config = _sft_config({"monitors": {"prime": {}}})
 
-    asyncio.run(PrimeTrainMonitor(config.monitors.prime).init(config=config, output_dir=None))
+    asyncio.run(PrimeMonitor(config.monitors.prime).init(config=config, output_dir=tmp_path))
 
     (call,) = prime_init
     assert call["kind"] == "train"
@@ -95,7 +94,7 @@ def test_sft_registers_dataset_training_fields(prime_init):
     assert call["config"]["model"]["name"] == "PrimeIntellect/Qwen3-0.6B"
 
 
-def test_sft_registers_wandb_project(prime_init):
+def test_sft_registers_wandb_project(prime_init, tmp_path):
     config = _sft_config(
         {
             "monitors": {
@@ -105,32 +104,27 @@ def test_sft_registers_wandb_project(prime_init):
         }
     )
 
-    asyncio.run(PrimeTrainMonitor(config.monitors.prime).init(config=config, output_dir=None))
+    asyncio.run(PrimeMonitor(config.monitors.prime).init(config=config, output_dir=tmp_path))
 
     assert prime_init[0]["training"].wandb_project == "sft-tests"
 
 
-def test_online_eval_monitors_switch_prime_flavor():
-    """The online-eval process parses EvalMonitorsConfig, whose ``prime`` field is the
-    evaluation flavor - the launcher converts the trainer's TrainMonitorsConfig."""
+def test_online_eval_monitors_keep_the_trainers_prime_monitor():
+    """The online-eval process logs to the trainer's Prime run, under the same config."""
     from prime_rl.entrypoints.sft import build_online_eval_monitors
 
     monitors = build_online_eval_monitors(
         TrainMonitorsConfig(
             wandb=WandbMonitorConfig(project="sft-tests"),
             file=FileMonitorConfig(),
-            prime=PrimeTrainMonitorConfig(name="my-run"),
+            prime=PrimeMonitorConfig(name="my-run"),
         )
     )
 
     assert isinstance(monitors, EvalMonitorsConfig)
-    assert isinstance(monitors.prime, PrimeEvalMonitorConfig)
-    assert monitors.prime.name == "my-run"
+    assert monitors.prime == PrimeMonitorConfig(name="my-run")
     assert monitors.wandb.project == "sft-tests"
-
-    # Without a platform run the evals process gets no platform monitor either
-    bare = build_online_eval_monitors(TrainMonitorsConfig(prime=None))
-    assert bare.prime is None
+    assert build_online_eval_monitors(TrainMonitorsConfig(prime=None)).prime is None
 
 
 def test_sft_setup_registers_prime_monitor(prime_init, tmp_path, clear_monitors):
@@ -144,7 +138,7 @@ def test_sft_setup_registers_prime_monitor(prime_init, tmp_path, clear_monitors)
         )
     )
 
-    assert monitors.get(PrimeTrainMonitor) is not None
+    assert monitors.get(PrimeMonitor) is not None
 
     # The trainer's per-step metrics fan out to the platform run, and finalize
     # closes it out (drains the SDK's upload queue).
@@ -155,10 +149,10 @@ def test_sft_setup_registers_prime_monitor(prime_init, tmp_path, clear_monitors)
 
 def test_online_eval_config_keeps_prime_monitor():
     """SFTOnlineEvalConfig.monitors must be EvalMonitorsConfig so the
-    launcher-converted PrimeEvalMonitorConfig survives the eval.json
-    dump/re-parse boundary (base MonitorsConfig drops/forbids prime)."""
+    trainer's prime monitor survives the eval.json dump/re-parse boundary
+    (base MonitorsConfig drops/forbids prime)."""
     from prime_rl.configs.eval import SFTOnlineEvalConfig
-    from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig
+    from prime_rl.configs.monitors import EvalMonitorsConfig
     from prime_rl.entrypoints.sft import build_online_eval_monitors
 
     field = SFTOnlineEvalConfig.model_fields["monitors"]
@@ -166,7 +160,7 @@ def test_online_eval_config_keeps_prime_monitor():
 
     train_monitors = TrainMonitorsConfig.model_validate({"prime": {"name": "r1"}})
     eval_monitors = build_online_eval_monitors(train_monitors)
-    assert isinstance(eval_monitors.prime, PrimeEvalMonitorConfig)
+    assert isinstance(eval_monitors.prime, PrimeMonitorConfig)
     assert eval_monitors.prime.name == "r1"
 
     # The online-eval process passes the prime monitor to monitors.setup
@@ -181,50 +175,48 @@ def test_online_eval_config_keeps_prime_monitor():
     assert "prime=config.monitors.prime" in online_src
 
 
-def test_online_eval_shares_trainer_run_dir_and_merges_records(tmp_path):
-    """The online-eval process shares the trainer's run dir (the dashboard
-    reads its file-monitor artifacts from there), and the platform records
-    MERGE instead of clobbering each other: the trainer's kind="train"
-    link survives with the eval process's evaluations riding along."""
+def test_online_evals_share_the_trainers_run(tmp_path, monkeypatch):
+    """The online-eval process shares the trainer's run dir and attaches to the run the
+    trainer registered. Only it finishes the run: it drains its final evals after the
+    trainer exits."""
     from prime_rl.entrypoints.sft import build_online_eval_config
-    from prime_rl.monitors.prime import (
-        read_platform_record,
-        write_platform_record,
-    )
+    from prime_rl.utils.links import ATTEMPT_VAR
+    from prime_rl.utils.process import RUN_FINISHER_VAR
+
+    runs = []
+
+    def fake_init(**kwargs):
+        run = SimpleNamespace(id=kwargs.get("id", "run-123"), url="https://x/run-123", attached="id" in kwargs)
+        run.kwargs, run.finished, run.flushed = kwargs, False, False
+        run._atexit_hook = lambda: None
+        run.finish = lambda *a, **k: setattr(run, "finished", True)
+        run.flush = lambda *a, **k: setattr(run, "flushed", True)
+        runs.append(run)
+        return run
+
+    monkeypatch.setattr("prime_rl.monitors.prime.pr.init", fake_init)
+    for var in ("RUN_ID", "PRIME_RUNS_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PRIME_API_KEY", "test-key")
+    monkeypatch.setenv(ATTEMPT_VAR, str(tmp_path / "logs" / "attempt_1"))
+    monkeypatch.setenv(RUN_FINISHER_VAR, "online-eval")
 
     config = _sft_config(
-        {
-            "eval": {
-                "interval": 50,
-                "source": [
-                    {
-                        "name": "rev",
-                        "env": {"taskset": {"id": "harbor"}},
-                    }
-                ],
-            },
-            "inference": {},
-        }
+        {"eval": {"interval": 50, "source": [{"name": "rev", "env": {"taskset": {"id": "harbor"}}}]}, "inference": {}}
     )
     eval_config = build_online_eval_config(config)
     # Same run dir: dashboard visibility for the eval artifacts.
     assert eval_config.output_dir == config.run_dir
-    assert eval_config.broadcasts_dir != eval_config.output_dir
 
-    # Simulate the trainer's record, then the eval process merging on top.
-    write_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
-    record = read_platform_record(tmp_path) or {}
-    if record.get("kind") == "train":
-        record.setdefault("evaluations", {})
-        record["run_id"] = "run-1"
-    else:
-        record = {"kind": "eval", "run_id": "run-1", "evaluations": {}}
-    record.setdefault("evaluations", {})["rev"] = {"step": 5, "id": "ev-1", "url": "https://x/ev-1"}
-    write_platform_record(tmp_path, record)
-    merged = read_platform_record(tmp_path)
-    assert merged["kind"] == "train"  # the train link survives
-    assert merged["id"] == "run-1"
-    assert merged["evaluations"]["rev"]["id"] == "ev-1"
+    trainer, online_eval = PrimeMonitor(config.monitors.prime), PrimeMonitor(eval_config.monitors.prime)
+    asyncio.run(trainer.init(config=config, output_dir=tmp_path, producer="trainer"))
+    asyncio.run(online_eval.init(config=eval_config, output_dir=tmp_path, producer="online-eval"))
+    assert online_eval.run.kwargs["id"] == trainer.run.id
+
+    asyncio.run(trainer.finalize())
+    assert trainer.run.flushed and not trainer.run.finished
+    asyncio.run(online_eval.finalize())
+    assert online_eval.run.finished
 
 
 def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
@@ -284,19 +276,18 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
     monkeypatch.setattr(prime_module, "_merge_platform_record", spy)
 
     config = _sft_config({"monitors": {"prime": {}}})
-    asyncio.run(PrimeTrainMonitor(config.monitors.prime).init(config=config, output_dir=tmp_path))
+    asyncio.run(PrimeMonitor(config.monitors.prime).init(config=config, output_dir=tmp_path))
 
     assert seen_threads, "the record merge never ran"
     assert threading.get_ident() not in seen_threads, "record merge ran on the caller thread"
 
-    # All three async write sites (train init, eval init, eval epoch) go
-    # through to_thread; only the sync helpers stay callable directly.
+    # The async write sites (train run, evaluation) go through to_thread; only the sync
+    # helpers stay callable directly.
     import re
 
     import prime_rl
 
     src = Path(prime_rl.__path__[0], "monitors", "prime.py").read_text()
-    assert len(re.findall(r"asyncio\.to_thread\(\s*_merge_platform_record", src)) == 1
     assert len(re.findall(r"asyncio\.to_thread\(\s*self\._record", src)) == 2
 
     from prime_rl.monitors.prime import read_platform_record

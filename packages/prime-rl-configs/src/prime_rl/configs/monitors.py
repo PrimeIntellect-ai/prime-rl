@@ -43,14 +43,9 @@ class FileMonitorConfig(BaseConfig):
     not the records, so this only trades record size against overlay precision."""
 
 
-class PrimeTrainMonitorConfig(BaseConfig):
+class PrimeMonitorConfig(BaseConfig):
     name: str | None = None
-    """Run name shown on the platform. Inherits ``run.name`` when unset."""
-
-
-class PrimeEvalMonitorConfig(BaseConfig):
-    name: str | None = None
-    """Evaluation name shown on the platform. Inherits ``run.name`` when unset."""
+    """Run or evaluation name shown on Prime. Inherits ``run.name`` when unset."""
 
 
 class MonitorsConfig(BaseConfig):
@@ -62,12 +57,13 @@ class MonitorsConfig(BaseConfig):
 
 
 class TrainMonitorsConfig(MonitorsConfig):
-    prime: PrimeTrainMonitorConfig | None = PrimeTrainMonitorConfig()
+    prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
     """Log metrics and episodes to the Prime Intellect platform. On by default and
     needs a Prime API key; disable with ``--no-monitors.prime``."""
 
 
 class EvalMonitorsConfig(MonitorsConfig):
-    prime: PrimeEvalMonitorConfig | None = PrimeEvalMonitorConfig()
-    """Upload every eval source's epoch as an evaluation on the Prime Intellect platform. On by
-    default and needs a Prime API key; disable with ``--no-monitors.prime``."""
+    prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
+    """Upload every eval source's epoch as an evaluation on the Prime Intellect platform (an
+    SFT online-eval process logs to the trainer's run instead). On by default and needs a
+    Prime API key; disable with ``--no-monitors.prime``."""
