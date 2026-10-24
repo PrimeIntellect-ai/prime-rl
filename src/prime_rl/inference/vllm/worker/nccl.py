@@ -53,6 +53,11 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
             for key, shape, numel in bucket:
                 tensor = concatenated[offset : offset + numel].view(shape)
                 offset += numel
+                # The layerwise reload holds what it loads until the layer is complete, and a view
+                # would pin the whole bucket: under EP, a rank's experts would keep every bucket of
+                # the layer alive, other ranks' experts included.
+                if len(bucket) > 1:
+                    tensor = tensor.clone()
                 try:
                     yield key, tensor
                 finally:
