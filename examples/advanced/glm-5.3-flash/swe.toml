@@ -1,5 +1,5 @@
 # GLM-5.3 Flash SWE RL on SWE-rebench-V2 (20-turn cap) at 128K context:
-# 2 trainer nodes + 6 vLLM replicas (TP 8, one node each), H200.
+# 2 trainer nodes + 4 vLLM replicas (TP 8, one node each), H200.
 #
 #   uv run rl @ examples/advanced/glm-5.3-flash/swe.toml
 
@@ -33,7 +33,7 @@ timeout = 12000
 type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
-num_infer_replicas = 6
+num_infer_replicas = 4
 # Trainer nodes peak near 3 TB host RAM with AdamW offloaded; the orchestrator's 128K rollout buffer tips them over.
 orchestrator_on_inference = true
 
@@ -52,7 +52,6 @@ block_size = 768
 gpu_memory_utilization = 0.75
 # vLLM's KDA decode kernel puts num_seqs * 64 on a grid axis capped at 65535.
 max_num_seqs = 512
-safetensors_load_strategy = "prefetch"
 
 [trainer]
 dist_timeout_seconds = 1800
@@ -77,11 +76,9 @@ mode = "full"
 [trainer.optim]
 type = "adamw"
 lr = 1e-6
-weight_decay = 0.0
 
 [orchestrator]
 batch_size = 256
-max_off_policy_steps = 8
 
 [orchestrator.train]
 group_size = 16
@@ -95,9 +92,6 @@ max_inflight = 512
 name = "glm-5.3"
 clear_thinking = false
 
-[orchestrator.train.sampling]
-temperature = 1.0
-
 [orchestrator.train.sampling.extra_body.chat_template_kwargs]
 clear_thinking = false
 
@@ -110,10 +104,3 @@ env.agent.max_turns = 20
 # Fail rollouts stuck on a dead sandbox stream instead of letting them hold in-flight slots forever.
 env.timeout.episode = 7200
 env.agent.runtime.labels = ["glm53-flash", "swe"]
-
-# Sample all-solved tasks rarely once seen; all-failed ones at half weight.
-[orchestrator.train.source.curriculum.sampler]
-type = "difficulty_pool"
-pools.unsolved = { threshold = 0.0, weight = 0.5 }
-pools.signal = { threshold = 0.999, weight = 1.0 }
-pools.solved = { threshold = 1.0, weight = 0.05 }

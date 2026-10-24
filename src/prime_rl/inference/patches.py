@@ -298,7 +298,8 @@ def monkey_patch_glm5_next_kda_conv_weights():
     After loading, store the three weights as slices of one buffer and point the cache at it;
     reloads copy into parameter storage in place, so updates land in the buffer.
 
-    Remove when vLLM keeps the q/k/v conv weights in one merged parameter.
+    Remove when vLLM keeps the q/k/v conv weights in one merged parameter
+    (https://github.com/vllm-project/vllm/pull/60991).
     """
     from vllm.models.glm5next.common.kda import Glm5NextLinearAttention
     from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
