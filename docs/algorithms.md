@@ -253,9 +253,16 @@ score_centering = true
 score_centering_topk = 128
 ```
 
-Training sampling must be untruncated (`top_p = 1`, no `top_k`) with positive
-temperature. The captured head retains full-vocabulary normalization. The trainer
-approximates the remaining sampler mass as proportional to its own tail.
+Training sampling requires positive temperature. With untruncated sampling
+(`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
+and the trainer approximates the remaining sampler mass as proportional to its own tail.
+
+With bounded top-k (optionally combined with top-p), the launcher captures at least
+`top_k` probabilities and enables sampling replay. The renderer retains the complete
+recorded support; the trainer normalizes over that same support and computes exact
+centering on it, without a tail approximation. `score_centering_topk` only controls
+the captured head for untruncated sampling. The existing sampling-replay limits and
+eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
 
 With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is
 `A * (w_a * grad(log p_a) - sum_v q_v*w_v*grad(log p_v))`. The correction applies

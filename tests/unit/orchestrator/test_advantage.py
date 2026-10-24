@@ -148,8 +148,8 @@ def _scalar(episode: vf.Episode) -> float:
     """The per-rollout advantage scalar an algorithm assigned — broadcast over
     the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
     for node in episode.traces[0].nodes:
-        if node.advantages:
-            return node.advantages[0]
+        if node.advantages is not None and len(node.advantages):
+            return float(node.advantages[0])
     raise AssertionError("episode has no trainable token")
 
 
@@ -222,7 +222,7 @@ def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
         group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
         asyncio.run(algo.score_group(group))
         weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
-        assert set(weights) == {0.0, 1.0 / sum(lengths)}
+        assert sorted(set(weights)) == pytest.approx([0.0, 1.0 / sum(lengths)])
         assert sum(weights) == pytest.approx(1.0)
 
 
@@ -377,7 +377,7 @@ def test_assign_advantages_broadcasts_scalar():
     trace = episode.traces[0]
     # one user prompt token (masked) + 2 sampled tokens (trainable)
     assign_advantages(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == [0.0, 0.7, 0.7]
+    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
 
 
 def test_assign_advantages_zeros_non_trainable():
@@ -386,7 +386,7 @@ def test_assign_advantages_zeros_non_trainable():
     episode = _build_episode(0.0, sampled_lengths=[1], obs_lengths=[1])
     trace = episode.traces[0]
     assign_advantages(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == [0.0, 0.7, 0.0]
+    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])
 
 
 def test_assign_advantages_rejects_misaligned():

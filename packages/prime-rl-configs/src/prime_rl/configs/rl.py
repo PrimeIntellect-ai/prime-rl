@@ -547,9 +547,9 @@ class RLConfig(BaseConfig):
         for sampling in samplings:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            if sampling.truncates_distribution():
-                raise ValueError("IcePop score centering requires untruncated sampling")
-            k = loss.score_centering_topk
+            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
+            if k is None:
+                raise ValueError("Truncated score centering requires a bounded top_k")
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
@@ -572,9 +572,8 @@ class RLConfig(BaseConfig):
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
-        on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
-        so eval sampling against the same server must set both."""
+        configs are bounded by TRAIN_TOP_K_BOUND). Only opted-in requests capture
+        masks; eval requests retain independent sampling settings."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.rollout_model == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
@@ -589,13 +588,6 @@ class RLConfig(BaseConfig):
             )
             return self
         self.inference.enable_return_sampling_mask = True
-        if self.orchestrator.eval is not None:
-            warnings.warn(
-                "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
-                "eval sampling config or the model's generation config) or with temperature 0 are "
-                "rejected by the inference server while truncated train sampling is on.",
-                stacklevel=2,
-            )
         return self
 
     @model_validator(mode="after")
