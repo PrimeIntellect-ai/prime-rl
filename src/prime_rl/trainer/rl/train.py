@@ -362,6 +362,14 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            # Each token's env: the sequences' env names spread over their lengths
+            env_names = sorted(set(micro_batch["env_names"]))
+            env_ids = torch.from_numpy(
+                np.repeat(
+                    np.array([env_names.index(name) for name in micro_batch["env_names"]], dtype=np.int64),
+                    micro_batch["sequence_lengths"],
+                )
+            ).to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
             rl_weights = micro_batch["rl_weights"].to("cuda") if micro_batch["rl_weights"] is not None else None
@@ -534,16 +542,7 @@ def train(config: TrainerConfig):
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
             tensors.add("loss", loss * cp_size)
 
-            # Each token's env: the sequences' env names spread over their lengths
-            env_names = sorted(set(micro_batch["env_names"]))
-            env_index = torch.from_numpy(
-                np.repeat(
-                    np.array([env_names.index(name) for name in micro_batch["env_names"]], dtype=np.int64),
-                    micro_batch["sequence_lengths"],
-                )
-            ).to("cuda")
-            tensors.add("entropy/all", out["entropy"], loss_mask)
-            tensors.add_grouped("entropy", out["entropy"], loss_mask, env_index, env_names)
+            tensors.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
@@ -556,8 +555,7 @@ def train(config: TrainerConfig):
                 mismatch_mask = loss_mask & sampled_mask
             with torch.no_grad():
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
-            tensors.add("mismatch_kl/all", mismatch_kl, mismatch_mask)
-            tensors.add_grouped("mismatch_kl", mismatch_kl, mismatch_mask, env_index, env_names)
+            tensors.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
 
             annotation_writer.export(micro_batch, out)
 
