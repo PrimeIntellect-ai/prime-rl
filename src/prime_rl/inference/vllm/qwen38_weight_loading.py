@@ -56,7 +56,6 @@ def patch_qwen38_weight_loading() -> None:
                             skipped.add("ngram_embedding.weight")
                             continue
                     if cpu_offloaded:
-                        # Layerwise reload retains input tensors until the local table is complete.
                         weight = weight.cpu()
                 yield name, weight
 
