@@ -1,8 +1,10 @@
 import re
+from pathlib import Path
 from typing import Callable, List
 
 import torch
 import torch.nn as nn
+from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import (
@@ -12,7 +14,9 @@ from prime_rl.trainer.models.layers.lora import (
     LoRAModule,
 )
 from prime_rl.trainer.models.layers.moe import GroupedExperts
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.weights import save_state_dict
 
 
 class LoRAState:
@@ -188,6 +192,21 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 
 def has_lora_layers(model: nn.Module) -> bool:
     return any(isinstance(module, LoRAModule) for module in model.modules())
+
+
+def save_lora_adapter(model: nn.Module, save_path: Path, config: LoRAConfig) -> None:
+    """Gather and save a PEFT adapter; all ranks must call this function."""
+    world = get_world()
+    state_dict = get_lora_state().adapter_state_dict()
+    for key, value in state_dict.items():
+        if isinstance(value, DTensor):
+            value = value.full_tensor()
+        if world.is_master:
+            state_dict[key] = value.to("cpu", non_blocking=False)
+    if world.is_master:
+        get_logger().debug(f"Saving adapter to {save_path}")
+        save_state_dict(state_dict, save_path, save_sharded=False, adapter=True)
+        save_lora_config(model, save_path, rank=config.rank, alpha=config.alpha, dropout=config.dropout)
 
 
 def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:
