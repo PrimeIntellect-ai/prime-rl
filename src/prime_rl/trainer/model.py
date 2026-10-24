@@ -956,13 +956,13 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
-    if config.freeze_layers > 0:
-        freeze_layers(model, config.freeze_layers, config.vlm.language_model_attr if config.vlm is not None else None)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
             freeze_all_except_lora(model)
+    if config.freeze_layers > 0:
+        freeze_layers(model, config.freeze_layers, config.vlm.language_model_attr if config.vlm is not None else None)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
