@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
@@ -9,12 +10,18 @@ from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 
 
 def iter_trainable_traces(episodes: list[vf.Episode]):
-    """Yield clean trainable traces that contain sampled tokens."""
+    """Yield clean, kept, trainable traces that contain sampled tokens."""
     for episode in episodes:
         for trace in episode.traces:
-            if not episode.ok or trace.has_error or not trace.agent.trainable or trace.num_turns == 0:
+            if (
+                not episode.ok
+                or trace.has_error
+                or trace.is_dropped
+                or not trace.agent.trainable
+                or trace.num_turns == 0
+            ):
                 continue
-            if any(any(node.mask) for node in trace.nodes):
+            if any(np.any(node.mask) for node in trace.nodes):
                 yield episode, trace
 
 
