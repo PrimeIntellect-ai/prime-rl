@@ -342,7 +342,7 @@ def train(config: TrainerConfig):
         )
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
-        tensors = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
+        tensor_stats = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
@@ -540,9 +540,9 @@ def train(config: TrainerConfig):
 
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensors.add("loss", loss * cp_size)
+            tensor_stats.add("loss", loss * cp_size)
 
-            tensors.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
+            tensor_stats.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
@@ -555,18 +555,18 @@ def train(config: TrainerConfig):
                 mismatch_mask = loss_mask & sampled_mask
             with torch.no_grad():
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
-            tensors.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
+            tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
 
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
                 moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
                 for name, value in moe_stats.items():
-                    tensors.add(name, value)
+                    tensor_stats.add(name, value)
                 step_tokens_per_expert += tokens_per_expert
 
             for key, loss_tensor in loss_tensors.items():
-                tensors.add(key, loss_tensor)
+                tensor_stats.add(key, loss_tensor)
 
             # Debug log with *local, micro step* stats, evaluated only when debug logging is on
             logger.opt(lazy=True).debug(
@@ -640,9 +640,9 @@ def train(config: TrainerConfig):
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
-        tensor_stats = tensors.compute_stats()
+        tensor_metrics = tensor_stats.compute_stats()
         if is_moe_model:
-            tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
+            tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
         # The dp mesh excludes cp, whose ranks hold the same rows.
         global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
@@ -667,16 +667,16 @@ def train(config: TrainerConfig):
                 f"{format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
                 "add more inference nodes."
             )
-        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats.get('entropy/all/mean', float('nan')):.4f}"
-        if "mismatch_kl/all/mean" in tensor_stats:
-            step_message += f" | Mismatch KL {tensor_stats['mismatch_kl/all/mean']:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_metrics['loss/mean']:.4f} | Entropy {tensor_metrics.get('entropy/all/mean', float('nan')):.4f}"
+        if "mismatch_kl/all/mean" in tensor_metrics:
+            step_message += f" | Mismatch KL {tensor_metrics['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
-        if "max_vio/mean" in tensor_stats:
-            step_message += f" | Max Vio {tensor_stats['max_vio/mean']:.4f}"
-        if "routing_confidence/mean" in tensor_stats:
-            step_message += f" | Routing Conf. {tensor_stats['routing_confidence/mean']:.4f}"
+        if "max_vio/mean" in tensor_metrics:
+            step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
+        if "routing_confidence/mean" in tensor_metrics:
+            step_message += f" | Routing Conf. {tensor_metrics['routing_confidence/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics
@@ -700,13 +700,13 @@ def train(config: TrainerConfig):
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
-        entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
-        mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
+        entropy_mean = tensor_metrics.get("entropy/all/mean", 0.0)
+        mismatch_kl_mean = tensor_metrics.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
-            tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
+            tensor_metrics["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
-        tensor_stats["step"] = progress.step
-        asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
+        tensor_metrics["step"] = progress.step
+        asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_metrics), step=progress.step))
 
         # Log time metrics
         time_metrics = {
