@@ -40,7 +40,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
+from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
@@ -924,11 +924,6 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
-    if parallel_dims.ep_enabled:
-        # EP replaces params with DTensors that default to requires_grad=True,
-        # re-freeze base params that LoRA froze earlier.
-        if config.lora is not None:
-            freeze_all_except_lora(model)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
