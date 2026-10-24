@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -59,26 +60,26 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     if sample.advantages is None:
         return True
 
+    mask = np.asarray(sample.mask, dtype=bool)
+    advantages = np.asarray(sample.advantages)
     if sample.rl_weights is None:
-        rl_weights = [1.0 if trainable else 0.0 for trainable in sample.mask]
+        rl_weights = mask.astype(np.float32)
     else:
-        rl_weights = list(sample.rl_weights)
+        rl_weights = np.array(sample.rl_weights, dtype=np.float32)
+    if not len(mask) == len(advantages) == len(rl_weights):
+        raise ValueError(
+            f"mask, advantages and rl_weights must align: {len(mask)}, {len(advantages)}, {len(rl_weights)}"
+        )
 
-    changed = False
-    for index, (trainable, advantage, weight) in enumerate(
-        zip(sample.mask, sample.advantages, rl_weights, strict=True)
-    ):
-        if trainable and advantage == 0.0 and weight != 0.0:
-            rl_weights[index] = 0.0
-            changed = True
-
-    if not changed:
+    pruned = mask & (advantages == 0.0) & (rl_weights != 0.0)
+    if not pruned.any():
         return True
 
+    rl_weights[pruned] = 0.0
     sample.rl_weights = rl_weights
-    has_rl = any(trainable and weight != 0.0 for trainable, weight in zip(sample.mask, rl_weights, strict=True))
-    has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
-    has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
+    has_rl = bool((mask & (rl_weights != 0.0)).any())
+    has_ce = sample.ce_weights is not None and bool(np.any(np.asarray(sample.ce_weights) != 0.0))
+    has_ref_kl = sample.ref_kl_weights is not None and bool(np.any(np.asarray(sample.ref_kl_weights) != 0.0))
     return has_rl or has_ce or has_ref_kl
 
 
@@ -364,7 +365,7 @@ class TrainSink:
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
-                sample.temperatures = [temperature] * len(sample.token_ids)
+                sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
                 if (
                     env.requires_sampling_masks
                     and sample.sampling_mask is None
@@ -378,7 +379,8 @@ class TrainSink:
                         "the inference server config (the rl entrypoint does this automatically) - "
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
-                if env.requires_top_logprobs and sample.top_logprobs is None:
+                mask_logprobs = sample.sampling_mask.logprobs if sample.sampling_mask is not None else None
+                if env.requires_top_logprobs and sample.top_logprobs is None and mask_logprobs is None:
                     raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
