@@ -14,7 +14,12 @@ from torch import nn
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import Activation, ActivationDispatch, ActivationType
-from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, ExpertCompute
+from prime_rl.trainer.models.layers.expert_compute import (
+    BF16ExpertCompute,
+    ExpertCompute,
+    FusedDispatchExpertCompute,
+)
+from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax", "sqrtsoftplus"]
@@ -78,7 +83,7 @@ class GroupedExperts(nn.Module):
         expert_type: ExpertType = "gated",
         activation: ActivationType | Activation = "silu",
         bias: bool = False,
-        compute: ExpertCompute | None = None,
+        compute: ExpertCompute | FusedDispatchExpertCompute | None = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -98,7 +103,7 @@ class GroupedExperts(nn.Module):
             self.supported_fusions = {}
         self.set_compute(compute or BF16ExpertCompute())
 
-    def set_compute(self, compute: ExpertCompute) -> None:
+    def set_compute(self, compute: ExpertCompute | FusedDispatchExpertCompute) -> None:
         compute.validate(self)
         self.compute = compute
 
@@ -106,12 +111,10 @@ class GroupedExperts(nn.Module):
     def token_group_alignment(self) -> int:
         return self.compute.token_group_alignment
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.compute(self, x, num_tokens_per_expert)
+    def forward(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor:
+        """``routing`` is ``num_tokens_per_expert`` for dispatched tokens grouped by expert, or
+        ``top_scores, selected_experts_indices`` for undispatched tokens when the compute fuses dispatch."""
+        return self.compute(self, x, *routing)
 
     def init_weights(self, init_std: float):
         if self.gate_up_proj is None:
@@ -160,7 +163,7 @@ class TokenChoiceTopKRouter(nn.Module):
         topk_sorted: bool = True,
     ):
         super().__init__()
-        self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
+        self.gate = FP32Linear(dim, num_experts, bias=gate_bias)
         self.register_buffer(
             "selection_bias",
             torch.zeros(num_experts, dtype=torch.float32) if selection_bias else None,
@@ -172,9 +175,6 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_scale = route_scale
         self.topk_sorted = topk_sorted
         self.force_balanced = False
-        # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
-        # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
-        self.fp32_gate = False
 
     def forward(
         self,
@@ -201,21 +201,16 @@ class TokenChoiceTopKRouter(nn.Module):
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
-        if self.fp32_gate:
-            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
-            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
-        else:
-            logits = self.gate(x)
+        logits = self.gate(x)
 
-        # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
         if self.score_func == "sigmoid":
-            scores = torch.sigmoid(logits.float())
+            scores = torch.sigmoid(logits)
         elif self.score_func == "softmax":
-            scores = F.softmax(logits.float(), dim=1)
+            scores = F.softmax(logits, dim=1)
         elif self.score_func == "topk_softmax":
             scores = logits
         elif self.score_func == "sqrtsoftplus":
-            scores = F.softplus(logits.float()).sqrt()
+            scores = F.softplus(logits).sqrt()
         else:
             raise NotImplementedError(f"Unknown score function {self.score_func}")
 

@@ -1,13 +1,41 @@
 import time
+from collections.abc import Sequence
 
 import torch
 from torch import nn
-from transformers import PretrainedConfig
 
-from prime_rl.trainer.lora import has_lora_layers
-from prime_rl.trainer.models.layers.lora import LoRAModule
+from prime_rl.trainer.models.base import AttentionFlops, PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+
+
+class FlopCounter:
+    """Training FLOPs of packed documents.
+
+    6 FLOPs per active parameter per token, plus each sequence-mixing layer's FLOPs per document (a
+    token attends only within its own document). The model is walked once, at construction.
+
+    `flops_per_token_6dn` is the plain 6 * active params estimate (no attention, no LoRA discount), for
+    MFU comparable with the common 6ND convention.
+    """
+
+    def __init__(self, model: PreTrainedModelPrimeRL):
+        active_params = model.num_active_params()
+        self.flops_per_token_6dn = 6 * active_params
+        lora_params = [param for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name]
+        if lora_params:
+            # Frozen base matmuls cost forward (2x) and dX (2x); adapters cost 6x.
+            lora_active_params = count_active_params(model, lora_params)
+            self.matmul_flops_per_token = 4 * (active_params - lora_active_params) + 6 * lora_active_params
+        else:
+            self.matmul_flops_per_token = 6 * active_params
+        self.attention_modules = [module for module in model.modules() if isinstance(module, AttentionFlops)]
+
+    def __call__(self, seq_lens: Sequence[int]) -> int:
+        return sum(
+            n * self.matmul_flops_per_token + sum(module.attention_flops(n) for module in self.attention_modules)
+            for n in seq_lens
+        )
 
 
 class PerfCounter:
@@ -16,19 +44,18 @@ class PerfCounter:
 
     Two modes:
     - Sliding window over full-step wall time: `count_tokens(tokens)` each step,
-      read smoothed values via `get_tokens_per_second()` / `get_mfu()`.
+      read smoothed values via `get_tokens_per_second()`.
       Time is measured between successive `count_tokens` calls (full step).
     - Single point on a caller-provided duration: `get_step_tokens_per_second(tokens, fwd_bwd_time)`
-      / `get_step_mfu(tokens, fwd_bwd_time)`. No smoothing.
+      / `get_step_mfu(flops, fwd_bwd_time)`, with `flops` summed from `flop_counter(seq_lens)`. No smoothing.
 
     Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
-    def __init__(self, model: nn.Module, seq_len: int, window_size: int = 10):
+    def __init__(self, model: nn.Module, window_size: int = 10):
         self.window_size = window_size
         self.tokens: list[int] = []
         self.times: list[float] = []
-        self.model = model
 
         self._world = get_world()
         self._logger = get_logger()
@@ -37,7 +64,7 @@ class PerfCounter:
             self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         else:
             self.gpu_peak_flops = 0
-        self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
+        self.flop_counter = FlopCounter(model)
 
     def count_tokens(self, tokens: int) -> None:
         """Push a step into the sliding window. Time is recorded internally."""
@@ -52,21 +79,12 @@ class PerfCounter:
             return None
         return sum(self.tokens[1:]) / (self.times[-1] - self.times[0])
 
-    def get_mfu(self) -> float | None:
-        tokens_per_second = self.get_tokens_per_second()
-        if tokens_per_second is None:
-            return None
-        return self._mfu_from_tps(tokens_per_second)
-
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
         """Single-step throughput from a caller-provided duration."""
         return tokens / fwd_bwd_time
 
-    def get_step_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
-        return self._mfu_from_tps(self.get_step_tokens_per_second(tokens, fwd_bwd_time))
-
-    def _mfu_from_tps(self, tokens_per_second: float) -> float:
-        return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
+    def get_step_mfu(self, flops: float, fwd_bwd_time: float) -> float:
+        return 100 * flops / fwd_bwd_time / self.gpu_peak_flops / self._world.world_size
 
     def _get_peak_flops(self, device_name: str) -> float:
         """
@@ -108,126 +126,13 @@ class PerfCounter:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
 
-    @staticmethod
-    def get_active_mm_params(config: PretrainedConfig) -> float:
-        """Get number of active parameters per token involved in matmuls"""
-        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
-        if hasattr(config, "text_config"):
-            config = config.text_config
-
-        vocab_size = config.vocab_size
-        hidden_size = config.hidden_size
-        intermediate_size = getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0))
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        num_attention_heads = config.num_attention_heads
-        num_hidden_layers = config.num_hidden_layers
-
-        ## Attention
-        if hasattr(config, "q_lora_rank") and hasattr(config, "kv_lora_rank"):
-            # MLA
-            q_params = num_hidden_layers * (
-                hidden_size * config.q_lora_rank + config.q_lora_rank * num_attention_heads * config.qk_head_dim
-            )
-            kv_params = num_hidden_layers * (
-                hidden_size * (config.kv_lora_rank + config.qk_rope_head_dim)
-                + config.kv_lora_rank * num_attention_heads * (config.qk_nope_head_dim + config.v_head_dim)
-            )
-            o_params = num_hidden_layers * (num_attention_heads * config.v_head_dim * hidden_size)
-        else:
-            # GQA
-            num_key_value_heads = config.num_key_value_heads
-            q_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
-            kv_params = 2 * num_hidden_layers * hidden_size * num_key_value_heads * head_dim
-            o_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
-
-        ## MLP
-        if hasattr(config, "first_k_dense_replace"):
-            num_dense_layers = config.first_k_dense_replace
-            num_sparse_layers = config.num_hidden_layers - num_dense_layers
-        elif hasattr(config, "num_experts_per_tok"):
-            num_dense_layers = 0
-            num_sparse_layers = config.num_hidden_layers
-        else:
-            num_dense_layers = config.num_hidden_layers
-            num_sparse_layers = 0
-
-        dense_mlp_params = num_dense_layers * 3 * intermediate_size * hidden_size
-        sparse_mlp_params = 0
-
-        # Some MoE models (e.g. DeepSeek) use moe_intermediate_size, others (e.g. Granite) just use intermediate_size
-        moe_intermediate_size = getattr(config, "moe_intermediate_size", None) or intermediate_size
-        if hasattr(config, "num_shared_experts") and config.num_shared_experts:  # Shared experts
-            sparse_mlp_params += num_sparse_layers * config.num_shared_experts * 3 * moe_intermediate_size * hidden_size
-        if hasattr(config, "num_experts_per_tok") and config.num_experts_per_tok:  # Routed experts
-            sparse_mlp_params += (
-                num_sparse_layers * config.num_experts_per_tok * 3 * moe_intermediate_size * hidden_size
-            )
-        if hasattr(config, "n_routed_experts"):  # DeepSeek Router
-            sparse_mlp_params += num_sparse_layers * config.n_routed_experts * hidden_size
-        elif hasattr(config, "num_experts") and config.num_experts is not None:  # Qwen Router
-            sparse_mlp_params += num_sparse_layers * config.num_experts * hidden_size
-        else:
-            sparse_mlp_params = 0
-
-        ## LM Head
-        lm_head_params = vocab_size * hidden_size
-        ## Total
-        return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
-
-    def _get_num_flop_per_token(self, model_config: PretrainedConfig, seq_len: int) -> int:
-        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
-        if hasattr(model_config, "text_config"):
-            model_config = model_config.text_config
-
-        l, h, t = (  # noqa: E741
-            model_config.num_hidden_layers,
-            model_config.num_attention_heads,
-            seq_len,
-        )
-        # Head dims as torchtitan's quadratic_attention_flops_per_token: the real head_dim (e.g. 128 for
-        # Qwen3-235B, whose hidden_size / num_attention_heads is 64), or the MLA qk / v head dims.
-        if hasattr(model_config, "qk_head_dim") and hasattr(model_config, "v_head_dim"):
-            qk_head_dim, v_head_dim = model_config.qk_head_dim, model_config.v_head_dim
-        else:
-            qk_head_dim = v_head_dim = (
-                getattr(model_config, "head_dim", None) or model_config.hidden_size // model_config.num_attention_heads
-            )
-        # Reasoning behind the factor of 6 for the self-attention part of the formula:
-        # 1. each self-attention has 2 matmul in the forward and 4 in the backward (6)
-        #    (q @ K^T over qk_head_dim, then scores @ V over v_head_dim, per head and attended token)
-        # 2. the flash attention does 1 more matmul recomputation in the backward
-        #    but recomputation should not be counted in calculating MFU           (+0)
-        # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
-        # 4. we follow the convention and do not account for sparsity in causal attention
-        attention_flops = 6 * l * h * (qk_head_dim + v_head_dim) * t
-
-        if has_lora_layers(self.model):
-            # LoRA case:
-            # - Frozen base matmuls still incur dX in backward: 2×, plus forward: 2× => 4× active_mm
-            # - LoRA adapter params cost 6×
-            flop_per_token = 4 * self.get_active_mm_params(model_config) + 6 * self._count_lora_adapter_params()
-            flop_per_token += attention_flops
-        else:
-            # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
-            flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
-
-        return flop_per_token
-
-    def _count_lora_adapter_params(self) -> int:
-        return sum(
-            p.numel()
-            for module in self.model.modules()
-            if isinstance(module, LoRAModule)
-            for p in module.parameters(recurse=False)
-        )
-
 
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, seq_len: int, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module, window_size: int = 10) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, seq_len, window_size)
+        _PERF_COUNTER = PerfCounter(model, window_size)
 
     return _PERF_COUNTER

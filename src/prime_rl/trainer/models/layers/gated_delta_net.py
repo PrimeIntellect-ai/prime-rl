@@ -6,6 +6,7 @@ from fla.ops.cp import build_cp_context
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import delta_rule_flops
 from prime_rl.utils.cp import CPContext
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
@@ -60,6 +61,14 @@ class GatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(hidden_size, num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(hidden_size, num_value_heads, bias=False)
         self.cp_context = CPContext()
+
+    def attention_flops(self, seq_len: int) -> int:
+        return delta_rule_flops(
+            num_heads=self.num_value_heads,
+            key_head_dim=self.key_head_dim,
+            v_head_dim=self.value_head_dim,
+            seq_len=seq_len,
+        )
 
     def forward(
         self,

@@ -242,6 +242,46 @@ ratio_high = 5.0
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
+### IcePop with Score Centering
+
+Enable [score centering](https://arxiv.org/abs/2609.20807) on IcePop:
+
+```toml
+[trainer.loss]
+type = "icepop"
+score_centering = true
+score_centering_topk = 128
+```
+
+Training sampling requires positive temperature. With untruncated sampling
+(`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
+and the trainer approximates the remaining sampler mass as proportional to its own tail.
+
+With bounded top-k (optionally combined with top-p), the launcher captures at least
+`top_k` probabilities and enables sampling replay. The renderer retains the complete
+recorded support; the trainer normalizes over that same support and computes exact
+centering on it, without a tail approximation. `score_centering_topk` only controls
+the captured head for untruncated sampling. The existing sampling-replay limits and
+eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
+
+With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is
+`A * (w_a * grad(log p_a) - sum_v q_v*w_v*grad(log p_v))`. The correction applies
+even when the sampled action is rejected. All centering coefficients are detached.
+The modeled tail has a constant importance ratio, so all tail actions are accepted
+or rejected together. Both tail masses are floored at `1e-6` for stability.
+This is an approximation to the unknown sampler tail, not exact full-distribution
+centering. The IcePop ratio band remains `[0.2, 5]` by default.
+
+The launcher configures probability capture automatically. Standalone inference
+servers need `processed_logprobs` and `max_logprobs >= sampling.logprobs + 2`.
+The renderer requests two extra candidates to recover a head independent of the
+sampled action, excluding ties at the head boundary. Missing heads fail explicitly.
+Compact HTTP transport packs token IDs and probabilities into binary buffers.
+
+Metrics report captured sampler `score_centering/head_mass`, modeled
+`score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
+baseline's logit-gradient L1 norm before advantage scaling).
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).
@@ -326,6 +366,17 @@ type = "grpo"
 [orchestrator.train.algo.length_penalty]
 type = "linear"
 ```
+
+The opt-in `linear-subagent` penalty uses the same coefficients and group normalization, summing output and newly introduced input tokens within each branch. It assumes branches do not share physical prefixes. Its `subagent_token_weight` defaults to `0`, excluding subagent input and output tokens; `1` counts them fully. An empty length-penalty block selects `linear`.
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "linear-subagent"
+subagent_token_weight = 0.0
+num_turns_weight = 0.0
+```
+
+Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
