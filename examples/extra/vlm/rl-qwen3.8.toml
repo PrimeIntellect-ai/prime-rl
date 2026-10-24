@@ -61,7 +61,7 @@ fullgraph = false
 
 [trainer.optim]
 type = "muon"
-lr = 1.2e-6
+lr = 1e-6
 mu = 0.95
 betas1 = 0.9
 betas2 = 0.95
