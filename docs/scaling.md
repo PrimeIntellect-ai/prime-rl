@@ -126,7 +126,7 @@ PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded and all-gather their keys instead, which needs no head sharding.
 
-Ulysses head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Nemotron-H redistributes its Mamba activations between sequence- and head-parallel layouts in the model-owned Mamba path; the CP degree must divide `mamba_num_heads` and `n_groups`.
+Ulysses head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Nemotron-H redistributes its Mamba activations between sequence- and head-parallel layouts in the model-owned Mamba path; the CP degree must divide `mamba_num_heads` and divide or be a multiple of `n_groups`. Past `n_groups`, the ranks that split a group's heads each receive a copy of that group's B/C projections (e.g. Nemotron 3.5 Super, 128 heads in 8 groups, runs CP up to 32). EP borrows the CP ranks, so `ep` must be a multiple of `cp`.
 
 ```toml
 [trainer.model]
@@ -152,6 +152,15 @@ mode = "selective"
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
 
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
+
+For long sequences, a MoE layer's routed-expert activations (tokens × `top_k` × expert hidden size) dominate the recompute and backward peak. Blocks whose output at each token depends on that token alone (Nemotron-H MoE layers) can be checkpointed in token chunks, so recompute and backward hold one chunk at a time:
+
+```toml
+[trainer.model.ac]
+token_chunk_size = 8192      # tokens per rank per chunk
+```
+
+On Nemotron 3.5 Super (4 × 8 H200, CP 8) this takes 512k and 1M-token rows from out-of-memory to a 71 and 107 GiB peak; other blocks keep whole-block checkpointing.
 
 `ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only losing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
 
