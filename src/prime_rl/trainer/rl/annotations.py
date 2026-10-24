@@ -17,9 +17,8 @@ class AnnotationWriter:
     ``(trace_id, branch_index)``. Streams are full-length over the sample's token prefix
     so readers can fold them onto trace nodes without knowing the trainer's loss mask;
     positions outside that mask hold null, since a fold keeps sampled tokens only and a
-    run of nulls costs nothing once the stream is sealed. Streams stay float32 arrays with
-    NaN for null until the file monitor serializes them, which keeps them at 4 bytes per
-    token instead of a Python float each.
+    run of nulls costs nothing once the stream is sealed. Streams are float32 arrays with
+    NaN for null.
 
     ``export`` accumulates locally per micro batch; ``flush`` gathers every rank's
     records to rank 0, the only rank running monitors. CP ranks past the first
