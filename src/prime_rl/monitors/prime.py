@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import prime_runs as pr
-from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.credentials import missing_prime_credentials
 from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.record import read_record, update_record, write_record
@@ -61,15 +61,8 @@ OFF_HINT = "turn the monitor off with --no-monitors.prime"
 
 
 def prime_mode() -> str:
-    """$PRIME_RUNS_MODE when set, else online. Like the W&B monitor, a configured
-    monitor without credentials fails the run instead of leaving it untracked."""
-    if mode := os.getenv(pr.MODE_ENV):
-        return mode
-    if not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
-        raise RuntimeError(
-            f"The prime monitor found no Prime API key. Authenticate with `prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
-        )
-    return "online"
+    """$PRIME_RUNS_MODE when set, else online."""
+    return os.getenv(pr.MODE_ENV) or "online"
 
 
 def _base_url() -> str | None:
@@ -97,6 +90,12 @@ class PrimeTrainMonitor(Monitor):
     """
 
     config: PrimeTrainMonitorConfig
+    links = PRIME_LINKS
+
+    @classmethod
+    def missing_credentials(cls, config: PrimeTrainMonitorConfig) -> str | None:
+        return missing_prime_credentials()
+
     run: pr.Run
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
@@ -215,6 +214,11 @@ class PrimeEvalMonitor(Monitor):
     this the run shows every metric group except the one its evals produced."""
 
     config: PrimeEvalMonitorConfig
+    links = PRIME_EVAL_LINKS
+
+    @classmethod
+    def missing_credentials(cls, config: PrimeEvalMonitorConfig) -> str | None:
+        return missing_prime_credentials()
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         self.mode = prime_mode()

@@ -426,7 +426,7 @@ The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream und
 
 ### Weights & Biases
 
-W&B is off by default:
+W&B is off by default. Without W&B credentials (`wandb login` or `WANDB_API_KEY`), a run with `--monitors.wandb` logs a warning and runs without it:
 
 ```bash
 uv run rl @ rl.toml --monitors.wandb                      # default project, random name
@@ -455,7 +455,7 @@ name = "my-experiment"
 
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
 
-The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Without a key, the run logs a warning and trains without the monitor. A run whose registration fails (no team, a team outside the allowlist) fails at launch: select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 
 ## Rules of Thumb
 

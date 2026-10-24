@@ -124,7 +124,7 @@ The dashboard's overview tab reads the trace stream directly. It shows one env a
 
 ### Prime
 
-Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval fails at launch and says so:
+Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval logs a warning and runs without the monitor:
 
 ```bash
 uv run eval gsm8k -n 32 -r 4 -c 8
