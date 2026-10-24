@@ -74,6 +74,9 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     assert model.cp_support(restored).styles == frozenset({"ulysses"})
     assert model.supports_packed_multimodal_training == model.is_vlm
     assert (get_vision_encoder(model) is not None) == model.is_vlm
+    if model.is_vlm:
+        text_model = Qwen3_8FlashNextForCausalLM(restored.text_config)
+        assert model.num_active_params() == text_model.num_active_params()
     original = {
         name: torch.randn_like(value) if value.is_floating_point() else value.clone()
         for name, value in model.state_dict().items()

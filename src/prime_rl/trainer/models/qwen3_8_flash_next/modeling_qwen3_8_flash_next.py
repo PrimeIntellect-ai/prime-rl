@@ -1,8 +1,9 @@
 import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
+from transformers.utils import torch_compilable_check
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
@@ -253,8 +254,14 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
 
         image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
         if has_images:
-            image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
-            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+            image_mask = input_ids == self.config.image_token_id
+            torch_compilable_check(
+                image_mask.sum() * inputs_embeds.shape[-1] == image_embeds.numel(),
+                "Image features and image tokens do not match",
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(
+                image_mask.unsqueeze(-1).expand_as(inputs_embeds), image_embeds
+            )
         else:
             # Every rank must retain the vision graph so FSDP collectives stay symmetric.
             inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
@@ -334,6 +341,11 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
 
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
+
+    def num_active_params(self) -> int:
+        if not self.is_vlm:
+            return super().num_active_params()
+        return super().num_active_params() - count_active_params(self, self.model.visual.parameters())
 
     def forward(
         self,
