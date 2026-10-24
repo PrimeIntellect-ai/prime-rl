@@ -3,12 +3,11 @@ from typing import Any
 from huggingface_hub.dataclasses import strict
 from transformers.configuration_utils import PretrainedConfig
 
-from prime_rl.utils.transformers_compat import DEEPSEEK_V4_LAYER_TYPES, allow_deepseek_v4_layer_types
-
-# Below transformers 5.15 the base `validate_layer_type` rejects V4's layer types outright, and
-# it runs from `super().__init__()`, ahead of this class's own override. The inference half of
-# the repo needs the same shim (see `inference/patches.py`).
-allow_deepseek_v4_layer_types()
+DEEPSEEK_V4_LAYER_TYPES = (
+    "sliding_attention",
+    "compressed_sparse_attention",
+    "heavily_compressed_attention",
+)
 
 
 @strict
@@ -82,6 +81,7 @@ class DeepseekV4Config(PretrainedConfig):
         attention_bias: Whether the attention projections carry a bias.
         mlp_bias: Whether the MLP projections carry a bias.
         attention_dropout: Dropout ratio on the attention probabilities.
+        kv_precision: Precision attention reads keys and values at, `"bf16"` or `"fp8"` (vLLM's `fp8_ds_mla` rounding).
         output_router_logits: Whether to return the router logits.
         router_aux_loss_coef: Coefficient of the router auxiliary loss.
         router_jitter_noise: Jitter noise added to the router inputs during training.
@@ -145,6 +145,7 @@ class DeepseekV4Config(PretrainedConfig):
         attention_bias: bool = False,
         mlp_bias: bool = False,
         attention_dropout: float = 0.0,
+        kv_precision: str = "bf16",
         output_router_logits: bool = False,
         router_aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
@@ -178,6 +179,7 @@ class DeepseekV4Config(PretrainedConfig):
         self.o_lora_rank = o_lora_rank
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.kv_precision = kv_precision
         self.index_n_heads = index_n_heads
         self.index_head_dim = index_head_dim
         self.index_topk = index_topk
@@ -241,14 +243,6 @@ class DeepseekV4Config(PretrainedConfig):
             **kwargs,
         )
 
-        # Set after the base __init__: its `validate_layer_type` hook is registered at
-        # class-decoration time on `PretrainedConfig` (so a subclass override never runs)
-        # and only accepts the generic "dense" / "sparse" labels, not V4's hash_moe / moe.
-        # Only exists for duck-typing with HF's real modeling code (see `to_dict`) --
-        # `num_hash_layers` is this class's own source of truth.
-        self.mlp_layer_types = ["hash_moe"] * min(num_hidden_layers, num_hash_layers) + ["moe"] * max(
-            0, num_hidden_layers - num_hash_layers
-        )
         self.rope_parameters = self._nest_rope_parameters(raw_rope_parameters)
         self.validate_architecture()
 
@@ -279,13 +273,6 @@ class DeepseekV4Config(PretrainedConfig):
             # key unset lets `_compute_yarn_parameters` derive `0.1*log(factor)+1 != 1.0`.
             compress.setdefault("attention_factor", 1.0)
         return {"main": main, "compress": compress}
-
-    def convert_rope_params_to_dict(self, **kwargs):
-        # Dead code: `rope_theta`/`rope_scaling` never reach here via `**kwargs`, and
-        # `self.rope_parameters` is overwritten by `_nest_rope_parameters` right after
-        # `super().__init__()` returns regardless. Kept for parity with the same
-        # (also-dead) override in `laguna/configuration_laguna.py`.
-        return kwargs
 
     def validate_architecture(self) -> None:
         """Compress_rates completeness: every non-sliding layer type needs a rate."""
@@ -319,18 +306,6 @@ class DeepseekV4Config(PretrainedConfig):
             finally:
                 self.rope_parameters = rope_parameters_dict
 
-    def to_dict(self) -> dict[str, Any]:
-        """Drop the in-memory-only field before serializing.
-
-        `num_hash_layers` is the on-disk source of truth (matching the real checkpoint);
-        `mlp_layer_types` only exists in memory so HF's real `DeepseekV4SparseMoeBlock`
-        (which reads `config.mlp_layer_types[layer_idx]` directly) still works when this
-        config is handed to it, e.g. in HF-parity tests.
-        """
-        output = super().to_dict()
-        output.pop("mlp_layer_types", None)
-        return output
-
     def validate_layer_type(self) -> None:
         """Narrow `@strict`'s generic layer-type check to V4's own attention vocabulary.
 
@@ -340,9 +315,8 @@ class DeepseekV4Config(PretrainedConfig):
         plain method override on an undecorated subclass, whose `validate()`
         closure would keep calling the base `PretrainedConfig.validate_layer_type`.
         The base one still runs first, from `super().__init__()`, but it checks
-        `layer_types` against transformers' generic vocabulary, which
-        `allow_deepseek_v4_layer_types` widened above precisely so V4's names get
-        through it. Narrowing them to `DEEPSEEK_V4_LAYER_TYPES` is what this adds.
+        `layer_types` against transformers' generic vocabulary. Narrowing them to
+        `DEEPSEEK_V4_LAYER_TYPES` is what this adds.
         """
         if len(self.layer_types) != self.num_hidden_layers:
             raise ValueError(

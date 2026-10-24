@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.orchestrator.clients import AdminPlane
-from prime_rl.trainer.world import get_world
+from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
 
@@ -63,6 +63,7 @@ class WeightSender(ABC):
             (step_dir / SENDER_READY_MARKER).touch()
             self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
+        wait_for_master(f"weight_broadcast/{step}", self.timeout)
         self._broadcast(model, step, step_dir)
         if self.world.is_master:
             (step_dir / FINISHED_MARKER).touch()
@@ -94,9 +95,8 @@ class WeightSender(ABC):
 
     @abstractmethod
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
-        """Move v{step}'s weights to the consumer. Rank synchronization is the
-        transport's own job — non-master ranks must be held back until the
-        master finished the handshake (see ``NCCLWeightSender._broadcast``)."""
+        """Move v{step}'s weights to the consumer. All ranks enter only after
+        the master finished the handshake."""
 
     def _clean(self, step: int) -> None:
         """Remove old broadcast dirs, keeping ``step`` and ``step - 1`` (a

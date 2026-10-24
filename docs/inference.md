@@ -15,6 +15,7 @@ This page covers the inference configuration and the supported features/deployme
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
+    - [HiSparse](#hisparse)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
@@ -245,8 +246,36 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); `0` connects the node to the pool without contributing storage. The store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
 
+Under disaggregated P/D, `inference.deployment.prefill_kv_cache_offload` and `inference.deployment.decode_kv_cache_offload` set offload per role. By default both inherit `inference.kv_cache_offload`; `"None"` disables offload for that role. With Mooncake, decode instances also store the KV they generate (`save_decode_cache`), so the next turn's prefill can load the previous completion. A typical setup keeps all storage on prefill and connects decode without capacity:
+
+```toml
+[inference.deployment.prefill_kv_cache_offload]
+type = "mooncake"
+[inference.deployment.prefill_kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000
+
+[inference.deployment.decode_kv_cache_offload]
+type = "mooncake"
+[inference.deployment.decode_kv_cache_offload.cpu]
+num_bytes = 0
+```
+
+Mooncake keys a block by model, parallel rank and content hash only. Roles that share the store must therefore use the same KV layout (tensor parallel size, `kv_cache_dtype`, block size): do not change these in only one role's `*_vllm_overrides`.
+
+### HiSparse
+
+> **Experimental.** Off by default and not used by any example config. Validated so far: P/D with HiSparse on decode, router replay and sampling replay on, on a small random DSA model (statistical checks only). Not validated yet: a real GLM-5.x long-prompt (40k+) quality A/B, aggregated HiSparse against the trainer forward pass, and preemption or failed KV loads with HiSparse.
+
+HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV in a pinned host pool. Decode attention reads per-request GPU buffers that hold the indexer top-k rows. This frees GPU memory for many more concurrent decode sequences.
+
+```toml
+[inference.hisparse]
+host_pool_gib = 160   # pinned host RAM per GPU worker
+```
+
+prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM 0.32 also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
 
 ### Optimized P/D disaggregation deployment
 
@@ -287,7 +316,7 @@ On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (o
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
-To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Router replay is not supported with disaggregated P/D: vLLM does not capture routed experts across NIXL KV transfer.
+To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Under disaggregated P/D the router takes the prompt routing from the prefill instance and the completion routing from the decode instance. 
 
 ```toml
 [trainer]
@@ -299,7 +328,7 @@ enable_return_routed_experts = true
 
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env server pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
-Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
+Router replay works with `inference.kv_cache_offload` (native and Mooncake). vLLM keeps routing rows in a local store keyed by block hash, and no connector moves them with the KV, so a loaded block has no rows on this instance. prime-rl therefore limits an offload load to the prompt tokens the client already has routing for: the blocks before `routed_experts_prompt_start`. Multi-turn rollouts keep their offload hits, because the reloaded earlier turns sit before that position. Offloaded prefixes past it (first turns, prompts shared across a group or across nodes) are recomputed. Loaded blocks then serve local GPU prefix hits like any other block, so a local hit is cut at the first loaded block that a request needs routing from (for example a first turn that hits a prefix reloaded by another rollout's later turn), and the rest is recomputed. Under P/D, decode-side loads are not limited: decode requests emit routing only from their first forward.
 
 ### Sampling Replay
 
@@ -308,11 +337,36 @@ Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-top_k = 512   # optional, defaults to 512 under truncation (bounds each sampling mask)
+top_k = 128   # optional, defaults to 128 under truncation (bounds each sampling mask)
 ```
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run together with router replay. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
+Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature and bounded top-k. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. They do not inherit the training top-k cap. Mixed batches skip mask capture for eval rows; only training rows determine the capture width. All-eval batches skip mask capture entirely.
 
-When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `0 < top_k <= 512`.
+Online eval uses the chat-completions client with logprobs disabled. The chat endpoint already strips returned router data. An omitted eval top-k is explicitly disabled (`-1`) rather than inherited from the model generation config. Token-renderer training clients retain their required sampled logprobs. Router instrumentation itself remains engine-wide; this does not remove its model-side overhead. Request-scoped mask capture currently rejects speculative decoding rather than silently capturing eval supports through the rejection sampler.
+
+When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request and use `0 < top_k <= 512`.
+
+### Top-p before the top-k cap
+
+Sampling-mask capture defaults to `inference.top_p_before_top_k = true`: select the nucleus using the full
+probability distribution, then keep at most `top_k` candidates and renormalize.
+For example, with `top_p = 0.99` and `top_k = 128`, a nucleus smaller than 128 is
+unchanged; a larger nucleus is capped at 128 and may retain less than 99% of the
+original mass. Ties at the cap are broken by token ID (higher IDs retained).
+
+This applies engine-wide, including evaluation requests, when sampling-mask
+capture is enabled on the V2 model runner. Without capture, the flag has no effect.
+The recorded mask and processed logprobs
+reflect the final support, so trainer replay and score centering use that same
+distribution. Set `inference.top_p_before_top_k = false` to use vLLM's
+top-k-then-top-p order instead. Bounded batches compute the normalizer over the
+full vocabulary but sort only the top-k candidates. Single-row batches,
+unbounded requests, and ties across the extraction boundary use a full sort.
+
+Non-streaming compact replay requests capture support IDs and their normalized
+logprobs together, avoiding a separate full-vocabulary top-logprob extraction.
+The server returns the same compact-logprob and sampling-mask formats. Evaluation
+requests do not enable this capture. Aligned support evidence is encoded directly;
+reordered or mixed evidence still uses support matching and validation.

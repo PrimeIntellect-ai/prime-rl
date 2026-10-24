@@ -72,9 +72,11 @@ class DeepseekV4HyperConnection(nn.Module):
     def update_states(
         self, post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, mhc_states: torch.Tensor
     ) -> torch.Tensor:
-        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`."""
-        dtype = mhc_states.dtype
-        return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
+        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`.
+
+        The write-back runs in fp32 and rounds once to the residual's dtype.
+        """
+        return dsv4_mhc.fused_post_bda(comb.float(), mhc_states, post.float(), sublayer_out)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)

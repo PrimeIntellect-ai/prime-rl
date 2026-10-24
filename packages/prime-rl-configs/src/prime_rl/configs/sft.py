@@ -13,27 +13,14 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
-    EnvVars,
     FileSystemWeightBroadcastConfig,
-    HeartbeatConfig,
     NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
-    TrainerLogConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import (
-    AdamWConfig,
-    CheckpointConfig,
-    ConstantSchedulerConfig,
-    GCConfig,
-    ModelConfig,
-    OptimizerConfig,
-    SchedulerConfig,
-    TokenizerConfig,
-    validate_scheduler,
-)
+from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -49,6 +36,11 @@ class BaseDataConfig(BaseConfig):
 
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
+
+    pad_to_seq_len: bool = False
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
+    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
+    at the cost of extra padding."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -216,13 +208,10 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class SFTConfig(BaseConfig):
-    model: ModelConfig = ModelConfig()
-
-    env_vars: EnvVars = {}
-    """Extra environment variables for the SFT trainer process(es). Merged on top of the launcher defaults."""
-
-    tokenizer: TokenizerConfig = TokenizerConfig()
+class SFTConfig(BaseTrainerConfig):
+    auto_freeze_moe_router = False
+    # Standard L2 regularization for supervised training.
+    auto_weight_decay = 0.01
 
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
@@ -244,16 +233,8 @@ class SFTConfig(BaseConfig):
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
     LoRA and external inference use filesystem broadcast."""
 
-    optim: OptimizerConfig = AdamWConfig()
-
-    scheduler: SchedulerConfig = ConstantSchedulerConfig()
-
-    ckpt: CheckpointConfig | None = None
-
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
-
-    log: TrainerLogConfig = TrainerLogConfig()
 
     monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
@@ -273,27 +254,6 @@ class SFTConfig(BaseConfig):
         return self.output_dir / self.run.dir
 
     @model_validator(mode="after")
-    def resolve_moe_router_dtype_auto(self):
-        """Resolve ``model.moe_router_dtype='auto'``: SFT defaults to bf16 routing, skipping the fp32 gate GEMM and its fp32 FSDP unit."""
-        if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = "bfloat16"
-        return self
-
-    @model_validator(mode="after")
-    def resolve_weight_decay_auto(self):
-        """Resolve ``optim.weight_decay='auto'``: SFT keeps the historical 0.01 default — standard L2 regularization for supervised training."""
-        if self.optim.weight_decay == "auto":
-            self.optim.weight_decay = 0.01
-        return self
-
-    @model_validator(mode="after")
-    def resolve_freeze_moe_router_auto(self):
-        """Resolve ``model.freeze_moe_router='auto'``: SFT trains the router."""
-        if self.model.freeze_moe_router == "auto":
-            self.model.freeze_moe_router = False
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
         default the run directory, W&B run name and platform run name to it when not
@@ -310,27 +270,6 @@ class SFTConfig(BaseConfig):
         if self.monitors.prime is not None and self.monitors.prime.name is None:
             self.monitors.prime.name = self.run.name
         return self
-
-    matmul_precision: Literal["highest", "high", "medium"] = "high"
-    """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
-
-    max_steps: int | None = None
-    """Maximum training steps. If None, runs indefinitely."""
-
-    memory_profiler_path: Path | None = None
-    """Path to write the memory profile to."""
-
-    gc: GCConfig | None = GCConfig()
-    """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
-
-    trace_path: Path | None = None
-    """Path to write the PyTorch profiler trace to."""
-
-    dist_timeout_seconds: int = 3600
-    """Timeout in seconds for torch distributed ops."""
-
-    heartbeat: HeartbeatConfig | None = None
-    """BetterStack heartbeat configuration for monitoring training progress."""
 
     deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
@@ -376,34 +315,6 @@ class SFTConfig(BaseConfig):
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
-    def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
-            raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
-        return self
-
-    @model_validator(mode="after")
-    def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.full_offload and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
@@ -442,8 +353,6 @@ class SFTConfig(BaseConfig):
                     "LoRA training is not yet supported with in-memory weight broadcast. "
                     "Set weight_broadcast.type = 'filesystem'."
                 )
-            if self.eval.retrigger_on_resume:
-                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
@@ -574,21 +483,22 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe":
+            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_micro_batch_size(self):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
             if self.val is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
-        return self
-
-    @model_validator(mode="after")
-    def vlm_freeze_incompatible_with_lora(self):
-        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
-            raise ValueError(
-                "freeze_vision_encoder=false is incompatible with LoRA. "
-                "LoRA freezes all non-adapter parameters including the vision encoder."
-            )
         return self
 
     @model_validator(mode="after")
@@ -605,37 +515,7 @@ class SFTConfig(BaseConfig):
             raise ValueError("VLM SFT requires val.data.micro_batch_size = 1.")
         return self
 
-    @model_validator(mode="after")
-    def dont_do_massive_traces(self):
-        if self.trace_path:
-            if self.max_steps is None:
-                raise ValueError("Must specify max_steps when tracing")
-            if self.max_steps >= 10:
-                raise ValueError(
-                    "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
-                )
-        return self
-
-    @model_validator(mode="after")
-    def validate_scheduler_steps(self):
-        validate_scheduler(self.scheduler, self.max_steps)
-        return self
-
-    @model_validator(mode="after")
-    def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
-            raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
     ### Auto-setup and validate shared configs
-
-    @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
-        if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.name
-        if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
@@ -651,6 +531,8 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:

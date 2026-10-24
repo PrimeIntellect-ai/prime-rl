@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import wandb
-from wandb.errors import CommError
+from wandb.errors import CommError, UsageError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.links import WANDB_LINKS, publish_link, register_links
 from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
@@ -113,7 +114,13 @@ class WandbMonitor(Monitor):
         # Non-primary processes in shared mode wait for the primary to create the run.
         # Everyone else still retries to absorb transient W&B server errors (e.g. 404 on upsertBucket).
         max_retries = 30 if shared_mode and not primary else 5
-        self.wandb = init_wandb(max_retries)
+        try:
+            self.wandb = init_wandb(max_retries)
+        except UsageError as e:
+            raise RuntimeError(
+                f"The W&B monitor could not start ({e}). Authenticate with `wandb login` (or set WANDB_API_KEY), "
+                "or turn the monitor off with --no-monitors.wandb"
+            ) from e
 
         wandb.define_metric("*", step_metric="step")
         # key prefixes that arrived via step=None (wall-time rows); their time axis
@@ -138,6 +145,13 @@ class WandbMonitor(Monitor):
                 self.logger.warning(f"Failed to create W&B overview view - {e}")
 
         self.logger.info(f"Logging metrics to W&B ({self.wandb.url})")
+        await asyncio.to_thread(self._record, output_dir, self.wandb.url if is_online else None)
+
+    @staticmethod
+    def _record(output_dir: Path, url: str | None) -> None:
+        register_links(output_dir, WANDB_LINKS, 1 if url else 0)
+        if url:
+            publish_link(output_dir, WANDB_LINKS, "run", url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # every log carries the monitor's own wall-time stamp
@@ -155,7 +169,7 @@ class WandbMonitor(Monitor):
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")
         t0 = time.perf_counter()
         # Explicit finish: in (experimental) shared mode the SDK's atexit finish does

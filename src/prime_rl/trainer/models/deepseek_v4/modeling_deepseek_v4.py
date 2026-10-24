@@ -15,7 +15,7 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
@@ -40,8 +40,8 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     transposed, i.e. summing over the *source* stream axis. Sinkhorn leaves `comb` doubly
     stochastic but not symmetric, so that direction is not a free choice.
 
-    Both gates come out of the hyper-connection in fp32 and are cast back to the residual's
-    dtype before mixing, so the residual keeps the dtype it entered with.
+    Both gates come out of the hyper-connection in fp32 and stay fp32 through the write-back,
+    which rounds once to the residual's dtype, so the residual keeps the dtype it entered with.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
@@ -108,12 +108,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(
-            frozenset({"ring"}),
-            "currently only supporting the minimal ring strategy where all keys, or tensors "
-            "required to form the keys are all-gathered in the CP region.",
-        )
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
+        return None
 
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
@@ -210,19 +207,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             Token ids. Threaded down to every decoder layer, not just the embedding: the
             bootstrap layers route on `tid2eid[input_ids]` and cannot run without them.
         position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Each token's position within its own document. Only checked, never consulted: the
-            positions every rotation and every causal threshold reads are derived from
-            `seq_lens`, so the two cannot disagree.
-
-            NOTE: omitting it is not the same as having no positions. `inject_prime_lm_head`
-            rebinds this model's forward and substitutes a 1-based `arange(1, N + 1)`, which is
-            wrong for V4 twice over, since entries are numbered and rotated from 0: it shifts
-            every query-entry RoPE distance by one and admits an entry whose last source token
-            is one past the query. `check_position_ids` rejects it, so a caller that passes
-            nothing gets a `ValueError` rather than a working default.
-
-            TODO: make that substitution 0-based, matching HF's convention and every other
-            model's own fallback, after which an omitted `position_ids` would just be accepted.
+            Ignored. V4 derives every position it rotates or thresholds on from `seq_lens`.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
@@ -262,8 +247,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             cp_rank=cp_rank,
             cp_world_size=cp_world_size,
         )
-        if position_ids is not None:
-            packed.check_position_ids(position_ids)
 
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
