@@ -155,8 +155,8 @@ jobs:
               - 'src/prime_rl/entrypoints/{sft,dashboard}.py'
               - 'src/prime_rl/monitors/**'
               - 'src/prime_rl/eval/{online,runner}.py'
-              - 'tests/integration/test_reverse_text_sft{,_lora}.py'
-              - 'configs/ci/integration/reverse-text-sft{,-lora}/**'
+              - 'tests/integration/test_{reverse_text_sft,reverse_text_sft_lora,pretrain}.py'
+              - 'configs/ci/integration/{reverse-text-sft,reverse-text-sft-lora,pretrain}/**'
             rl:
               - *runtime
               - 'tools/convert_{dcp_to_bf16,dcp_to_fp8,bf16_to_fp8,fp8_to_bf16}.py'
@@ -188,7 +188,8 @@ jobs:
           tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" '[
               if $all or $sft then
                 {test: "reverse_text_sft", name: "Reverse Text SFT"},
-                {test: "reverse_text_sft_lora", name: "Reverse Text SFT LoRA"}
+                {test: "reverse_text_sft_lora", name: "Reverse Text SFT LoRA"},
+                {test: "pretrain", name: "Pretrain"}
               else empty end,
               if $all or $rl then
                 {test: "reverse_text", name: "Reverse Text"},

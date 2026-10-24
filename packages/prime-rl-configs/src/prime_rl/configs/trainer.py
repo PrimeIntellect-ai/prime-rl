@@ -261,6 +261,17 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
+class InitConfig(BaseConfig):
+    """Random weight initialization: every weight matrix and embedding from N(0, std). Norm weights start at 1,
+    biases and other 1-D parameters at 0."""
+
+    std: float = Field(0.02, gt=0)
+    """Standard deviation."""
+
+    seed: int = 0
+    """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
+
+
 class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""

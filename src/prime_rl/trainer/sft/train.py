@@ -3,7 +3,6 @@ import prime_rl._compat  # noqa: F401
 import math
 import time
 import asyncio
-from contextlib import nullcontext
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -11,7 +10,7 @@ from datetime import timedelta
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.profiler import profile, ProfilerActivity, record_function
+from torch.profiler import profile, ProfilerActivity
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -26,10 +25,9 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    get_expert_load_stats,
-    get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
+    iter_moe_blocks,
     reshard_module,
     setup_processor,
     setup_tokenizer,
@@ -37,23 +35,25 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
+from prime_rl.trainer.metrics import DeadExperts, SpikeDetector, grad_norms_by_group, take_routing_counts
+from prime_rl.trainer.micro_batches import run_micro_batches
 from prime_rl.trainer.sft.data import (
+    TokenDataset,
     get_dataset_progress,
     get_dataset_state,
     load_sft_dataset,
     setup_dataloader,
     setup_dataset,
+    starts_with_bos,
 )
+from prime_rl.trainer.sft.val_sets import ValSets
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
-    begin_backward,
     clip_grad_norm_,
-    finish_backward,
     get_ckpt_disk_metrics,
     prepare_gradient_offload,
     print_sample,
-    scale_gradients_,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
@@ -143,7 +143,25 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(
+        config.model,
+        parallel_dims,
+        loading_from_ckpt_later,
+        init=config.model.init if not loading_from_ckpt_later else None,
+    )
+    logger.info(
+        f"Parameters: {model.num_active_non_embedding_params() / 1e6:,.1f}M active non-embedding, "
+        f"{model.num_non_embedding_params() / 1e6:,.1f}M non-embedding, "
+        f"{model.num_embedding_params() / 1e6:,.1f}M embedding, {model.num_params() / 1e6:,.1f}M total"
+    )
+    if not loading_from_ckpt_later:
+        param_metrics = {
+            "params/total": model.num_params(),
+            "params/embedding": model.num_embedding_params(),
+            "params/non_embedding": model.num_non_embedding_params(),
+            "params/active_non_embedding": model.num_active_non_embedding_params(),
+        }
+        asyncio.run(monitors.log({**param_metrics, "step": 0}, step=0))
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -193,7 +211,7 @@ def train(config: SFTConfig):
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     val_raw_dataset = None
-    if config.val is not None:
+    if config.val is not None and config.val.data is not None:
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
@@ -233,8 +251,8 @@ def train(config: SFTConfig):
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
+    moes = list(iter_moe_blocks(model))
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
@@ -284,8 +302,6 @@ def train(config: SFTConfig):
         del out
         return loss_sum, token_count
 
-    maybe_record_function = nullcontext
-
     def run_eval_loop(data_iter):
         """Validation forward loop. Returns token-weighted global mean loss."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
@@ -319,37 +335,61 @@ def train(config: SFTConfig):
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
-    def run_validation(step: int) -> None:
-        val_dataset = setup_dataset(
-            tokenizer,
-            config.val.data,
-            config.model.cp,
-            max_epochs=1,
-            raw_dataset=val_raw_dataset,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
+    val_sets = None
+    if config.val is not None and config.val.sets:
+        bos = isinstance(dataset, TokenDataset) and starts_with_bos(dataset.shards, tokenizer.bos_token_id)
+        val_sets = ValSets(config.val, tokenizer, bos, config.run_dir)
 
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            get_load_balance_stats(model)
-        if nan_count > 0:
-            logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
-        if mean_loss != mean_loss:
-            logger.warning(f"Validation at step {step} had no valid tokens")
-        else:
-            logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+    def run_validation(step: int) -> None:
+        start_time = time.perf_counter()
+        if config.val.data is not None:
+            val_dataset = setup_dataset(
+                tokenizer,
+                config.val.data,
+                config.model.cp,
+                max_epochs=1,
+                raw_dataset=val_raw_dataset,
+                renderer_config=config.renderer,
+                processor=processor,
+                multimodal=multimodal,
             )
-        )
+            val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
+
+            # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+            mean_loss, nan_count = run_eval_loop(val_dataloader)
+            if is_tt_moe_model(model):
+                # Keep validation routing out of the next training step's statistics.
+                get_load_balance_stats(model)
+            if nan_count > 0:
+                logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
+            if mean_loss != mean_loss:
+                logger.warning(f"Validation at step {step} had no valid tokens")
+            else:
+                logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
+            asyncio.run(
+                monitors.log(
+                    {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+                )
+            )
+        metrics = {}
+        if val_sets is not None:
+            metrics = val_sets.run(model, step)
+            if moes:
+                take_routing_counts(moes)
+            logger.success(f"Validation sets | Step {step} | {len(val_sets.sets)} sets")
+        metrics["time/val"] = time.perf_counter() - start_time
+        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
+
+    def logged_micro_batches(micro_batches):
+        for micro_batch in micro_batches:
+            print_sample(
+                micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
+            )
+            yield micro_batch
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+    dead_experts = DeadExperts()
+    loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
 
     # A broadcast must land at every step an online eval env is due. The schedule is
     # deterministic, so all ranks agree when to enter the transport collective.
@@ -383,7 +423,6 @@ def train(config: SFTConfig):
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
-        maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
@@ -406,25 +445,17 @@ def train(config: SFTConfig):
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
 
-        step_loss_sum = torch.tensor(0.0, device="cuda")
-        nan_loss_count = torch.tensor(0, device="cuda")
-        is_moe_model = is_tt_moe_model(model)
-        moe_stats = (
-            {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
-            }
-            if is_moe_model
-            else {}
-        )
+        # With eval_on_end, the end round scores the last step instead.
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
+            or (
+                not is_first_step
+                and progress.step % config.val.interval == 0
+                and not (config.val.eval_on_end and progress.step == config.max_steps)
+            )
         )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
@@ -441,58 +472,23 @@ def train(config: SFTConfig):
                 grad_scale,
                 overlap_optimizer=not run_validation_this_step,
             )
+        if config.log.log_data:
+            micro_batches = logged_micro_batches(micro_batches)
 
-        step_tokens_per_expert = 0
         perf_counter = get_perf_counter(model)
-        step_local_num_tokens = 0
-        step_local_flops = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
-            step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
-            if config.log.log_data:
-                print_sample(
-                    micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
-                )
-
-            with maybe_record_function("forward"):
-                local_loss_sum, batch_token_count = compute_loss(micro_batch)
-
-            if gradient_manager is None:
-                step_local_token_count += batch_token_count
-
-            if torch.isnan(local_loss_sum.detach()):
-                nan_loss_count += 1
-                logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
-            else:
-                step_loss_sum += local_loss_sum.detach()
-                scaled_loss = local_loss_sum / grad_accum_steps
-
-            with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
-                scaled_loss.backward()
-                finish_backward(gradient_manager)
-
-            if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in micro_moe_stats.items():
-                    moe_stats[f"{name}/mean"] += value / grad_accum_steps
-                    if name == "max_vio":
-                        moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
-                step_tokens_per_expert += tokens_per_expert
-
-        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
-        torch.cuda.synchronize()
+        result = run_micro_batches(
+            model,
+            iter(micro_batches),
+            compute_loss,
+            grad_accum_steps,
+            parallel_dims,
+            perf_counter,
+            gradient_manager=gradient_manager,
+            defer_grad_sync=config.model.defer_grad_sync,
+        )
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
-
-        if gradient_manager is None:
-            global_step_token_count = step_local_token_count.clone()
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item()
-            if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+        if result.nan_count > 0:
+            logger.warning(f"{result.nan_count} micro-batches had a NaN loss and were excluded from the backward pass")
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -503,15 +499,7 @@ def train(config: SFTConfig):
             # unsharded parameters. Reshard so clipping sees every gradient.
             reshard_module(model)
 
-        # Compute the global mean loss for logging.
-        dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        if global_token_count_val > 0:
-            batch_loss = (step_loss_sum / global_token_count_val).item()
-        else:
-            batch_loss = 0.0
-        nan_loss_count = nan_loss_count.item()
-
+        group_grad_norms = grad_norms_by_group(model) if gradient_manager is None else {}
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
@@ -548,10 +536,7 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
+        num_tokens, num_flops = result.num_tokens, result.num_flops
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
@@ -566,13 +551,14 @@ def train(config: SFTConfig):
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
+        batch_loss = result.loss
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if is_moe_model:
+        if result.tokens_per_expert is not None:
             for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
-                value = moe_stats[name].item()
+                value = result.metrics[name]
                 if value > 0:
                     step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
@@ -618,14 +604,17 @@ def train(config: SFTConfig):
             "optim/lr": current_lr,
             "step": progress.step,
         }
+        optim_metrics |= {f"optim/grad_norm/{group}": norm.item() for group, norm in group_grad_norms.items()}
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+            optim_metrics["optim/grad_norm_spike"] = grad_norm_spikes.update(grad_norm.item())
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
             "loss/perplexity": math.exp(min(batch_loss, 20)),
-            "loss/nan_count": nan_loss_count,
+            "loss/nan_count": result.nan_count,
+            "loss/spike": loss_spikes.update(batch_loss),
             "step": progress.step,
         }
         # Log tensor stats
@@ -646,9 +635,10 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
-        if moe_log_metrics:
-            asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
+        step_metrics = {**result.metrics, "step": progress.step}
+        if result.tokens_per_expert is not None:
+            step_metrics["expert_load/dead"] = dead_experts.update(result.tokens_per_expert)
+        asyncio.run(monitors.log(step_metrics, step=progress.step))
 
         is_first_step = False
 
@@ -676,6 +666,10 @@ def train(config: SFTConfig):
             controller.mark_saved(progress.step)
         else:
             ckpt_manager.maybe_clean()
+
+    # After the final checkpoint, so a failure here cannot lose it.
+    if config.val is not None and config.val.eval_on_end and not paused:
+        run_validation(progress.step)
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.

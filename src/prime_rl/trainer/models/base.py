@@ -108,6 +108,24 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """Parameters a text token multiplies through, LoRA adapters included."""
         return count_active_params(self)
 
+    def embedding_params(self) -> list[nn.Parameter]:
+        """The embedding tables (every ``nn.Embedding``, as in `count_active_params`) and the lm_head."""
+        params = [p for m in self.modules() if isinstance(m, nn.Embedding) for p in m.parameters(recurse=False)]
+        return list({id(p): p for p in [*params, *self.lm_head.parameters()]}.values())
+
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+    def num_embedding_params(self) -> int:
+        return sum(p.numel() for p in self.embedding_params())
+
+    def num_non_embedding_params(self) -> int:
+        return self.num_params() - self.num_embedding_params()
+
+    def num_active_non_embedding_params(self) -> int:
+        embedding = {id(p) for p in self.embedding_params()}
+        return count_active_params(self, [p for p in self.parameters() if id(p) not in embedding])
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         """

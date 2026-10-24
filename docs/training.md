@@ -17,6 +17,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Important Metrics](#important-metrics-1)
+- [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
@@ -37,7 +38,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | Command | Purpose | Notes |
 |---|---|---|
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
-| `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
+| `uv run sft` | Supervised fine-tuning on a HF dataset, or [pretraining](#pretraining) on token shards. | Launches torchrun internally; never call torchrun directly. |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
@@ -279,17 +280,18 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `val/loss`, `val/perplexity` — validation metrics when `val.data` is set, logged every `val.interval` steps; `val/<set>/...` for `val.sets` (see [Pretraining](#pretraining)).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
 
 **Stability and optimization:**
 
-- `optim/grad_norm` — spikes precede divergence.
+- `optim/grad_norm` — spikes precede divergence. `optim/grad_norm/<group>` splits it by parameter group (embed, attn, mlp, experts, router, norm, lm_head, ...).
+- `loss/spike`, `optim/grad_norm_spike` — 1 when the value is more than 6 standard deviations above the mean of the previous 128 steps.
 - `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
-- For MoE: `expert_load/{cv,max_mean,cold_frac}/{mean,max}` — expert load per layer over the whole step, from token counts summed across all ranks, as the mean and max over MoE layers. `cv` is std/mean of the per-expert token counts, `max_mean` the busiest expert's count over the mean, and `cold_frac` the fraction of experts receiving under 0.1x the mean. A trainable router that drifts shows up as a rising `cv`/`cold_frac` (MiMo-V2.6 §5.4).
+- For MoE: `expert_load/{cv,max_mean,cold_frac}/{mean,max}` — expert load per layer over the whole step, from token counts summed across all ranks, as the mean and max over MoE layers. `cv` is std/mean of the per-expert token counts, `max_mean` the busiest expert's count over the mean, and `cold_frac` the fraction of experts receiving under 0.1x the mean. A trainable router that drifts shows up as a rising `cv`/`cold_frac` (MiMo-V2.6 §5.4). `expert_load/{min_mean,entropy}/{mean,min}` add the least-loaded expert over the mean and the normalized entropy of the expert shares (1 is uniform), `expert_load/layer_<i>/{max_mean,top_share}` the same per decoder layer, and `expert_load/dead` the experts that got no token in the last 100 steps.
 
 **Performance:**
 
@@ -300,6 +302,69 @@ Pulled from the console log and mirrored to W&B.
 | `perf/mfu_6dn` | MFU from the plain 6 x active params x tokens estimate (no attention FLOPs) |
 | `perf/peak_memory` | peak GPU memory (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
+| `time/data/{max,mean}` | time the step waited for data, max and mean over ranks |
+| `time/val` | time of a validation round |
+| `params/*` | total, embedding, non-embedding and active non-embedding parameter counts, at step 0 |
+
+## Pretraining
+
+Pretraining is SFT on token shards: set `data.type = "tokens"` and `[model.init]`, and launch with `uv run sft` as above. `model.name` only supplies the model config (an HF model id or a directory with a `config.json`); the weights start from the init, or from the checkpoint when resuming.
+
+```toml
+max_steps = 10000
+
+[model]
+name = "path/to/model-dir"         # a config.json; vocab size and special ids must fit the tokenizer
+defer_grad_sync = true             # optional, see below
+
+[model.init]
+std = 0.02                         # every weight matrix and embedding from N(0, std); norms 1, biases 0
+seed = 0                           # the values do not depend on the number of GPUs
+
+[tokenizer]
+name = "path/to/tokenizer"
+
+[data]
+type = "tokens"
+paths = ["data/web", "data/code"]
+seq_len = 8192                     # tokens per window
+batch_size = 256                   # windows per optimizer step, over all GPUs
+micro_batch_size = 4               # windows per forward pass on one GPU
+
+[optim]
+type = "muon"
+lr = 3e-3
+
+[scheduler]
+type = "linear"
+warmup_steps = 1000
+decay_steps = 2000
+
+[ckpt]
+interval = 1000
+```
+
+**Token shards.** `paths` are folders of [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. The files of all folders (in folder order, then file name order) are read as one token pool, so mixtures are made offline, as folders sized to the mixture weights. Every document must end with the tokenizer's EOS; the trainer checks the first document of every folder.
+
+**Windows.** Each epoch reads every `seq_len` window of the pool once, in a random order and from a random offset drawn from `data.seed` and the epoch. Every token is trained on. Attention and positions restart at every document (`data.document_masking = false` makes a window one sequence) and at every window. Resume restores the data position on the same GPU layout and `data.num_workers`. `progress/epoch` is the fraction of the pool read.
+
+**Gradient sync.** `model.defer_grad_sync = true` reduce-scatters the gradients once per optimizer step instead of after every micro-batch. It saves communication with gradient accumulation (most with experts across nodes), but keeps the unsharded parameters and gradients in memory across the micro-batches, so a config that fits without it can run out of memory.
+
+**Validation sets.** `[val]` also scores log-likelihood sets on the training model (`val.sets`), with or without `val.data`. A set is the name of a pretrain-evals set (`ppl`, `ctxcont` or `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`) or a held-out folder of token shards, scored like a `ppl` set: every document on its own, every token after its first. Every set is scored at each of `seq_lens` (default `data.seq_len`). Requests start with BOS only if the training documents do. As for `val.data`, step N scores the weights before step N's update; `eval_on_end` also scores the final weights, after the final checkpoint, logged at the last step. Requires `model.cp = 1`.
+
+```toml
+[val]
+interval = 1000
+eval_on_start = true
+eval_on_end = true
+data_dir = "/shared/evals-data"
+sets = ["lambada", { name = "heldout", path = "data/heldout" }]
+seq_lens = [2048, 8192]
+```
+
+The metrics are `val/<set>/<metric>@<length>`, e.g. `val/heldout/bpb@8k`: `loss` (nats per token), `bpb` (bits per UTF-8 byte, comparable across tokenizers), and `acc`, `acc_norm` and `greedy_em` for multiple-choice and gold-answer sets. `time/val` is the time of a validation round. Training metrics are the SFT ones above.
+
+For multi-node runs, use `[deployment]` and `[slurm]` as for SFT (see [Scaling § SLURM](scaling.md#slurm)).
 
 ## Checkpointing
 

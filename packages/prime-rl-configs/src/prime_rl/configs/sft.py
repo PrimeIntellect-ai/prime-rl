@@ -20,7 +20,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
+from prime_rl.configs.trainer import BaseTrainerConfig, InitConfig, ModelConfig, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -155,6 +155,36 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class TokensDataConfig(BaseDataConfig):
+    """Pretraining data: ``seq_len`` windows of pre-tokenized datatrove shards, read as one token pool. Every token
+    is trained on. Mixtures are made offline, as shard folders."""
+
+    type: Literal["tokens"] = "tokens"
+
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
+
+    seed: int = 0
+    """Seed for the window order: each epoch reads every window of the pool once, in a new random order and from a
+    new random offset."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a window is one sequence: attention spans the
+    whole window and positions run over it."""
+
+
+class TokenEvalSetConfig(BaseConfig):
+    """A held-out folder of datatrove tokenized shards, scored like a ``ppl`` set: every document on its own, in
+    windows of each of ``val.seq_lens``."""
+
+    name: str
+    """Names the metrics, ``val/<name>/<metric>@<length>``."""
+
+    path: Path
+    """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``, as for ``tokens`` data."""
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -162,10 +192,52 @@ class SFTValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    data: SFTDataConfig
+    eval_on_end: bool = False
+    """Run validation on the final weights, after the last optimizer step and the final checkpoint, instead of before
+    the last step's update."""
+
+    data: SFTDataConfig | None = None
+    """Validation dataset. Its mean loss is logged as ``val/loss`` and ``val/perplexity``."""
+
+    sets: list[str | TokenEvalSetConfig] = []
+    """Log-likelihood sets to score: the name of a pretrain-evals set (``ppl``, ``ctxcont`` or ``pairs``) in
+    ``data_dir``, or a held-out token folder. Logged as ``val/<set>/<metric>@<length>``."""
+
+    data_dir: Path | None = None
+    """Directory of the pretrain-evals sets, one directory per set with ``test.parquet`` and ``meta.json``."""
+
+    seq_lens: list[int] | None = None
+    """Context lengths to score every set at: the window length for ``ppl`` and token sets and the context limit for
+    ``ctxcont`` sets. Defaults to ``data.seq_len``."""
+
+    micro_batch_tokens: int | None = Field(None, ge=1)
+    """Tokens per packed row of the sets (one forward pass on one GPU). Defaults to the training micro-batch
+    (``data.micro_batch_size * data.seq_len``) or the longest of ``seq_lens``, whichever is larger; must be at least
+    the longest of ``seq_lens``."""
+
+    save_arrays: bool = False
+    """Write the sets' per-document arrays (npz) and summaries to ``<run_dir>/val/step_N/``."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        if self.data is None and not self.sets:
+            raise ValueError("[val] needs val.data or val.sets")
+        if self.data_dir is None and any(isinstance(eval_set, str) for eval_set in self.sets):
+            raise ValueError("val.data_dir is required for pretrain-evals sets")
+        return self
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | TokensDataConfig, Field(discriminator="type")]
+
+
+class SFTModelConfig(ModelConfig):
+    init: InitConfig | None = None
+    """Initialize the weights from scratch (pretraining) instead of loading them from ``name``, which then only
+    supplies the model config. A resumed run loads the weights from the checkpoint."""
+
+    defer_grad_sync: bool = False
+    """Reduce-scatter the gradients once per optimizer step instead of after every micro-batch. Saves communication
+    with gradient accumulation, but keeps the unsharded parameters and gradients in memory across the micro-batches."""
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -212,6 +284,8 @@ class SFTConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
+
+    model: SFTModelConfig = SFTModelConfig()
 
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
@@ -454,7 +528,7 @@ class SFTConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
+        if self.data.type in ("fake", "tokens") and (self.val is None or self.val.data is None):
             return self
 
         model_id = self.tokenizer.name or self.model.name
@@ -478,7 +552,7 @@ class SFTConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("Sequence length must be divisible by CP degree")
-            if self.val is not None and self.val.data.seq_len % self.model.cp != 0:
+            if self.val is not None and self.val.data is not None and self.val.data.seq_len % self.model.cp != 0:
                 raise ValueError("Validation sequence length must be divisible by CP degree")
         return self
 
@@ -486,7 +560,7 @@ class SFTConfig(BaseTrainerConfig):
     def resolve_mega_moe_max_tokens_per_rank(self):
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
-            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            data_configs = [self.data] + ([self.val.data] if self.val is not None and self.val.data is not None else [])
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
             )
@@ -497,8 +571,29 @@ class SFTConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
-            if self.val is not None and self.val.data.micro_batch_size != 1:
+            if self.val is not None and self.val.data is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def validate_defer_grad_sync(self):
+        if self.model.defer_grad_sync and self.model.offload == "full":
+            raise ValueError("model.defer_grad_sync is not supported with model.offload = 'full'")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_val_sets(self):
+        if self.val is None or not self.val.sets:
+            return self
+        if self.model.cp > 1:
+            raise ValueError("val.sets does not support context parallelism yet")
+        if self.val.seq_lens is None:
+            self.val.seq_lens = [self.data.seq_len]
+        longest = max(self.val.seq_lens)
+        if self.val.micro_batch_tokens is None:
+            self.val.micro_batch_tokens = max(self.data.micro_batch_size * self.data.seq_len, longest)
+        elif self.val.micro_batch_tokens < longest:
+            raise ValueError(f"val.micro_batch_tokens must be at least the longest of val.seq_lens ({longest})")
         return self
 
     @model_validator(mode="after")
@@ -511,7 +606,7 @@ class SFTConfig(BaseTrainerConfig):
             )
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
-        if self.val is not None and self.val.data.micro_batch_size != 1:
+        if self.val is not None and self.val.data is not None and self.val.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires val.data.micro_batch_size = 1.")
         return self
 

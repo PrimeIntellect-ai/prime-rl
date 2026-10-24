@@ -1,0 +1,29 @@
+# A small dense model trained from scratch on token shards, validated on them as a held-out token set. The test
+# writes the shards (Reverse-Text-SFT, Qwen3 tokenizer) and passes their folder as --data.paths and --val.sets.
+max_steps = 20
+
+[model]
+name = "configs/ci/integration/pretrain/model"
+
+[model.init]
+
+[tokenizer]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[data]
+type = "tokens"
+paths = ["set-by-the-test"]
+seq_len = 1024
+batch_size = 8
+micro_batch_size = 2
+
+[optim]
+lr = 3e-3
+
+[val]
+interval = 10
+eval_on_start = true
+eval_on_end = true
+sets = [{ name = "heldout", path = "set-by-the-test" }]
+
+[ckpt]
