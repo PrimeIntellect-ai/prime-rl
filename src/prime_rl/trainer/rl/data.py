@@ -257,14 +257,23 @@ class DataLoader:
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
         top_ids = top_values = None
-        if (head := micro_batch.top_logprobs) is not None:
-            counts = np.frombuffer(head.counts, dtype=np.int32)
+        # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
+        heads = [
+            head
+            for head in (micro_batch.top_logprobs, packed_sampling_mask)
+            if head is not None and head.logprobs is not None
+        ]
+        if heads:
+            head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
+            counts = sum(head_counts)
+            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
+            order = np.argsort(rows, kind="stable")
             width = max(int(counts.max(initial=0)), 1)
             valid = np.arange(width)[None, :] < counts[:, None]
             ids = np.full((len(counts), width), -1, dtype=np.int32)
             values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.frombuffer(head.ids, dtype=np.int32)
-            values[valid] = np.frombuffer(head.logprobs, dtype=np.float32)
+            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
             top_ids = torch.from_numpy(ids).unsqueeze(0)
             top_values = torch.from_numpy(values).unsqueeze(0)
 
@@ -324,8 +333,14 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -
     q = values.exp().masked_fill(~valid, 0.0)
     if (q.sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
-        raise ValueError("Top-k score centering requires untruncated sampling")
+    if batch["sampling_mask"] is not None:
+        support = batch["sampling_mask"][mask]
+        replay = (support >= 0).any(-1)
+        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
+            raise ValueError("Sampler probabilities must normalize over the recorded support")
+        sampled = batch["input_ids"][mask]
+        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
+            raise ValueError("Sampled token is missing from the recorded support")
 
 
 def _torch_dtype(name: str) -> torch.dtype:
