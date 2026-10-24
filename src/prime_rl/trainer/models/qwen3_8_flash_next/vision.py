@@ -6,9 +6,9 @@ from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from prime_rl.trainer.models.layers.attn import (
-    flash_attn_3_varlen_func,
-    flash_attn_4_varlen_func,
-    flash_attn_varlen_func,
+    flash_attn_2_varlen_op,
+    flash_attn_3_varlen_op,
+    flash_attn_4_varlen_op,
 )
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextVisionConfig
@@ -69,9 +69,9 @@ class VisionMLP(nn.Module):
 
 class VisionAttention(nn.Module):
     FLASH_ATTENTION_FUNCTIONS = {
-        "flash_attention_2": flash_attn_varlen_func,
-        "flash_attention_3": flash_attn_3_varlen_func,
-        "flash_attention_4": flash_attn_4_varlen_func,
+        "flash_attention_2": flash_attn_2_varlen_op,
+        "flash_attention_3": flash_attn_3_varlen_op,
+        "flash_attention_4": flash_attn_4_varlen_op,
     }
 
     def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
@@ -87,6 +87,7 @@ class VisionAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.IntTensor,
+        max_seqlen: int,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         sequence_length = hidden_states.shape[0]
@@ -107,18 +108,19 @@ class VisionAttention(nn.Module):
                 value,
                 cu_seqlens_q=cu_seqlens,
                 cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
                 causal=False,
             )
         else:
-            max_sequence_length = int((cu_seqlens[1:] - cu_seqlens[:-1]).max())
             attention_output = self.flash_attention(
                 query,
                 key,
                 value,
                 cu_seqlens,
                 cu_seqlens,
-                max_sequence_length,
-                max_sequence_length,
+                max_seqlen,
+                max_seqlen,
                 causal=False,
             )
         return self.proj(attention_output.reshape(sequence_length, -1))
@@ -136,9 +138,12 @@ class VisionBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.IntTensor,
+        max_seqlen: int,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        hidden_states = hidden_states + self.attn(self.norm1(hidden_states), cu_seqlens, position_embeddings)
+        hidden_states = hidden_states + self.attn(
+            self.norm1(hidden_states), cu_seqlens, max_seqlen, position_embeddings
+        )
         return hidden_states + self.mlp(self.norm2(hidden_states))
 
 
@@ -252,8 +257,9 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
         position_embeddings = (rotary.cos(), rotary.sin())
         sequence_lengths = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0])
         cu_seqlens = F.pad(sequence_lengths.cumsum(dim=0, dtype=torch.int32), (1, 0))
+        max_seqlen = int(sequence_lengths.max())
         for block in self.blocks:
-            hidden_states = block(hidden_states, cu_seqlens, position_embeddings)
+            hidden_states = block(hidden_states, cu_seqlens, max_seqlen, position_embeddings)
         return BaseModelOutputWithPooling(
             last_hidden_state=hidden_states,
             pooler_output=self.merger(hidden_states),
