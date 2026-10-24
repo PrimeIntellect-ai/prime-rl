@@ -121,6 +121,7 @@ def _create_optimizer(
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
+                eps=config.eps,
                 fused=fused_adamw,
             )
         case "muon":
@@ -224,7 +225,9 @@ def _create_muon_optimizer(
         matrix_partitions=matrix_partitions,
         lr=lr,
         mu=config.mu,
+        nesterov=config.nesterov,
         betas=(config.betas1, config.betas2),
+        epsilon=config.eps,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
         distributed_mesh=distributed_mesh,
