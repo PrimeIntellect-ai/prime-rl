@@ -74,7 +74,12 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import (
+    get_broadcast_dir,
+    get_config_dir,
+    resolve_external_resume_dir,
+    resolve_latest_ckpt_step,
+)
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -226,6 +231,7 @@ class Orchestrator:
 
         if config.resume is not None:
             if config.resume.dir is not None:
+                config.resume.dir = resolve_external_resume_dir(self.ckpt_manager.ckpt_dir, config.resume.dir)
                 self.resume_step = config.resume.dir_step
             else:
                 self.resume_step = config.resume.step

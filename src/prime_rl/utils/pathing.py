@@ -311,6 +311,19 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     return latest_step
 
 
+def resolve_external_resume_dir(ckpt_dir: Path, external_dir: Path) -> Path:
+    """Bootstrap from an external RL checkpoint, then recover local progress."""
+    external_step = int(external_dir.name.removeprefix("step_"))
+    for step in reversed(get_all_ckpt_steps(ckpt_dir)):
+        if step <= external_step:
+            break
+        candidate = get_step_path(ckpt_dir, step)
+        if (candidate / "trainer" / ".metadata").is_file() and (candidate / "orchestrator" / "progress.pt").is_file():
+            get_logger().info(f"Recovering from local checkpoint {candidate} instead of {external_dir}")
+            return candidate
+    return external_dir
+
+
 def has_checkpoints(output_dir: Path) -> bool:
     """Check if the output directory contains any checkpoints."""
     ckpt_dir = get_ckpt_dir(output_dir)
