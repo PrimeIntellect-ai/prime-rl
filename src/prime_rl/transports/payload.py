@@ -105,13 +105,14 @@ def routed_layers(config: Any) -> list[int]:
 
 
 def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fill: int) -> np.ndarray | None:
-    """Rows ``[lo, hi)`` of fixed-width ``field`` as int32, ``fill`` where no segment covers a
-    position; None when no segment carries ``field``. Later segments win."""
+    """Rows ``[lo, hi)`` of fixed-width ``field`` in the segments' dtype, ``fill`` where no segment
+    covers a position; None when no segment carries ``field``. Later segments win."""
     field_segments = [segment for segment in segments if segment.field == field]
     if not field_segments:
         return None
     shape = [max(dims) for dims in zip(*(segment.shape for segment in field_segments))]
-    out = np.full((hi - lo, *shape), fill, dtype=np.int32)
+    dtype = np.result_type(*(segment.dtype for segment in field_segments))
+    out = np.full((hi - lo, *shape), fill, dtype=dtype)
     segments = clip_segments(field_segments, lo, hi)
     for segment, data in zip(segments, _pread([(s.file, s.offset, s.rows * s.row_bytes) for s in segments])):
         rows = np.frombuffer(data, dtype=segment.dtype).reshape(segment.rows, *segment.shape)

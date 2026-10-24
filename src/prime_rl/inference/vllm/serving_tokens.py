@@ -52,6 +52,7 @@ from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
+from prime_rl.inference.vllm.paired_capture import serialize_paired_support
 from prime_rl.transports.payload import RAGGED_FIELDS, id_bits, ragged_bytes, routed_layers
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
@@ -110,6 +111,7 @@ class _PackedOutputs:
         self._payload_dir = Path(payload_dir) if payload_dir is not None else None
         self._num_logprobs = request.sampling_params.logprobs
         self._compact = (request.sampling_params.extra_args or {}).get("prl_compact_logprobs", False)
+        self._paired = (request.sampling_params.extra_args or {}).get("prl_paired_capture", False)
         self.fields: dict[int, dict[str, Any]] = {}
         # Choice index -> (field, first token position, rows) for the by-handle file; rows of a
         # ragged field are CSR (counts, values).
@@ -133,10 +135,18 @@ class _PackedOutputs:
                     else:
                         arrays.append(("routed_experts", start, np.ascontiguousarray(rows)))
                     output.routed_experts = None
-                if self._compact:
+                if self._paired:
+                    mask = output.sampling_mask
+                    if mask is None or mask.ids.dtype != np.int64:
+                        raise ValueError("Missing paired sampling-support evidence")
+                    mask.ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
+                    output.logprobs = None
+                elif self._compact:
                     assert output.logprobs is not None, "Did not output logprobs"
                     assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
-                    fields["compact_logprobs"] = serialize_compact_logprobs(output.logprobs, self._num_logprobs)
+                    fields["compact_logprobs"] = serialize_compact_logprobs(
+                        output.logprobs, self._num_logprobs, drop_filtered=output.sampling_mask is not None
+                    )
                     output.logprobs = None
                     self._request.sampling_params.logprobs = None
                 elif isinstance(output.logprobs, FlatLogprobs) and (self._num_logprobs or 0) <= 1:
@@ -147,7 +157,10 @@ class _PackedOutputs:
                 mask = output.sampling_mask
                 if mask is not None:
                     if self._payload_dir is None:
-                        fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
+                        fields["sampling_mask"] = {
+                            "ids": encode_array(mask.ids.astype(np.int32, copy=False)),
+                            "counts": encode_array(mask.counts),
+                        }
                     else:
                         # Mask row i is completion token i.
                         arrays.append(("sampling_mask", prompt_len, (mask.counts, mask.ids)))
@@ -222,6 +235,17 @@ class PrimeRlServingTokens(ServingTokens):
                 return self.create_error_response(
                     "Compact logprobs require a non-streaming request with logprobs enabled"
                 )
+        extra_args = sampling_params.extra_args or {}
+        paired = (
+            not request.stream
+            and extra_args.get("prl_replay", False)
+            and extra_args.get("prl_compact_logprobs", False)
+            and os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1"
+        )
+        sampling_params.extra_args = {**extra_args, "prl_paired_capture": paired}
+        if paired:
+            # Full support evidence supplies both sampled and candidate logprobs.
+            sampling_params.logprobs = None
         if not request.stream:
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None

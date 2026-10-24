@@ -125,13 +125,16 @@ def test_generate_response_post_process_preserves_prompt_metadata():
 
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("selection", [slice(None), slice(1, 3), slice(None, None, 2), slice(0, 0)])
-def test_compact_logprobs_roundtrip_ragged_slices(flat, selection):
+@pytest.mark.parametrize("drop_filtered", [False, True])
+def test_compact_logprobs_roundtrip_ragged_slices(flat, selection, drop_filtered):
     rows = [{7: Logprob(-0.5)}, {8: Logprob(-1.5), 9: Logprob(float("-inf"))}, {10: Logprob(-2.5)}]
     logprobs = FlatLogprobs() if flat else []
     logprobs.extend(rows)
-    encoded = serialize_compact_logprobs(logprobs[selection], 2)
+    encoded = serialize_compact_logprobs(logprobs[selection], 2, drop_filtered)
     raw = pybase64.b64decode(encoded["data"])
-    selected = rows[selection]
+    selected = [
+        {i: v for i, v in row.items() if not drop_filtered or v.logprob > float("-inf")} for row in rows[selection]
+    ]
     count = sum(map(len, selected))
     assert encoded["format"] == "u32-f32-le-v1"
     assert encoded["num_top_logprobs"] == 2
@@ -230,6 +233,8 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
             choice.pop("compact_logprobs", None)
         payload.pop("created")
         responses.append(payload)
+    # The sampled logprobs parse to a float32 array; compare them as values.
+    evidence = [(logprobs.tolist(), *heads) for logprobs, *heads in evidence]
     assert all(item == evidence[0] for item in evidence)
     assert evidence[0][1] == ([[1, 2, 3]] * 2 if replay else [[1, 2]] * 2)
     assert responses[0] == responses[1]
