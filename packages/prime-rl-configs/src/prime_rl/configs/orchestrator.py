@@ -66,8 +66,8 @@ class TrainSamplingConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
         """Truncating values must come from the typed fields — the replay policy reads
-        them. Disabled values pass so resolved configs (where ``resolve_env_config``
-        stamped the ``top_k = -1`` / ``min_p = 0.0`` sentinels) re-validate cleanly."""
+        them. Disabled values (``top_k = -1`` / ``min_p = 0.0``) pass, so configs
+        saved with these sentinels re-validate cleanly."""
         smuggled = [
             key
             for key, truncates in (
@@ -266,7 +266,8 @@ class TrainSourceConfig(EnvConfig):
                 f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
             )
         for name, agent in agent_config_fields(self.env).items():
-            if agent.sampling is None:
+            # An agent with its own client does not sample from the policy.
+            if agent.sampling is None or agent.client is not None:
                 continue
             if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
                 raise ValueError(
@@ -701,15 +702,12 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def resolve_env_config(self):
-        """Set vLLM sampling defaults on each train env from top-level fields."""
+    def resolve_sampling_replay(self):
+        """Opt policy train sources into replay and keep eval sampling independent."""
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             if env.algo.sampling.source == "policy":
-                env.sampling.extra_body.setdefault("top_k", -1)
-                env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
                 extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
                 extra_args["prl_replay"] = env.sampling.truncates_distribution()
                 env.sampling.extra_body["extra_args"] = extra_args

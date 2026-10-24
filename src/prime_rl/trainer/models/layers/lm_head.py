@@ -45,11 +45,13 @@ class FusedOutputLinear(torch.nn.Linear):
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
     as ``loss``, computing the gradients chunk by chunk in the forward pass (see ``_ChunkedCrossEntropySumFn``).
     With ``temperature`` it returns per-token ``logprobs`` and ``entropy``.
+    With ``softcap`` the logits are capped to ``softcap * tanh(logits / softcap)`` before anything else.
     """
 
-    def __init__(self, in_features: int, out_features: int, chunk_size: int):
+    def __init__(self, in_features: int, out_features: int, chunk_size: int, softcap: float | None = None):
         super().__init__(in_features, out_features, bias=False)
         self.chunk_size = chunk_size
+        self.softcap = softcap
 
     def forward(
         self,
@@ -67,7 +69,7 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if temperature is None:
             assert sampling_mask is None and topk_ids is None, "Sampling evidence requires per-token temperatures"
-            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size)
+            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
@@ -78,7 +80,15 @@ class FusedOutputLinear(torch.nn.Linear):
         if topk_ids is not None:
             support = topk_ids.reshape(b * s, topk_ids.shape[-1]).long().contiguous()
         logprobs, entropy, topk_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
-            hidden_states, self.weight, labels, inv_t, self.chunk_size, support, replay, topk_ids is not None
+            hidden_states,
+            self.weight,
+            labels,
+            inv_t,
+            self.chunk_size,
+            support,
+            replay,
+            topk_ids is not None,
+            self.softcap,
         )
 
         logprobs = logprobs.reshape(b, s)
@@ -89,10 +99,11 @@ class FusedOutputLinear(torch.nn.Linear):
 
 class VanillaOutputLinear(torch.nn.Linear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
-    cross-entropy over labels != IGNORE_INDEX as ``loss``."""
+    cross-entropy over labels != IGNORE_INDEX as ``loss``. With ``softcap`` the logits are capped first."""
 
-    def __init__(self, in_features: int, out_features: int):
+    def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
         super().__init__(in_features, out_features, bias=False)
+        self.softcap = softcap
 
     def forward(
         self,
@@ -103,6 +114,8 @@ class VanillaOutputLinear(torch.nn.Linear):
         topk_ids: Tensor | None = None,
     ) -> PrimeLmOutput:
         logits = super().forward(hidden_states)
+        if self.softcap is not None:
+            logits = self.softcap * torch.tanh(logits / self.softcap)
         if labels is not None and temperature is None:
             return PrimeLmOutput(loss=cross_entropy_sum(logits, labels))
         # train.py applies temperature scaling and sampling-mask replay to the logits.
@@ -158,6 +171,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         support: torch.Tensor | None = None,  # [N, K] int64, -1-padded
         replay: torch.Tensor | None = None,  # [N] bool
         return_support: bool = False,
+        softcap: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
@@ -212,7 +226,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
                 logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
+                scaled_logits = logits_chunk.to(torch.float32)
+                if softcap is not None:
+                    scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
+                scaled_logits = scaled_logits * inv_t_chunk
 
                 m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
 
@@ -244,6 +261,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, support, replay)
         ctx.chunk_size = chunk_size
+        ctx.softcap = softcap
 
         return logprobs, entropy, support_logprobs
 
@@ -257,6 +275,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
         hidden, weight, labels, inv_temperature, logz, support, replay = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
+        softcap: float | None = ctx.softcap
 
         n, _ = hidden.shape
         vocab = weight.shape[0]
@@ -288,7 +307,11 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
                 logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
+                scaled_logits = logits_chunk.to(torch.float32)
+                if softcap is not None:
+                    tanh_logits = torch.tanh(scaled_logits / softcap)
+                    scaled_logits = softcap * tanh_logits
+                scaled_logits = scaled_logits * inv_t_chunk
 
                 if support_chunk is not None:
                     local, in_range = _sampling_mask_local_indices(support_chunk, vocab_start, vocab_end)
@@ -310,13 +333,15 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 if grad_head is not None:
                     grad_logits.scatter_add_(1, local, grad_head * in_range)
                 grad_logits = grad_logits * inv_t_chunk
+                if softcap is not None:
+                    grad_logits = grad_logits * (1 - tanh_logits.square())
 
                 if needs_hidden:
                     grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
                 if needs_weight:
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
-        return grad_hidden, grad_weight, None, None, None, None, None, None
+        return grad_hidden, grad_weight, None, None, None, None, None, None, None
 
 
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
@@ -339,6 +364,7 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
         weight: torch.Tensor,  # [V, H]
         labels: torch.Tensor,  # [N], IGNORE_INDEX where the token has no loss
         chunk_size: int,
+        softcap: float | None = None,
     ) -> torch.Tensor:
         assert hidden.dim() == 2 and weight.dim() == 2 and labels.dim() == 1
         assert hidden.shape[0] == labels.shape[0] and hidden.shape[1] == weight.shape[1]
@@ -357,6 +383,9 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
             target = labels_chunk.clamp(min=0).unsqueeze(-1)
 
             logits = (hidden_chunk @ weight.t()).float()
+            if softcap is not None:
+                tanh_logits = torch.tanh(logits / softcap)
+                logits = softcap * tanh_logits
             logz = torch.logsumexp(logits, dim=-1)
             target_logits = logits.gather(1, target).squeeze(1)
             loss += torch.where(valid, logz - target_logits, 0.0).sum()
@@ -365,7 +394,10 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
                 # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
                 grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
                 grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
-                grad_logits = grad_logits.mul_(valid.unsqueeze(-1)).to(hidden.dtype)
+                grad_logits = grad_logits.mul_(valid.unsqueeze(-1))
+                if softcap is not None:
+                    grad_logits = grad_logits.mul_(1 - tanh_logits.square())
+                grad_logits = grad_logits.to(hidden.dtype)
                 if needs_hidden:
                     torch.mm(grad_logits, weight, out=grad_hidden[start:end])
                 if needs_weight:
@@ -381,7 +413,7 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
             grad_hidden = grad_hidden * grad_loss.to(grad_hidden.dtype)
         if grad_weight is not None:
             grad_weight = grad_weight * grad_loss.to(grad_weight.dtype)
-        return grad_hidden, grad_weight, None, None
+        return grad_hidden, grad_weight, None, None, None
 
 
 def inject_prime_lm_head(
@@ -410,16 +442,22 @@ def inject_prime_lm_head(
 
     logger = get_logger()
 
-    # Replace the lm_head with the appropriate wrapper
+    # Replace the lm_head with the appropriate wrapper, keeping a final-logit softcap the model's own head applies
     old_lm_head = model.lm_head
+    softcap = getattr(old_lm_head, "softcap", None)
     if isinstance(chunk_size, int):
         logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
         model.lm_head = FusedOutputLinear(
-            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+            chunk_size=chunk_size,
+            softcap=softcap,
         )
     else:
         logger.info("Injecting vanilla LM head")
-        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+        model.lm_head = VanillaOutputLinear(
+            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, softcap=softcap
+        )
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
