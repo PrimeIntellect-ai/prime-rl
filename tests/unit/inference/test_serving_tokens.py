@@ -224,6 +224,8 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
             choice.pop("compact_logprobs", None)
         payload.pop("created")
         responses.append(payload)
+    # The sampled logprobs parse to a float32 array; compare them as values.
+    evidence = [(logprobs.tolist(), *heads) for logprobs, *heads in evidence]
     assert all(item == evidence[0] for item in evidence)
     assert evidence[0][1] == ([[1, 2, 3]] * 2 if replay else [[1, 2]] * 2)
     assert responses[0] == responses[1]

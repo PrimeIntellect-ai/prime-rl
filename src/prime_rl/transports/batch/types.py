@@ -1,4 +1,5 @@
 import msgspec
+import numpy as np
 
 
 class MMImageRef(msgspec.Struct, array_like=True, gc=False):
@@ -44,21 +45,25 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     There is no prompt/completion split: an agentic, multi-turn branch interleaves context and
     model-sampled spans, so ``mask`` marks which tokens are trainable (model-sampled) and
     ``logprobs`` / ``temperatures`` are aligned per token. All four arrays share the length of
-    ``token_ids``."""
+    ``token_ids``.
 
-    token_ids: list[int]
-    mask: list[bool]
-    logprobs: list[float]
-    temperatures: list[float]
+    Per-token streams are numpy arrays (int32 ids, bool mask, float32 values): a sample lives
+    only in the orchestrator, and per-token Python lists would make its garbage collector walk
+    every token. ``prepare_sample`` turns them into the ``MicroBatch`` wire format."""
+
+    token_ids: np.ndarray
+    mask: np.ndarray
+    logprobs: np.ndarray
+    temperatures: np.ndarray
     env_name: str
-    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
+    ref_logprobs: np.ndarray | None = None  # reference-model logprobs (ref_kl component)
 
     mm_refs: MMRefs | None = None
 
     routed_experts: RoutedExperts | None = None
 
-    # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
-    mm_token_type_ids: list[int] | None = None
+    # mm_token_type_ids: token type ids per token [batch seq] (0=text, 1=image, 2=video)
+    mm_token_type_ids: np.ndarray | None = None
 
     # Per-token component weight streams (full prompt+completion length),
     # stamped by the orchestrator from the env's algorithm. The training loss
@@ -69,15 +74,15 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # (mask and denominator). ``None`` means absent: no ce/ref_kl component,
     # and an rl weight of 1.0 on every trainable token — so the plain GRPO
     # wire stays as small as before.
-    rl_weights: list[float] | None = None
-    ce_weights: list[float] | None = None
-    ref_kl_weights: list[float] | None = None
+    rl_weights: np.ndarray | None = None
+    ce_weights: np.ndarray | None = None
+    ref_kl_weights: np.ndarray | None = None
 
     # Per-token advantages (full prompt+completion length), the fourth stream:
     # the orchestrator broadcasts the rollout's scalar over the completion for
     # scalar algorithms. ``None`` means no rl credit assigned — legal only for
     # samples without live rl member tokens (the trainer raises otherwise).
-    advantages: list[float] | None = None
+    advantages: np.ndarray | None = None
 
     # Appended fields only: array_like structs encode positionally, so appending
     # keeps the wire layout of earlier fields stable across versions.
@@ -91,35 +96,62 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     top_logprobs: TopLogprobs | None = None
     # Per-token policy step whose weights sampled the token; ``-1`` on context tokens. ``None`` for
     # frozen-policy samples.
-    policy_versions: list[int] | None = None
+    policy_versions: np.ndarray | None = None
+
+
+# Per-token streams of a MicroBatch and the dtype each travels as. The orchestrator holds them as
+# numpy arrays and the batch encoder ships each as its raw bytes (`encode_array`); the trainer
+# decodes them as memoryviews into the received frame and reads each with `np.frombuffer`.
+MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
+    "input_ids": np.int32,
+    "loss_mask": np.bool_,
+    "advantages": np.float32,
+    "inference_logprobs": np.float32,
+    "position_ids": np.int32,
+    "temperatures": np.float32,
+    "ref_logprobs": np.float32,
+    "mm_token_type_ids": np.int32,
+    "rl_weights": np.float32,
+    "ce_weights": np.float32,
+    "ref_kl_weights": np.float32,
+    "policy_versions": np.int32,
+}
+
+
+def encode_array(value: object) -> memoryview:
+    """msgspec ``enc_hook``: a numpy array as its raw bytes."""
+    if isinstance(value, np.ndarray):
+        return np.ascontiguousarray(value).data
+    raise NotImplementedError(f"cannot encode {type(value).__name__}")
 
 
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A micro batch of data for training."""
+    """A micro batch of data for training. Per-token streams are numpy arrays in the orchestrator
+    and raw buffers on the wire (``MICRO_BATCH_DTYPES``)."""
 
-    input_ids: list[int]
-    loss_mask: list[bool]
-    advantages: list[float]
-    inference_logprobs: list[float]
-    position_ids: list[int]
+    input_ids: memoryview
+    loss_mask: memoryview
+    advantages: memoryview
+    inference_logprobs: memoryview
+    position_ids: memoryview
     sequence_lengths: list[int]
-    temperatures: list[float]  # Per-token temperatures used during generation
-    env_names: list[str]
+    temperatures: memoryview  # Per-token temperatures used during generation
+    env_names: list[str]  # One per sequence, parallel to ``sequence_lengths``
     seq_lens: list[int]
-    ref_logprobs: list[float] | None = None
+    ref_logprobs: memoryview | None = None
     routed_experts: RoutedExperts | None = None
 
     mm_refs: MMRefs | None = None
-    # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
-    mm_token_type_ids: list[int] | None = None
+    # mm_token_type_ids: token type ids per token [batch seq] (0=text, 1=image, 2=video)
+    mm_token_type_ids: memoryview | None = None
 
     # Per-token component weight streams (see TrainingSample). ``None`` means
     # absent: no ce/ref_kl component, rl weight 1.0 everywhere — packing
     # materializes a stream as soon as one packed sample carries it.
-    rl_weights: list[float] | None = None
-    ce_weights: list[float] | None = None
-    ref_kl_weights: list[float] | None = None
+    rl_weights: memoryview | None = None
+    ce_weights: memoryview | None = None
+    ref_kl_weights: memoryview | None = None
 
     # See TrainingSample.sampling_mask; appended for wire-layout stability.
     sampling_mask: SamplingMask | None = None
@@ -130,5 +162,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
     top_logprobs: TopLogprobs | None = None
+    # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
+    padding: int = 0
     # Per-token TrainingSample.policy_versions; ``-1`` marks an unknown version.
-    policy_versions: list[int] | None = None
+    policy_versions: memoryview | None = None

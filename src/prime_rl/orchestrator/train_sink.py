@@ -14,6 +14,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -39,39 +40,39 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     if sample.advantages is None:
         return True
 
+    mask = np.asarray(sample.mask, dtype=bool)
+    advantages = np.asarray(sample.advantages)
     if sample.rl_weights is None:
-        rl_weights = [1.0 if trainable else 0.0 for trainable in sample.mask]
+        rl_weights = mask.astype(np.float32)
     else:
-        rl_weights = list(sample.rl_weights)
+        rl_weights = np.array(sample.rl_weights, dtype=np.float32)
+    if not len(mask) == len(advantages) == len(rl_weights):
+        raise ValueError(
+            f"mask, advantages and rl_weights must align: {len(mask)}, {len(advantages)}, {len(rl_weights)}"
+        )
 
-    changed = False
-    for index, (trainable, advantage, weight) in enumerate(
-        zip(sample.mask, sample.advantages, rl_weights, strict=True)
-    ):
-        if trainable and advantage == 0.0 and weight != 0.0:
-            rl_weights[index] = 0.0
-            changed = True
-
-    if not changed:
+    pruned = mask & (advantages == 0.0) & (rl_weights != 0.0)
+    if not pruned.any():
         return True
 
+    rl_weights[pruned] = 0.0
     sample.rl_weights = rl_weights
-    has_rl = any(trainable and weight != 0.0 for trainable, weight in zip(sample.mask, rl_weights, strict=True))
-    has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
-    has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
+    has_rl = bool((mask & (rl_weights != 0.0)).any())
+    has_ce = sample.ce_weights is not None and bool(np.any(np.asarray(sample.ce_weights) != 0.0))
+    has_ref_kl = sample.ref_kl_weights is not None and bool(np.any(np.asarray(sample.ref_kl_weights) != 0.0))
     return has_rl or has_ce or has_ref_kl
 
 
-def token_policy_versions(branch: vf.Branch, fallback: int) -> list[int]:
+def token_policy_versions(branch: vf.Branch, fallback: int) -> np.ndarray:
     """Per-token policy versions over the branch's tokens (see ``node_policy_versions``); ``-1`` on
     context tokens."""
-    versions: list[int] = []
+    rows = []
     for node in branch.nodes:
-        row = [-1] * len(node.token_ids)
+        row = np.full(len(node.token_ids), -1, dtype=np.int32)
         for start, end, version in node_policy_versions(node, fallback):
-            row[start:end] = [version] * (end - start)
-        versions += row
-    return versions
+            row[start:end] = version
+        rows.append(row)
+    return np.concatenate(rows)
 
 
 class TrainSink:
@@ -268,7 +269,7 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             policy = train_work(episode).policy
             for sample in samples:
-                sample.temperatures = [temperature] * len(sample.token_ids)
+                sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
                 if policy is not None:
                     sample.policy_versions = token_policy_versions(trace.branches[sample.branch_index], policy.start)
                 if env.requires_sampling_masks and sample.sampling_mask is None:
