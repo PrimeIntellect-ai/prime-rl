@@ -95,9 +95,9 @@ def patch_qwen38_weight_loading() -> None:
                             continue
                 yield name, weight
 
-        weights = _stage_cpu_weights(local_weights()) if cpu_offloaded else local_weights()
-        with closing(weights):
-            loaded = original_load_weights(self, weights)
+        staged_weights = _stage_cpu_weights(local_weights()) if cpu_offloaded else local_weights()
+        with closing(staged_weights):
+            loaded = original_load_weights(self, staged_weights)
         return loaded | skipped
 
     load_weights._prime_rl_filters_ple_shards = True
