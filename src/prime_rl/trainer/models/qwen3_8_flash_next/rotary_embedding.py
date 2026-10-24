@@ -110,8 +110,6 @@ def build_mrope_position_ids(
                 sequence_positions.append(text_positions.unsqueeze(0).expand(3, -1))
                 current_position += group_length
                 continue
-            if modality == 2:
-                raise ValueError("Qwen3.8 Flash Next video MRoPE is not supported")
             if modality != 1:
                 raise ValueError(f"Unsupported Qwen3.8 Flash Next multimodal token type: {modality}")
             if image_grids is None:
