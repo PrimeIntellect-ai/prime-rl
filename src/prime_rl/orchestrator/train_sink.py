@@ -28,7 +28,6 @@ from prime_rl.orchestrator.utils import (
     episode_group_id,
     min_fresh_version,
     node_policy_versions,
-    rollout_staleness,
     train_work,
 )
 from prime_rl.transports.batch import TrainingSample
@@ -146,21 +145,6 @@ class TrainSink:
             episode = self.episode_by_trace[trace_id]
             counts[episode_env_name(episode)] += 1
         return dict(counts)
-
-    def queued_staleness(self) -> list[int]:
-        """Current rollout staleness of each queued live-sourced train trace
-        in the batch being collected (see ``rollout_staleness``)."""
-        episodes = (self.episode_by_trace[trace_id] for trace_id in self.pending_batch)
-        staleness = (rollout_staleness(episode, self.progress.step) for episode in episodes)
-        return [s.rollout for s in staleness if s is not None]
-
-    def gauges(self) -> dict[str, float]:
-        """Instantaneous, read-only gauges sampled by the periodic logger."""
-        staleness = self.queued_staleness()
-        return {
-            "train_sink/staleness/max": float(max(staleness, default=0)),
-            "train_sink/staleness/mean": sum(staleness) / len(staleness) if staleness else 0.0,
-        }
 
     async def add(self, episode: vf.Episode) -> TrainBatch | None:
         """Process one completed episode and return a batch when ready."""

@@ -145,7 +145,6 @@ Pulled from the console logs and mirrored to W&B.
 | orchestrator | `staleness/rollout/{mean,max}` | rollout staleness (max token staleness) of the shipped batch |
 | orchestrator | `staleness/rollout/{in_flight,in_queue}/{mean,max}` | in-flight and in-queue split of rollout staleness |
 | orchestrator | `staleness/rollout/dropped` | queued rollouts dropped because every token passed `max_staleness` |
-| orchestrator | `dispatcher/staleness/{mean,max}`, `train_sink/staleness/{mean,max}` | live rollout staleness of in-flight rollouts and of queued rollouts |
 
 See [Async Training & Staleness](algorithms.md#async-training--staleness) for the token and rollout staleness definitions.
 

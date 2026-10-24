@@ -306,19 +306,6 @@ class Dispatcher:
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
 
-    def inflight_staleness(self) -> list[int]:
-        """Current rollout staleness of each in-flight live-sourced train
-        episode: the version the batch being collected trains on (v{step-1})
-        minus the episode's dispatch version. In-flight episodes carry no token
-        labels yet, and no token predates the dispatch version."""
-        if self.train_envs is None or self.progress is None:
-            return []
-        return [
-            (self.progress.step - 1) - meta.policy_version
-            for meta in self.inflight.values()
-            if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
-        ]
-
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -849,12 +836,9 @@ class Dispatcher:
 
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
-        staleness = self.inflight_staleness()
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/staleness/max": float(max(staleness, default=0)),
-            "dispatcher/staleness/mean": sum(staleness) / len(staleness) if staleness else 0.0,
         }

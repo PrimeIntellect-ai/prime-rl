@@ -862,13 +862,7 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {
-            **disp_gauges,
-            **disp_drain,
-            **watcher_gauges,
-            **self.concurrency.gauges(),
-            **self.train_sink.gauges(),
-        }
+        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean

@@ -153,7 +153,6 @@ All metrics print to the console log (and W&B when configured).
 | orchestrator | `time/step`, `time/save_ckpt` | phase timings |
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
 | orchestrator | `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
-| orchestrator | `dispatcher/staleness/{mean,max}`, `train_sink/staleness/{mean,max}` | live rollout staleness of in-flight and queued rollouts |
 | orchestrator | `staleness/token/{mean,masked}`, `staleness/rollout/{mean,max}`, `staleness/rollout/{in_flight,in_queue}/{mean,max}`, `staleness/rollout/dropped` | per-step token and rollout staleness of trained rollouts (rollout = max token staleness) |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
