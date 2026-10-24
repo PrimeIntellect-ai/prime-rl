@@ -30,7 +30,7 @@ def episode_kind(rec: dict) -> str:
 
 
 TRUNCATING_STOPS = frozenset(
-    {"max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "compaction_failed"}
+    {"max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"}
 )
 """The stop conditions ``verifiers.v1.Trace.is_truncated`` counts as truncation."""
 
@@ -89,7 +89,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         if advantage is not None:
             advantages.append(advantage)
         for node in nodes:
-            if (node.get("message") or {}).get("role") == "assistant":
+            if node.get("sampled"):
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
         truncated = truncated or trace_truncated(trace)

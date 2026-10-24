@@ -1,10 +1,12 @@
-"""Training-side episode, group, and batch assembly.
+"""Training-side group finalization, scalar accounting, and batch assembly.
 
 ``add()`` takes one completed episode, ``fail()`` a request that produced no
 episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Before every
 readiness check the sink sweeps ``pending_batch`` for traces past
 ``max_off_policy_steps`` — this sweep, not the dispatcher's in-flight cancel,
-is what guarantees nothing stale ships."""
+is what guarantees nothing stale ships. Completed groups become numeric
+observations; only queued traces retain verifier objects. The consumer drains
+``take_rollout_window(force=True)`` before shipping a batch."""
 
 from __future__ import annotations
 
@@ -12,13 +14,14 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
@@ -31,26 +34,26 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     if sample.advantages is None:
         return True
 
+    mask = np.asarray(sample.mask, dtype=bool)
+    advantages = np.asarray(sample.advantages)
     if sample.rl_weights is None:
-        rl_weights = [1.0 if trainable else 0.0 for trainable in sample.mask]
+        rl_weights = mask.astype(np.float32)
     else:
-        rl_weights = list(sample.rl_weights)
+        rl_weights = np.array(sample.rl_weights, dtype=np.float32)
+    if not len(mask) == len(advantages) == len(rl_weights):
+        raise ValueError(
+            f"mask, advantages and rl_weights must align: {len(mask)}, {len(advantages)}, {len(rl_weights)}"
+        )
 
-    changed = False
-    for index, (trainable, advantage, weight) in enumerate(
-        zip(sample.mask, sample.advantages, rl_weights, strict=True)
-    ):
-        if trainable and advantage == 0.0 and weight != 0.0:
-            rl_weights[index] = 0.0
-            changed = True
-
-    if not changed:
+    pruned = mask & (advantages == 0.0) & (rl_weights != 0.0)
+    if not pruned.any():
         return True
 
+    rl_weights[pruned] = 0.0
     sample.rl_weights = rl_weights
-    has_rl = any(trainable and weight != 0.0 for trainable, weight in zip(sample.mask, rl_weights, strict=True))
-    has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
-    has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
+    has_rl = bool((mask & (rl_weights != 0.0)).any())
+    has_ce = sample.ce_weights is not None and bool(np.any(np.asarray(sample.ce_weights) != 0.0))
+    has_ref_kl = sample.ref_kl_weights is not None and bool(np.any(np.asarray(sample.ref_kl_weights) != 0.0))
     return has_rl or has_ce or has_ref_kl
 
 
@@ -74,10 +77,7 @@ class TrainSink:
         self.batch_size = batch_size
         self.on_result = on_result
 
-        self.pending_episodes = TrainEpisodes()
-        self.pending_failures: list[DispatchFailure] = []
-        self.pending_cancelled_attempts = 0
-        self.pending_stale_attempts = 0
+        self.rollout_window = RolloutWindow()
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
         self.pending_group_failures: dict[str, list[DispatchFailure]] = defaultdict(list)
         # A dropped group's terminal marker; its ``count`` fills in for the
@@ -85,9 +85,6 @@ class TrainSink:
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
-        # Queued traces voided by the staleness sweep since the last ship;
-        # read and reset by the orchestrator's per-step metrics.
-        self.stale_drops = 0
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
@@ -121,7 +118,7 @@ class TrainSink:
         if not self._group_complete(group_id, env_name):
             return None
         await self.process_group(group_id)
-        return self._maybe_batch()
+        return await self.take_batch()
 
     async def cancel(self, cancellation: GroupCancellation) -> TrainBatch | None:
         """Process a dropped group's terminal marker: its ``count`` completes
@@ -133,7 +130,7 @@ class TrainSink:
         if not self._group_complete(cancellation.group_id, cancellation.env_name):
             return None
         await self.process_group(cancellation.group_id)
-        return self._maybe_batch()
+        return await self.take_batch()
 
     async def fail(self, failure: DispatchFailure) -> TrainBatch | None:
         """Count a request failure toward its group without presenting it as
@@ -144,7 +141,7 @@ class TrainSink:
         if not self._group_complete(failure.group_id, failure.env_name):
             return None
         await self.process_group(failure.group_id)
-        return self._maybe_batch()
+        return await self.take_batch()
 
     def _group_complete(self, group_id: str, env_name: str) -> bool:
         cancellation = self.pending_group_cancellations.get(group_id)
@@ -152,11 +149,11 @@ class TrainSink:
         failed = len(self.pending_group_failures[group_id])
         return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
 
-    def _maybe_batch(self) -> TrainBatch | None:
+    async def take_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
         meet the threshold."""
         self._drop_stale()
-        return self.process_batch() if len(self.pending_batch) >= self.batch_size else None
+        return await self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_off_policy_steps``. The batch being
@@ -169,9 +166,8 @@ class TrainSink:
         inserted group, whose traces may already be stale on arrival.
         Frozen-sourced episodes (no policy span) never go stale.
 
-        A swept trace whose window already shipped is visible only in
-        ``stale_drops`` — its episode was reported with that window, and
-        re-observing it would double-count its stats."""
+        Queue outcomes are counted separately from completed groups; observing
+        the episode again here would double-count rollout statistics."""
         if trace_ids is None:
             if self._swept_step == self.progress.step:
                 return
@@ -188,10 +184,9 @@ class TrainSink:
                 continue
             del self.pending_batch[trace_id]
             del self.episode_by_trace[trace_id]
-            self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
         if dropped:
-            self.stale_drops += dropped
+            self.rollout_window.metrics.count("off_policy/dropped", float(dropped))
             get_logger().warning(
                 f"Dropped {dropped} queued traces past max_off_policy_steps={self.config.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
@@ -221,22 +216,17 @@ class TrainSink:
             + len(failures)
         )
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
-        self.pending_failures.extend(failures)
-        if cancellation is not None:
-            self.pending_cancelled_attempts += cancellation.count
-            if cancellation.reason == "stale":
-                self.pending_stale_attempts += cancellation.count
-
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
-        # cancelled tail. Stale groups bypass the curriculum — a pipeline
-        # decision is not a task result.
-        if cancellation is not None and cancellation.reason == "stale":
-            self.pending_episodes.extend(group, admitted=False, cancelled=True)
+        # cancelled tail. Stale and shutdown groups bypass the curriculum — a
+        # pipeline decision is not a task result.
+        if cancellation is not None and cancellation.reason in ("stale", "shutdown"):
+            self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
-                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
+                f"reason=cancelled ({cancellation.reason})"
             )
             return
 
@@ -245,7 +235,7 @@ class TrainSink:
             await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
-            self.pending_episodes.extend(group, admitted=admitted)
+            self._record_group(group, failures, cancellation, env_name, admitted=admitted)
             self._record_zero_output(group, survivors, n_owed)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
@@ -255,11 +245,11 @@ class TrainSink:
             return
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
-        temperature = env.sampling_args["temperature"]
+        temperature = env.config.sampling.temperature
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
-                sample.temperatures = [temperature] * len(sample.token_ids)
+                sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
                 if env.requires_sampling_masks and sample.sampling_mask is None:
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
@@ -269,14 +259,17 @@ class TrainSink:
                         "the inference server config (the rl entrypoint does this automatically) - "
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
+                mask_logprobs = sample.sampling_mask.logprobs if sample.sampling_mask is not None else None
+                if env.requires_top_logprobs and sample.top_logprobs is None and mask_logprobs is None:
+                    raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
 
-        self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace), admitted=True)
         if not samples_by_trace:
+            self._record_group(group, failures, cancellation, env_name)
             self._record_zero_output(group, survivors, n_owed)
             return
 
@@ -284,8 +277,10 @@ class TrainSink:
         for episode in group:
             for trace in episode.traces:
                 if trace.id in samples_by_trace:
-                    self.episode_by_trace[trace.id] = episode
+                    self.episode_by_trace[trace.id] = episode.model_copy(update={"traces": [trace]})
         self._drop_stale(samples_by_trace)
+        queued = set(samples_by_trace) & self.pending_batch.keys()
+        self._record_group(group, failures, cancellation, env_name, queued_trace_ids=queued, cancelled=not queued)
         # A group's traces share one dispatch version, so the insertion sweep
         # voids all or none of them. A fully-voided group shipped nothing —
         # advance the zero-output tally instead of resetting it, or a stalled
@@ -296,6 +291,39 @@ class TrainSink:
             return
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def _record_group(
+        self,
+        group: list[vf.Episode],
+        failures: list[DispatchFailure],
+        cancellation: GroupCancellation | None,
+        env_name: str,
+        *,
+        admitted: bool = True,
+        cancelled: bool = False,
+        queued_trace_ids: set[str] | None = None,
+    ) -> None:
+        episodes = TrainEpisodes()
+        episodes.extend(group, admitted=admitted, cancelled=cancelled)
+        self.rollout_window.observe(
+            episodes, failures, cancellation, env_name=env_name, queued_trace_ids=queued_trace_ids or set()
+        )
+
+    def take_rollout_window(self, *, force: bool = False) -> RolloutWindow | None:
+        """Transfer accumulated step statistics before shipment."""
+        if not force:
+            return None
+        if not self.rollout_window.groups and not self.rollout_window.metrics.counts:
+            return None
+        window, self.rollout_window = self.rollout_window, RolloutWindow()
+        return window
+
+    def discard_queued(self) -> None:
+        """Release accepted traces that cannot ship after training stops."""
+        if self.pending_batch:
+            self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
+        self.pending_batch.clear()
+        self.episode_by_trace.clear()
 
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
@@ -321,7 +349,7 @@ class TrainSink:
             f"({windows} zero-output batch equivalents)"
         )
 
-    def process_batch(self) -> TrainBatch:
+    async def process_batch(self) -> TrainBatch:
         selected = list(self.pending_batch.items())[: self.batch_size]
 
         selected_by_trace = dict(selected)
@@ -330,43 +358,31 @@ class TrainSink:
             del self.pending_batch[trace_id]
 
         if not self.config.constant_trainer_batch_size:
-            selected_by_trace = {
-                trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
-                for trace_id, samples in selected
-            }
-            selected_by_trace = {trace_id: samples for trace_id, samples in selected_by_trace.items() if samples}
+
+            def prune_selected() -> dict[str, list[TrainingSample]]:
+                pruned = {
+                    trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
+                    for trace_id, samples in selected
+                }
+                return {trace_id: samples for trace_id, samples in pruned.items() if samples}
+
+            selected_by_trace = await asyncio.to_thread(prune_selected)
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
         shipped_ids = set(selected_by_trace)
-        buffered_episode_ids = {self.episode_by_trace[trace_id].id for trace_id in self.pending_batch}
-        traces_by_episode: dict[int, list[vf.Trace]] = defaultdict(list)
-        selected_episodes: dict[int, vf.Episode] = {}
+        traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)
+        selected_episodes: dict[str, vf.Episode] = {}
         for trace_id in selected_ids:
             episode = self.episode_by_trace.pop(trace_id)
             if trace_id in shipped_ids:
-                selected_episodes[id(episode)] = episode
-                traces_by_episode[id(episode)].extend(trace for trace in episode.traces if trace.id == trace_id)
+                selected_episodes[episode.id] = episode
+                traces_by_episode[episode.id].extend(episode.traces)
+        if pruned := len(selected_ids - shipped_ids):
+            self.rollout_window.metrics.count("rollout/queued/pruned", float(pruned))
         cohort_episodes = [
-            episode.model_copy(update={"traces": traces_by_episode[id(episode)]})
+            episode.model_copy(update={"traces": traces_by_episode[episode.id]})
             for episode in selected_episodes.values()
         ]
         cohort = TrainEpisodes(cohort_episodes, sampled_trace_ids=shipped_ids)
 
-        episodes = self.pending_episodes
-        failures = self.pending_failures
-        cancelled_attempts = self.pending_cancelled_attempts
-        stale_attempts = self.pending_stale_attempts
-        if samples:
-            self.pending_episodes = TrainEpisodes()
-            self.pending_failures = []
-            self.pending_cancelled_attempts = 0
-            self.pending_stale_attempts = 0
-        return TrainBatch(
-            episodes=episodes,
-            cohort=cohort,
-            samples=samples,
-            failures=failures,
-            buffered_episode_ids=buffered_episode_ids,
-            cancelled_attempts=cancelled_attempts,
-            stale_attempts=stale_attempts,
-        )
+        return TrainBatch(cohort=cohort, samples=samples)

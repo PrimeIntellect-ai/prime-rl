@@ -1,5 +1,3 @@
-from unittest.mock import MagicMock
-
 import pytest
 import torch
 
@@ -35,15 +33,17 @@ def test_load_dcp_from_hf_keeps_checkpoint_selection_bias(model, tmp_path, monke
     """Checkpoint values for the persistent selection bias must survive loading."""
     expected = torch.tensor([0.1, 0.2, 0.3, 0.4])
 
-    def fake_dcp_load(state_dict, storage_reader=None):
+    def fake_dcp_load(state_dict, storage_reader=None, process_group=None):
         buffer = state_dict["model.layers.1.mlp.router.selection_bias"]
         buffer.copy_(expected.to(device=buffer.device, dtype=buffer.dtype))
 
     monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
     monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: model.state_dict().keys())
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
 
-    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
+    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)))
 
     selection_bias = model.model.layers[1].mlp.router.selection_bias
     torch.testing.assert_close(selection_bias.cpu(), expected.to(selection_bias.dtype))

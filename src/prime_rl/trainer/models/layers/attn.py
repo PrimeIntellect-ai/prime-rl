@@ -404,6 +404,29 @@ def flash_attn_3_varlen_op(
     return out
 
 
+def quadratic_attention_flops(
+    *, num_heads: int, qk_head_dim: int, v_head_dim: int, seq_len: int, attended_tokens: int | None = None
+) -> int:
+    """Training FLOPs of softmax attention over one document.
+
+    Each of the `seq_len` queries attends `attended_tokens` keys (default all `seq_len`): two matmuls per
+    head (q @ K^T over `qk_head_dim`, scores @ V over `v_head_dim`), 2 FLOPs per multiply-add, 3x for
+    forward plus backward. Causal sparsity and the flash-attention recompute are not counted.
+    """
+    if attended_tokens is None:
+        attended_tokens = seq_len
+    return 6 * num_heads * (qk_head_dim + v_head_dim) * seq_len * attended_tokens
+
+
+def delta_rule_flops(*, num_heads: int, key_head_dim: int, v_head_dim: int, seq_len: int) -> int:
+    """Training FLOPs of a gated delta-rule recurrence over one document.
+
+    Per token and head, reading, updating and querying the `[key_head_dim, v_head_dim]` state are three
+    `key_head_dim * v_head_dim` products.
+    """
+    return 6 * 3 * num_heads * key_head_dim * v_head_dim * seq_len
+
+
 @dataclass
 class AttentionConfig:
     hidden_size: int
@@ -437,6 +460,7 @@ class FlashAttention(nn.Module):
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
         super().__init__()
         self.head_dim = config.head_dim
+        self.num_heads = config.num_attention_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.is_causal = config.is_causal
@@ -467,6 +491,15 @@ class FlashAttention(nn.Module):
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
+
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, getattr(self, "sliding_window", None) or seq_len),
+        )
 
     def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Query, key and value projections, from one packed GEMM when qkv is fused."""
@@ -538,47 +571,3 @@ ATTN_IMPL2CLASS = {
     "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
     "flash_attention_4": functools.partial(FlashAttention, flash_attn_version=4),
 }
-
-
-def substitute_ring_attn(
-    process_group: torch.distributed.ProcessGroup,
-    heads_k_stride: int,
-    attn_impl: str = "flash_attention_2",
-) -> None:
-    """Patch _compute_attention on FlashAttention variants to use ring attention."""
-    from .ring_attn import ring_varlen_attention
-
-    def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
-        from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
-
-        window_size = (-1, -1)
-        sliding_window = getattr(self, "sliding_window", None)
-        if sliding_window is not None:
-            window_size = (sliding_window - 1, 0)
-
-        out = ring_varlen_attention(
-            q,
-            k,
-            v,
-            cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
-            cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
-            max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
-            max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
-            local_k_slice=DATA_PARAMS["local_k_slice"],
-            causal=True,
-            window_size=window_size,
-            group=process_group,
-            heads_k_stride=heads_k_stride,
-            attention_backend=attn_impl,
-        )
-        return out
-
-    FlashAttention._compute_attention = _ring_compute_attention
-
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
-
-    AfmoeFlashAttention._compute_attention = _ring_compute_attention
-
-    from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ring_attention
-
-    substitute_gpt_oss_ring_attention(process_group, heads_k_stride)

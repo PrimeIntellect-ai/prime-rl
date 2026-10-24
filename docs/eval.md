@@ -8,6 +8,7 @@ This page covers `uv run eval` — evaluating a model in one or more environment
 
 - [Launch](#launch)
 - [Configuration](#configuration)
+- [Live Concurrency](#live-concurrency)
 - [Resume](#resume)
 - [Monitors](#monitors)
   - [File](#file)
@@ -80,6 +81,19 @@ Each field a source sets in its `select` overrides the same field of the top-lev
 
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
+## Live Concurrency
+
+With `--control`, a running eval serves a small API on port 8040 to read and change its episode concurrency, so a shared endpoint's capacity can move between evals without restarting them. `PUT` pins the cap at `target`, outside the configured band too, and `null` hands it back to the adaptive controller. Lowering it cancels nothing: new episodes wait until enough running ones finish.
+
+```bash
+uv run eval @ eval.toml -c 2000 --control
+
+curl localhost:8040/v1/concurrency
+# {"target": null, "cap": 2000, "inflight": 2000}
+curl -X PUT localhost:8040/v1/concurrency -H 'content-type: application/json' -d '{"target": 1500}'
+# {"target": 1500, "cap": 1500, "inflight": 2000}
+```
+
 ## Resume
 
 An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: saved episodes with `episode.ok` rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch), and only the rollouts still owed run. Failed episodes and the ones the interruption cut off run again. Saved records that fail schema validation stop the resume before the current stream is archived.
@@ -92,11 +106,15 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
-A landed episode counts toward a selected task in the same source when their content hashes (`task.hash`) match. A task whose content changes runs again even if its public `task.key` stays the same. `select` and `group_size` may change between launches: each selected occurrence keeps up to `group_size` matching episodes, and only its missing rollouts run. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Each selected occurrence owns a separate group containing its restored and new rollouts, even when the same task is selected more than once, so pass@k and the dashboard see one group per selected occurrence. Use `--clean` to start over instead.
+A landed episode counts toward a selected task in the same source when their content hashes (`task.hash`) match. A task whose content changes runs again even if its public `task.key` stays the same. Each selected occurrence keeps up to `group_size` matching episodes, and only its missing rollouts run. Each selected occurrence owns a separate group containing its restored and new rollouts, even when the same task is selected more than once, so pass@k and the dashboard see one group per selected occurrence.
+
+Every attempt's saved resolved config must match the current config exactly, except for `resume`, before its episodes are reused. This includes operational settings such as logging and concurrency, source order, and shared defaults. Missing snapshots or config differences stop the resume before the trace stream is rotated; mismatches list the differing top-level fields. Use a fresh run name or `--clean` without `--resume` to start over.
+
+To intentionally reuse episodes despite changed settings or missing snapshots, pass `--resume.skip-checks` (or set `skip_checks = true` in a `[resume]` TOML section). This enables resume and bypasses compatibility checks for every attempt; restored and new episodes may therefore come from different experiment settings. A bare `--resume` or empty `[resume]` section keeps the checks enabled.
 
 ## Monitors
 
-Monitors receive the run's metrics and episodes through one abstraction. The file monitor is on by default; `--monitors.wandb` logs the run to Weights & Biases; `--monitors.prime` streams it to the Prime platform.
+Monitors receive the run's metrics and episodes through one abstraction. The file and Prime monitors are on by default; `--monitors.wandb` logs the run to Weights & Biases.
 
 ### File
 
@@ -106,13 +124,13 @@ The dashboard's overview tab reads the trace stream directly. It shows one env a
 
 ### Prime
 
-`--monitors.prime` streams each source's epoch as an evaluation on the Prime platform:
+Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval fails at launch and says so:
 
 ```bash
-uv run eval gsm8k -n 32 -r 4 -c 8 --monitors.prime
+uv run eval gsm8k -n 32 -r 4 -c 8
 ```
 
-The monitor opens one platform evaluation per env when its epoch starts, streams every episode to it as it lands, and closes it with the epoch's aggregates. The run leaves its platform identity in `monitors/prime/run.json` (the training run's id and URL, or one entry per eval epoch), and the dashboard's top bar shows a `view on platform` link from the moment the evaluation opens: a direct link for a training run or a single evaluation, a menu when a run has several.
+The monitor opens one platform evaluation per env when its epoch starts, streams every episode to it as it lands, and closes it with the epoch's aggregates. The run leaves its platform identity in `monitors/prime/run.json` (the training run's id and URL, or one entry per eval epoch), and the dashboard's top bar shows a `View on Prime` link from the moment the evaluation opens: a direct link for a training run or a single evaluation, a menu when a run has several.
 
 ## Metrics
 
