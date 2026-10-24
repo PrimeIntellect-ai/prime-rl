@@ -130,7 +130,7 @@ uv run python -c "import flash_attn"
 3. Check that you can run SFT trainer  (*this requires 1 GPU*)
 
 ```bash
-uv run sft @ configs/debug/fake/sft.toml
+uv run sft @ configs/debug/fake/sft.toml --no-monitors.prime
 ```
 
 4. Check that you can run the inference server (*this requires 1 GPU*)
@@ -142,7 +142,7 @@ uv run inference --vllm.model Qwen/Qwen3-0.6B
 5. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
 
 ```bash
-uv run rl @ examples/basic/reverse-text/rl.toml
+uv run rl @ examples/basic/reverse-text/rl.toml --no-monitors.prime
 ```
 
 </details>
@@ -162,6 +162,8 @@ uv run wandb login
 uv run hf auth login
 # Or set `export HF_TOKEN=...`
 ```
+
+3. `sft` and `rl` runs stream to the Prime Intellect platform by default, which needs a Prime API key (`prime login` or `PRIME_API_KEY`) and is currently internal-only. Without one, pass `--no-monitors.prime`, as in the validation commands above (see [Prime](docs/training.md#prime)).
 
 ## Training Examples
 We provide end-to-end training examples in the [`examples`](examples) directory to highlight features of the framework and guide you through the process of training your own models.
