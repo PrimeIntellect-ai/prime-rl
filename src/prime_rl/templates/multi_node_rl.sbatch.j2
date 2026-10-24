@@ -164,6 +164,8 @@ echo "ORCH_ADDR=${ORCH_ADDR}"
 
 # Setup environment
 cd $PROJECT_DIR
+# Components attach only after this job's orchestrator publishes its platform run.
+rm -f "$OUTPUT_DIR/monitors/prime/run.json"
 [ -f .env ] && source .env
 source .venv/bin/activate
 {% if not shared_fs %}
