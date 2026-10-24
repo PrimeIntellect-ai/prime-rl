@@ -11,6 +11,7 @@ from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.perf import FlopCounter
 from prime_rl.transports.batch.types import (
+    MICRO_BATCH_DTYPES,
     MicroBatch,
     MMImageRef,
     MMRefs,
@@ -170,9 +171,11 @@ def _empty_sampling_mask(num_tokens: int) -> SamplingMask:
 
 def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingMask:
     counts = np.frombuffer(sampling_mask.counts, dtype=np.int32)[:seq_len]
+    size = int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE
     return SamplingMask(
-        ids=sampling_mask.ids[: int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE],
+        ids=sampling_mask.ids[:size],
         counts=counts.tobytes(),
+        logprobs=sampling_mask.logprobs[:size] if sampling_mask.logprobs is not None else None,
     )
 
 
@@ -245,26 +248,25 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     loss_mask = training_example.mask
     inference_logprobs = training_example.logprobs
     if training_example.advantages is not None:
-        advantages = list(training_example.advantages)
+        advantages = training_example.advantages
     else:
         rl_w = training_example.rl_weights
-        has_rl_members = any(loss_mask) if rl_w is None else any(m and w != 0 for m, w in zip(loss_mask, rl_w))
+        has_rl_members = loss_mask.any() if rl_w is None else (loss_mask & (rl_w != 0)).any()
         if has_rl_members:
             raise ValueError(
                 f"sample from env '{training_example.env_name}' has rl member tokens but no advantages — "
                 "the producer must stamp the advantage stream (the orchestrator broadcasts the rollout scalar)"
             )
-        advantages = [0.0] * len(input_ids)
+        advantages = np.zeros(len(input_ids), dtype=np.float32)
     # Component weight streams: keep absent streams None (rl weight 1.0 on the
     # loss mask, no ce/ref_kl component) so the packed batch stays as small as before.
-    rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None
-    ce_weights = list(training_example.ce_weights) if training_example.ce_weights is not None else None
-    ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
-    position_ids = list(range(len(input_ids)))
+    rl_weights = training_example.rl_weights
+    ce_weights = training_example.ce_weights
+    ref_kl_weights = training_example.ref_kl_weights
+    position_ids = np.arange(len(input_ids), dtype=np.int32)
     mm_token_type_ids = training_example.mm_token_type_ids
     mm_refs = training_example.mm_refs
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
-    env_names = [training_example.env_name] * len(input_ids)
 
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
     temperatures = training_example.temperatures
@@ -308,7 +310,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             top_logprobs = _slice_top_logprobs(top_logprobs, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
-        env_names = env_names[:cut]
 
     assert (
         len(input_ids)
@@ -342,8 +343,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             f"sampling_mask counts: {len(mask_counts)}, input_ids: {len(input_ids)}"
         )
         assert len(sampling_mask.ids) == int(mask_counts.sum()) * _SAMPLING_MASK_ITEMSIZE
-
-    assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
+        assert sampling_mask.logprobs is None or len(sampling_mask.logprobs) == len(sampling_mask.ids)
 
     return MicroBatch(
         input_ids=input_ids,
@@ -358,7 +358,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         sampling_mask=sampling_mask,
         top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
-        env_names=env_names,
+        env_names=[training_example.env_name],
         mm_refs=mm_refs,
         rl_weights=rl_weights,
         ce_weights=ce_weights,
@@ -429,45 +429,58 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # Sampling masks are per-token optional (unlike routed_experts): samples
     # without them get zero-count backfill instead of constraining packing.
     has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
+    has_mask_logprobs = any(
+        sample.sampling_mask is not None and sample.sampling_mask.logprobs is not None for sample in bin_content.samples
+    )
     has_top_logprobs = any(sample.top_logprobs is not None for sample in bin_content.samples)
 
-    input_ids: list[int] = []
-    loss_mask: list[bool] = []
-    advantages: list[float] = []
-    inference_logprobs: list[float] = []
-    position_ids: list[int] = []
-    temperatures: list[float] = []
+    # Each sample's per-token arrays, concatenated once the bin is walked.
+    input_ids: list[np.ndarray] = []
+    loss_mask: list[np.ndarray] = []
+    advantages: list[np.ndarray] = []
+    inference_logprobs: list[np.ndarray] = []
+    position_ids: list[np.ndarray] = []
+    temperatures: list[np.ndarray] = []
     env_names: list[str] = []
-    ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
-    mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
+    ref_logprobs: list[np.ndarray] | None = [] if has_ref_logprobs else None
+    mm_token_type_ids: list[np.ndarray] | None = [] if has_mm_token_type_ids else None
     mm_refs: MMRefs | None = None
-    streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
+    streams: dict[str, list[np.ndarray] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
-    sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    sampling_mask: SamplingMask | None = (
+        SamplingMask(ids=b"", counts=b"", logprobs=b"" if has_mask_logprobs else None) if has_sampling_mask else None
+    )
     top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
 
+    offset = 0
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
-        input_ids.extend(sample.input_ids)
-        loss_mask.extend(sample.loss_mask)
-        advantages.extend(sample.advantages)
-        inference_logprobs.extend(sample.inference_logprobs)
-        position_ids.extend(sample.position_ids)
-        temperatures.extend(sample.temperatures)
+        input_ids.append(sample.input_ids)
+        loss_mask.append(sample.loss_mask)
+        advantages.append(sample.advantages)
+        inference_logprobs.append(sample.inference_logprobs)
+        position_ids.append(sample.position_ids)
+        temperatures.append(sample.temperatures)
         env_names.extend(sample.env_names)
         if ref_logprobs is not None:
-            ref_logprobs.extend(sample.ref_logprobs if sample.ref_logprobs is not None else [0.0] * sample_len)
+            ref_logprobs.append(
+                sample.ref_logprobs if sample.ref_logprobs is not None else np.zeros(sample_len, dtype=np.float32)
+            )
         for name, fill in STREAM_FILL.items():
             stream = streams[name]
             if stream is not None:
                 sample_stream = getattr(sample, name)
-                stream.extend(sample_stream if sample_stream is not None else [fill] * sample_len)
+                stream.append(
+                    sample_stream if sample_stream is not None else np.full(sample_len, fill, dtype=np.float32)
+                )
         if mm_token_type_ids is not None:
-            mm_token_type_ids.extend(
-                sample.mm_token_type_ids if sample.mm_token_type_ids is not None else [0] * sample_len
+            mm_token_type_ids.append(
+                sample.mm_token_type_ids
+                if sample.mm_token_type_ids is not None
+                else np.zeros(sample_len, dtype=np.int32)
             )
         if sample.routed_experts is not None:
             if routed_experts is None:
@@ -483,7 +496,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             mm_refs.images.extend(
                 MMImageRef(
                     url=image.url,
-                    offset=len(input_ids) - sample_len + image.offset,
+                    offset=offset + image.offset,
                     length=image.length,
                 )
                 for image in sample.mm_refs.images
@@ -493,6 +506,13 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+            if sampling_mask.logprobs is not None:
+                # NaN marks mask rows that carry no sampler logprobs.
+                sampling_mask.logprobs += (
+                    sample_mask.logprobs
+                    if sample_mask.logprobs is not None
+                    else np.full(len(sample_mask.ids) // _SAMPLING_MASK_ITEMSIZE, np.nan, np.float32).tobytes()
+                )
         if top_logprobs is not None:
             head = sample.top_logprobs
             if head is None:
@@ -503,29 +523,28 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                 top_logprobs.counts += head.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
+        offset += sample_len
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
-    assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
-    assert sum(seq_lens) == len(input_ids), (seq_lens, len(input_ids))
+    assert sum(sequence_lengths) == offset, (sequence_lengths, offset)
+    assert sum(seq_lens) == offset, (seq_lens, offset)
 
     return MicroBatch(
-        input_ids=input_ids,
-        advantages=advantages,
-        loss_mask=loss_mask,
-        position_ids=position_ids,
-        inference_logprobs=inference_logprobs,
+        input_ids=np.concatenate(input_ids),
+        advantages=np.concatenate(advantages),
+        loss_mask=np.concatenate(loss_mask),
+        position_ids=np.concatenate(position_ids),
+        inference_logprobs=np.concatenate(inference_logprobs),
         sequence_lengths=sequence_lengths,
-        ref_logprobs=ref_logprobs,
-        temperatures=temperatures,
+        ref_logprobs=np.concatenate(ref_logprobs) if ref_logprobs is not None else None,
+        temperatures=np.concatenate(temperatures),
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
         top_logprobs=top_logprobs,
-        mm_token_type_ids=mm_token_type_ids,
+        mm_token_type_ids=np.concatenate(mm_token_type_ids) if mm_token_type_ids is not None else None,
         env_names=env_names,
         mm_refs=mm_refs,
-        rl_weights=streams["rl_weights"],
-        ce_weights=streams["ce_weights"],
-        ref_kl_weights=streams["ref_kl_weights"],
+        **{name: np.concatenate(stream) if stream is not None else None for name, stream in streams.items()},
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
@@ -615,10 +634,10 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
 
-    if len(micro_batch.env_names) != len(micro_batch.input_ids):
+    if len(micro_batch.env_names) != len(micro_batch.sequence_lengths):
         raise ValueError(
-            f"MicroBatch.env_names must match input_ids length before padding: "
-            f"env_names={len(micro_batch.env_names)}, input_ids={len(micro_batch.input_ids)}"
+            f"MicroBatch.env_names must name every sequence: "
+            f"env_names={len(micro_batch.env_names)}, sequences={len(micro_batch.sequence_lengths)}"
         )
 
     if not (pad_to_multiple_of > 1 and padding_size > 0):
@@ -626,20 +645,25 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text rows pad with their
     # own tokens. Multimodal rows keep a constant id: a repeated image placeholder would have no feature to receive.
+    # `np.pad` appends zeros of the stream's own dtype unless given another value.
+    tail = (0, padding_size)
     if micro_batch.mm_refs is None:
-        micro_batch.input_ids.extend(repeat_to_length(micro_batch.input_ids, padding_size))
+        # `np.resize` repeats the row end to end.
+        pad_ids = np.resize(micro_batch.input_ids, padding_size)
+        micro_batch.input_ids = np.concatenate([micro_batch.input_ids, pad_ids])
     else:
-        micro_batch.input_ids.extend([1] * padding_size)
-    micro_batch.advantages.extend([0.0] * padding_size)
-    micro_batch.loss_mask.extend([False] * padding_size)
-    micro_batch.position_ids.extend(list(range(padding_size)))
+        micro_batch.input_ids = np.pad(micro_batch.input_ids, tail, constant_values=1)
+    micro_batch.advantages = np.pad(micro_batch.advantages, tail)
+    micro_batch.loss_mask = np.pad(micro_batch.loss_mask, tail)
+    micro_batch.position_ids = np.concatenate([micro_batch.position_ids, np.arange(padding_size, dtype=np.int32)])
     micro_batch.sequence_lengths[-1] += padding_size
     micro_batch.seq_lens[-1] += padding_size
-    micro_batch.inference_logprobs.extend([0.0] * padding_size)
+    micro_batch.padding += padding_size
+    micro_batch.inference_logprobs = np.pad(micro_batch.inference_logprobs, tail)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
-    micro_batch.temperatures.extend([1.0] * padding_size)
+    micro_batch.temperatures = np.pad(micro_batch.temperatures, tail, constant_values=1.0)
     if micro_batch.ref_logprobs is not None:
-        micro_batch.ref_logprobs.extend([0.0] * padding_size)
+        micro_batch.ref_logprobs = np.pad(micro_batch.ref_logprobs, tail)
     # Padding is loss-masked, so no component trains it; fill every stream
     # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
     # still reads as rl-empty to consumers that key off nonzero weights
@@ -647,16 +671,15 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     for stream_name in STREAM_FILL:
         stream = getattr(micro_batch, stream_name)
         if stream is not None:
-            stream.extend([0.0] * padding_size)
+            setattr(micro_batch, stream_name, np.pad(stream, tail))
     if micro_batch.mm_token_type_ids is not None:
-        micro_batch.mm_token_type_ids.extend([0] * padding_size)
+        micro_batch.mm_token_type_ids = np.pad(micro_batch.mm_token_type_ids, tail)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
     if micro_batch.sampling_mask is not None:
         _pad_sampling_mask(micro_batch, padding_size)
     if micro_batch.top_logprobs is not None:
         micro_batch.top_logprobs.counts += b"\0" * (padding_size * 4)
-    micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
 
@@ -672,23 +695,26 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "inference_logprobs",
         "position_ids",
         "temperatures",
-        "env_names",
         "ref_logprobs",
         "rl_weights",
         "ce_weights",
         "ref_kl_weights",
         "mm_token_type_ids",
     )
-    for name in per_token_fields:
+    for name in ("input_ids", *per_token_fields):
         values = getattr(micro_batch, name)
         assert values is None or len(values) == num_tokens, (
             f"{name} misaligned after packing: {len(values)} != {num_tokens} tokens"
+        )
+        # The trainer reads each stream's raw bytes as this dtype.
+        assert values is None or values.dtype == MICRO_BATCH_DTYPES[name], (
+            f"{name} must be {np.dtype(MICRO_BATCH_DTYPES[name])}, got {values.dtype}"
         )
     assert sum(micro_batch.sequence_lengths) == num_tokens, (
         f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
     )
     num_sequences = len(micro_batch.sequence_lengths)
-    for name in ("trace_ids", "branch_indices"):
+    for name in ("env_names", "trace_ids", "branch_indices"):
         values = getattr(micro_batch, name)
         assert values is None or len(values) == num_sequences, (
             f"{name} misaligned after packing: {len(values)} != {num_sequences} sequences"
@@ -707,6 +733,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"sampling_mask ids/counts inconsistent after packing: "
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
+        assert micro_batch.sampling_mask.logprobs is None or len(micro_batch.sampling_mask.logprobs) == len(
+            micro_batch.sampling_mask.ids
+        ), "sampling_mask logprobs/ids inconsistent after packing"
 
     if micro_batch.top_logprobs is not None:
         _validate_top_logprobs(micro_batch.top_logprobs, num_tokens)
@@ -715,8 +744,8 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
-    dummy.advantages = [0.0] * len(dummy.input_ids)
-    dummy.loss_mask = [False] * len(dummy.input_ids)
+    dummy.advantages = np.zeros(len(dummy.input_ids), dtype=np.float32)
+    dummy.loss_mask = np.zeros(len(dummy.input_ids), dtype=np.bool_)
     # ce/ref_kl membership is weight != 0 (independent of loss_mask), so the
     # streams must go too or the dummy would still train those tokens.
     dummy.rl_weights = None

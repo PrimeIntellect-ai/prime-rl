@@ -264,12 +264,6 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
 
-    assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
-    assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
-
-    with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
-        TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
-
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
@@ -643,7 +637,20 @@ def test_policy_sources_accept_different_top_p_values():
             }
         )
 
-    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+    assert [source.sampling.top_k for source in config.train.source] == [128, 128]
+    assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
+    data = config.model_dump(mode="json")
+    data["eval"] = {
+        "source": [
+            {"name": "nucleus", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}},
+            {"name": "greedy", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"temperature": 0}},
+        ]
+    }
+    mixed = OrchestratorConfig.model_validate(data)
+    for source in mixed.eval.source:
+        assert source.sampling.top_k == -1
+        assert source.sampling.logprobs is None
+    assert OrchestratorConfig.model_validate_json(mixed.model_dump_json()) == mixed
 
 
 @pytest.mark.parametrize("frozen", [False, True])
@@ -1173,14 +1180,17 @@ def test_explicit_inference_parser_wins_over_auto():
 
 
 @pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
+@pytest.mark.parametrize("top_p_first", [None, False, True])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    monkeypatch.setenv("PRL_TOP_P_BEFORE_TOP_K", "0")
     config = InferenceConfig(
         deployment=deployment,
         slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
+        **({"top_p_before_top_k": top_p_first} if top_p_first is not None else {}),
         vllm={"enable_return_routed_experts": True},
     )
 
@@ -1189,6 +1199,16 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+    assert config.top_p_before_top_k is (top_p_first is not False)
+    assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == ("0" if top_p_first is False else "1")
+    if top_p_first is not False:
+        monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "0")
+        with pytest.raises(ValueError, match="requires VLLM_USE_V2_MODEL_RUNNER"):
+            setup_vllm_env(config)
+        config.enable_return_sampling_mask = False
+        setup_vllm_env(config)
+        assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == "0"
 
 
 def test_pd_role_connectors():
@@ -1291,3 +1311,28 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
+
+
+@pytest.mark.parametrize("top_k", [32, 256])
+@pytest.mark.parametrize("top_p", [0.9, 1.0])
+def test_score_centering_captures_complete_bounded_support(top_k, top_p):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "orchestrator": {
+                "train": {
+                    "source": [
+                        {
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_k": top_k, "top_p": top_p},
+                        }
+                    ]
+                }
+            },
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.train.source[0].sampling.logprobs == top_k
+    assert config.inference.vllm.max_logprobs >= top_k + 2
+    assert config.inference.enable_return_sampling_mask
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
