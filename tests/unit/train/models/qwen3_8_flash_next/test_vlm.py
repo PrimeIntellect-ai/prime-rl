@@ -129,10 +129,33 @@ def test_vlm_forward():
 
 
 @pytest.mark.gpu
-def test_vlm_backward():
+@pytest.mark.parametrize("num_image_tokens", [0, 2])
+def test_vlm_rejects_image_feature_count_mismatch(num_image_tokens):
+    config = get_vlm_config()
+    model = get_model(config)
+    pixel_values, image_grid_thw, _ = get_image_inputs(config)
+    input_ids = torch.tensor([[10, *([config.image_token_id] * num_image_tokens), 11]], device="cuda")
+
+    with pytest.raises(ValueError, match="Image features and image tokens do not match"):
+        model(
+            input_ids=input_ids,
+            position_ids=torch.arange(input_ids.shape[1], device="cuda").unsqueeze(0),
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=get_mm_token_type_ids(input_ids, config.image_token_id),
+            seq_lens=get_seq_lens(input_ids),
+        )
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("compile_vision", [False, True])
+def test_vlm_backward(compile_vision):
     """Gradients flow through both vision scatter and text model."""
     config = get_vlm_config()
     model = get_model(config)
+    if compile_vision:
+        for index, block in enumerate(model.model.visual.blocks):
+            model.model.visual.blocks[index] = torch.compile(block, backend="eager", fullgraph=True)
 
     pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
