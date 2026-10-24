@@ -298,9 +298,6 @@ class Tensors(defaultdict):
             metrics[f"{key}/min"] = tensors.min().item()
             metrics[f"{key}/max"] = tensors.max().item()
 
-            # Add back all-gathered tensors to self
-            self[key].append(tensors.tolist())
-
         return metrics
 
 
