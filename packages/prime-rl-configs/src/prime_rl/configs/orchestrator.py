@@ -66,8 +66,8 @@ class TrainSamplingConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
         """Truncating values must come from the typed fields — the replay policy reads
-        them. Disabled values pass so resolved configs (where ``resolve_env_config``
-        stamped the ``top_k = -1`` / ``min_p = 0.0`` sentinels) re-validate cleanly."""
+        them. Disabled values (``top_k = -1`` / ``min_p = 0.0``) pass, so configs
+        saved with these sentinels re-validate cleanly."""
         smuggled = [
             key
             for key, truncates in (
@@ -696,18 +696,6 @@ class OrchestratorConfig(BaseConfig):
                     f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
                 )
 
-        return self
-
-    @model_validator(mode="after")
-    def resolve_env_config(self):
-        """Set vLLM sampling defaults on each train env from top-level fields."""
-        for env in self.train.source:
-            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
-            # rollouts may hit external OAI endpoints that reject these knobs.
-            if env.algo.sampling.source == "policy":
-                env.sampling.extra_body.setdefault("top_k", -1)
-                env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
         return self
 
     @model_validator(mode="after")
