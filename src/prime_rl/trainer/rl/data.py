@@ -17,6 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 
 
 class TensorMicroBatch(TypedDict):
@@ -30,8 +31,9 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
-    env_names: list[str]
+    env_names: list[str]  # One per sequence, parallel to sequence_lengths
     sequence_lengths: list[int]
+    padding: int  # Trailing padding tokens, folded into the last sequence's length
 
     # Per-sequence branch identity, parallel to sequence_lengths; None on
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
@@ -39,7 +41,6 @@ class TensorMicroBatch(TypedDict):
     branch_indices: list[int] | None
 
     # Batch level
-    lora_num_tokens: Int[Tensor, "n_loras"]
     seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
@@ -48,6 +49,8 @@ class TensorMicroBatch(TypedDict):
     # Sampling-mask token ids per position, padded with -1 to the micro batch's
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
+    top_logprobs_ids: Int[Tensor, "batch seq head"] | None
+    top_logprobs_values: Float[Tensor, "batch seq head"] | None
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
@@ -86,10 +89,11 @@ class FakeDataLoader:
         else:
             get_micro_batch_fn = self._get_sample_micro_batch
 
-        # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
+        # Seeded by the global micro batch index, so every DP layout trains the same batch and
+        # all CP ranks of a data parallel group receive the same micro batch.
         micro_batches = []
         for micro_batch_idx in range(self.num_micro_batches):
-            seed = self.dp_rank * 1000000 + self.batch_counter * 1000 + micro_batch_idx
+            seed = self.batch_counter * 1000000 + self.dp_rank * self.num_micro_batches + micro_batch_idx
             generator = torch.Generator().manual_seed(seed)
             micro_batches.append(get_micro_batch_fn(generator))
 
@@ -128,15 +132,17 @@ class FakeDataLoader:
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
-            "env_names": ["fake"] * input_ids.shape[0],
+            "env_names": ["fake"] * len(sequence_lengths),
             "sequence_lengths": sequence_lengths,
+            "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
-            "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "top_logprobs_ids": None,
+            "top_logprobs_values": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -160,15 +166,17 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
-            "env_names": ["fake"] * self.seq_len,
+            "env_names": ["fake"],
             "sequence_lengths": [self.seq_len],
+            "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
-            "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "top_logprobs_ids": None,
+            "top_logprobs_values": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -226,7 +234,7 @@ class DataLoader:
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
-        """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
+        """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
@@ -236,7 +244,6 @@ class DataLoader:
                     dtype=_torch_dtype(packed_routed_experts.dtype),
                 )
                 .reshape(packed_routed_experts.shape)
-                .to(torch.int32)
                 .unsqueeze(0)
             )
         sampling_mask = None
@@ -249,39 +256,91 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+        top_ids = top_values = None
+        # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
+        heads = [
+            head
+            for head in (micro_batch.top_logprobs, packed_sampling_mask)
+            if head is not None and head.logprobs is not None
+        ]
+        if heads:
+            head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
+            counts = sum(head_counts)
+            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
+            order = np.argsort(rows, kind="stable")
+            width = max(int(counts.max(initial=0)), 1)
+            valid = np.arange(width)[None, :] < counts[:, None]
+            ids = np.full((len(counts), width), -1, dtype=np.int32)
+            values = np.zeros((len(counts), width), dtype=np.float32)
+            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
+            top_ids = torch.from_numpy(ids).unsqueeze(0)
+            top_values = torch.from_numpy(values).unsqueeze(0)
+
+        def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
+            """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
+            (which stays read-only) that also widens it to the trainer's dtype."""
+            values = getattr(micro_batch, name)
+            if values is None:
+                return None
+            return torch.from_numpy(np.frombuffer(values, MICRO_BATCH_DTYPES[name]).astype(dtype)).unsqueeze(0)
+
         return TensorMicroBatch(
-            input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
-            position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
-            advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-            inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-            ref_logprobs=torch.tensor(micro_batch.ref_logprobs, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_logprobs is not None
-            else None,
-            loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-            temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            input_ids=stream("input_ids", np.int64),
+            position_ids=stream("position_ids", np.int64),
+            advantages=stream("advantages", np.float32),
+            inference_logprobs=stream("inference_logprobs", np.float32),
+            ref_logprobs=stream("ref_logprobs", np.float32),
+            loss_mask=stream("loss_mask", np.bool_),
+            temperatures=stream("temperatures", np.float32),
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
+            padding=micro_batch.padding,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
-            # Single adapter: every token in the batch belongs to it (padding included).
-            lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
-            mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
-            if micro_batch.mm_token_type_ids is not None
-            else None,
+            mm_token_type_ids=stream("mm_token_type_ids", np.int64),
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
-            rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.rl_weights is not None
-            else None,
-            ce_weights=torch.tensor(micro_batch.ce_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ce_weights is not None
-            else None,
-            ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_kl_weights is not None
-            else None,
+            top_logprobs_ids=top_ids,
+            top_logprobs_values=top_values,
+            rl_weights=stream("rl_weights", np.float32),
+            ce_weights=stream("ce_weights", np.float32),
+            ref_kl_weights=stream("ref_kl_weights", np.float32),
         )
+
+
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
+    """Validate sampler evidence on the CPU before the LM head consumes it."""
+    mask = batch["loss_mask"]
+    if batch["rl_weights"] is not None:
+        mask = mask & (batch["rl_weights"] != 0)
+    if not mask.any():
+        return
+    ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]
+    if ids is None or values is None:
+        raise ValueError("Score centering requires top logprobs on every RL token")
+    ids, values = ids[mask], values[mask]
+    valid = ids >= 0
+    if not valid.any(-1).all() or (ids >= vocab_size).any():
+        raise ValueError("Missing or out-of-vocabulary sampler top logprobs")
+    if not torch.isfinite(values[valid]).all() or (values[valid] > 1e-6).any():
+        raise ValueError("Sampler top logprobs must be finite and nonpositive")
+    ordered = ids.sort(-1).values
+    if ((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)).any():
+        raise ValueError("Duplicate sampler head ids")
+    q = values.exp().masked_fill(~valid, 0.0)
+    if (q.sum(-1) > 1.0001).any():
+        raise ValueError("Sampler head mass exceeds one")
+    if batch["sampling_mask"] is not None:
+        support = batch["sampling_mask"][mask]
+        replay = (support >= 0).any(-1)
+        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
+            raise ValueError("Sampler probabilities must normalize over the recorded support")
+        sampled = batch["input_ids"][mask]
+        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
+            raise ValueError("Sampled token is missing from the recorded support")
 
 
 def _torch_dtype(name: str) -> torch.dtype:

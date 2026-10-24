@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
+from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
@@ -18,10 +18,11 @@ class SparseAttentionIndexer(nn.Module):
         compression_ratio: int,
         norm_eps: float,
     ) -> None:
-        import prime_kernels
-
         super().__init__()
-        self.select_indexed_blocks = prime_kernels.load("indexed_attention").select_indexed_blocks
+        if torch.cuda.is_available():
+            import prime_kernels
+
+            self.select_indexed_blocks = prime_kernels.load("indexed_attention").select_indexed_blocks
         self.num_query_heads = num_query_heads
         self.head_dim = head_dim
         self.token_budget = token_budget
@@ -33,8 +34,8 @@ class SparseAttentionIndexer(nn.Module):
             (num_query_heads + 1) * head_dim,
             bias=False,
         )
-        self.q_layernorm = RMSNorm(head_dim, norm_eps)
-        self.k_layernorm = RMSNorm(head_dim, norm_eps)
+        self.q_layernorm = ZeroCenteredRMSNorm(head_dim, norm_eps)
+        self.k_layernorm = ZeroCenteredRMSNorm(head_dim, norm_eps)
         self.requires_grad_(False)
 
         self.cp_context = CPContext()
