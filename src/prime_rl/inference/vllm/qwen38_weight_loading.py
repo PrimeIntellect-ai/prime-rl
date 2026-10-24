@@ -55,8 +55,10 @@ def patch_qwen38_weight_loading() -> None:
                         if overlap is None:
                             skipped.add("ngram_embedding.weight")
                             continue
-                    if cpu_offloaded:
-                        weight = weight.cpu()
+                    if cpu_offloaded and weight.is_cuda:
+                        cpu_weight = torch.empty_like(weight, device="cpu", pin_memory=True)
+                        cpu_weight.copy_(weight, non_blocking=False)
+                        weight = cpu_weight
                 yield name, weight
 
         loaded = original_load_weights(self, local_weights())
