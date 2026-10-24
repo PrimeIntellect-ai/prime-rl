@@ -8,6 +8,7 @@ from prime_rl.configs.monitors import EvalMonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import (
     ClientConfig,
+    ControlConfig,
     HeartbeatConfig,
     LogConfig,
     RunConfig,
@@ -33,6 +34,10 @@ class ServedEvalConfig(EvalSourcesConfig):
     episode counts once, so a group of ``group_size`` episodes counts ``group_size``
     times. Use it for sandbox-backed environments to pace provisioning during
     autoscaling. None disables it."""
+
+    control: ControlConfig | None = None
+    """Serve the eval's control API, which reads and sets its concurrency while it runs
+    (``GET``/``PUT /v1/concurrency``). If None, it takes no control requests."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat for the run: pinged by landed episodes — the first
