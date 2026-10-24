@@ -275,6 +275,14 @@ class TraceMetrics(StatGroup):
         types = [trace.last_error.type for trace in self.traces if trace.has_error and trace.last_error is not None]
         return {error_type: types.count(error_type) for error_type in sorted(set(types))}
 
+    @property
+    def is_dropped(self) -> Stat:
+        return Stat([float(trace.is_dropped) for trace in self.traces])
+
+    def drop_reasons(self) -> dict[str, int]:
+        reasons = [trace.dropped for trace in self.traces if trace.dropped is not None]
+        return {reason: reasons.count(reason) for reason in sorted(set(reasons))}
+
     def solve_rates(self) -> dict[str, float]:
         groups: dict = {}
         for record in self.records:
@@ -303,8 +311,20 @@ class TraceMetrics(StatGroup):
             out.rate(f"{prefix}/cancelled", {"mean": sum(self.cancelled.values)}, len(self.records))
             for key, value in self.error_types().items():
                 out.count(f"{prefix}/error/{key}", float(value))
+            out.rate(f"{prefix}/dropped", {"mean": sum(self.is_dropped.values)}, len(self.records))
+            for reason, value in self.drop_reasons().items():
+                out.count(f"{prefix}/dropped/{reason}", float(value))
             num_groups = len({episode_group_id(record.episode) for record in self.records})
             out.rate(prefix, {key: value * num_groups for key, value in self.solve_rates().items()}, num_groups)
+        for trace in self.traces:
+            for node in trace.nodes:
+                if node.sampling_mask is None:
+                    continue
+                counts = node.sampling_mask.counts
+                counts = counts[counts > 0]
+                if not len(counts):
+                    continue
+                out.rate(f"{prefix}/sampling_support/size", {"mean": int(counts.sum())}, len(counts))
         # Truncation uses all traces; named stop conditions use only recorded conditions.
         out.rate(
             f"{prefix}/stop_condition/generation_truncated",
@@ -565,6 +585,7 @@ class TrainEpisodes(EpisodeCollection):
                 and record.sampled
                 and not record.cancelled
                 and not record.trace.has_error
+                and not record.trace.is_dropped
                 and record.trace.agent.trainable
             ),
         )
@@ -650,7 +671,9 @@ class EvalEpisodes(EpisodeCollection):
         return EvalEpisodes(
             self.episodes,
             self.group_size,
-            predicate=lambda record: not record.trace.has_error and record.trace.agent.trainable,
+            predicate=lambda record: (
+                not record.trace.has_error and not record.trace.is_dropped and record.trace.agent.trainable
+            ),
         )
 
     @property
