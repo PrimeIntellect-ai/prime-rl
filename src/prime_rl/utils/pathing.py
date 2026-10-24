@@ -513,3 +513,9 @@ async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -
             logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
         await asyncio.sleep(interval)
         wait_time += interval
+
+
+def get_links_path(output_dir: Path) -> Path:
+    """Each monitor's run-page links for the launcher's banner: ``{monitor: {"attempt",
+    "expected", "links": {label: url}}}``."""
+    return output_dir / "monitors" / "links.json"

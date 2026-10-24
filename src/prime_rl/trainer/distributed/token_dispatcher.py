@@ -114,6 +114,7 @@ class LocalDispatchState:
 class TorchDispatchState(LocalDispatchState):
     input_splits: torch.Tensor
     output_splits: torch.Tensor
+    num_routed_tokens: int
 
 
 def permute_for_grouped_gemm(
@@ -292,16 +293,18 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return all_to_all_single(x, output_splits, input_splits, self.group)
+        return all_to_all_single(x, output_splits, input_splits, self.group, output_size)
 
     def _combine_tokens(
         self,
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return all_to_all_single(x, output_splits, input_splits, self.group)
+        return all_to_all_single(x, output_splits, input_splits, self.group, output_size)
 
     def dispatch(
         self,
@@ -334,7 +337,9 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
                 )
             ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
 
-        routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits)
+        num_routed_tokens = routed_input.shape[0]
+        num_received_tokens = int(output_splits.sum())
+        routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits, num_received_tokens)
         experts_per_rank = self.num_experts // ep_degree
         routed_input, num_tokens_per_expert, permutation = permute_for_grouped_gemm(
             routed_input,
@@ -350,12 +355,15 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             permutation=permutation,
             input_splits=input_splits,
             output_splits=output_splits,
+            num_routed_tokens=num_routed_tokens,
         )
         return routed_input, num_tokens_per_expert, state
 
     def combine(self, routed_output: torch.Tensor, state: TorchDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
-        routed_output = self._combine_tokens(routed_output, state.input_splits, state.output_splits)
+        routed_output = self._combine_tokens(
+            routed_output, state.input_splits, state.output_splits, state.num_routed_tokens
+        )
         return _combine_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
@@ -379,13 +387,15 @@ class MXFP8TorchTokenDispatcher(TorchTokenDispatcher):
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return mxfp8_all_to_all_dispatch(x, output_splits, input_splits, self.group)
+        return mxfp8_all_to_all_dispatch(x, output_splits, input_splits, self.group, output_size)
 
     def _combine_tokens(
         self,
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return mxfp8_all_to_all_combine(x, output_splits, input_splits, self.group)
+        return mxfp8_all_to_all_combine(x, output_splits, input_splits, self.group, output_size)

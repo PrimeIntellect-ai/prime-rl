@@ -3,6 +3,7 @@ import socket
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from prime_rl.configs.shared import ZMQTransportConfig
@@ -14,13 +15,13 @@ from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 
 def _micro_batch(token: int) -> MicroBatch:
     return MicroBatch(
-        input_ids=[token],
-        loss_mask=[True],
-        advantages=[1.0],
-        inference_logprobs=[0.0],
-        position_ids=[0],
+        input_ids=np.array([token], np.int32),
+        loss_mask=np.array([True]),
+        advantages=np.array([1.0], np.float32),
+        inference_logprobs=np.array([0.0], np.float32),
+        position_ids=np.array([0], np.int32),
         sequence_lengths=[1],
-        temperatures=[1.0],
+        temperatures=np.array([1.0], np.float32),
         env_names=["env"],
         seq_lens=[1],
     )
@@ -86,6 +87,11 @@ def test_step_is_sent_only_after_every_trainer_rank_requests_it(
 
     result = asyncio.run(_send_while_ranks_request(sender, receivers))
 
-    assert result == (False, [MICRO_BATCH_GRID[data_rank] for data_rank in RANK_TO_DATA_RANK])
+    sent_before_last_request, received = result
+    assert sent_before_last_request is False
+    # Streams arrive as raw buffers: compare each rank's tokens with what its data rank was sent
+    assert [[np.frombuffer(mb.input_ids, np.int32).tolist() for mb in batches] for batches in received] == [
+        [mb.input_ids.tolist() for mb in MICRO_BATCH_GRID[data_rank]] for data_rank in RANK_TO_DATA_RANK
+    ]
     for transport in [sender, *receivers]:
         transport.close()
