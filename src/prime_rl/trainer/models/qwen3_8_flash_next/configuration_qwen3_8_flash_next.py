@@ -157,7 +157,6 @@ class Qwen3_8FlashNextVisionConfig(PretrainedConfig):
         self.out_hidden_size = out_hidden_size
         self.num_position_embeddings = num_position_embeddings
         self.initializer_range = initializer_range
-        kwargs.pop("deepstack_visual_indexes", None)
         super().__init__(**kwargs)
 
 
@@ -172,7 +171,6 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
         text_config: Qwen3_8FlashNextTextConfig | dict | None = None,
         vision_config: Qwen3_8FlashNextVisionConfig | dict | None = None,
         image_token_id: int = 248056,
-        video_token_id: int = 248057,
         vision_start_token_id: int = 248053,
         vision_end_token_id: int = 248054,
         tie_word_embeddings: bool = False,
@@ -185,7 +183,6 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
             vision_config = Qwen3_8FlashNextVisionConfig(**vision_config)
         self.vision_config = vision_config or Qwen3_8FlashNextVisionConfig()
         self.image_token_id = image_token_id
-        self.video_token_id = video_token_id
         self.vision_start_token_id = vision_start_token_id
         self.vision_end_token_id = vision_end_token_id
 
