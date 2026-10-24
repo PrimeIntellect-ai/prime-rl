@@ -38,19 +38,18 @@ class AnnotationWriter:
             return
         sequence_lengths = micro_batch["sequence_lengths"]
         loss_mask = [bool(v) for v in micro_batch["loss_mask"].detach().cpu().reshape(-1).tolist()]
-        env_names = micro_batch["env_names"]
         trainer_logprobs = _tensor_to_floats(model_output["logprobs"], self.float_decimals)
         entropies = _tensor_to_floats(model_output["entropy"], self.float_decimals)
 
         start = 0
-        for trace_id, branch_index, length in zip(trace_ids, branch_indices, sequence_lengths):
+        for index, (trace_id, branch_index, length) in enumerate(zip(trace_ids, branch_indices, sequence_lengths)):
             span_start, end = start, start + length
             start = end
             if not trace_id or branch_index < 0:
                 continue
             # Trailing padding is appended to the last sample and folded into its length.
-            while end > span_start and env_names[end - 1] == "" and not loss_mask[end - 1]:
-                end -= 1
+            if index == len(sequence_lengths) - 1:
+                end -= micro_batch["padding"]
             if end <= span_start or not any(loss_mask[span_start:end]):
                 continue
             trained = loss_mask[span_start:end]

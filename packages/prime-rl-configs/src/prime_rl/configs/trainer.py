@@ -534,48 +534,14 @@ class IcePopLossConfig(BaseConfig):
 
     score_centering_topk: int = Field(128, ge=1)
     """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
+    Probabilities retain full-vocabulary normalization. With sampling replay, the
+    complete recorded support is captured instead."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
         return self
-
-
-class PPOLossConfig(BaseConfig):
-    type: Literal["ppo"] = "ppo"
-
-    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
-    """Lower ratio bound for the clipped surrogate."""
-
-    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
-    """Upper ratio bound for the clipped surrogate."""
-
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the unbounded side of the surrogate while preserving its gradient."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    @model_validator(mode="after")
-    def validate_max_importance_ratio(self):
-        if self.max_importance_ratio < self.ratio_high:
-            raise ValueError("max_importance_ratio must be at least ratio_high")
-        return self
-
-
-class CISPOLossConfig(BaseConfig):
-    type: Literal["cispo"] = "cispo"
-
-    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
-    """Lower bound for the detached importance weight; zero disables lower clipping."""
-
-    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
-    """Upper bound for the detached importance weight."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -589,7 +555,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

@@ -11,6 +11,7 @@ from datetime import timedelta
 
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -384,6 +385,9 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
+            sampler_support_complete = (
+                (sampling_mask >= 0).any(-1) if score_centering and sampling_mask is not None else None
+            )
             topk_ids = micro_batch["top_logprobs_ids"] if score_centering else None
             sampler_topk = micro_batch["top_logprobs_values"].to("cuda") if topk_ids is not None else None
             topk_valid = (topk_ids >= 0).to("cuda") if topk_ids is not None else None
@@ -519,6 +523,9 @@ def train(config: TrainerConfig):
                 if sampler_topk is not None
                 else None,
                 topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
+                sampler_support_complete=sampler_support_complete.squeeze(0).split(sequence_lengths)
+                if sampler_support_complete is not None
+                else None,
             )
 
             # Backward pass
@@ -536,14 +543,19 @@ def train(config: TrainerConfig):
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
             tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
 
-            env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
-            env_to_indices: dict[str, list[int]] = {}
-            for idx, env_name in enumerate(masked_env_names):
-                env_to_indices.setdefault(env_name, []).append(idx)
-
-            for env_name, indices in env_to_indices.items():
-                tensors[f"entropy/{env_name}"].append(entropy[indices])
+            # Each token's env: the sequences' env names spread over their lengths
+            env_names = sorted(set(micro_batch["env_names"]))
+            env_index = torch.from_numpy(
+                np.repeat(
+                    np.array([env_names.index(name) for name in micro_batch["env_names"]], dtype=np.int64),
+                    micro_batch["sequence_lengths"],
+                )
+            )
+            masked_env_index = env_index[loss_mask.flatten().cpu()]
+            for index, env_name in enumerate(env_names):
+                selected = masked_env_index == index
+                if selected.any():
+                    tensors[f"entropy/{env_name}"].append(entropy[selected])
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
@@ -563,14 +575,11 @@ def train(config: TrainerConfig):
                     mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
                 mismatch_kl = mismatch_kl.detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
-                mismatch_env_names = [
-                    env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
-                ]
-                mismatch_env_to_indices: dict[str, list[int]] = {}
-                for idx, env_name in enumerate(mismatch_env_names):
-                    mismatch_env_to_indices.setdefault(env_name, []).append(idx)
-                for env_name, indices in mismatch_env_to_indices.items():
-                    tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
+                mismatch_env_index = env_index[mismatch_mask.flatten().cpu()]
+                for index, env_name in enumerate(env_names):
+                    selected = mismatch_env_index == index
+                    if selected.any():
+                        tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[selected])
 
             annotation_writer.export(micro_batch, out)
 
