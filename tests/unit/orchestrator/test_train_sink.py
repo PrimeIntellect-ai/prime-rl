@@ -20,6 +20,9 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
 from prime_rl.utils.logger import setup_logger
 
+# Samples hold numpy streams; encode them as lists to compare them byte for byte.
+ENCODER = msgspec.msgpack.Encoder(enc_hook=lambda value: value.tolist())
+
 setup_logger("warning")
 
 
@@ -75,6 +78,7 @@ def sink(*, constant=True, admitted=True, batch_size=100):
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
+        requires_top_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
     )
     return TrainSink(
@@ -96,10 +100,10 @@ def test_zero_output_finalization_releases_objects_without_reporting(constant, a
             t = trace(advantage=0)
             ep = episode([t], group=str(i))
             refs.extend([weakref.ref(t), weakref.ref(ep)])
-            before = msgspec.msgpack.encode(trace_to_samples(t, env_name="test"))
+            before = ENCODER.encode(trace_to_samples(t, env_name="test"))
             batch = await s.add(ep)
             assert batch is None or not batch.samples
-            assert msgspec.msgpack.encode(trace_to_samples(t, env_name="test")) == before
+            assert ENCODER.encode(trace_to_samples(t, env_name="test")) == before
             assert s.take_rollout_window() is None
             assert s.rollout_window.attempts == i + 1
             del t, ep, batch
@@ -127,14 +131,14 @@ def test_queued_trace_does_not_own_discarded_siblings():
         ep = episode([kept, *discarded])
         refs = [weakref.ref(t) for t in discarded] + [weakref.ref(ep)]
         s = sink()
-        before = msgspec.msgpack.encode(trace_to_samples(kept, env_name="test"))
+        before = ENCODER.encode(trace_to_samples(kept, env_name="test"))
         assert await s.add(ep) is None
-        assert all(t.nodes[2].token_ids == [3, 4] for t in discarded)
+        assert all(t.nodes[2].token_ids.tolist() == [3, 4] for t in discarded)
         del discarded, ep
         gc.collect()
         assert all(ref() is None for ref in refs)
         assert s.episode_by_trace[kept.id].traces == [kept]
-        assert msgspec.msgpack.encode(trace_to_samples(kept, env_name="test")) == before
+        assert ENCODER.encode(trace_to_samples(kept, env_name="test")) == before
         window = s.take_rollout_window(force=True)
         assert window.traces == 5 and window.attempts == 1
         assert window.metrics.to_dict()["rollout/traces/discarded"] == 4
@@ -172,7 +176,7 @@ def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
         assert len(batch.samples) == 1 and batch.samples[0].trace_id == kept.id
         assert len(batch.cohort) == 1 and batch.cohort.episodes[0].id == ep_id
         assert sibling.id in s.pending_batch
-        assert zero.nodes[2].token_ids == [3, 4]
+        assert list(zero.nodes[2].token_ids) == [3, 4]
         batch = await s.take_batch()
         assert len(batch.samples) == 2
         assert len(batch.cohort) == 1 and batch.cohort.num_traces == 2

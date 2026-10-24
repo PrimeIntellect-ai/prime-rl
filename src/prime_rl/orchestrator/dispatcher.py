@@ -685,6 +685,8 @@ class Dispatcher:
                 trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
                 trace.ok = False
                 episode.ok = False
+            if trace.is_dropped:
+                get_logger().info(f"Trace dropped in group {meta.group_id} ({meta.env_name}) — {trace.dropped}")
             if trace.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if trace.last_error is not None:
