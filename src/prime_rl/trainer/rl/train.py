@@ -2,6 +2,7 @@ import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
 from functools import partial
+import os
 import time
 import asyncio
 from datetime import timedelta
@@ -18,6 +19,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch, validate_score_centering_data
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -96,6 +98,7 @@ def train(config: TrainerConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
+            prime=PrimeTrainMonitorConfig() if os.getenv("RUN_ID") else None,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,

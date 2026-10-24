@@ -153,6 +153,54 @@ def test_sft_setup_registers_prime_monitor(prime_init, tmp_path, clear_monitors)
     asyncio.run(monitors.finalize())
 
 
+def test_managed_rl_trainer_attaches_and_logs_kl(monkeypatch, tmp_path, clear_monitors):
+    import ast
+    import os
+    from pathlib import Path
+
+    import prime_rl
+
+    source = Path(prime_rl.__path__[0], "trainer", "rl", "train.py")
+    tree = ast.parse(source.read_text())
+    setup = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "monitors.setup"
+    )
+    expression = next(keyword.value for keyword in setup.keywords if keyword.arg == "prime")
+    expression = compile(ast.Expression(expression), str(source), "eval")
+    scope = {"os": os, "PrimeTrainMonitorConfig": PrimeTrainMonitorConfig}
+    monkeypatch.delenv("RUN_ID", raising=False)
+    assert eval(expression, scope) is None
+    monkeypatch.setenv("RUN_ID", "managed-run")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("PRIME_API_KEY", "test-key")
+    monkeypatch.delenv("PRIME_RUNS_MODE", raising=False)
+    init_calls, metric_calls = [], []
+
+    def fake_init(**kwargs):
+        init_calls.append(kwargs)
+        return SimpleNamespace(
+            id="managed-run",
+            url="https://platform/training/managed-run",
+            attached=True,
+            log_metrics=lambda values, **kw: metric_calls.append((values, kw)),
+            finish=lambda **kw: None,
+        )
+
+    monkeypatch.setattr("prime_rl.monitors.prime.pr.init", fake_init)
+    asyncio.run(monitors.setup(prime=eval(expression, scope), output_dir=tmp_path, producer="trainer"))
+    metrics = {
+        "mismatch_kl/all/mean": 0.002,
+        "masked_mismatch_kl/mean": 0.8,
+        "unmasked_mismatch_kl/mean": 0.001,
+        "is_masked/mean": 0.0001,
+    }
+    asyncio.run(monitors.log(metrics, step=1))
+    asyncio.run(monitors.finalize())
+    assert init_calls[0]["id"] == "managed-run"
+    assert "training" not in init_calls[0]
+    assert metric_calls == [(metrics, {"step": 1})]
+
+
 def test_online_eval_config_keeps_prime_monitor():
     """SFTOnlineEvalConfig.monitors must be EvalMonitorsConfig so the
     launcher-converted PrimeEvalMonitorConfig survives the eval.json
