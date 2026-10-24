@@ -515,6 +515,11 @@ class OrchestratorConfig(BaseConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
+    env_server_replicas: int = Field(1, ge=1)
+    """Replicas of each launcher-managed env server; the orchestrator spreads each source's
+    episodes over them, least loaded first. Set by the ``rl`` launcher: multi-node runs
+    start one replica per inference node, so env-server memory spreads over all of them."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 import verifiers.v1 as vf
 
@@ -25,7 +26,13 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
+from prime_rl.transports.payload import delete_payloads, sample_payload_urls, trace_payload_urls
 from prime_rl.utils.logger import get_logger
+
+
+def _kept(sample: TrainingSample, field: str) -> bool:
+    """Whether an env server keeps this array of the sample (see `prime_rl.transports.payload`)."""
+    return sample.payload is not None and field in sample.payload.fields
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -89,6 +96,16 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+        # Train env servers keep the arrays of delivered traces; the sink deletes those of
+        # every sample and trace it drops without shipping.
+        self.payload_pool = ThreadPoolExecutor(8, thread_name_prefix="payload")
+
+    def _release(self, urls: Iterable[str]) -> None:
+        delete_payloads(list(urls), self.payload_pool)
+
+    def release_samples(self, samples: Iterable[TrainingSample]) -> None:
+        """Delete the env-server arrays of samples that will never ship."""
+        self._release(sample_payload_urls(samples))
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -181,7 +198,7 @@ class TrainSink:
             policy = train_work(episode).policy
             if policy is None or policy.start >= min_version:
                 continue
-            del self.pending_batch[trace_id]
+            self.release_samples(self.pending_batch.pop(trace_id))
             del self.episode_by_trace[trace_id]
             dropped += 1
         if dropped:
@@ -197,6 +214,16 @@ class TrainSink:
         await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
+        traces = [trace for episode in self.pending_groups.get(group_id, []) for trace in episode.traces]
+        try:
+            await self._process_group(group_id)
+        finally:
+            # Every delivered trace's arrays are either queued for a batch or deleted here.
+            for trace in traces:
+                queued = set(sample_payload_urls(self.pending_batch.get(trace.id, [])))
+                self._release(url for url in trace_payload_urls(trace) if url not in queued)
+
+    async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
         cancellation = self.pending_group_cancellations.pop(group_id, None)
@@ -249,7 +276,7 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
-                if env.requires_sampling_masks and sample.sampling_mask is None:
+                if env.requires_sampling_masks and sample.sampling_mask is None and not _kept(sample, "sampling_mask"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
@@ -258,7 +285,7 @@ class TrainSink:
                         "the inference server config (the rl entrypoint does this automatically) - "
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
-                if env.requires_top_logprobs and sample.top_logprobs is None:
+                if env.requires_top_logprobs and sample.top_logprobs is None and not _kept(sample, "top_logprobs"):
                     raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
@@ -320,6 +347,14 @@ class TrainSink:
         """Release accepted traces that cannot ship after training stops."""
         if self.pending_batch:
             self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
+        self.release_samples(sample for samples in self.pending_batch.values() for sample in samples)
+        self._release(
+            url
+            for group in self.pending_groups.values()
+            for episode in group
+            for trace in episode.traces
+            for url in trace_payload_urls(trace)
+        )
         self.pending_batch.clear()
         self.episode_by_trace.clear()
 
@@ -366,6 +401,10 @@ class TrainSink:
 
             selected_by_trace = await asyncio.to_thread(prune_selected)
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
+        shipped = set(sample_payload_urls(samples))
+        self._release(
+            url for _, trace_samples in selected for url in sample_payload_urls(trace_samples) if url not in shipped
+        )
 
         shipped_ids = set(selected_by_trace)
         traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)

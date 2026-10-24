@@ -244,15 +244,19 @@ def write_launch_artifacts(config_dir: Path, name: str) -> None:
     write_launch_toml(config_dir, name)
 
 
-def env_address_file(config_dir: Path, split: str, name: str) -> Path:
+def env_address_file(config_dir: Path, split: str, name: str, replica: int | None = None) -> Path:
     """Where a launcher-managed env server publishes the address it bound
-    (``envs/<split>/<name>.address``, next to its config). The server binds an
-    OS-assigned port, so two runs on one host never race for the same one; a client
-    waits for this file instead of assuming a port."""
-    return config_dir / "envs" / split / f"{name}.address"
+    (``envs/<split>/<name>.address``, next to its config, or ``<name>.<replica>.address``
+    for one of several replicas). The server binds an OS-assigned port, so two runs on one
+    host never race for the same one; a client waits for this file instead of assuming a
+    port."""
+    stem = name if replica is None else f"{name}.{replica}"
+    return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
+def write_env_server_config(
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, keep_training_arrays: bool = False
+) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
@@ -265,6 +269,7 @@ def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
+        "keep_training_arrays": keep_training_arrays,
     }
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(server_config, indent=2))

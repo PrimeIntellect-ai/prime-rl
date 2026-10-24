@@ -25,6 +25,11 @@ class EnvServerConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
+    keep_training_arrays: bool = False
+    """Keep the per-token training arrays of finished episodes and serve them to the
+    trainer by reference (``prime_rl.transports.payload``). Set by the ``rl`` launcher
+    for train sources."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 

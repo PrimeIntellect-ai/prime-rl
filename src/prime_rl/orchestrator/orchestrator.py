@@ -232,9 +232,12 @@ class Orchestrator:
             config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
+            replicas=config.env_server_replicas,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
+            self.eval_envs = EvalEnvs(
+                config.eval.source, config.env_addresses, config_dir, replicas=config.env_server_replicas
+            )
 
         if config.resume is not None:
             if config.resume.dir is not None:
@@ -581,6 +584,7 @@ class Orchestrator:
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+                self.train_sink.release_samples(batch.samples)
             self.train_sink.discard_queued()
 
     def take_rollout_metrics(self) -> dict[str, float]:

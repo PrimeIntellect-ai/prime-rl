@@ -144,9 +144,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
-    orchestrator_on_inference: bool = False
-    """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
-
     @property
     def infer_nodes_per_replica(self) -> int:
         return self.num_infer_nodes or 0
@@ -650,6 +647,8 @@ class RLConfig(BaseConfig):
             self.orchestrator.num_train_workers = (
                 self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             )
+            if self.deployment.total_infer_nodes > 0:
+                self.orchestrator.env_server_replicas = self.deployment.total_infer_nodes
 
             if self.deployment.nodes_per_fsdp_group is not None:
                 if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:

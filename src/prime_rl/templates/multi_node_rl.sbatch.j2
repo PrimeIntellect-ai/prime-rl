@@ -152,12 +152,10 @@ echo "WEIGHT_BROADCAST_HOST=${WEIGHT_BROADCAST_HOST}"
 echo "MODEL_EXPRESS_PORT=${MODEL_EXPRESS_PORT}"
 {% endif %}
 
-# The orchestrator runs on trainer rank 0's node (SLURM_PROCID == NUM_INFER_NODES) by
-# default; with orchestrator_on_inference it moves to the last inference node (a decode
-# node) to keep its rollout buffer + env workers off host-RAM-saturated trainer nodes.
+# The orchestrator runs on trainer rank 0's node (SLURM_PROCID == NUM_INFER_NODES).
 # The ZMQ rollout transport binds in the orchestrator process, so both sides must
 # address the orchestrator's node.
-{% if num_infer_nodes > 0 and orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
+ORCH_PROCID=$NUM_INFER_NODES
 export ORCH_PROCID
 export ORCH_ADDR="${HOSTNAMES[$ORCH_PROCID]}"
 echo "ORCH_ADDR=${ORCH_ADDR}"
@@ -340,6 +338,27 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     # NIXL/RDMA registers pinned host memory (KV offload pools, the HiSparse host pool).
     ulimit -l unlimited
+{%- if train_env_names or eval_env_names %}
+
+    # Every inference node runs a replica of every env server, and the orchestrator spreads
+    # each source's episodes over them, so env-server memory and CPU spread over all inference
+    # nodes instead of piling up next to the orchestrator. Each binds this node so the
+    # orchestrator connects across nodes. They take the orchestrator env vars.
+    # NOTE: keep this block free of single quotes (see the orchestrator block).
+{%- for split, names in [("train", train_env_names), ("eval", eval_env_names)] %}
+{%- for name in names %}
+    mkdir -p $LOG_DIR/envs/{{ split }}
+    (
+{%- for key, value in orchestrator_env_vars.items() %}
+        export {{ key }}="{{ value }}"
+{%- endfor %}
+        exec uv run env-server @ $CONFIG_DIR/envs/{{ split }}/{{ name }}.json --serve.address tcp://$LOCAL_IP:0 \
+            --address-file $CONFIG_DIR/envs/{{ split }}/{{ name }}.$INFER_NODE_RANK.address \
+            > $LOG_DIR/envs/{{ split }}/{{ name }}.$INFER_NODE_RANK.log 2>&1
+    ) &
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
 {%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
@@ -543,9 +562,9 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     export {{ key }}="{{ value }}"
 {%- endfor %}
 {%- endif %}
-{%- if train_env_names or eval_env_names %}
+{%- if (train_env_names or eval_env_names) and num_infer_nodes == 0 %}
 
-    # Launch one env server per source next to the orchestrator, which connects to each
+    # Without inference nodes, launch one env server per source next to the orchestrator, which connects to each
     # source on this node; each publishes the loopback address it bound, polling until they are
     # up — the servers and the orchestrator start in parallel.
     # NOTE: keep this block free of single quotes. The whole srun body is one
