@@ -38,6 +38,6 @@ class OPDAlgorithm(Algorithm):
         branches = [
             branch for _, trace in iter_trainable_traces([episode]) for branch, _ in iter_trainable_branches(trace)
         ]
-        scores = await asyncio.gather(*(teacher.score(branch.token_ids) for branch in branches))
+        scores = await asyncio.gather(*(teacher.score(branch.token_ids.tolist()) for branch in branches))
         for branch, logprobs in zip(branches, scores, strict=True):
             assign_reference_logprobs(branch, logprobs)
