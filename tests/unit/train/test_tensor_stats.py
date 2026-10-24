@@ -27,8 +27,7 @@ def test_tensor_stats_match_torch():
         mask = torch.rand(1000, device="cuda") > 0.3
         groups = torch.randint(0, 2, (1000,), device="cuda")
         loss = torch.rand((), device="cuda")
-        stats.add("entropy/all", values, mask)
-        stats.add_grouped("entropy", values, mask, groups, names)
+        stats.add("entropy", values, mask, groups, names)
         stats.add("empty", values, torch.zeros_like(mask))
         stats.add("loss", loss)
         all_values.append(values[mask])

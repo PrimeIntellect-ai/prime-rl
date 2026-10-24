@@ -238,39 +238,39 @@ class TensorStats:
         # Per key: count, sum, sum of squares, -min, max
         self.moments: dict[str, Tensor] = {}
 
-    def add(self, key: str, values: Tensor, mask: Tensor | None = None) -> None:
-        """Fold ``values`` (where ``mask`` is set) into ``key``."""
-        self.add_grouped(key, values, mask, torch.zeros_like(values, dtype=torch.long), [None])
-
-    def add_grouped(
-        self, key: str, values: Tensor, mask: Tensor | None, groups: Tensor, names: list[str | None]
+    def add(
+        self,
+        key: str,
+        values: Tensor,
+        mask: Tensor | None = None,
+        env_ids: Tensor | None = None,
+        env_names: list[str] | None = None,
     ) -> None:
-        """Fold ``values`` (where ``mask`` is set) into ``{key}/{names[group]}`` by each value's group.
+        """Fold ``values`` (where ``mask`` is set) into ``key``. With ``env_ids`` (each value's index into
+        ``env_names``), fold them into ``{key}/{env}`` per env and into ``{key}/all`` instead.
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
         # A custom loss may emit a metric on the CPU
         values = values.detach().reshape(-1).to(device="cuda", dtype=torch.float64)
-        groups = groups.reshape(-1).to(values.device)
+        if values.numel() == 0:
+            return
         mask = torch.ones_like(values, dtype=torch.bool) if mask is None else mask.reshape(-1).to(values.device)
-        zero, neg_inf = torch.zeros_like(values), torch.full_like(values, -math.inf)
-        sums = values.new_zeros(len(names), 3).index_add_(
-            0,
-            groups,
-            torch.stack([mask.double(), torch.where(mask, values, zero), torch.where(mask, values.square(), zero)], 1),
-        )
-        extremes = values.new_full((len(names), 2), -math.inf).scatter_reduce_(
-            0,
-            groups[:, None].expand(-1, 2),
-            torch.stack([torch.where(mask, -values, neg_inf), torch.where(mask, values, neg_inf)], 1),
-            "amax",
-        )
-        for name, row in zip(names, torch.cat([sums, extremes], 1)):
-            group_key = key if name is None else f"{key}/{name}"
-            if (moments := self.moments.get(group_key)) is None:
-                self.moments[group_key] = row
-            else:
-                moments[:3] += row[:3]
-                torch.maximum(moments[3:], row[3:], out=moments[3:])
+        if env_ids is None:
+            self._fold(key, _moments(values, mask[:, None])[0])
+            return
+        env_ids = env_ids.reshape(-1).to(values.device)
+        members = (env_ids[:, None] == torch.arange(len(env_names), device=values.device)) & mask[:, None]
+        rows = _moments(values, members)
+        for env_name, row in zip(env_names, rows):
+            self._fold(f"{key}/{env_name}", row)
+        self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
+
+    def _fold(self, key: str, row: Tensor) -> None:
+        if (moments := self.moments.get(key)) is None:
+            self.moments[key] = row
+        else:
+            moments[:3] += row[:3]
+            torch.maximum(moments[3:], row[3:], out=moments[3:])
 
     def compute_stats(self) -> dict[str, float]:
         """Reduce every key across all ranks and compute its statistics. Collective: every rank must call it."""
@@ -299,6 +299,23 @@ class TensorStats:
             metrics[f"{key}/min"] = -neg_min
             metrics[f"{key}/max"] = max_
         return metrics
+
+
+def _moments(values: Tensor, members: Tensor) -> Tensor:
+    """Count, sum, sum of squares, -min and max of ``values`` for each column of the boolean
+    ``members`` [values, groups]. Plain reductions, so no atomics contend on a few addresses."""
+    values = values[:, None]
+    member_values = torch.where(members, values, 0.0)
+    return torch.stack(
+        [
+            members.sum(0, dtype=torch.float64),
+            member_values.sum(0),
+            member_values.square().sum(0),
+            torch.where(members, -values, -math.inf).amax(0),
+            torch.where(members, values, -math.inf).amax(0),
+        ],
+        dim=1,
+    )
 
 
 def _is_env_tensor_stat(key: str, allowed_stats: set[str]) -> bool:
