@@ -21,20 +21,27 @@ def test_full_nucleus_then_cap(device):
     tied = apply_top_p_then_top_k(torch.zeros(2, 8, device=device), torch.tensor([2, 4], device=device), None)
     assert torch.isfinite(tied).sum(-1).tolist() == [2, 4]
     assert torch.isfinite(tied[0]).nonzero().flatten().tolist() == [6, 7]
+    for nucleus in (None, p):
+        torch.testing.assert_close(
+            apply_top_p_then_top_k(logits.clone(), torch.tensor([-1], device=device), nucleus),
+            apply_top_p_then_top_k(logits.clone(), None, nucleus),
+        )
     assert apply_top_p_then_top_k(logits, None, None) is logits
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
-def test_sampling_order_matches_independent_nucleus_reference(device):
+@pytest.mark.parametrize("top_k", [[1, 2, 16, 128] * 4, [-1] * 16, [-1, 2, 16, 128] * 4])
+def test_sampling_order_matches_independent_nucleus_reference(device, top_k):
     generator = torch.Generator().manual_seed(4176)
     logits = torch.randn(16, 257, generator=generator).to(device)
-    k = torch.tensor([1, 2, 16, 128] * 4, device=device)
+    k = torch.tensor(top_k, device=device)
     p = torch.tensor([0.01, 0.5, 0.95, 1.0] * 4, device=device)
     result = apply_top_p_then_top_k(logits.clone(), k, p)
     for row in range(len(logits)):
         order = logits[row].argsort(descending=True)
         cumulative = logits[row].softmax(-1)[order].cumsum(0)
-        size = min(int((cumulative < p[row]).sum()) + 1, int(k[row]), len(order))
+        cap = len(order) if k[row] == -1 else int(k[row])
+        size = min(int((cumulative < p[row]).sum()) + 1, cap, len(order))
         expected = torch.zeros_like(logits[row], dtype=torch.bool)
         expected[order[:size]] = True
         assert torch.equal(torch.isfinite(result[row]), expected)

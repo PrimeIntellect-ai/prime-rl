@@ -15,7 +15,7 @@ def reference_top_p_then_top_k(logits: Tensor, k: Tensor | None, p: Tensor | Non
         remove[:, -1] = False
     if k is not None:
         ranks = torch.arange(logits.shape[-1], device=logits.device)
-        remove |= ranks.unsqueeze(0) < logits.shape[-1] - k.unsqueeze(-1)
+        remove |= (k.unsqueeze(-1) != -1) & (ranks.unsqueeze(0) < logits.shape[-1] - k.unsqueeze(-1))
     sorted_logits.masked_fill_(remove, -torch.inf)
     return logits.scatter_(dim=-1, index=indices, src=sorted_logits)
 
@@ -25,6 +25,7 @@ def apply_top_p_then_top_k(logits: Tensor, k: Tensor | None, p: Tensor | None) -
     # For a single row, the full sort is cheaper than bounded-path dispatch.
     if k is None or logits.shape[0] == 1:
         return reference_top_p_then_top_k(logits, k, p)
+    k = torch.where(k == -1, logits.shape[-1], k)
     width = int(k.max().item())
     if width >= logits.shape[-1]:
         return reference_top_p_then_top_k(logits, k, p)
