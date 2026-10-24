@@ -112,3 +112,60 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
     assert pointers_before.keys() == pointers_after.keys()
     for key, pointer in pointers_before.items():
         assert pointers_after[key] == pointer, f"state buffer reallocated for {key}"
+
+
+@pytest.mark.parametrize("step_chunk_bytes", [1, 64 * 128 * 8, None])
+def test_chunked_steps_match_plain_adamw(step_chunk_bytes: int | None) -> None:
+    reference_model = make_model(0)
+    reference_optimizer = torch.optim.AdamW(reference_model.parameters(), lr=1e-2)
+    run_steps(reference_model, reference_optimizer, num_steps=3, seed=1)
+
+    chunked_model = make_model(0)
+    chunked_optimizer = CPUOffloadOptimizer(
+        torch.optim.AdamW(chunked_model.parameters(), lr=1e-2), step_chunk_bytes=step_chunk_bytes
+    )
+    run_steps(chunked_model, chunked_optimizer, num_steps=3, seed=1)
+
+    assert_params_equal(reference_model, chunked_model)
+    assert_states_offloaded(chunked_optimizer)
+    assert all(param.grad is None for param in chunked_model.parameters())
+
+
+def test_chunk_plan_covers_params_without_grad(monkeypatch) -> None:
+    """The plan must not depend on which parameters have a gradient on this rank, or ranks can
+    disagree on the number of optimizer.step calls."""
+    params = [torch.nn.Parameter(torch.zeros(n)) for n in (64, 64, 64, 64)]
+    wrapper = CPUOffloadOptimizer(torch.optim.SGD(params, lr=0.1), step_chunk_bytes=8 * 128)
+    monkeypatch.setattr(wrapper, "_move_states", lambda *args, **kwargs: None)
+    plans = []
+    original = wrapper._step_chunks
+    monkeypatch.setattr(wrapper, "_step_chunks", lambda ps: plans.append(original(ps)) or plans[-1])
+    for with_grad in ((True, True, True, True), (True, False, True, False)):
+        for param, has_grad in zip(params, with_grad):
+            param.grad = torch.ones_like(param) if has_grad else None
+        wrapper._chunked_step()
+    assert [len(plan) for plan in plans] == [2, 2]
+    assert [[id(p) for p in chunk] for chunk in plans[0]] == [[id(p) for p in chunk] for chunk in plans[1]]
+    # The second pass leaves parameters without a gradient untouched and their grad None.
+    assert params[1].grad is None and torch.equal(params[1].data, torch.full((64,), -0.1))
+    assert torch.equal(params[0].data, torch.full((64,), -0.2))
+
+
+def test_planned_numel_counts_the_largest_uneven_shard() -> None:
+    """A dim that does not divide evenly across ranks must count its largest shard, not numel / ranks."""
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import DTensor, Shard
+    from torch.testing._internal.distributed.fake_pg import FakeStore
+
+    dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=2)
+    try:
+        mesh = init_device_mesh("cpu", (2,))
+        param = DTensor.from_local(
+            torch.zeros(2, 1000), mesh, [Shard(0)], shape=torch.Size([3, 1000]), stride=(1000, 1)
+        )
+        # Rank 0 holds rows 0-1 (2000 elements); ceil(3000 / 2) would say 1500.
+        assert CPUOffloadOptimizer._planned_numel(param) == 2000
+        assert CPUOffloadOptimizer._planned_numel(torch.zeros(3, 1000)) == 3000
+    finally:
+        dist.destroy_process_group()
