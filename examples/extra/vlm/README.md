@@ -9,7 +9,7 @@ RL and SFT examples for the custom [PrimeRL VLM implementations](../../../docs/a
 | [`rl-qwen3.5.toml`](rl-qwen3.5.toml) | `Qwen/Qwen3.5-122B-A10B` | 336 / 16 |
 | [`rl-qwen3.8.toml`](rl-qwen3.8.toml) | `Qwen/Qwen3.8-Flash-Next` | 256 / 16 |
 
-Both target **4 trainer + 4 inference nodes**, each with 8× H200 141 GB GPUs: Muon at `1e-6`, 200 steps, frozen vision encoder, and 237,568-token context with browser compaction at 184,320 tokens. Full settings are in the TOMLs.
+Both target **4 trainer + 4 inference nodes**, each with 8× H200 GPUs.
 
 Replace the environment/harness IDs, run and W&B names, and shared output path. Install your environments and export the credentials they require. Reward and compaction fields are browser-environment options; adapt them to your harness's schema.
 
