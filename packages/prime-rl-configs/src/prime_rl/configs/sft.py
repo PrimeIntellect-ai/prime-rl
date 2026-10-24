@@ -367,13 +367,22 @@ class SFTConfig(BaseTrainerConfig):
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
             # env servers, and evals process.
-            if self.inference is None:
-                raise ValueError(
-                    "Multi-node online evals require an [inference] block - dedicated nodes in the "
-                    "SFT allocation run the inference pool and evals process."
-                )
             if self.deployment.num_infer_nodes < 1:
                 raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
+            if self.weight_broadcast.type == "nccl":
+                self.weight_broadcast.inference_world_size = (
+                    self.deployment.num_infer_nodes * self.deployment.gpus_per_node
+                )
+            if self.inference is None:
+                # Hosted Training splits the config per pod and hands the trainer the run's
+                # config without [inference] but with [deployment] (the SLURM launcher drops
+                # both), so a trainer-side config is valid without it.
+                warnings.warn(
+                    "Multi-node online evals without an [inference] block: validating as the "
+                    "trainer side of a split config - dedicated nodes must run the inference pool.",
+                    stacklevel=2,
+                )
+                return self
             if self.inference.router is None:
                 raise ValueError(
                     "Multi-node online evals require an inference router - the launcher starts one "
@@ -388,10 +397,6 @@ class SFTConfig(BaseTrainerConfig):
                 raise ValueError(
                     f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be divisible by "
                     f"inference.vllm.tensor_parallel_size ({self.inference.vllm.tensor_parallel_size})."
-                )
-            if self.weight_broadcast.type == "nccl":
-                self.weight_broadcast.inference_world_size = (
-                    self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
             if self.max_steps is None:
