@@ -165,26 +165,23 @@ The trainer finds the vision encoder at `model.visual` and the language model at
 
 ### Enabling VLM Mode
 
-Add `[model.vlm]` and bfloat16 dtypes:
+Add `[model.vlm]`:
 
 ```toml
 [model]
 name = "Qwen/Qwen3.5-4B"
-optimization_dtype = "bfloat16"
-reduce_dtype = "bfloat16"
 
 [model.vlm]
 # freeze_vision_encoder = true  # default; set false to fine-tune the encoder
 ```
 
-For `rl`, keep `[model.vlm]` in the shared `[model]` block but set the dtypes under `[trainer.model]`.
+For `rl`, set `[model.vlm]` in the shared `[model]` block.
 
 VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
 
 - **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
-- **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
 
