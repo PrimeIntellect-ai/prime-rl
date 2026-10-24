@@ -1,4 +1,5 @@
 import gc
+import math
 import os
 import pickle
 import shutil
@@ -258,46 +259,102 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
     return all_tensors_unpadded
 
 
-class Tensors(defaultdict):
-    """A class to accumulate tensors and compute statistics (mean, median, std, min, max) across multiple steps and ranks."""
+class TensorStats:
+    """Accumulates a step's tensor metrics on the GPU and reduces them across ranks once per step.
+
+    Per-token values are folded into a running count, sum, sum of squares, min and max per key, so
+    memory stays constant however many tokens a step trains on; they report mean, std, min and max.
+    Per-sample values are few, so they are kept and additionally report their exact median.
+    Keys without any value on any rank are left out."""
 
     def __init__(self):
-        assert dist.is_initialized(), "Tensors requires a distributed environment"
-        super().__init__(list)
+        assert dist.is_initialized(), "TensorStats requires a distributed environment"
+        self.samples: dict[str, list[Tensor]] = defaultdict(list)
+        # Per key: count, sum, sum of squares, -min, max
+        self.moments: dict[str, Tensor] = {}
 
-    def compute_stats(self) -> dict[str, float | int]:
-        """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
+    def add(self, key: str, values: Tensor, mask: Tensor | None = None) -> None:
+        """Fold per-token ``values`` (where ``mask`` is set) into ``key``."""
+        self.add_grouped(key, values, mask, torch.zeros_like(values, dtype=torch.long), [None])
 
-        local_keys = list(self.keys())
-        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_keys, local_keys)
-        keys = sorted({key for rank_keys in gathered_keys if rank_keys is not None for key in rank_keys})
+    def add_grouped(
+        self, key: str, values: Tensor, mask: Tensor | None, groups: Tensor, names: list[str | None]
+    ) -> None:
+        """Fold per-token ``values`` (where ``mask`` is set) into ``{key}/{names[group]}`` by each token's group.
+
+        Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
+        values = values.detach().reshape(-1).double()
+        groups = groups.reshape(-1)
+        mask = torch.ones_like(values, dtype=torch.bool) if mask is None else mask.reshape(-1)
+        zero, neg_inf = torch.zeros_like(values), torch.full_like(values, -math.inf)
+        sums = values.new_zeros(len(names), 3).index_add_(
+            0,
+            groups,
+            torch.stack([mask.double(), torch.where(mask, values, zero), torch.where(mask, values.square(), zero)], 1),
+        )
+        extremes = values.new_full((len(names), 2), -math.inf).scatter_reduce_(
+            0,
+            groups[:, None].expand(-1, 2),
+            torch.stack([torch.where(mask, -values, neg_inf), torch.where(mask, values, neg_inf)], 1),
+            "amax",
+        )
+        for name, row in zip(names, torch.cat([sums, extremes], 1)):
+            group_key = key if name is None else f"{key}/{name}"
+            if (moments := self.moments.get(group_key)) is None:
+                self.moments[group_key] = row
+            else:
+                moments[:3] += row[:3]
+                torch.maximum(moments[3:], row[3:], out=moments[3:])
+
+    def add_samples(self, key: str, values: Tensor) -> None:
+        """Keep per-sample (or per-micro-step) ``values`` for ``key``."""
+        self.samples[key].append(values.detach().reshape(-1).double())
+
+    def compute_stats(self) -> dict[str, float]:
+        """Reduce every key across all ranks and compute its statistics. Collective: every rank must call it."""
+        gathered_keys: list[tuple[list[str], list[str]] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_keys, (list(self.samples), list(self.moments)))
+        sample_keys = sorted({key for rank_keys in gathered_keys for key in rank_keys[0]})
+        moment_keys = sorted({key for rank_keys in gathered_keys for key in rank_keys[1]})
 
         metrics = {}
-        for key in keys:
-            # All-gather tensors across steps and ranks (get global distribution)
-            values = self.pop(key, [])
-            tensors = torch.cat(values, dim=0).to("cuda") if values else torch.empty(0, device="cuda")
-            assert tensors.ndim == 1, "Can only aggregate 1D tensors"
-            tensors = flexible_all_gather(tensors)
-            assert tensors.ndim == 1, "Can only aggregate 1D tensors"
+        if moment_keys:
+            empty = torch.tensor([0, 0, 0, -math.inf, -math.inf], dtype=torch.float64, device="cuda")
+            rows = torch.stack([self.moments.get(key, empty) for key in moment_keys])
+            sums, extremes = rows[:, :3].contiguous(), rows[:, 3:].contiguous()
+            dist.all_reduce(sums, op=dist.ReduceOp.SUM)
+            dist.all_reduce(extremes, op=dist.ReduceOp.MAX)
+            for key, (count, total, total_sq), (neg_min, max_) in zip(moment_keys, sums.tolist(), extremes.tolist()):
+                if count == 0:
+                    continue
+                mean = total / count
+                metrics[f"{key}/mean"] = mean
+                # Bessel-corrected like torch.std
+                variance = max(total_sq - total * mean, 0.0) / (count - 1) if count > 1 else math.nan
+                metrics[f"{key}/std"] = math.sqrt(variance)
+                metrics[f"{key}/min"] = -neg_min
+                metrics[f"{key}/max"] = max_
 
-            # Handle empty tensors (can happen when all rollouts in a batch fail)
-            if tensors.numel() == 0:
-                metrics[f"{key}/mean"] = float("nan")
-                metrics[f"{key}/median"] = float("nan")
-                metrics[f"{key}/std"] = float("nan")
-                metrics[f"{key}/min"] = float("nan")
-                metrics[f"{key}/max"] = float("nan")
-                continue
+        if sample_keys:
+            # Gather every key's values in one tensor, tagged with the key's index
+            local_values = [torch.empty(0, dtype=torch.float64, device="cuda")]
+            local_key_ids = [torch.empty(0, dtype=torch.float64, device="cuda")]
+            for index, key in enumerate(sample_keys):
+                if key in self.samples:
+                    local_values.append(torch.cat(self.samples[key]))
+                    local_key_ids.append(torch.full_like(local_values[-1], index))
+            values = flexible_all_gather(torch.cat(local_values)).cpu()
+            key_ids = flexible_all_gather(torch.cat(local_key_ids)).cpu()
+            for index, key in enumerate(sample_keys):
+                key_values = values[key_ids == index]
+                metrics[f"{key}/mean"] = key_values.mean().item()
+                metrics[f"{key}/median"] = torch.median(key_values).item()
+                metrics[f"{key}/std"] = key_values.std().item()
+                metrics[f"{key}/min"] = key_values.min().item()
+                metrics[f"{key}/max"] = key_values.max().item()
 
-            # Compute relevant tensor statistics
-            metrics[f"{key}/mean"] = tensors.mean().item()
-            metrics[f"{key}/median"] = torch.median(tensors).item()
-            metrics[f"{key}/std"] = tensors.std().item()
-            metrics[f"{key}/min"] = tensors.min().item()
-            metrics[f"{key}/max"] = tensors.max().item()
-
+        self.samples.clear()
+        self.moments.clear()
         return metrics
 
 
