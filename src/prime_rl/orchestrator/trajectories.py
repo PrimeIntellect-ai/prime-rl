@@ -114,7 +114,7 @@ def _encode_top_logprobs(head: vf.TopLogprobs | None, num_tokens: int) -> TopLog
     )
 
 
-def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
+def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, np.ndarray]]:
     """Yield each branch that yields a training sample, with its trainable-token mask.
 
     Branches excluded by trace semantics are skipped before shared-node accounting.
@@ -128,35 +128,39 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[b
     for branch in trace.branches:
         if not branch.trainable:
             continue
-        mask: list[bool] = []
+        parts: list[np.ndarray] = []
         for node in branch.nodes:
-            if node.sampled and any(node.mask) and id(node) in trained_nodes:
-                mask.extend([False] * len(node.mask))
+            node_mask = np.asarray(node.mask, dtype=bool)
+            if node.sampled and node_mask.any() and id(node) in trained_nodes:
+                parts.append(np.zeros(len(node_mask), dtype=bool))
             else:
-                if node.sampled and any(node.mask):
+                if node.sampled and node_mask.any():
                     trained_nodes.add(id(node))
-                mask.extend(node.mask)
-        if any(mask):
+                parts.append(node_mask)
+        mask = np.concatenate(parts) if parts else np.zeros(0, dtype=bool)
+        if mask.any():
             yield branch, mask
 
 
-def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list[float] | None:
-    """Flatten one graph-native loss stream, training each shared node once."""
-    weights: list[float] = []
+def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> np.ndarray | None:
+    """Flatten one graph-native loss stream (float32), training each shared node once."""
+    parts: list[np.ndarray] = []
     for node in branch.nodes:
         node_weights = (node.loss_weights or {}).get(name)
         if node_weights is None or id(node) in trained_nodes:
-            weights.extend([0.0] * len(node.token_ids))
+            parts.append(np.zeros(len(node.token_ids), dtype=np.float32))
             continue
         if len(node_weights) != len(node.token_ids):
             raise ValueError(
                 f"loss weight stream {name!r} must align with node token_ids: "
                 f"got {len(node_weights)}, expected {len(node.token_ids)}"
             )
-        weights.extend(node_weights)
-        if any(node_weights):
+        node_weights = np.asarray(node_weights, dtype=np.float32)
+        parts.append(node_weights)
+        if node_weights.any():
             trained_nodes.add(id(node))
-    return weights if any(weights) else None
+    weights = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+    return weights if weights.any() else None
 
 
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
@@ -173,7 +177,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
-        mm_token_type_ids: list[int] | None = None
+        mm_token_type_ids: np.ndarray | None = None
         mm_refs: MMRefs | None = None
         image_urls = _image_urls(branch)
         if image_urls:
@@ -186,7 +190,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 token_ids=token_ids,
                 mask=mask,
                 logprobs=branch.logprobs,
-                temperatures=[],  # filled by TrainSink.process_group
+                temperatures=np.zeros(0, dtype=np.float32),  # filled by TrainSink.process_group
                 env_name=env_name,
                 ref_logprobs=branch.reference_logprobs,
                 mm_refs=mm_refs,
