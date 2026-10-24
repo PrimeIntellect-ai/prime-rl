@@ -55,7 +55,8 @@ def patch_qwen38_weight_loading() -> None:
                         if overlap is None:
                             skipped.add("ngram_embedding.weight")
                             continue
-                    if cpu_offloaded and weight.is_cuda:
+                    # Preserve symbolic tensor subclasses used to trace NIXL transfers.
+                    if cpu_offloaded and type(weight) is torch.Tensor and weight.is_cuda:
                         cpu_weight = torch.empty_like(weight, device="cpu", pin_memory=True)
                         cpu_weight.copy_(weight, non_blocking=False)
                         weight = cpu_weight
