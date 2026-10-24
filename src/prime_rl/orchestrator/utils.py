@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
@@ -50,7 +51,7 @@ def node_policy_versions(node: vf.MessageNode, fallback: int) -> Iterator[tuple[
     ``node.token_ids``: the policy step whose weights sampled them, from the
     engine's ``weight_versions`` labels. Tokens without a step label (engines
     whose updates bypass ``/update_weights``, e.g. Dynamo) get ``fallback``."""
-    sampled = sum(node.mask)
+    sampled = int(np.count_nonzero(node.mask))
     offset = len(node.mask) - sampled
     if not node.weight_versions:
         if sampled:
