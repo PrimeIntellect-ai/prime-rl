@@ -118,7 +118,6 @@ type = "vllm-router"
 policy = "sticky_least_loaded"
 
 [inference.env_vars]
-VLLM_BATCH_INVARIANT = "0"
 VLLM_ENGINE_READY_TIMEOUT_S = "7200"
 
 [orchestrator]
