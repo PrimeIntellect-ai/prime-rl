@@ -66,8 +66,8 @@ class TrainSamplingConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
         """Truncating values must come from the typed fields — the replay policy reads
-        them. Disabled values pass so resolved configs (where ``resolve_env_config``
-        stamped the ``top_k = -1`` / ``min_p = 0.0`` sentinels) re-validate cleanly."""
+        them. Disabled values (``top_k = -1`` / ``min_p = 0.0``) pass, so configs
+        saved with these sentinels re-validate cleanly."""
         smuggled = [
             key
             for key, truncates in (
@@ -259,12 +259,15 @@ class TrainSourceConfig(EnvConfig):
             | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
         )
         sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
+        if getattr(sampling, "extra_args", None) == {"prl_replay": self.sampling.truncates_distribution()}:
+            supported.add("extra_args")
         if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
             raise ValueError(
                 f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
             )
         for name, agent in agent_config_fields(self.env).items():
-            if agent.sampling is None:
+            # An agent with its own client does not sample from the policy.
+            if agent.sampling is None or agent.client is not None:
                 continue
             if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
                 raise ValueError(
@@ -477,8 +480,8 @@ class GarbageCollectionConfig(BaseConfig):
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
 # batch's masks to the largest sampling mask, so the bound also caps trainer
-# mask tensors. Large enough that a 0.95-0.99 nucleus rarely reaches it (the
-# sampling policy is essentially unchanged).
+# mask tensors.
+TRAIN_TOP_K_DEFAULT = 128
 TRAIN_TOP_K_BOUND = 512
 
 
@@ -567,7 +570,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum staleness of a trained token: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of off-policy noise."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -646,12 +649,12 @@ class OrchestratorConfig(BaseConfig):
         unbounded = [sampling for sampling in truncating if sampling.top_k is None]
         if unbounded:
             warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every sampling mask is "
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_DEFAULT} so every sampling mask is "
                 "bounded and sampling replay stays exact. Set top_k explicitly to override.",
                 stacklevel=2,
             )
             for sampling in unbounded:
-                sampling.top_k = TRAIN_TOP_K_BOUND
+                sampling.top_k = TRAIN_TOP_K_DEFAULT
 
         algos = [env.algo for env in self.train.source] or [self.train.algo]
         if any(algo.type in ("opd", "opsd") for algo in algos):
@@ -720,15 +723,20 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def resolve_env_config(self):
-        """Set vLLM sampling defaults on each train env from top-level fields."""
+    def resolve_sampling_replay(self):
+        """Opt policy train sources into replay and keep eval sampling independent."""
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             if env.algo.sampling.source == "policy":
-                env.sampling.extra_body.setdefault("top_k", -1)
-                env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
+                extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
+                extra_args["prl_replay"] = env.sampling.truncates_distribution()
+                env.sampling.extra_body["extra_args"] = extra_args
+        if self.eval is not None:
+            for env in self.eval.source:
+                if getattr(env.sampling, "top_k", None) is None:
+                    env.sampling.top_k = -1
+                env.sampling.logprobs = None
         return self
 
     @model_validator(mode="after")

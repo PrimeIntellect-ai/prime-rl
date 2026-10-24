@@ -69,6 +69,7 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     release_and_trim,
     set_default_executor,
+    token_policy_ages,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -340,7 +341,6 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             dispatch_per_minute=config.dispatch_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -734,6 +734,15 @@ class Orchestrator:
                     "off_policy/in_flight/max": float(max(in_flight)),
                     "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
                     "off_policy/in_queue/max": float(max(in_queue)),
+                }
+            # Per-token age from the engines' weight-version labels: tokens sampled
+            # after mid-rollout weight updates are younger than their episode.
+            ages = [token_policy_ages(record.trace, step) for record in effective.records]
+            num_labelled = sum(count for _, count, _ in ages)
+            if num_labelled:
+                metrics |= {
+                    "off_policy/token/mean": sum(total for total, _, _ in ages) / num_labelled,
+                    "off_policy/token/max": float(max(oldest for _, _, oldest in ages)),
                 }
             for env_name, env_pool in effective.by_env().items():
                 metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
