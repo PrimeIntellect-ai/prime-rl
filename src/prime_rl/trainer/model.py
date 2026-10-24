@@ -153,6 +153,21 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def freeze_ngram_embedding(model: nn.Module) -> None:
+    """Freeze the hashed n-gram embedding tables of Qwen3.8's position learning enhancement."""
+    logger = get_logger()
+    num_frozen = 0
+    for module in model.modules():
+        if isinstance(module, NGramEmbedding):
+            for param in module.parameters():
+                param.requires_grad = False
+                num_frozen += 1
+
+    if num_frozen == 0:
+        raise ValueError("freeze_ngram_embedding is set, but the model has no n-gram embedding to freeze")
+    logger.info(f"Froze {num_frozen} n-gram embedding parameters")
+
+
 def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
@@ -914,6 +929,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.freeze_ngram_embedding:
+        freeze_ngram_embedding(model)
 
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.

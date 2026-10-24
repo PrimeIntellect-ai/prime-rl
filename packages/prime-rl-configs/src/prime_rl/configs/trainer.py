@@ -321,6 +321,9 @@ class ModelConfig(BaseModelConfig):
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
+    freeze_ngram_embedding: bool = False
+    """Freeze the hashed n-gram embedding tables (Qwen3.8's PLE). Setup fails on models without them. Frozen tables get no gradients or optimizer state, so resuming a checkpoint saved with frozen tables with ``freeze_ngram_embedding=false`` fails on missing DCP keys."""
+
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 

@@ -1,12 +1,16 @@
 import pytest
 import torch
 
+from prime_rl.configs.trainer import AdamWConfig
+from prime_rl.trainer.model import freeze_ngram_embedding
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
 )
+from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.vlm import get_language_model
 
 
@@ -58,3 +62,19 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     assert converted.keys() == original.keys()
     for name, value in original.items():
         torch.testing.assert_close(converted[name], value, rtol=0, atol=0)
+
+
+def test_freeze_ngram_embedding(config):
+    model = Qwen3_8FlashNextForCausalLM(config)
+    freeze_ngram_embedding(model)
+
+    table = get_language_model(model).layers[0].ple.ple_embedding.ngram_embedding.weight
+    trainable = {id(param) for param in model.parameters() if param.requires_grad}
+    assert trainable == {id(param) for param in model.parameters() if param is not table}
+
+    optimizer, _ = setup_optimizer(
+        AdamWConfig(weight_decay=0.0),
+        list(model.named_parameters()),
+        ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1),
+    )
+    assert {id(param) for group in optimizer.param_groups for param in group["params"]} == trainable
