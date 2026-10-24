@@ -25,6 +25,7 @@ GLM_MOE_DSA = GlmMoeDsaConfig(
     v_head_dim=32,
     index_n_heads=2,
     index_head_dim=32,
+    dsa_backend="tilelang",
 )
 
 QWEN3_5 = Qwen3_5TextConfig(
