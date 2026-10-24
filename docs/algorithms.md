@@ -327,7 +327,7 @@ class LossOutputs:
     metrics: dict[str, Tensor]
 ```
 
-Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics.
+Anything you put in `metrics` is logged with the other trainer metrics. A scalar is a per-sequence value and logs its mean, median, std, min and max across sequences. A 1D tensor holds per-token values and logs their mean, std, min and max across tokens.
 
 ## Advantage
 

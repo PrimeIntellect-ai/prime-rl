@@ -56,7 +56,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
-    Tensors,
+    TensorStats,
     begin_backward,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
@@ -342,7 +342,7 @@ def train(config: TrainerConfig):
         )
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
-        tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        tensors = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
@@ -500,7 +500,7 @@ def train(config: TrainerConfig):
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
-            loss, loss_tensors = compute_loss(
+            loss, loss_metrics = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
                 ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
@@ -530,12 +530,9 @@ def train(config: TrainerConfig):
 
             mm_kwargs = None
 
-            # Add relevant tensors to tensor dict for logging purposes
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
-            tensors["entropy/all"].append(entropy)
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
+            tensors.add_samples("loss", loss.detach() * cp_size)
 
             # Each token's env: the sequences' env names spread over their lengths
             env_names = sorted(set(micro_batch["env_names"]))
@@ -544,54 +541,46 @@ def train(config: TrainerConfig):
                     np.array([env_names.index(name) for name in micro_batch["env_names"]], dtype=np.int64),
                     micro_batch["sequence_lengths"],
                 )
-            )
-            masked_env_index = env_index[loss_mask.flatten().cpu()]
-            for index, env_name in enumerate(env_names):
-                selected = masked_env_index == index
-                if selected.any():
-                    tensors[f"entropy/{env_name}"].append(entropy[selected])
+            ).to("cuda")
+            tensors.add("entropy/all", out["entropy"], loss_mask)
+            tensors.add_grouped("entropy", out["entropy"], loss_mask, env_index, env_names)
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
             # whose action component is ce (frozen-model tokens).
-            if rl_weights is None and ref_kl_weights is None:
-                mismatch_mask = loss_mask
-                has_mismatch_tokens = True
-            else:
+            mismatch_mask = loss_mask
+            if rl_weights is not None or ref_kl_weights is not None:
                 sampled_mask = (rl_weights != 0) if rl_weights is not None else loss_mask
                 if ref_kl_weights is not None:
                     sampled_mask = sampled_mask | (ref_kl_weights != 0)
                 mismatch_mask = loss_mask & sampled_mask
-                has_mismatch_tokens = bool(mismatch_mask.any())
-            if has_mismatch_tokens:
-                with torch.no_grad():
-                    log_ratio = out["logprobs"][mismatch_mask] - inference_logprobs[mismatch_mask]
-                    mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
-                mismatch_kl = mismatch_kl.detach().to("cpu")
-                tensors["mismatch_kl/all"].append(mismatch_kl)
-                mismatch_env_index = env_index[mismatch_mask.flatten().cpu()]
-                for index, env_name in enumerate(env_names):
-                    selected = mismatch_env_index == index
-                    if selected.any():
-                        tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[selected])
+            with torch.no_grad():
+                mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
+            tensors.add("mismatch_kl/all", mismatch_kl, mismatch_mask)
+            tensors.add_grouped("mismatch_kl", mismatch_kl, mismatch_mask, env_index, env_names)
 
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
                 moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
                 for name, value in moe_stats.items():
-                    tensors[name].append(value.reshape(1))
+                    tensors.add_samples(name, value)
                 step_tokens_per_expert += tokens_per_expert
 
-            # Add loss tensors to tensor dict for logging purposes
-            for key, loss_tensor in loss_tensors.items():
-                tensors[key].append(loss_tensor.detach().to("cpu"))
+            for key, values in loss_metrics.items():
+                if values[0].ndim == 0:
+                    tensors.add_samples(key, torch.stack(values))
+                else:
+                    tensors.add(key, torch.cat(values))
 
-            # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
-            if has_mismatch_tokens:
-                micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
-            logger.debug(micro_step_message)
+            # Debug log with *local, micro step* stats, evaluated only when debug logging is on
+            logger.opt(lazy=True).debug(
+                "Micro Step {} | Loss {:.4f} | Entropy {:.4f} | Mismatch KL {:.4f}",
+                lambda: f"{micro_step + 1}/{len(micro_batches)}",
+                lambda: loss.item() * cp_size,
+                lambda: out["entropy"][loss_mask].mean().item(),
+                lambda: mismatch_kl[mismatch_mask].mean().item(),
+            )
 
         annotation_writer.flush()
         # Free this batch before the next one is received and converted
@@ -685,7 +674,7 @@ def train(config: TrainerConfig):
                 f"{format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
                 "add more inference nodes."
             )
-        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats['entropy/all/mean']:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats.get('entropy/all/mean', float('nan')):.4f}"
         if "mismatch_kl/all/mean" in tensor_stats:
             step_message += f" | Mismatch KL {tensor_stats['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
