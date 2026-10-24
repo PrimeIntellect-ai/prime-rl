@@ -28,12 +28,12 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
-    get_load_balance_stats,
     is_tt_moe_model,
     reshard_module,
     setup_processor,
     setup_tokenizer,
     setup_model,
+    take_moe_routing_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -336,7 +336,7 @@ def train(config: SFTConfig):
         mean_loss, nan_count = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
-            get_load_balance_stats(model)
+            take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
@@ -409,15 +409,6 @@ def train(config: SFTConfig):
         step_loss_sum = torch.tensor(0.0, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
-        moe_stats = (
-            {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
-            }
-            if is_moe_model
-            else {}
-        )
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
             or (not is_first_step and progress.step % config.val.interval == 0)
@@ -442,7 +433,7 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
-        step_tokens_per_expert = 0
+        routing_stats = []
         perf_counter = get_perf_counter(model)
         step_local_num_tokens = 0
         step_local_flops = 0
@@ -474,17 +465,20 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in micro_moe_stats.items():
-                    moe_stats[f"{name}/mean"] += value / grad_accum_steps
-                    if name == "max_vio":
-                        moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
-                step_tokens_per_expert += tokens_per_expert
+                routing_stats.append(take_moe_routing_stats(model))
 
         # Wait for the queued backward kernels so this times GPU work, not kernel launches.
         torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        moe_stats, expert_load_stats = {}, {}
+        if is_moe_model:
+            micro_moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
+            moe_stats = {
+                "max_vio/mean": micro_moe_stats["max_vio"].mean(),
+                "max_vio/max": micro_moe_stats["max_vio"].max(),
+                "routing_confidence/mean": micro_moe_stats["routing_confidence"].mean(),
+            }
+            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
