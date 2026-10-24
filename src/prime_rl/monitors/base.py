@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
 
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
@@ -15,6 +15,15 @@ Subset = Literal["all", "effective"]
 
 class Monitor(ABC):
     """Base class for monitors."""
+
+    links: ClassVar[str | None] = None
+    """The monitor's key in the links record, when it opens run pages."""
+
+    @classmethod
+    def missing_credentials(cls, config: BaseConfig) -> str | None:
+        """Why the monitor cannot authenticate, or None when it can. ``setup`` skips a
+        monitor without credentials, with this as the warning."""
+        return None
 
     def __init__(self, config: BaseConfig):
         self.config = config

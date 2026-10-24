@@ -150,16 +150,25 @@ def run_links(
     """The ``links`` argument of ``log_run_links``: waits for every configured monitor
     in ``monitors`` (links-record key -> its config, None when off) that can open a
     page. A monitor turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline
-    or disabled ``$WANDB_MODE``) opens none; one without credentials fails its
-    component, which ends the wait through ``stop``."""
+    or disabled ``$WANDB_MODE``) opens none. One without credentials opens none either:
+    its component skips it, and the warning goes to the launcher's console here."""
+    from prime_rl.utils.credentials import PRIME_MODE_VAR, missing_prime_credentials, missing_wandb_credentials
     from prime_rl.utils.links import wait_for_links
 
-    def opens_pages(key: str) -> bool:
+    def opens_pages(key: str, config: object) -> bool:
         if key == WANDB_LINKS:
-            return os.environ.get("WANDB_MODE") not in ("offline", "disabled")
-        return os.environ.get("PRIME_RUNS_MODE", "online") == "online"
+            if getattr(config, "offline", False) or os.environ.get("WANDB_MODE") in ("offline", "disabled"):
+                return False
+            reason = missing_wandb_credentials()
+        else:
+            if os.environ.get(PRIME_MODE_VAR, "online") != "online":
+                return False
+            reason = missing_prime_credentials()
+        if reason:
+            get_logger().bind(console=True).warning(reason)
+        return reason is None
 
-    waited = [key for key, config in monitors.items() if config is not None and opens_pages(key)]
+    waited = [key for key, config in monitors.items() if config is not None and opens_pages(key, config)]
     if not waited:
         return None
     return functools.partial(wait_for_links, run_dir, attempt_log_dir, waited, stop)

@@ -16,6 +16,7 @@ from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.credentials import missing_wandb_credentials
 from prime_rl.utils.links import WANDB_LINKS, publish_link, register_links
 from prime_rl.utils.logger import format_time
 
@@ -27,6 +28,12 @@ class WandbMonitor(Monitor):
     """Logs metrics to Weights and Biases."""
 
     config: WandbMonitorConfig
+    links = WANDB_LINKS
+
+    @classmethod
+    def missing_credentials(cls, config: WandbMonitorConfig) -> str | None:
+        # Shared mode ignores ``offline``: it needs the server.
+        return missing_wandb_credentials(offline=config.offline and os.environ.get("WANDB_SHARED_MODE") != "1")
 
     async def init(
         self,
