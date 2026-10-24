@@ -1,3 +1,4 @@
+import math
 import uuid
 import warnings
 from pathlib import Path
@@ -23,6 +24,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    MXFP8Config,
     TokenizerConfig,
     TrainerConfig,
 )
@@ -513,12 +515,46 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_score_centering(self):
+        loss = self.trainer.loss
+        if loss.type != "icepop" or not loss.score_centering:
+            return self
+        samplings = [
+            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        if not samplings:
+            raise ValueError("Score centering requires a policy-sampled training source")
+        requested = []
+        for sampling in samplings:
+            if sampling.temperature <= 0:
+                raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
+            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
+            if k is None:
+                raise ValueError("Truncated score centering requires a bounded top_k")
+            if sampling.logprobs is not None and sampling.logprobs < k:
+                raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
+            sampling.logprobs = max(sampling.logprobs or 0, k)
+            requested.append(sampling.logprobs + 2)
+        if self.inference is not None:
+            if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
+                raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
+            self.inference.vllm.logprobs_mode = "processed_logprobs"
+            limit = getattr(self.inference.vllm, "max_logprobs", 20)
+            if limit != -1:
+                self.inference.vllm.max_logprobs = max(limit, *requested)
+        else:
+            warnings.warn(
+                "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
-        on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
-        so eval sampling against the same server must set both."""
+        configs are bounded by TRAIN_TOP_K_BOUND). Only opted-in requests capture
+        masks; eval requests retain independent sampling settings."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
@@ -533,13 +569,6 @@ class RLConfig(BaseConfig):
             )
             return self
         self.inference.enable_return_sampling_mask = True
-        if self.orchestrator.eval is not None:
-            warnings.warn(
-                "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
-                "eval sampling config or the model's generation config) or with temperature 0 are "
-                "rejected by the inference server while truncated train sampling is on.",
-                stacklevel=2,
-            )
         return self
 
     @model_validator(mode="after")
@@ -559,6 +588,11 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_deployment(self):
         self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
+        if isinstance(self.trainer.model.quantization, MXFP8Config):
+            # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
+            self.orchestrator.pad_to_multiple_of = math.lcm(
+                self.orchestrator.pad_to_multiple_of, self.trainer.model.cp * 32
+            )
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp

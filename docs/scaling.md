@@ -106,6 +106,22 @@ transport = "bf16"
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
+
+The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches, so the trainer refuses to start unless it is set to at most `num_reserved_sms`. 16 is enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so match the two rather than over-reserving. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to the micro batch (`model.seq_len` for RL, `data.micro_batch_size * data.seq_len` for SFT); a smaller value is rejected at startup.
+
+```toml
+[trainer.model.moe.dispatch]
+type = "mega_moe"
+precision = "bf16"     # or "mxfp8" (SM100), "fp8" / "fp8_bwd" (SM90)
+num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS must be <= this
+
+[trainer.env_vars]
+NCCL_MAX_CTAS = "16"
+CUDA_HOME = "/usr/local/cuda-13.0"
+PATH = "/usr/local/cuda-13.0/bin:${PATH}"
+```
+
 ### Context Parallelism
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded and all-gather their keys instead, which needs no head sharding.
@@ -181,13 +197,12 @@ The trainer defaults are tuned for memory, not speed: optimizer CPU offload, AC 
 [model]
 offload = "none"            # optimizer states stay on GPU
 ac_offloading = "None"      # activations stay on GPU
-moe_router_dtype = "bfloat16"  # fullgraph needs the router inside the block's FSDP unit; an fp32 router is not
 
 [model.compile]
 fullgraph = true            # compile each block as a single graph
 ```
 
-Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. The SFT default router dtype is already `bfloat16`. RL defaults to an fp32 router, so check that bf16 routing is acceptable for your model before using `fullgraph` in RL.
+Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. Router gates share the block's FSDP unit and use BF16 operands with FP32 logits.
 
 Examples:
 
