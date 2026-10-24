@@ -39,8 +39,6 @@ enable_router_replay = true
 [trainer.model]
 attn = "flash_attention_3"
 cp = 4
-cp_style = "ulysses"
-fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
 
@@ -153,11 +151,6 @@ env.taskset.id = "terminal-bench-2"
 # --- Inference ---
 
 [inference]
-
-# vLLM + FlashInfer caches on node-local /tmp.
-[inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.vllm]
 max_model_len = 131072

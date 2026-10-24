@@ -3,9 +3,9 @@ import torch
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import (
+    Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
     Qwen3_5MoeTextConfig,
     Qwen3_5VisionConfig,
@@ -58,9 +58,7 @@ def get_model(config, device="cuda"):
     runtime_config = ModelConfig()
     resolve_auto_attn(runtime_config)
     with torch.device(device):
-        model = AutoModelForCausalLMPrimeRL.from_config(
-            config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
-        )
+        model = Qwen3_5ForCausalLM.from_config(config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16)
     inject_prime_lm_head(model)
     return model
 

@@ -6,11 +6,12 @@ import torch
 
 
 def patch_qwen38_weight_loading() -> None:
-    """Skip nonlocal PLE checkpoint pieces before vLLM buffers parameter loads.
+    """Preserve CPU PLE storage and skip nonlocal checkpoint pieces during reload.
 
-    Remove when vLLM's Qwen4ExpNGramEmbedding.load_weights checks TP overlap
-    before calling the embedding parameter's weight_loader.
+    Remove when vLLM preserves CPU PLE placement and checks TP overlap before
+    calling the embedding parameter's weight_loader.
     """
+    from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
     from vllm.models.qwen4_exp.common.ple import compute_ple_shard_overlap
     from vllm.models.qwen4_exp.nvidia.ngram_embedding import Qwen4ExpNGramEmbedding
 
@@ -21,6 +22,15 @@ def patch_qwen38_weight_loading() -> None:
     @wraps(original_load_weights)
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         embedding = self.ngram_embedding
+        cpu_offloaded = embedding.weight.device.type == "cpu"
+        info = get_layerwise_info(embedding)
+        if info.kernel_tensors is not None:
+            original_parameters, _ = info.kernel_tensors
+            original_weight = original_parameters["weight"]
+            cpu_offloaded = original_weight.device.type == "cpu"
+            # vLLM records the default CUDA device even for CPU-offloaded PLE weights.
+            if original_weight.device.type == "cpu":
+                info.restore_device = original_weight.device
         shard_size = (embedding.org_vocab_size + self.split_ngram_parts - 1) // self.split_ngram_parts
         skipped: set[str] = set()
 
@@ -45,6 +55,11 @@ def patch_qwen38_weight_loading() -> None:
                         if overlap is None:
                             skipped.add("ngram_embedding.weight")
                             continue
+                    # Preserve symbolic tensor subclasses used to trace NIXL transfers.
+                    if cpu_offloaded and type(weight) is torch.Tensor and weight.is_cuda:
+                        cpu_weight = torch.empty_like(weight, device="cpu", pin_memory=True)
+                        cpu_weight.copy_(weight, non_blocking=False)
+                        weight = cpu_weight
                 yield name, weight
 
         loaded = original_load_weights(self, local_weights())
