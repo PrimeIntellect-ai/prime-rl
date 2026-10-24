@@ -58,6 +58,7 @@ def layer_type(request):
 
 def test_meta_flop_count_without_cuda(config, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = type(config).from_dict(config.to_dict(), attn_implementation="flash_attention_2")
     with torch.device("meta"):
         model = Qwen3_8FlashNextForCausalLM(config)
     assert all(parameter.is_meta for parameter in model.parameters())
