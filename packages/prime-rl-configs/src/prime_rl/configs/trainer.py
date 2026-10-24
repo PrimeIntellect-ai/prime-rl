@@ -54,7 +54,7 @@ OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
-    """Compile transformer blocks with ``fullgraph=True``. Custom MoE models need ``moe_router_dtype="bfloat16"``: the fp32 router is its own FSDP unit inside the block, and dynamo cannot trace FSDP hooks."""
+    """Compile transformer blocks with ``fullgraph=True``."""
 
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
@@ -128,6 +128,9 @@ class FP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
+
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
@@ -136,6 +139,9 @@ class MXFP8Config(BaseConfig):
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from torchao MXFP8 replacement."""
+
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
@@ -215,8 +221,35 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class MegaMoeMoEDispatchConfig(BaseConfig):
+    type: Literal["mega_moe"] = "mega_moe"
+    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
+    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
+    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
+
+    num_reserved_sms: int = Field(16, ge=1)
+    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+
+
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+    """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
+    buffer must hold the full micro batch."""
+    if max_tokens_per_rank is None:
+        return micro_batch_tokens
+    if max_tokens_per_rank < micro_batch_tokens:
+        raise ValueError(
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
+            f"({micro_batch_tokens} tokens)."
+        )
+    return max_tokens_per_rank
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -260,7 +293,7 @@ class ModelConfig(BaseModelConfig):
     """Data parallel dim where model weights are replicated."""
 
     ep: int | Literal["auto"] = "auto"
-    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves for MoE models to the largest degree up to 8 that divides both ``fsdp_island_size = world_size // dp_replicate`` and the expert count and is a multiple of ``cp``, and to 1 for non-MoE models. Set an explicit integer to override."""
 
     moe: MoERuntimeConfig = MoERuntimeConfig()
     """Routed-expert compute and token-dispatch runtime."""
@@ -274,16 +307,13 @@ class ModelConfig(BaseModelConfig):
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
 
-    moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
-    """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
-
     reduce_scatter_max_input_buffers: int = Field(1, ge=1)
     """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
 
     quantization: QuantizationConfig | None = None
 
-    dsa_backend: DSABackend = "tilelang"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
+    dsa_backend: DSABackend = "cudnn_flashmla"
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -323,6 +353,8 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
@@ -414,6 +446,9 @@ class AdamWConfig(BaseOptimizerConfig):
     betas2: float = Field(0.999, ge=0)
     """Adam second-moment (β2) decay."""
 
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon, added to the denominator of the update."""
+
 
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
@@ -429,6 +464,9 @@ class MuonConfig(BaseOptimizerConfig):
 
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+
+    eps: float = Field(1e-8, gt=0)
+    """Epsilon for the AdamW sub-optimizer used on non-Muon params."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):
@@ -485,46 +523,19 @@ class IcePopLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Center the ratio-masked importance-weighted score under the sampler."""
+
+    score_centering_topk: int = Field(128, ge=1)
+    """Captured head size for an untruncated sampler with a proportional tail.
+    Probabilities retain full-vocabulary normalization. With sampling replay, the
+    complete recorded support is captured instead."""
+
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
         return self
-
-
-class PPOLossConfig(BaseConfig):
-    type: Literal["ppo"] = "ppo"
-
-    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
-    """Lower ratio bound for the clipped surrogate."""
-
-    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
-    """Upper ratio bound for the clipped surrogate."""
-
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the unbounded side of the surrogate while preserving its gradient."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    @model_validator(mode="after")
-    def validate_max_importance_ratio(self):
-        if self.max_importance_ratio < self.ratio_high:
-            raise ValueError("max_importance_ratio must be at least ratio_high")
-        return self
-
-
-class CISPOLossConfig(BaseConfig):
-    type: Literal["cispo"] = "cispo"
-
-    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
-    """Lower bound for the detached importance weight; zero disables lower clipping."""
-
-    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
-    """Upper bound for the detached importance weight."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -538,7 +549,8 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -561,7 +573,6 @@ class DataLoaderConfig(BaseConfig):
 class BaseTrainerConfig(BaseConfig):
     """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
 
-    auto_moe_router_dtype: ClassVar[Literal["float32", "bfloat16"]]
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
 
@@ -607,8 +618,6 @@ class BaseTrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_auto_defaults(self):
-        if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = self.auto_moe_router_dtype
         if self.model.freeze_moe_router == "auto":
             self.model.freeze_moe_router = self.auto_freeze_moe_router
         if self.optim.weight_decay == "auto":
@@ -678,8 +687,6 @@ class BaseTrainerConfig(BaseConfig):
 
 
 class TrainerConfig(BaseTrainerConfig):
-    # fp32 routing matches the fp32-routed checkpoints RL trains from (e.g. GLM-5.x).
-    auto_moe_router_dtype = "float32"
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.
@@ -714,5 +721,15 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe":
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, self.model.seq_len
             )
         return self
