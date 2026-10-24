@@ -46,7 +46,8 @@ class EvalSink:
         return self._complete(key)
 
     def _complete(self, key: tuple[str, int]) -> EvalBatch | None:
-        if self._batch_size(key) >= self.batch_size_for(key[0]):
+        expected = self.batch_size_for(key[0])
+        if expected is not None and self._batch_size(key) >= expected:
             return self.process_batch(key)
         return None
 
@@ -60,12 +61,15 @@ class EvalSink:
     def group_size_for(self, env_name: str) -> int:
         return self.eval_envs.get(env_name).config.group_size
 
-    def batch_size_for(self, env_name: str) -> int:
-        """Every rollout of an env's epoch: its examples times its group size."""
+    def batch_size_for(self, env_name: str) -> int | None:
+        """Every rollout of an env's epoch: its examples times its group size. ``None``
+        for a streaming env, whose epoch ends with its taskset."""
         env = self.eval_envs.get(env_name)
+        if env.feed is not None:
+            return None
         return len(env.examples) * env.config.group_size
 
-    def batch_progress(self) -> list[tuple[str, int, int, int]]:
+    def batch_progress(self) -> list[tuple[str, int, int, int | None]]:
         """``(env, step, arrived, expected)`` per epoch in progress."""
         keys = set(self.pending_batches) | set(self.pending_batch_failures) | set(self.pending_batch_cancellations)
         return [
