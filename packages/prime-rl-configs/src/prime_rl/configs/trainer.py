@@ -231,8 +231,11 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
     (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
 
-    num_reserved_sms: int = Field(16, ge=1)
-    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+    num_reserved_sms: int = Field(16, ge=2)
+    """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
+    at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
+    a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
 def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
