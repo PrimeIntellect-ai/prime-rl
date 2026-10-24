@@ -60,7 +60,6 @@ def get_vlm_config():
             out_hidden_size=256,
         ),
         image_token_id=250,
-        video_token_id=251,
         vision_start_token_id=252,
         vision_end_token_id=253,
     )
@@ -329,11 +328,11 @@ def test_mrope_rejects_image_length_grid_mismatch():
         )
 
 
-def test_mrope_rejects_video_tokens():
+def test_mrope_rejects_unsupported_modalities():
     input_ids = torch.tensor([[10, 99]])
     mm_token_type_ids = torch.tensor([[0, 2]])
 
-    with pytest.raises(ValueError, match="video MRoPE"):
+    with pytest.raises(ValueError, match="Unsupported Qwen3.8 Flash Next multimodal token type: 2"):
         build_mrope_position_ids(
             input_ids=input_ids,
             mm_token_type_ids=mm_token_type_ids,
