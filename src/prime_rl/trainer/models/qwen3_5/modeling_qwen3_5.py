@@ -1,4 +1,9 @@
+import base64
+from io import BytesIO
+from typing import Any
+
 import torch
+from PIL import Image
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -23,6 +28,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
+from prime_rl.transports.batch import MMRefs
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -284,6 +290,14 @@ class Qwen3_5VLMModel(nn.Module):
         )
 
 
+def _load_image(data_url: str) -> Image.Image:
+    header, separator, payload = data_url.partition(",")
+    if not separator or not header.startswith("data:image/") or ";base64" not in header:
+        raise ValueError("Multimodal training requires base64 data image URLs")
+    with Image.open(BytesIO(base64.b64decode(payload, validate=True))) as image:
+        return image.convert("RGB")
+
+
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
     def __init__(self, config) -> None:
         super().__init__(config)
@@ -303,6 +317,23 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
 
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
+
+    @staticmethod
+    def materialize_images(refs: MMRefs, processor: Any) -> dict[str, torch.Tensor]:
+        """Decode the image refs of a micro batch into the vision forward kwargs."""
+        image_processor = getattr(processor, "image_processor", None)
+        if image_processor is None:
+            raise ValueError("Multimodal samples require a model image processor")
+        images = [_load_image(ref.url) for ref in refs.images]
+        processed = image_processor(images=images, return_tensors="pt")
+        kwargs = {key: torch.as_tensor(processed[key]).contiguous() for key in ("pixel_values", "image_grid_thw")}
+        merge_size = int(image_processor.merge_size)
+        # HF Qwen-VL / renderer pad count: T*H*W / merge_size^2.
+        lengths = [int(grid.prod()) // (merge_size * merge_size) for grid in kwargs["image_grid_thw"].reshape(-1, 3)]
+        expected = [ref.length for ref in refs.images]
+        if lengths != expected:
+            raise ValueError(f"Image placeholder lengths differ from vLLM: expected {expected}, got {lengths}")
+        return kwargs
 
     def num_active_params(self) -> int:
         # The vision encoder runs per image, not per text token.

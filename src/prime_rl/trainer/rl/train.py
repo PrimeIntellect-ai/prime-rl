@@ -146,16 +146,16 @@ def train(config: TrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
-    processor = None
+    materialize_images = None
     if config.model.vlm is not None:
+        if not getattr(model, "supports_packed_multimodal_training", False):
+            raise ValueError("Packed multimodal training requires model support")
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
-    prepare = partial(prepare_micro_batch, processor=processor)
+        materialize_images = partial(model.materialize_images, processor=processor)
+    prepare = partial(prepare_micro_batch, materialize_images=materialize_images)
     micro_batch_workers = WorkerPool(config.data.num_workers)
-
-    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
-        raise ValueError("Packed multimodal training requires model support")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")

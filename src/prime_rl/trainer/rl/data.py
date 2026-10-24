@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -7,7 +8,6 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
-from prime_rl.trainer.vlm import materialize_images
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -183,14 +183,16 @@ class FakeDataLoader:
         }
 
 
-def prepare_micro_batch(micro_batch: TensorMicroBatch, processor: Any | None) -> TensorMicroBatch:
+def prepare_micro_batch(
+    micro_batch: TensorMicroBatch, materialize_images: Callable[[MMRefs], dict[str, Tensor]] | None
+) -> TensorMicroBatch:
     """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
     mm_refs = micro_batch.get("mm_refs")
     if mm_refs is not None:
-        if processor is None:
+        if materialize_images is None:
             raise ValueError("Received multimodal samples but [model.vlm] is not set")
-        micro_batch["mm_kwargs"] = materialize_images(mm_refs, processor)
+        micro_batch["mm_kwargs"] = materialize_images(mm_refs)
         micro_batch["mm_refs"] = None
     return micro_batch
 
