@@ -668,6 +668,12 @@ class InferenceConfig(BaseConfig):
         if "enable_prompt_tokens_details" not in extra_fields:
             namespace.enable_prompt_tokens_details = True
 
+        # vLLM's SWA bounded replay (DeepSeek-V4.1) prefills later layers on each request's last
+        # window only, so the first tokens of that window get approximate states the trainer
+        # never computes. Compute every window exactly unless overridden.
+        if "swa_bounded_replay" not in extra_fields:
+            namespace.swa_bounded_replay = False
+
         # The orchestrator generates through /inference/v1/generate, a scale-out
         # endpoint that vLLM registers only with `--enable-scale-out`.
         if "enable_scale_out" not in extra_fields:

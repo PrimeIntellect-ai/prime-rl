@@ -53,10 +53,12 @@ def _kv_fake_quant_kernel(
 
 
 @torch.library.custom_op("prime_rl::dsv4_kv_fake_quant", mutates_args=())
-def dsv4_kv_fake_quant(x: torch.Tensor, rope_dim: int, amax_floor: float, scale_floor: float) -> torch.Tensor:
+def dsv4_kv_fake_quant(
+    x: torch.Tensor, rope_dim: int, amax_floor: float, scale_floor: float, tile: int = QUANT_TILE
+) -> torch.Tensor:
     """The value vLLM's `fp8_ds_mla` cache returns for `x`, in `x`'s dtype.
 
-    Each `QUANT_TILE`-wide tile of the leading `head_dim - rope_dim` channels becomes
+    Each `tile`-wide tile of the leading `head_dim - rope_dim` channels becomes
     `e4m3(x / scale) * scale` with `scale = 2^ceil(log2(max(max(amax, amax_floor) / 448, scale_floor)))`,
     rounding to nearest even. The trailing `rope_dim` channels pass through.
 
@@ -65,10 +67,11 @@ def dsv4_kv_fake_quant(x: torch.Tensor, rope_dim: int, amax_floor: float, scale_
         rope_dim: trailing channels the cache stores unquantized.
         amax_floor: floor on each tile's absolute maximum.
         scale_floor: floor on each tile's scale before it is rounded up to a power of two.
+        tile: channels sharing one scale.
     """
     head_dim = x.shape[-1]
     nope_dim = head_dim - rope_dim
-    assert nope_dim % QUANT_TILE == 0, f"{nope_dim=} is not a multiple of {QUANT_TILE}"
+    assert nope_dim % tile == 0, f"{nope_dim=} is not a multiple of {tile}"
     assert amax_floor > 0 or scale_floor > 0, "an all-zero tile needs a positive floor"
     x = x.contiguous()
     out = torch.empty_like(x)
@@ -79,23 +82,25 @@ def dsv4_kv_fake_quant(x: torch.Tensor, rope_dim: int, amax_floor: float, scale_
         x,
         out,
         head_dim,
-        nope_dim // QUANT_TILE,
+        nope_dim // tile,
         amax_floor,
         scale_floor,
         FP8_MAX,
-        TILE=QUANT_TILE,
-        NUM_TILES=triton.next_power_of_2(triton.cdiv(head_dim, QUANT_TILE)),
+        TILE=tile,
+        NUM_TILES=triton.next_power_of_2(triton.cdiv(head_dim, tile)),
     )
     return out
 
 
 @dsv4_kv_fake_quant.register_fake
-def _dsv4_kv_fake_quant_fake(x: torch.Tensor, rope_dim: int, amax_floor: float, scale_floor: float) -> torch.Tensor:
+def _dsv4_kv_fake_quant_fake(
+    x: torch.Tensor, rope_dim: int, amax_floor: float, scale_floor: float, tile: int = QUANT_TILE
+) -> torch.Tensor:
     return torch.empty_like(x, memory_format=torch.contiguous_format)
 
 
 def _dsv4_kv_fake_quant_autograd_backward(ctx, grad: torch.Tensor):
-    return grad, None, None, None
+    return grad, None, None, None, None
 
 
 dsv4_kv_fake_quant.register_autograd(_dsv4_kv_fake_quant_autograd_backward)

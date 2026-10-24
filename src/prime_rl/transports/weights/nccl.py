@@ -67,6 +67,48 @@ def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.
     return max_num + 1
 
 
+# Rows of a row-sharded table sent per broadcast. One engram chunk is 512 MiB in fp8.
+TABLE_CHUNK_ROWS = 1 << 21
+FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
+UE8M0_BLOCK = 32
+
+
+def row_sharded_tables(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, nn.Module]:
+    """The row-sharded embeddings (`AllToAllEmbeddingParallel`) among `state_dict`'s keys.
+
+    FSDP never gathers them and they are too large to gather whole, so they are sent separately,
+    in row chunks.
+    """
+    tables = {f"{name}.weight": module for name, module in model.named_modules() if hasattr(module, "rows_per_rank")}
+    missing = set(tables) - set(state_dict)
+    assert not missing, f"row-sharded tables {missing} are not in the state dict"
+    return tables
+
+
+def quantize_rows_ue8m0(rows: Tensor) -> tuple[Tensor, Tensor]:
+    """Rows -> fp8 e4m3 values and power-of-two (ue8m0) scales per 1x32 block, as raw bytes.
+
+    Exact for rows dequantized from this format: the new scale is never larger than the original,
+    so every value is its original fp8 value times a power of two that keeps it in range.
+    """
+    blocks = rows.float().unflatten(-1, (-1, UE8M0_BLOCK))
+    amax = blocks.abs().amax(-1, keepdim=True)
+    exponent = torch.ceil(torch.log2(amax / FP8_MAX)).clamp(-127, 127)
+    values = (blocks * torch.exp2(-exponent)).to(torch.float8_e4m3fn).flatten(-2)
+    return values.view(torch.uint8), (exponent.squeeze(-1) + 127).to(torch.uint8)
+
+
+def table_chunks(weight: DTensor, rows_per_rank: int) -> list[tuple[int, int, int]]:
+    """`(owner, local_start, num_rows)` for every chunk of a `Shard(0)` table, owners in order."""
+    num_rows, world = weight.shape[0], weight.device_mesh.size()
+    chunks = []
+    for owner in range(world):
+        local_rows = max(0, min(rows_per_rank, num_rows - owner * rows_per_rank))
+        for start in range(0, local_rows, TABLE_CHUNK_ROWS):
+            chunks.append((owner, start, min(TABLE_CHUNK_ROWS, local_rows - start)))
+    return chunks
+
+
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
     """Broadcast an integer to a process group using NCCL communicator."""
     integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
@@ -173,6 +215,8 @@ class NCCLBroadcaster:
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = torch.bfloat16
+        # Frozen row-sharded tables never change after their first broadcast, so they are sent once.
+        self.sent_frozen_tables: set[str] = set()
 
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
@@ -189,15 +233,24 @@ class NCCLBroadcaster:
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
+        tables = row_sharded_tables(model, state_dict)
+        table_weights = {name: state_dict.pop(name) for name in tables}
+        for name in self.sent_frozen_tables:
+            del tables[name], table_weights[name]
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
+        chunks = {name: table_chunks(table_weights[name], tables[name].rows_per_rank) for name in tables}
         chunked_ops = get_chunked_conversion_ops(model, state_dict)
-        num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())
+        # every layer, the remaining weights, each chunked conversion's packets, then each row-sharded
+        # table chunk by chunk
+        num_state_dict_to_send = (
+            num_layers + 1 + sum(op.shard_count for op in chunked_ops.values()) + sum(len(c) for c in chunks.values())
+        )
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
-        self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
+        self.logger.debug(f"Broadcasting {num_state_dict_to_send} state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             chunked_weights = {key: layer_state_dict.pop(key) for key in chunked_ops if key in layer_state_dict}
@@ -215,6 +268,42 @@ class NCCLBroadcaster:
                         assert packet is not None
                         broadcast_state_dict(packet, self.communicator)
                     del packet
+
+        for name, weight in table_weights.items():
+            self._send_table(model, name, weight, tables[name].rows_per_rank, chunks[name])
+            if not tables[name].weight.requires_grad:
+                self.sent_frozen_tables.add(name)
+
+    def _send_table(
+        self, model: nn.Module, name: str, weight: DTensor, rows_per_rank: int, chunks: list[tuple[int, int, int]]
+    ) -> None:
+        """Send a row-sharded table as fp8 + ue8m0 chunks, each owner's rows relayed by the master.
+
+        Every chunk goes out as `<table>.weight` and `<table>.scale` (raw bytes) under the
+        checkpoint name, plus `<table>.row_start`, the chunk's first row in the whole table.
+        """
+        assert isinstance(model, PreTrainedModelPrimeRL)
+        hf_name = next(iter(model.convert_to_hf({name: torch.empty(0)})))
+        prefix = hf_name.removesuffix(".weight")
+        group = weight.device_mesh.get_group()
+        rank, master = dist.get_rank(group), dist.get_group_rank(group, 0)
+        local, dim = weight.to_local(), weight.shape[1]
+        for owner, start, num_rows in chunks:
+            if rank == owner:
+                values, scales = quantize_rows_ue8m0(local[start : start + num_rows])
+                if owner != master:
+                    dist.send(values, group_dst=master, group=group)
+                    dist.send(scales, group_dst=master, group=group)
+            elif rank == master:
+                device = local.device
+                values = torch.empty(num_rows, dim, dtype=torch.uint8, device=device)
+                scales = torch.empty(num_rows, dim // UE8M0_BLOCK, dtype=torch.uint8, device=device)
+                dist.recv(values, group_src=owner, group=group)
+                dist.recv(scales, group_src=owner, group=group)
+            if rank == master:
+                row_start = torch.tensor([owner * rows_per_rank + start], dtype=torch.long, device=values.device)
+                chunk = {f"{prefix}.weight": values, f"{prefix}.scale": scales, f"{prefix}.row_start": row_start}
+                broadcast_state_dict(chunk, self.communicator)
 
 
 class NCCLWeightSender(WeightSender):

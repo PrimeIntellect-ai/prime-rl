@@ -150,6 +150,8 @@ def _create_muon_optimizer(
             return False
         if "ngram_embedding" in n:
             return False
+        if "engrams." in n and n.endswith(".embed.weight"):
+            return False
         # Expert biases should not go to Muon (and would also raise under EP).
         if "mlp.experts" in n and n.endswith("_bias"):
             return False

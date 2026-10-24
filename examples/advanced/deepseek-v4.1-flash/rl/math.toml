@@ -1,0 +1,83 @@
+# DeepSeek-V4.1-Flash RL on hendrycks math: 1 inference node + 7 trainer nodes (8x H200 each).
+# Inference serves the bf16 checkpoint quantized online to per-block FP8 (DP 8 + EP); the trainer
+# runs bf16 with EP 8 + FSDP and frozen engram tables, and broadcasts its weights over NCCL.
+# Needs DeepGEMM >= 2.8 (V4.1's indexer uses 32-token KV blocks on Hopper).
+max_steps = 100
+seq_len = 8192
+output_dir = "/shared/outputs"  # FILL IN
+clean = true
+
+[run]
+name = "dsv41-math"
+
+[inference.env_vars]
+# fp32 FP8 scales, as in the trainer's FP8 kernels on Hopper.
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+# FlashInfer's small-batch FP8 GEMM fails CUDA graph capture with fp32 scales.
+VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER = "0"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 12000
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 7
+gpus_per_node = 8
+num_infer_replicas = 1
+
+[slurm]
+job_name = "dsv41-rl"
+partition = "all"  # FILL IN
+
+[trainer]
+dist_timeout_seconds = 3600
+
+[trainer.model]
+# A PrimeRL-format copy written by tools/convert_deepseek_v41_to_prime.py.
+name = "/shared/models/DeepSeek-V4.1-Flash-bf16"  # FILL IN
+ep = 8
+freeze_engram_tables = true
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-7
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 64
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.model]
+name = "PrimeIntellect/DeepSeek-V4.1-Flash-bf16"
+
+[orchestrator.renderer]
+name = "deepseek-v4.1"
+
+[[orchestrator.train.source]]
+name = "hendrycks-math"
+env.taskset.id = "math-env"
+env.taskset.dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
+env.taskset.dataset_subset = "default"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference]
+use_deep_gemm = true
+
+[inference.vllm]
+model = "PrimeIntellect/DeepSeek-V4.1-Flash-bf16"
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+data_parallel_size = 8
+enable_expert_parallel = true
+# The weight reload holds one received bf16 layer (~25 GB) per GPU.
+gpu_memory_utilization = 0.70
+max_model_len = 8192
+kv_cache_dtype = "fp8"
+block_size = 64

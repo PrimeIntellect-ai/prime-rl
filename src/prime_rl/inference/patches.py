@@ -38,6 +38,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    register_deepseek_v41_text_model()
 
 
 @dataclass
@@ -202,34 +203,42 @@ def monkey_patch_deepseek_v4_c128_boundary():
 
 
 def monkey_patch_deepseek_v4_attn_sink_loading():
-    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
+    """Fix DeepSeek V4 and V4.1 weight updates silently keeping the boot-time attention sinks.
 
     ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
     ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
     that go through a loader, so the copy is silently dropped. This pads this rank's heads back
     to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
 
-    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
-    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only the
+    ``nvidia/model.py`` variants are covered, not the MTP, DSpark or non-NVIDIA ones.
     """
     from vllm.logger import init_logger
-    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
     from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+    from vllm.models.deepseek_v41.nvidia import model as dsv41_model
 
-    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    for module in (dsv4_model, dsv41_model):
+        _patch_attn_sink_loading(module)
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 / V4.1 attn_sink loads through param.weight_loader.")
+
+
+def _patch_attn_sink_loading(module):
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+
+    original_load_weights = module.DeepseekV4Model.load_weights
     if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
         return
 
     def load_weights(self, weights):
         params = dict(self.named_parameters())
-        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        tp_size = module.get_tensor_model_parallel_world_size()
         heads_per_rank = self.config.num_attention_heads // tp_size
-        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        head_start = heads_per_rank * module.get_tensor_model_parallel_rank()
         loaded_params: set[str] = set()
 
         def remaining_weights():
             for name, weight in weights:
-                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                if "attn_sink" not in name or module.is_pp_missing_parameter(name, self):
                     yield name, weight
                     continue
                 param = params[name]
@@ -243,8 +252,16 @@ def monkey_patch_deepseek_v4_attn_sink_loading():
         return loaded_params
 
     load_weights._prime_rl_uses_weight_loaders = True
-    dsv4_model.DeepseekV4Model.load_weights = load_weights
-    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
+    module.DeepseekV4Model.load_weights = load_weights
+
+
+def register_deepseek_v41_text_model():
+    """Serve DeepSeek-V4.1 checkpoints as text-only models (see `DeepseekV41TextForCausalLM`)."""
+    from vllm import ModelRegistry
+
+    ModelRegistry.register_model(
+        "DeepseekV41ForCausalLM", "prime_rl.inference.vllm.deepseek_v41:DeepseekV41TextForCausalLM"
+    )
 
 
 def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
