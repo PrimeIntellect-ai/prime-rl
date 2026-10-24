@@ -1,21 +1,45 @@
-from dataclasses import dataclass
-from typing import Literal
+from collections.abc import Iterable
+from typing import Protocol, runtime_checkable
 
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.utils.cp import CPContext
 
-CPStyle = Literal["ring", "ulysses"]
-ALL_CP_STYLES: frozenset[CPStyle] = frozenset({"ring", "ulysses"})
+
+@runtime_checkable
+class AttentionFlops(Protocol):
+    """A sequence-mixing layer (softmax, sliding-window, sparse or linear attention, Mamba)."""
+
+    def attention_flops(self, seq_len: int) -> int:
+        """Training FLOPs of this layer's sequence mixing for one document of `seq_len` tokens."""
+        ...
 
 
-@dataclass(frozen=True)
-class CPSupport:
-    """Which context-parallel styles an architecture can train under, and why not the rest."""
+def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None = None) -> int:
+    """Elements of `params` (default: all of the model's) that a token multiplies through.
 
-    styles: frozenset[CPStyle]
-    reason: str = ""
+    Every parameter counts (attention and MLP projections, norms, routers, the lm_head) except the
+    routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables, which
+    count only when tied to the lm_head.
+    """
+    params = {id(param): param for param in (model.parameters() if params is None else params)}
+    lm_head_params = {id(param) for param in model.lm_head.parameters()}
+    inactive = 0
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            inactive += sum(
+                param.numel()
+                for param in module.parameters(recurse=False)
+                if id(param) in params and id(param) not in lm_head_params
+            )
+        elif isinstance(module, MoE):
+            # Expert weights lead with `num_experts`, so the division is exact.
+            num_experts, top_k = module.experts.num_experts, module.router.top_k
+            expert_params = sum(param.numel() for param in module.experts.parameters() if id(param) in params)
+            inactive += expert_params * (num_experts - top_k) // num_experts
+    return sum(param.numel() for param in params.values()) - inactive
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -30,14 +54,17 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     cp_context: CPContext = CPContext()
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        """CP styles this architecture supports, given its config.
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        """Why this architecture cannot train at context-parallel degree `cp`, or ``None`` if it can.
 
-        Softmax attention runs through the shared ``FlashAttention._compute_attention``, which both
-        ``substitute_ring_attn`` and ``substitute_ulysses_attn`` rebind, so the default is both styles.
-        Architectures whose attention sits outside that path declare their own support.
+        The default is the Ulysses constraint: query heads, and KV heads unless replicated, shard over `cp`.
         """
-        return CPSupport(ALL_CP_STYLES)
+        text_config = getattr(config, "text_config", config)
+        q_heads = text_config.num_attention_heads
+        kv_heads = getattr(text_config, "num_key_value_heads", None) or q_heads
+        if q_heads % cp != 0 or (kv_heads % cp != 0 and cp % kv_heads != 0):
+            return f"cp={cp} must divide the {q_heads} attention heads and divide or be a multiple of the {kv_heads} KV heads for Ulysses CP"
+        return None
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -76,6 +103,10 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
         """PrimeRL models always use eager experts implementation."""
         return "eager"
+
+    def num_active_params(self) -> int:
+        """Parameters a text token multiplies through, LoRA adapters included."""
+        return count_active_params(self)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -156,4 +187,4 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]
+__all__ = ["PreTrainedModelPrimeRL"]

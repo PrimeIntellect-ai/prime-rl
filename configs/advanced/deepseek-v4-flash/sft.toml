@@ -6,9 +6,6 @@
 #
 # Note: on 4 8xH200 nodes, this config is near the memory limit, using ~94%+ GPU memory. 
 #
-# `dist_timeout_seconds = 14400` is needed on any run that has to build the HF -> prime-rl
-# conversion cache, which takes far longer than the 3600s default.
-#
 # To buy memory back for quicker testing on fewer nodes, set `offload = "full"` under `[model]`,
 # which keeps the fp32 masters, moments and gradients in CPU RAM and disables gradient clipping;
 # the lighter `offload = "optimizer"` is already the default here.
@@ -17,7 +14,6 @@
 # checkpoint (fp32 master weights plus two fp32 AdamW moments) is ~3 TiB. Add one with
 # `ckpt.output_dir` pointed at a volume that can hold it if you need the trained weights.
 
-dist_timeout_seconds = 14400
 max_steps = 20
 
 [model]

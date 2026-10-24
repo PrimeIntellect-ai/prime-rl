@@ -9,7 +9,6 @@ attn = "flash_attention_2"
 cp = 8
 ep = 8
 offload = "optimizer"
-dsa_backend = "cudnn_flashmla"
 
 [model.ac]
 freq = 1

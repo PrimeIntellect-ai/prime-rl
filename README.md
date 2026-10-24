@@ -16,14 +16,11 @@ prime-rl: Async RL Training at Scale
 
 </br>
 <p align="center">
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yaml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yaml/badge.svg" alt="Style" />
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yml">
+    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yml/badge.svg" alt="Style" />
   </a>
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/cpu_tests.yaml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/cpu_tests.yaml/badge.svg" alt="Test" />
-  </a>
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/gpu_tests.yaml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/gpu_tests.yaml/badge.svg" alt="Test" />
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/tests.yml">
+    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/tests.yml/badge.svg" alt="Tests" />
   </a>
 </p>
 
@@ -54,6 +51,7 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
+| Muse Glimmer, text only (`muse_glimmer`) | `meta-models/Muse-Glimmer-30B` | no | — | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ✅ |
 | Trinity (`afmoe`) | `arcee-ai/Trinity-Mini`, … | yes | ✅ | ✅ |
 | GLM-4 · GLM-4.5 MoE · INTELLECT-3 (`glm4_moe`) | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5-Air`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | yes | ✅ | ✅ |
