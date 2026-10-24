@@ -758,7 +758,13 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
     set_proc_title("Trainer")
-    train(cli(TrainerConfig))
+    config = cli(TrainerConfig)
+    if config.env_vars.get("PRIME_COLLECTIVES_DIAGNOSTIC") == "1":
+        from prime_rl.trainer.rl.collectives_probe import run
+
+        run()
+    else:
+        train(config)
 
 
 if __name__ == "__main__":
