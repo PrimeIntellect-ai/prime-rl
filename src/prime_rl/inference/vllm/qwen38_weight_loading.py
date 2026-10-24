@@ -1,8 +1,46 @@
 import re
+from collections import deque
 from collections.abc import Iterable
+from contextlib import closing
 from functools import wraps
 
 import torch
+
+
+def _stage_cpu_weights(weights: Iterable[tuple[str, torch.Tensor]]):
+    """Overlap one incoming PLE shard with a pinned-host copy of its predecessor."""
+    pending = deque()
+    copy_stream = None
+
+    def ready():
+        name, weight, done = pending.popleft()
+        done.synchronize()
+        return name, weight
+
+    try:
+        for name, weight in weights:
+            if not weight.is_cuda or re.fullmatch(r"ngram_embedding\.shard_(\d+)\.weight", name) is None:
+                while pending:
+                    yield ready()
+                yield name, weight
+                continue
+            if copy_stream is None:
+                copy_stream = torch.cuda.Stream(device=weight.device)
+            host_weight = torch.empty_like(weight, device="cpu", pin_memory=True)
+            copy_stream.wait_stream(torch.cuda.current_stream(weight.device))
+            with torch.cuda.stream(copy_stream):
+                host_weight.copy_(weight, non_blocking=True)
+                done = torch.cuda.Event()
+                done.record(copy_stream)
+            weight.record_stream(copy_stream)
+            pending.append((name, host_weight, done))
+            if len(pending) == 2:
+                yield ready()
+        while pending:
+            yield ready()
+    finally:
+        if copy_stream is not None:
+            copy_stream.synchronize()
 
 
 def patch_qwen38_weight_loading() -> None:
@@ -55,11 +93,11 @@ def patch_qwen38_weight_loading() -> None:
                         if overlap is None:
                             skipped.add("ngram_embedding.weight")
                             continue
-                    if cpu_offloaded:
-                        weight = weight.cpu()
                 yield name, weight
 
-        loaded = original_load_weights(self, local_weights())
+        weights = _stage_cpu_weights(local_weights()) if cpu_offloaded else local_weights()
+        with closing(weights):
+            loaded = original_load_weights(self, weights)
         return loaded | skipped
 
     load_weights._prime_rl_filters_ple_shards = True
