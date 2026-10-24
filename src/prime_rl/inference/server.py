@@ -19,7 +19,7 @@ def setup_vllm_env(config: InferenceConfig):
     if top_p_first:
         if os.environ.get("VLLM_USE_V2_MODEL_RUNNER") != "1":
             raise ValueError("top_p_before_top_k requires VLLM_USE_V2_MODEL_RUNNER=1")
-    os.environ["PRIME_TOP_P_BEFORE_TOP_K"] = "1" if top_p_first else "0"
+    os.environ["PRL_TOP_P_BEFORE_TOP_K"] = "1" if top_p_first else "0"
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice

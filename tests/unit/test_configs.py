@@ -1210,7 +1210,7 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
-    monkeypatch.setenv("PRIME_TOP_P_BEFORE_TOP_K", "0")
+    monkeypatch.setenv("PRL_TOP_P_BEFORE_TOP_K", "0")
     config = InferenceConfig(
         deployment=deployment,
         slurm={} if deployment["type"] == "disaggregated" else None,
@@ -1226,14 +1226,14 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
     assert config.top_p_before_top_k is (top_p_first is not False)
-    assert os.environ["PRIME_TOP_P_BEFORE_TOP_K"] == ("0" if top_p_first is False else "1")
+    assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == ("0" if top_p_first is False else "1")
     if top_p_first is not False:
         monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "0")
         with pytest.raises(ValueError, match="requires VLLM_USE_V2_MODEL_RUNNER"):
             setup_vllm_env(config)
         config.enable_return_sampling_mask = False
         setup_vllm_env(config)
-        assert os.environ["PRIME_TOP_P_BEFORE_TOP_K"] == "0"
+        assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == "0"
 
 
 def test_pd_role_connectors():

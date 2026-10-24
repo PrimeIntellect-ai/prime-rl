@@ -36,7 +36,7 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
-    if os.environ.get("PRIME_TOP_P_BEFORE_TOP_K") == "1":
+    if os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1":
         from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
 
         patch_top_p_then_top_k()

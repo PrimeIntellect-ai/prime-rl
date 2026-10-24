@@ -80,14 +80,6 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
-def _int32_bytes(values) -> bytes:
-    return np.ascontiguousarray(values, dtype=np.int32).tobytes()
-
-
-def _float32_bytes(values) -> bytes:
-    return np.ascontiguousarray(values, dtype=np.float32).tobytes()
-
-
 def _encode_sampler_evidence(
     mask: vf.SamplingMask | None, head: vf.TopLogprobs | None, num_tokens: int
 ) -> tuple[SamplingMask | None, TopLogprobs | None]:
@@ -109,7 +101,9 @@ def _encode_sampler_evidence(
         if head is None:
             return None, None
         return None, TopLogprobs(
-            ids=_int32_bytes(head.ids), logprobs=_float32_bytes(head.logprobs), counts=_int32_bytes(head.counts)
+            ids=np.ascontiguousarray(head.ids, dtype=np.int32).tobytes(),
+            logprobs=np.ascontiguousarray(head.logprobs, dtype=np.float32).tobytes(),
+            counts=np.ascontiguousarray(head.counts, dtype=np.int32).tobytes(),
         )
 
     mask_ids, mask_counts = np.asarray(mask.ids), np.asarray(mask.counts)
@@ -119,12 +113,17 @@ def _encode_sampler_evidence(
     elif len(mask_counts) < num_tokens:
         mask_counts = np.concatenate([mask_counts, np.zeros(num_tokens - len(mask_counts), dtype=np.int32)])
     if head is None:
-        return SamplingMask(ids=_int32_bytes(mask_ids), counts=_int32_bytes(mask_counts)), None
+        return SamplingMask(
+            ids=np.ascontiguousarray(mask_ids, dtype=np.int32).tobytes(),
+            counts=np.ascontiguousarray(mask_counts, dtype=np.int32).tobytes(),
+        ), None
 
     head_ids, head_logprobs, head_counts = np.asarray(head.ids), np.asarray(head.logprobs), np.asarray(head.counts)
     if np.array_equal(mask_counts, head_counts) and np.array_equal(mask_ids, head_ids):
         return SamplingMask(
-            ids=_int32_bytes(head_ids), counts=_int32_bytes(mask_counts), logprobs=_float32_bytes(head_logprobs)
+            ids=np.ascontiguousarray(head_ids, dtype=np.int32).tobytes(),
+            counts=np.ascontiguousarray(mask_counts, dtype=np.int32).tobytes(),
+            logprobs=np.ascontiguousarray(head_logprobs, dtype=np.float32).tobytes(),
         ), None
     rows = np.arange(num_tokens, dtype=np.int64)
     head_rows = np.repeat(rows, head_counts)
@@ -135,16 +134,16 @@ def _encode_sampler_evidence(
     if not np.array_equal(np.sort(mask_keys), np.sort(head_keys)):
         raise ValueError("Top logprobs must cover exactly the recorded sampling support")
     sampling_mask = SamplingMask(
-        ids=_int32_bytes(head_ids[on_mask]),
-        counts=_int32_bytes(mask_counts),
-        logprobs=_float32_bytes(head_logprobs[on_mask]),
+        ids=np.ascontiguousarray(head_ids[on_mask], dtype=np.int32).tobytes(),
+        counts=np.ascontiguousarray(mask_counts, dtype=np.int32).tobytes(),
+        logprobs=np.ascontiguousarray(head_logprobs[on_mask], dtype=np.float32).tobytes(),
     )
     if on_mask.all():
         return sampling_mask, None
     return sampling_mask, TopLogprobs(
-        ids=_int32_bytes(head_ids[~on_mask]),
-        logprobs=_float32_bytes(head_logprobs[~on_mask]),
-        counts=_int32_bytes(np.where(masked, 0, head_counts)),
+        ids=np.ascontiguousarray(head_ids[~on_mask], dtype=np.int32).tobytes(),
+        logprobs=np.ascontiguousarray(head_logprobs[~on_mask], dtype=np.float32).tobytes(),
+        counts=np.ascontiguousarray(np.where(masked, 0, head_counts), dtype=np.int32).tobytes(),
     )
 
 

@@ -165,7 +165,7 @@ class PrimeRlServingTokens(ServingTokens):
             not request.stream
             and extra_args.get("prl_replay", False)
             and extra_args.get("prl_compact_logprobs", False)
-            and os.environ.get("PRIME_TOP_P_BEFORE_TOP_K") == "1"
+            and os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1"
         )
         sampling_params.extra_args = {**extra_args, "prl_paired_capture": paired}
         if paired:
