@@ -13,8 +13,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
-from prime_rl.monitors.base import Kind, Monitor, MonitorContext
+from prime_rl.configs.monitors import (
+    FileMonitorConfig,
+    PrimeMonitorConfig,
+    WandbMonitorConfig,
+)
+from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
@@ -26,7 +30,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Monitor",
-    "MonitorContext",
     "WandbMonitor",
     "PrimeMonitor",
     "FileMonitor",
@@ -63,24 +66,35 @@ async def setup(
     if rank != 0:
         return
 
-    context = MonitorContext(
-        output_dir=output_dir,
-        producer=producer,
-        run_config=run_config,
-        train_env_names=train_env_names or [],
-        eval_env_names=eval_env_names or [],
-        overview_flavor=overview_flavor,
-    )
-    configured = [(PrimeMonitor, prime), (WandbMonitor, wandb), (FileMonitor, file)]
-    monitors = [cls(config, context) for cls, config in configured if config is not None]
+    monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
+    if prime is not None:
+        monitors.append(
+            ("prime", PrimeMonitor(prime), dict(config=run_config, output_dir=output_dir, producer=producer))
+        )
+    if wandb is not None:
+        monitors.append(
+            (
+                "wandb",
+                WandbMonitor(wandb),
+                dict(
+                    output_dir=output_dir,
+                    config=run_config,
+                    train_env_names=train_env_names,
+                    eval_env_names=eval_env_names,
+                    overview_flavor=overview_flavor,
+                ),
+            )
+        )
+    if file is not None:
+        monitors.append(("file", FileMonitor(file), dict(output_dir=output_dir, producer=producer)))
     if not monitors:
         return
 
-    get_logger().info(f"Initializing monitors ({', '.join(type(monitor).__name__ for monitor in monitors)})")
+    get_logger().info(f"Initializing monitors ({', '.join(name for name, _, _ in monitors)})")
     t0 = time.perf_counter()
-    for monitor in monitors:
-        get_logger().info(f"Initializing {type(monitor).__name__} ({monitor.config})")
-        await monitor.init()
+    for name, monitor, init_kwargs in monitors:
+        get_logger().info(f"Initializing {name} monitor ({monitor.config})")
+        await monitor.init(**init_kwargs)
         MONITORS.append(monitor)
     get_logger().debug(f"Initialized monitors in {format_time(time.perf_counter() - t0)}")
 
@@ -91,48 +105,69 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
     return next((monitor for monitor in MONITORS if isinstance(monitor, monitor_cls)), None)
 
 
-async def _fan_out(hook: str, *args: Any, **kwargs: Any) -> None:
-    for monitor in MONITORS:
-        try:
-            await getattr(monitor, hook)(*args, **kwargs)
-        except Exception as e:
-            get_logger().warning(f"Failed to {hook} on {type(monitor).__name__}: {e}")
-
-
 @overload
 async def log(data: dict[str, Any], step: int | None) -> None: ...
 
 
 @overload
-async def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind) -> None: ...
+async def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
 
 
-async def log(data: dict[str, Any] | vf.Episode | list[vf.Episode], step: int | None, kind: Kind = "train") -> None:
-    """Log to all registered monitors: a dict of scalar metrics, or episodes as they
-    arrive."""
-    await _fan_out("log", data, step=step, kind=kind)
+async def log(
+    data: dict[str, Any] | vf.Episode | list[vf.Episode],
+    step: int | None,
+    kind: Kind = "train",
+    subset: Subset = "effective",
+) -> None:
+    """Log to all registered monitors: a dict of scalar metrics, or episodes
+    with their cohort coordinates (train/eval x all/effective)."""
+    for monitor in MONITORS:
+        try:
+            await monitor.log(data, step=step, kind=kind, subset=subset)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
 async def log_annotations(updates: list[dict[str, Any]]) -> None:
     """Log trace updates to all registered monitors."""
-    await _fan_out("log_annotations", updates)
+    for monitor in MONITORS:
+        try:
+            await monitor.log_annotations(updates)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
 async def log_eval_plan(env_name: str, step: int, expected: int) -> None:
     """Log an eval epoch's expected episode count to all registered monitors."""
-    await _fan_out("log_eval_plan", env_name, step, expected)
+    for monitor in MONITORS:
+        try:
+            await monitor.log_eval_plan(env_name, step, expected)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
 async def log_live(events: list[dict[str, Any]]) -> None:
     """Log live-trace events to all registered monitors."""
-    await _fan_out("log_live", events)
+    for monitor in MONITORS:
+        try:
+            await monitor.log_live(events)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
 async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
     """Log one finished eval epoch to all registered monitors."""
-    await _fan_out("log_eval_epoch", env_name, step, episodes)
+    for monitor in MONITORS:
+        try:
+            await monitor.log_eval_epoch(env_name, step, episodes)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
 async def finalize(paused: bool = False) -> None:
     """Finalize the run on all registered monitors. A paused run is not reported as completed."""
-    await _fan_out("finalize", paused=paused)
+    for monitor in MONITORS:
+        try:
+            await monitor.finalize(paused=paused)
+        except Exception as e:
+            get_logger().warning(f"Failed to finalize {monitor.__class__.__name__}: {e}")

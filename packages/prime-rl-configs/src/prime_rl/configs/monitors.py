@@ -48,9 +48,7 @@ class PrimeMonitorConfig(BaseConfig):
     """Run or evaluation name shown on Prime. Inherits ``run.name`` when unset."""
 
 
-class TrainerMonitorsConfig(BaseConfig):
-    """The RL trainer's monitors: its metrics reach Prime through the orchestrator's run."""
-
+class MonitorsConfig(BaseConfig):
     wandb: WandbMonitorConfig | None = None
     """Log metrics to Weights & Biases. Off by default; enable with ``--monitors.wandb``."""
 
@@ -58,7 +56,14 @@ class TrainerMonitorsConfig(BaseConfig):
     """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""
 
 
-class MonitorsConfig(TrainerMonitorsConfig):
+class TrainMonitorsConfig(MonitorsConfig):
     prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
-    """Log metrics and episodes to Prime. On by default and needs a Prime API key;
-    disable with ``--no-monitors.prime``."""
+    """Log metrics and episodes to the Prime Intellect platform. On by default and
+    needs a Prime API key; disable with ``--no-monitors.prime``."""
+
+
+class EvalMonitorsConfig(MonitorsConfig):
+    prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
+    """Upload every eval source's epoch as an evaluation on the Prime Intellect platform (an
+    SFT online-eval process logs to the trainer's run instead). On by default and needs a
+    Prime API key; disable with ``--no-monitors.prime``."""

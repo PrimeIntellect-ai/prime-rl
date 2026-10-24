@@ -253,7 +253,7 @@ class EvalRunner:
         """One episode of the epoch, arrived or restored: through the monitors and into
         its env's batch, which is finalized once the epoch is complete."""
         step = eval_work(episode).step
-        await monitors.log([episode], step, "eval")
+        await monitors.log([episode], step, "eval", "all")
         eval_batch = self.eval_sink.add(episode)
         if eval_batch is not None:
             await self.finalize_eval_batch(eval_batch)
@@ -261,12 +261,13 @@ class EvalRunner:
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
-        orchestrator: the effective subset's annotations plus the ``eval/{env}/...`` metric dict."""
+        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
         if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
         if batch.episodes.effective:
+            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
             await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
         await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes.vf_episodes)
 

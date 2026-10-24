@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.monitors import EvalMonitorsConfig, TrainMonitorsConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -70,6 +71,12 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
+def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
+    """The online-eval process's monitors: the trainer's, so it logs to the trainer's
+    W&B and Prime runs."""
+    return EvalMonitorsConfig(wandb=monitors.wandb, file=monitors.file, prime=monitors.prime)
+
+
 def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env servers itself; the
@@ -90,7 +97,7 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         # by directory separation.
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-        monitors=config.monitors,
+        monitors=build_online_eval_monitors(config.monitors),
     )
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
