@@ -206,7 +206,7 @@ def fp8_indexer(
     actual_topk = min(topk, S_k)
     indices = torch.full((S_q, topk), S_k, dtype=torch.int32, device=device)
     BLOCK_M, BLOCK_N = 64, 128
-    chunk_rows = max(BLOCK_M, LOGITS_CHUNK_BYTES // (4 * S_k_aligned) // BLOCK_M * BLOCK_M)
+    chunk_rows = max(BLOCK_M, LOGITS_CHUNK_BYTES // (4 * max(S_k_aligned, 1)) // BLOCK_M * BLOCK_M)
     for start in range(0, S_q, chunk_rows):
         end = min(start + chunk_rows, S_q)
         rows = end - start
