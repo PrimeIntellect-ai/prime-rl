@@ -75,7 +75,7 @@ from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import resolve_external_resume_dir, resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -133,6 +133,7 @@ def train(config: TrainerConfig):
 
     if config.resume is not None:
         if config.resume.dir is not None:
+            config.resume.dir = resolve_external_resume_dir(ckpt_manager.ckpt_dir, config.resume.dir)
             checkpoint_step = config.resume.dir_step
         else:
             checkpoint_step = config.resume.step
