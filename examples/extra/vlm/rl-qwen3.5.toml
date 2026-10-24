@@ -1,7 +1,7 @@
 # Qwen3.5 image RL: 4 trainer + 4 inference nodes, each with 8 H200 GPUs.
 # Customize the environment IDs, W&B names and shared paths before launching.
 seq_len = 237568
-max_steps = 110
+max_steps = 200
 output_dir = "/shared/outputs"
 
 [run]

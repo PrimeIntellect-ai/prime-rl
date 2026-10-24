@@ -9,7 +9,7 @@ Multimodal RL and SFT configurations using the custom [PrimeRL VLM implementatio
 | [`rl-qwen3.5.toml`](rl-qwen3.5.toml) | `Qwen/Qwen3.5-122B-A10B` | 336 / 16 | 4 trainer + 4 inference nodes, 8× H200 141 GB per node |
 | [`rl-qwen3.8.toml`](rl-qwen3.8.toml) | `Qwen/Qwen3.8-Flash-Next` | 256 / 16 | same |
 
-Both use Muon at `1.2e-6`, optimizer-state CPU offload, FP32 optimizer state and gradient reduction, full activation checkpointing with offload, CP4 / EP8, and a frozen vision encoder. Training uses GRPO with IPO (`eps = 0.3`), binary rewards and seeded shuffled task selection for 110 steps. The batch is the number of rollout episodes, so these are 21 and 16 groups per step respectively.
+Both use Muon at `1.2e-6`, optimizer-state CPU offload, FP32 optimizer state and gradient reduction, full activation checkpointing with offload, CP4 / EP8, and a frozen vision encoder. Training uses GRPO with IPO (`eps = 0.3`), binary rewards and seeded shuffled task selection for 200 steps. The batch is the number of rollout episodes, so these are 21 and 16 groups per step respectively.
 
 The sequence limit is 237,568 tokens, with browser-harness compaction at 184,320 tokens and at most 200 turns. Per-turn generation allows 16,384 tokens at temperature 1 with no top-p/top-k truncation. Episode concurrency is 96 initial / 400 maximum. Held-out eval runs at step 0 and every 10 steps, with two attempts per task; checkpoints are saved every 10 steps, keeping the latest one.
 
