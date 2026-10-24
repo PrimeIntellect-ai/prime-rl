@@ -3,8 +3,7 @@
 ``add()`` takes one completed episode, ``fail()`` a request that produced no
 episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Before every
 readiness check the sink sweeps ``pending_batch`` for traces past
-``max_off_policy_steps`` — this sweep, not the dispatcher's in-flight cancel,
-is what guarantees nothing stale ships. Completed groups become numeric
+``max_staleness`` — this sweep is what guarantees no stale token trains. Completed groups become numeric
 observations; only queued traces retain verifier objects. The consumer drains
 ``take_rollout_window(force=True)`` before shipping a batch."""
 
@@ -29,6 +28,7 @@ from prime_rl.orchestrator.utils import (
     episode_group_id,
     min_fresh_version,
     node_policy_versions,
+    rollout_staleness,
     train_work,
 )
 from prime_rl.transports.batch import TrainingSample
@@ -147,6 +147,21 @@ class TrainSink:
             counts[episode_env_name(episode)] += 1
         return dict(counts)
 
+    def queued_staleness(self) -> list[int]:
+        """Current rollout staleness of each queued live-sourced train trace
+        in the batch being collected (see ``rollout_staleness``)."""
+        episodes = (self.episode_by_trace[trace_id] for trace_id in self.pending_batch)
+        staleness = (rollout_staleness(episode, self.progress.step) for episode in episodes)
+        return [s.rollout for s in staleness if s is not None]
+
+    def gauges(self) -> dict[str, float]:
+        """Instantaneous, read-only gauges sampled by the periodic logger."""
+        staleness = self.queued_staleness()
+        return {
+            "train_sink/staleness/max": float(max(staleness, default=0)),
+            "train_sink/staleness/mean": sum(staleness) / len(staleness) if staleness else 0.0,
+        }
+
     async def add(self, episode: vf.Episode) -> TrainBatch | None:
         """Process one completed episode and return a batch when ready."""
         await self.process_episode(episode)
@@ -193,7 +208,7 @@ class TrainSink:
         return await self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
-        """Mask queued tokens past ``max_off_policy_steps`` out of the loss and
+        """Mask queued tokens past ``max_staleness`` out of the loss and
         void the samples left with nothing to train. The batch being collected
         is ``progress.step`` and trains policy v{step-1}, so a token sampled by
         v{k} would ship at staleness ``(step-1) - k``. Tokens without a policy
@@ -210,7 +225,7 @@ class TrainSink:
                 return
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
-        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+        min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
         if min_version <= 0:
             return
         dropped = 0
@@ -232,10 +247,10 @@ class TrainSink:
             del self.episode_by_trace[trace_id]
             dropped += 1
         if dropped:
-            self.rollout_window.metrics.count("off_policy/dropped", float(dropped))
+            self.rollout_window.metrics.count("staleness/rollout/dropped", float(dropped))
             get_logger().warning(
                 f"Dropped {dropped} queued traces with every token past "
-                f"max_off_policy_steps={self.config.max_off_policy_steps}. Consider increasing it to avoid this."
+                f"max_staleness={self.config.max_staleness}. Consider increasing it to avoid this."
             )
 
     async def process_episode(self, episode: vf.Episode) -> None:
@@ -417,7 +432,7 @@ class TrainSink:
             selected_by_trace = await asyncio.to_thread(prune_selected)
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
-        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+        min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
         kept = masked = 0
         for trace_id, trace_samples in selected_by_trace.items():
             episode = self.episode_by_trace[trace_id]
@@ -433,7 +448,7 @@ class TrainSink:
                 branch = trace.branches[sample.branch_index]
                 runs = stale_token_runs(branch, policy.start, min_version)
                 masked += sum(int(trainable[id(branch)][start:end].sum()) for start, end in runs)
-        self.rollout_window.metrics.rate("off_policy/token/masked", {"": float(masked)}, kept + masked)
+        self.rollout_window.metrics.rate("staleness/token/masked", {"": float(masked)}, kept + masked)
 
         shipped_ids = set(selected_by_trace)
         traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)
