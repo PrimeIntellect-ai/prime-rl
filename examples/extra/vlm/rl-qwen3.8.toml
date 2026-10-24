@@ -1,0 +1,205 @@
+# Qwen3.8 image RL: 4 trainer + 4 inference nodes, each with 8 H200 GPUs.
+# Customize the environment IDs, W&B names and shared paths before launching.
+seq_len = 237568
+max_steps = 200
+output_dir = "/shared/outputs"
+
+[run]
+name = "your-run-name"
+
+[model]
+name = "Qwen/Qwen3.8-Flash-Next"
+
+[model.vlm]
+language_model_attr = "model.language_model"
+vision_encoder_attr = "model.visual"
+freeze_vision_encoder = true
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 4
+orchestrator_on_inference = true
+
+[slurm]
+time = "7-00:00:00"
+job_name = "your-run-name"
+
+[ckpt]
+interval = 10
+keep_last = 1
+keep_interval = 200
+
+[weight_broadcast]
+type = "nccl"
+timeout = 7200
+
+[trainer]
+dist_timeout_seconds = 7200
+enable_router_replay = true
+
+[trainer.model]
+cp = 4
+ep = 8
+attn = "flash_attention_3"
+offload = "optimizer"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+freeze_moe_router = false
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+mode = "full"
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+fullgraph = false
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+mu = 0.95
+betas1 = 0.9
+betas2 = 0.95
+weight_decay = 0.01
+max_norm = 1.0
+
+[trainer.scheduler]
+type = "constant"
+
+[trainer.log]
+level = "info"
+
+[monitors.wandb]
+entity = "your-wandb-entity"
+project = "your-wandb-project"
+name = "your-run-name"
+
+[monitors.file]
+path = "metrics.jsonl"
+compress = true
+float_decimals = 6
+
+[inference]
+enable_fp32_lm_head = true
+enable_fp32_router_logits = true
+
+[inference.vllm]
+seed = 0
+dtype = "bfloat16"
+max_model_len = 237568
+max_num_seqs = 256
+max_num_batched_tokens = 8192
+tensor_parallel_size = 4
+data_parallel_size = 2
+enable_expert_parallel = true
+all2all_backend = "allgather_reducescatter"
+gpu_memory_utilization = 0.85
+mm_encoder_tp_mode = "data"
+mm_processor_cache_gb = 128
+mm_processor_cache_type = "lru"
+mamba_cache_dtype = "float32"
+enable_prefix_caching = true
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+safetensors_load_strategy = "prefetch"
+enable_return_routed_experts = true
+
+[inference.vllm.engram_config]
+cpu_offload = true
+
+[inference.router]
+type = "vllm-router"
+policy = "sticky_least_loaded"
+
+[inference.env_vars]
+VLLM_ENGINE_READY_TIMEOUT_S = "7200"
+
+[orchestrator]
+batch_size = 256
+max_off_policy_steps = 8
+
+# Adaptive episode cap: starts at 96 and grows or backs off with engine pressure.
+[orchestrator.concurrency]
+initial_inflight = 96
+max_inflight = 512
+
+[orchestrator.renderer]
+name = "qwen3.8"
+enable_thinking = true
+preserve_thinking = true
+reasoning_effort = "xhigh"
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.algo]
+type = "grpo"
+
+# Cycle through the task catalog in a seeded shuffled order.
+[orchestrator.train.select]
+shuffle = true
+seed = 0
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 16384
+
+[orchestrator.train.sampling.extra_body]
+min_p = 0.0
+top_k = -1
+return_token_ids = true
+
+[trainer.loss]
+type = "ipo"
+eps = 0.3
+adv_tau = 1.0
+max_importance_ratio = 10000.0
+
+# Replace both IDs with your image-capable taskset and its compatible harness.
+# The reward and compaction fields below belong to the browser harness/taskset;
+# adapt them if your environment exposes different configuration fields.
+[[orchestrator.train.source]]
+name = "your-favorite-env"
+env.taskset.id = "your-org/your-favorite-env@0.1.0"
+env.taskset.task.reward_mode = "binary"
+env.agent.runtime.type = "prime"
+env.agent.timeout.setup = 3600
+env.agent.timeout.rollout = 8100
+env.agent.timeout.scoring = 2400
+env.agent.harness.id = "your-org/your-favorite-env@0.1.0"
+env.agent.harness.max_turns = 200
+env.agent.harness.max_request_bytes = 60000000
+env.agent.harness.context_limit_tokens = 237568
+env.agent.harness.compaction_trigger_tokens = 184320
+env.agent.harness.history_trimming_enabled = true
+
+[orchestrator.eval]
+interval = 10
+group_size = 2
+skip_first_step = false
+retrigger_on_resume = true
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_tokens = 16384
+
+[[orchestrator.eval.source]]
+name = "your-held-out-env"
+env.taskset.id = "your-org/your-held-out-env@0.1.0"
+env.agent.runtime.type = "prime"
+env.agent.timeout.setup = 1200
+env.agent.timeout.rollout = 3700
+env.agent.timeout.scoring = 9600
+env.agent.harness.id = "your-org/your-held-out-env@0.1.0"
+env.agent.harness.max_turns = 200
+env.agent.harness.context_limit_tokens = 237568
+env.agent.harness.compaction_trigger_tokens = 184320
+env.agent.harness.history_trimming_enabled = false
