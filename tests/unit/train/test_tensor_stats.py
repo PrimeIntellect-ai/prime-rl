@@ -52,3 +52,14 @@ def test_tensor_stats_match_torch():
         assert f"{key}/median" not in metrics
     assert not any(key.startswith(("entropy/empty", "empty/")) for key in metrics)
     assert stats.compute_stats() == {}
+
+
+def test_tensor_stats_accepts_cpu_values():
+    stats = TensorStats()
+    stats.add("on_gpu", torch.tensor(1.0, device="cuda"))
+    stats.add("on_cpu", torch.tensor(0.5))
+
+    metrics = stats.compute_stats()
+
+    assert metrics["on_gpu/mean"] == 1.0
+    assert metrics["on_cpu/mean"] == 0.5

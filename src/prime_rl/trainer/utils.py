@@ -248,9 +248,10 @@ class TensorStats:
         """Fold ``values`` (where ``mask`` is set) into ``{key}/{names[group]}`` by each value's group.
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
-        values = values.detach().reshape(-1).double()
-        groups = groups.reshape(-1)
-        mask = torch.ones_like(values, dtype=torch.bool) if mask is None else mask.reshape(-1)
+        # A custom loss may emit a metric on the CPU
+        values = values.detach().reshape(-1).to(device="cuda", dtype=torch.float64)
+        groups = groups.reshape(-1).to(values.device)
+        mask = torch.ones_like(values, dtype=torch.bool) if mask is None else mask.reshape(-1).to(values.device)
         zero, neg_inf = torch.zeros_like(values), torch.full_like(values, -math.inf)
         sums = values.new_zeros(len(names), 3).index_add_(
             0,
