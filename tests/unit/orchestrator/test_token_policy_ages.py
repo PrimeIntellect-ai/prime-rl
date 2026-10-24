@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 from verifiers.v1.types import WeightVersionSpan
 
 from prime_rl.orchestrator.utils import token_policy_ages
@@ -13,8 +14,8 @@ def test_token_policy_ages_counts_labelled_tokens_only():
     ]
     trace = SimpleNamespace(
         nodes=[
-            SimpleNamespace(mask=[False, True], weight_versions=None),
-            SimpleNamespace(mask=[False] + [True] * 12, weight_versions=spans),
+            SimpleNamespace(mask=np.array([False, True]), weight_versions=None),
+            SimpleNamespace(mask=np.array([False] + [True] * 12), weight_versions=spans),
         ]
     )
 
