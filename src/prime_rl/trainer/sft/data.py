@@ -22,6 +22,7 @@ from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, S
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sequence import repeat_to_length
 from prime_rl.utils.utils import format_time
 
 
@@ -592,7 +593,13 @@ class CatDataset(StatefulIterableDataset):
             remaining -= kept
         pad_len = -len(result["input_ids"]) % self.pad_to_multiple_of
         if pad_len > 0:
-            result["input_ids"].extend([0] * pad_len)
+            # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text packs pad with
+            # their own tokens. Multimodal packs keep a constant id: a repeated image placeholder would have no feature
+            # to receive.
+            if packed["mm_kwargs"] is None:
+                result["input_ids"].extend(repeat_to_length(result["input_ids"], pad_len))
+            else:
+                result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
@@ -761,7 +768,10 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
-    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size, pad_to_multiple_of=cp)
+    row_len = config.seq_len * config.micro_batch_size
+    # Rows hold at most `row_len` tokens, so padding to a multiple of it pads every row to exactly `row_len`
+    pad_to_multiple_of = row_len if config.pad_to_seq_len else cp
+    packing_dataset = CatDataset(dataset, row_len, pad_to_multiple_of=pad_to_multiple_of)
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,

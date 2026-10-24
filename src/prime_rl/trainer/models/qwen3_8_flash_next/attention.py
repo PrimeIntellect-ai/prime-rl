@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
@@ -21,8 +22,6 @@ class IndexedGatedAttention(nn.Module):
         indexer_token_budget: int,
         indexer_compression_ratio: int,
     ) -> None:
-        import prime_kernels
-
         super().__init__()
         self.num_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
@@ -45,8 +44,24 @@ class IndexedGatedAttention(nn.Module):
         )
 
         self.cp_context = CPContext()
-        # Resolve once before torch.compile traces the layer; the loader caches the module.
-        self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
+        # Resolve before compilation on GPU trainers; CPU-only FLOP counting needs no kernels.
+        if torch.cuda.is_available():
+            import prime_kernels
+
+            self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
+
+    def attention_flops(self, seq_len: int) -> int:
+        # The indexer scores every compressed block, forward only (no_grad); attention reads `token_budget` tokens.
+        indexer = self.indexer
+        num_blocks = seq_len // indexer.compression_ratio
+        indexer_flops = 2 * indexer.num_query_heads * indexer.head_dim * seq_len * num_blocks
+        return indexer_flops + quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, indexer.token_budget),
+        )
 
     def forward(
         self,
