@@ -122,9 +122,10 @@ VLLM_ENGINE_READY_TIMEOUT_S = "7200"
 batch_size = 336
 max_off_policy_steps = 8
 
+# Adaptive episode cap: starts at 96 and grows or backs off with engine pressure.
 [orchestrator.concurrency]
 initial_inflight = 96
-max_inflight = 400
+max_inflight = 512
 
 [orchestrator.renderer]
 name = "qwen3.5"
