@@ -11,7 +11,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
-from prime_rl.trainer.utils import get_world
+from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
@@ -146,6 +146,9 @@ class NCCLBroadcaster:
             self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
+
+        # Inference startup may outlast the trainer collective timeout.
+        wait_for_master("nccl_broadcaster/init", timeout)
 
     @torch.no_grad()
     def send(self, model: nn.Module) -> None:

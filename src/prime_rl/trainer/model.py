@@ -9,6 +9,7 @@ from typing import cast
 # modules with implementations that have incompatible CUDA requirements.
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
+import fla.utils
 import torch
 import torch._dynamo
 import torch.distributed as dist
@@ -796,6 +797,8 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+    # FLA's metadata cache must not skip operations during checkpoint replay.
+    fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
     checkpointed_layers = 0
