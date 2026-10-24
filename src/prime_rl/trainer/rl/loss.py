@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Callable, Protocol
 
 import torch
 from beartype import beartype as typechecker
@@ -43,6 +43,7 @@ class LossOutputs:
 
     loss: Float[Tensor, ""]
     metrics: dict[str, Tensor]
+    """Scalars are per-sample values, 1D tensors per-token values."""
 
 
 class Loss(Protocol):
@@ -382,7 +383,7 @@ def compute_loss(
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
-) -> tuple[Float[Tensor, ""], dict[str, Any]]:
+) -> tuple[Float[Tensor, ""], dict[str, list[Tensor]]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
@@ -416,7 +417,7 @@ def compute_loss(
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
 
     Returns:
-        Tuple of (scaled_loss, aggregated_metrics)
+        Tuple of (scaled_loss, metrics), where metrics lists each key's values as the loss fns emitted them
     """
     all_metrics: dict[str, list[Tensor]] = {}
 
@@ -492,11 +493,4 @@ def compute_loss(
 
     scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
 
-    aggregated: dict[str, Any] = {}
-    for k, v in all_metrics.items():
-        if v[0].dim() == 0:
-            aggregated[k] = torch.stack(v)
-        else:
-            aggregated[k] = torch.cat(v)
-
-    return scaled_loss, aggregated
+    return scaled_loss, all_metrics
