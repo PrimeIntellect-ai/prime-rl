@@ -120,21 +120,21 @@ class GptOssAttention(nn.Module):
 
 
 def substitute_gpt_oss_ulysses_attention(process_group: torch.distributed.ProcessGroup) -> None:
-    from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS, ulysses_flash_attn_varlen_func
+    from prime_rl.trainer.models.layers.ulysses_attn import ulysses_flash_attn_varlen_func
 
     cp_size = torch.distributed.get_world_size(process_group)
 
-    def ulysses_attention(self, query, key, value, _cu_seqlens, _max_seqlen):
+    def ulysses_attention(self, query, key, value, cu_seqlens, max_seqlen):
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (-1, -1)
         return ulysses_flash_attn_varlen_func(
             self.flash_attn,
             query,
             key,
             value,
-            cu_seqlens_q=ULYSSES_PARAMS["cu_seqlens"],
-            cu_seqlens_k=ULYSSES_PARAMS["cu_seqlens"],
-            max_seqlen_q=ULYSSES_PARAMS["max_seqlen"],
-            max_seqlen_k=ULYSSES_PARAMS["max_seqlen"],
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
             causal=True,
             cp_group=process_group,
             cp_size=cp_size,

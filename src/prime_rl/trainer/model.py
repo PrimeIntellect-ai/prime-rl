@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import cast
 # modules with implementations that have incompatible CUDA requirements.
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
+import fla.utils
 import torch
 import torch._dynamo
 import torch.distributed as dist
@@ -679,7 +681,11 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
         )
         snapshot_path = convert_dir / "prime"
-        if not snapshot_path.exists() and get_world().is_master:
+        if not (snapshot_path / ".prime-v1").is_file() and get_world().is_master:
+            # The marker is written last, so a cache without it is left over from an interrupted conversion
+            if snapshot_path.exists():
+                logger.warning(f"Removing incomplete PrimeRL conversion cache {snapshot_path} and converting again")
+                shutil.rmtree(snapshot_path)
             logger.debug(
                 f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
@@ -731,6 +737,8 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+    # FLA's metadata cache must not skip operations during checkpoint replay.
+    fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
     checkpointed_layers = 0
