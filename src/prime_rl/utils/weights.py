@@ -2,7 +2,7 @@ import json
 import re
 import warnings
 from pathlib import Path
-from typing import Callable, Collection, cast
+from typing import TYPE_CHECKING, Callable, Collection, cast
 
 import torch
 import torch.distributed as dist
@@ -20,6 +20,9 @@ from transformers.utils import (
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
 
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:
@@ -157,6 +160,19 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
     TODO: NIXL keeps its own inline copy of this rule; unify the handling.
     """
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
+
+
+def get_chunked_conversion_ops(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, "ChunkedConvOp"]:
+    """Match independent chunked conversions to weights actually present, including wrapper prefixes."""
+    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+    from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
+
+    if not isinstance(model, PreTrainedModelPrimeRL):
+        return {}
+    operations = {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, ChunkedConvOp)}
+    if not operations:
+        return {}
+    return {key: operations[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in operations}
 
 
 def gather_weights_parallel(
