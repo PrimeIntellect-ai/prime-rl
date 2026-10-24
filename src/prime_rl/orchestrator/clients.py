@@ -184,6 +184,20 @@ class AdminPlane:
             )
         )
 
+    async def prefetch_weights(self, weight_dir: Path) -> None:
+        """Have every engine read and decode a sparse weight delta while serving."""
+        await asyncio.gather(
+            *[
+                _admin_post(
+                    admin_client,
+                    "/prefetch_weights",
+                    json={"weight_dir": weight_dir.as_posix()},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for admin_client in self.clients
+            ]
+        )
+
     async def update_weights(
         self,
         weight_dir: Path | None,

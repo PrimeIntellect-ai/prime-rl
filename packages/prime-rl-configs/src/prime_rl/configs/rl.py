@@ -442,6 +442,12 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
+        if (
+            self.weight_broadcast.type == "filesystem"
+            and self.weight_broadcast.sparse
+            and self.trainer.optim.type == "muon"
+        ):
+            raise ValueError("Sparse weight broadcast does not support Muon yet")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:

@@ -3,21 +3,30 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import AdamW, Optimizer
+from torch.optim import Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.optim.base import ChunkedUpdates, OptimizerLike
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
-from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
-from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sign_sgd import SignSGD as _SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+
+
+# The optimizers on the GPU take an ``update_hook``
+class AdamW(ChunkedUpdates, torch.optim.AdamW):
+    pass
+
+
+class SignSGD(ChunkedUpdates, _SignSGD):
+    pass
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:

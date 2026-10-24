@@ -48,6 +48,14 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    sparse: bool = False
+    """Between anchors, publish only the weight elements that changed since the previous broadcast.
+    Engines patch their weights in place and verify every update. Not supported with LoRA or Muon."""
+
+    anchor_interval: int = Field(50, ge=1)
+    """With ``sparse``, publish a full checkpoint every this many steps. Engines that join or fall
+    off the delta chain load the last one and replay the deltas since."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
