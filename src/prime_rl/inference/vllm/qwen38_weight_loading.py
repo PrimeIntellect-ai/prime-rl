@@ -19,7 +19,11 @@ def _stage_cpu_weights(weights: Iterable[tuple[str, torch.Tensor]]):
 
     try:
         for name, weight in weights:
-            if not weight.is_cuda or re.fullmatch(r"ngram_embedding\.shard_(\d+)\.weight", name) is None:
+            if (
+                type(weight) is not torch.Tensor
+                or not weight.is_cuda
+                or re.fullmatch(r"ngram_embedding\.shard_(\d+)\.weight", name) is None
+            ):
                 while pending:
                     yield ready()
                 yield name, weight
