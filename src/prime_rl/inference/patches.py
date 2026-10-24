@@ -26,6 +26,7 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
+    monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
@@ -716,6 +717,36 @@ def monkey_patch_strip_routed_experts_from_chat():
     logger.info(
         "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
     )
+
+
+def monkey_patch_skip_prompt_routing_for_chat():
+    """Start chat requests' routed experts at the end of the prompt.
+
+    Chat responses drop routed_experts (``monkey_patch_strip_routed_experts_from_chat``), but with
+    ``enable_return_routed_experts`` the engine still materializes every prompt's routing rows and
+    ships them to the API server each turn: about 258 B per token, so tens of MB for a long eval
+    prompt that is thrown away. Setting ``routed_experts_prompt_start`` to the prompt length keeps
+    only the completion's rows. A request that sets its own start keeps it.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.logger import init_logger
+    from vllm.sampling_params import SamplingParams
+
+    if getattr(OpenAIServingChat._log_inputs, "_prime_rl_skips_prompt_routing", False):
+        return
+    original_log_inputs = OpenAIServingChat._log_inputs
+
+    # The chat route calls _log_inputs right after it builds each prompt's SamplingParams, with the rendered prompt.
+    def _log_inputs(self, request_id, inputs, params, lora_request):
+        if isinstance(params, SamplingParams) and params.routed_experts_prompt_start == 0:
+            prompt_ids = self._extract_prompt_components(inputs).token_ids
+            if prompt_ids is not None:
+                params.routed_experts_prompt_start = len(prompt_ids)
+        return original_log_inputs(self, request_id, inputs, params, lora_request)
+
+    _log_inputs._prime_rl_skips_prompt_routing = True
+    OpenAIServingChat._log_inputs = _log_inputs
+    init_logger("vllm.prime_rl.routed_experts").info("Chat requests return routed experts only for their completions.")
 
 
 def _patch_qwen35_moe_lora_format():
