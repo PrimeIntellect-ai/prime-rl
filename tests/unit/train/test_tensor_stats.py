@@ -30,7 +30,7 @@ def test_tensor_stats_match_torch():
         stats.add("entropy/all", values, mask)
         stats.add_grouped("entropy", values, mask, groups, names)
         stats.add("empty", values, torch.zeros_like(mask))
-        stats.add_samples("loss", loss)
+        stats.add("loss", loss)
         all_values.append(values[mask])
         all_groups.append(groups[mask])
         losses.append(loss)
@@ -38,14 +38,17 @@ def test_tensor_stats_match_torch():
     metrics = stats.compute_stats()
 
     values, groups, losses = torch.cat(all_values), torch.cat(all_groups), torch.stack(losses)
-    expected = {"entropy/all": values, "entropy/math": values[groups == 0], "entropy/code": values[groups == 1]}
+    expected = {
+        "entropy/all": values,
+        "entropy/math": values[groups == 0],
+        "entropy/code": values[groups == 1],
+        "loss": losses,
+    }
     for key, key_values in expected.items():
         assert metrics[f"{key}/mean"] == pytest.approx(key_values.mean().item(), rel=1e-5)
         assert metrics[f"{key}/std"] == pytest.approx(key_values.std().item(), rel=1e-5)
         assert metrics[f"{key}/min"] == pytest.approx(key_values.min().item())
         assert metrics[f"{key}/max"] == pytest.approx(key_values.max().item())
         assert f"{key}/median" not in metrics
-    assert metrics["loss/median"] == pytest.approx(torch.median(losses).item())
-    assert metrics["loss/std"] == pytest.approx(losses.std().item(), rel=1e-5)
     assert not any(key.startswith(("entropy/empty", "empty/")) for key in metrics)
     assert stats.compute_stats() == {}

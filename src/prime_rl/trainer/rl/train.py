@@ -500,7 +500,7 @@ def train(config: TrainerConfig):
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
-            loss, loss_metrics = compute_loss(
+            loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
                 ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
@@ -532,7 +532,7 @@ def train(config: TrainerConfig):
 
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensors.add_samples("loss", loss.detach() * cp_size)
+            tensors.add("loss", loss * cp_size)
 
             # Each token's env: the sequences' env names spread over their lengths
             env_names = sorted(set(micro_batch["env_names"]))
@@ -564,14 +564,11 @@ def train(config: TrainerConfig):
             if is_moe_model:
                 moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
                 for name, value in moe_stats.items():
-                    tensors.add_samples(name, value)
+                    tensors.add(name, value)
                 step_tokens_per_expert += tokens_per_expert
 
-            for key, values in loss_metrics.items():
-                if values[0].ndim == 0:
-                    tensors.add_samples(key, torch.stack(values))
-                else:
-                    tensors.add(key, torch.cat(values))
+            for key, loss_tensor in loss_tensors.items():
+                tensors.add(key, loss_tensor)
 
             # Debug log with *local, micro step* stats, evaluated only when debug logging is on
             logger.opt(lazy=True).debug(
