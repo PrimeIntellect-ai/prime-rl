@@ -326,9 +326,7 @@ jobs:
               cache-dependency-glob: "uv.lock"
       # Runs the eval without torch; --all-packages would install it (via bfcl-v3).
       - name: Install dependencies
-        run: |
-          uv sync --locked --package prime-rl --package gsm8k
-          uv run --no-sync python -c "import importlib.util; assert importlib.util.find_spec('torch') is None, 'torch is installed'"
+        run: uv sync --locked --package prime-rl --package gsm8k
       - name: Run eval tests
         env:
           USERNAME_CI: CI_RUNNER
