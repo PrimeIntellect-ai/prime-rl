@@ -324,10 +324,7 @@ jobs:
             with:
               enable-cache: true
               cache-dependency-glob: "uv.lock"
-      # Base deps and the gsm8k env only, so the eval runs without torch, like it does
-      # after a plain `uv sync`. Torch comes with the gpu extra and with other workspace
-      # envs (--all-packages pulls it in through bfcl-v3); the check fails the job if
-      # it gets installed anyway.
+      # Runs the eval without torch; --all-packages would install it (via bfcl-v3).
       - name: Install dependencies
         run: |
           uv sync --locked --package prime-rl --package gsm8k

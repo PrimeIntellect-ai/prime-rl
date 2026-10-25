@@ -30,8 +30,7 @@ def setup_env():
 
 @pytest.fixture(autouse=True)
 def setup_world():
-    """Auto-fixture to reset the world between tests. Looked up in ``sys.modules`` because
-    the world module imports torch, which the eval integration test runs without."""
+    """Auto-fixture to reset the world if a test loaded it; importing it here would need torch."""
     yield
     world = sys.modules.get("prime_rl.trainer.world")
     if world is not None:
