@@ -41,8 +41,8 @@ def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
 
 
 def min_fresh_version(step: int, max_off_policy_steps: int) -> int:
-    """Oldest dispatch version whose episodes may still train in batch
-    ``step`` — anything older would ship past ``max_off_policy_steps``."""
+    """Oldest policy version whose tokens may still train in batch ``step`` —
+    anything older would ship past ``max_off_policy_steps``."""
     return (step - 1) - max_off_policy_steps
 
 
