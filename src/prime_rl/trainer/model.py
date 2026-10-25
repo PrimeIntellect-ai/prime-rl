@@ -519,6 +519,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
+            # Models look n-gram tables up outside their layer, so each table is its own FSDP unit, vocab-parallel
+            # across the head mesh when it has several ranks.
             if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
                 embedding = module.ngram_embedding
                 dp_mod_head_mesh = (
@@ -529,6 +531,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
                 fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
                 embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+            elif isinstance(module, NGramEmbedding):
+                fully_shard(module.ngram_embedding, mesh=hsdp_mesh, **fsdp_config)
 
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config

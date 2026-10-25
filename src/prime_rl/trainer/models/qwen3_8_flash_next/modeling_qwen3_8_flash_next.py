@@ -95,13 +95,13 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        input_ids: torch.LongTensor,
+        ngram_embeddings: torch.Tensor | None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
-            hidden_states = hidden_states + self.ple(hidden_states, input_ids, cu_seqlens)
+            hidden_states = hidden_states + self.ple(hidden_states, ngram_embeddings, cu_seqlens)
 
         block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
@@ -145,6 +145,14 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         self.layers = nn.ModuleList(
             Qwen3_8FlashNextDecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
+        # The n-gram embeddings are looked up outside their layers: a table's FSDP unit gathering inside an
+        # activation-checkpointed layer can make the backward replay run different operations than the forward.
+        # A plain dict keeps the tables registered (and named) only under their layers.
+        self.ngram_lookups = {
+            layer_index: layer.ple.ple_embedding
+            for layer_index, layer in enumerate(self.layers)
+            if layer.ple is not None
+        }
         self.hyper_connection_mixer = HyperConnection(
             hidden_size=config.hidden_size,
             stream_count=config.hc_count,
@@ -195,9 +203,10 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
+            ngram_lookup = self.ngram_lookups.get(layer_index)
             hidden_states = decoder_layer(
                 hidden_states,
-                input_ids,
+                ngram_lookup(input_ids, cu_seqlens) if ngram_lookup is not None else None,
                 position_embeddings,
                 cu_seqlens,
                 routed_experts=layer_routed_experts,

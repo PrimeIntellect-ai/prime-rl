@@ -10,7 +10,10 @@ from prime_rl.utils.cp import CPContext, gather_for_cp
 
 
 class PositionLearningEnhancement(nn.Module):
-    """Inject hashed N-gram features into the expanded residual streams."""
+    """Inject hashed N-gram features into the expanded residual streams.
+
+    The model looks the features up with ``ple_embedding`` before calling the decoder layer.
+    """
 
     def __init__(
         self,
@@ -67,10 +70,10 @@ class PositionLearningEnhancement(nn.Module):
     def forward(
         self,
         expanded_states: torch.Tensor,
-        input_ids: torch.LongTensor,
+        embeddings: torch.Tensor,
         cu_seqlens: torch.LongTensor,
     ) -> torch.Tensor:
-        embeddings = self.ple_embedding(input_ids, cu_seqlens).to(expanded_states.dtype)
+        embeddings = embeddings.to(expanded_states.dtype)
         keys = self.norm_key(self.key_proj(embeddings))
         queries = self.norm_query(expanded_states)
         keys = keys.unflatten(-1, (self.stream_count, self.hidden_size))
