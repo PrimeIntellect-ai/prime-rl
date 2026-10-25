@@ -1,11 +1,11 @@
-"""Training arrays kept by env servers: the trainer must assemble exactly the arrays the
-inline path packs, and the store must serve and free them."""
+"""Training arrays kept by env servers: the trainer must assemble each branch's arrays,
+cut, packed and padded like its tokens, and the store must serve and free them."""
 
 import base64
-import copy
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import msgspec
 import numpy as np
 import pytest
 import verifiers.v1 as vf
@@ -15,8 +15,18 @@ from verifiers.v1.types import SamplingMask, TopLogprobs, TurnTokens
 
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transports import payload
-from prime_rl.transports.payload import PayloadHook, PayloadServer, delete_payloads, payload_host, resolve_payloads
+from prime_rl.transports.batch import types as wire
+from prime_rl.transports.batch.types import MicroBatch, PayloadSlice, TrainingSample, encode_array
+from prime_rl.transports.payload import (
+    PayloadHook,
+    PayloadServer,
+    delete_payloads,
+    encode_branch_arrays,
+    payload_host,
+    resolve_payloads,
+)
 
 
 def _episode(
@@ -73,41 +83,176 @@ def _samples(episodes: list[vf.Episode]):
     return samples
 
 
-def test_fetched_batches_equal_inline_batches():
+def _rows(counts: bytes, *columns: bytes | None) -> list[tuple]:
+    """Per token, its row of each column (ids, logprobs) as Python values."""
+    counts = np.frombuffer(counts, np.int32)
+    ends = np.cumsum(counts)
+    out = []
+    for start, end in zip(ends - counts, ends):
+        out.append(
+            tuple(
+                None if c is None else tuple(np.frombuffer(c, np.int32 if i == 0 else np.float32)[start:end].tolist())
+                for i, c in enumerate(columns)
+            )
+        )
+    return out
+
+
+def test_fetched_micro_batches_hold_each_branchs_arrays():
     rng = np.random.default_rng(0)
     episodes = [
         _episode(rng, 40, 300),
         _episode(rng, 5, 30, masked=True),
         _episode(rng, 20, 90),
         _episode(rng, 8, 12, masked=True),
-        # Samples without routing must not share a micro batch with routed ones.
         _episode(rng, 6, 40, routed=False),
         _episode(rng, 9, 25, routed=False, masked=True),
     ]
-    inline = _samples(copy.deepcopy(episodes))
-
+    expected = {
+        episode.traces[0].id: encode_branch_arrays(branch, len(branch.token_ids))
+        for episode in episodes
+        for branch in episode.traces[0].branches
+    }
     hook = PayloadHook()
     for episode in episodes:
         hook.keep(episode, vf.SamplingConfig())
         assert all(node.routed_experts is None for node in episode.traces[0].nodes)
-    by_ref = _samples(episodes)
-    assert all(s.payload is not None and s.routed_experts is None and s.top_logprobs is None for s in by_ref)
+    samples = _samples(episodes)
+    assert all(sample.payload is not None for sample in samples)
 
     for pad in (1, 64):
         kwargs = dict(seq_len=256, num_train_workers=2, bin_cost=sum, pad_to_multiple_of=pad)
-        expected = prepare_batch(copy.deepcopy(inline), **kwargs)
-        packed = prepare_batch(copy.deepcopy(by_ref), **kwargs)
         with ThreadPoolExecutor(4) as pool:
-            for want_rank, got_rank in zip(expected, packed, strict=True):
-                failed, urls = resolve_payloads(got_rank, pool)
+            for rank in prepare_batch(samples, **kwargs):
+                layout = [(mb.trace_ids, list(mb.sequence_lengths), mb.padding) for mb in rank]
+                failed, urls = resolve_payloads(rank, pool)
                 assert failed == [] and urls
-                for want, got in zip(want_rank, got_rank, strict=True):
-                    assert np.array_equal(got.input_ids, want.input_ids)
-                    assert got.routed_experts == want.routed_experts
-                    assert got.sampling_mask == want.sampling_mask
-                    assert got.top_logprobs == want.top_logprobs
-                    assert got.payloads is None
-                    assert want.sampling_mask is None or want.sampling_mask.logprobs is not None
+                for mb, (trace_ids, lengths, padding) in zip(rank, layout, strict=True):
+                    lengths[-1] -= padding
+                    want = [(expected[trace_id], n) for trace_id, n in zip(trace_ids, lengths, strict=True)]
+                    # Routing replays per micro batch: all of its samples have rows or none.
+                    assert len({arrays.routed_experts is None for arrays, _ in want}) == 1
+                    if want[0][0].routed_experts is None:
+                        assert mb.routed_experts is None
+                    else:
+                        rows = b"".join(
+                            arrays.routed_experts.data[
+                                : n * len(arrays.routed_experts.data) // arrays.routed_experts.shape[0]
+                            ]
+                            for arrays, n in want
+                        )
+                        rows += payload._tile(rows, padding * len(rows) // sum(lengths))
+                        assert mb.routed_experts.data == rows
+                    for name, empty in (("sampling_mask", (0, 0)), ("top_logprobs", (0, 0))):
+                        got = getattr(mb, name)
+                        heads = [getattr(arrays, name) for arrays, _ in want]
+                        if all(head is None for head in heads):
+                            assert got is None
+                            continue
+                        got_rows = _rows(got.counts, got.ids, got.logprobs)
+                        want_rows = []
+                        for head, (_, n) in zip(heads, want):
+                            want_rows += (
+                                _rows(head.counts, head.ids, head.logprobs)[:n]
+                                if head is not None
+                                else [((), None)] * n
+                            )
+                        want_rows += [((), None)] * padding
+                        assert [ids for ids, _ in got_rows] == [ids for ids, _ in want_rows]
+                        for (_, got_lp), (ids, want_lp) in zip(got_rows, want_rows):
+                            if want_lp is not None:
+                                assert got_lp == want_lp
+                            elif got_lp is not None:
+                                assert all(np.isnan(got_lp)) and len(got_lp) == len(ids)
+                    assert mb.payloads is None
+
+
+def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
+    """Explicit values: a top-k head, a mask with sampler logprobs and a plain mask reach
+    the trainer cut to their slices, packed together and padded."""
+    server = PayloadServer("127.0.0.1")
+
+    def sample(key: str | None, fields: list[str], **arrays) -> TrainingSample:
+        if key is not None:
+            server.put(key, payload._encoder.encode(wire.BranchArrays(**arrays)))
+        return TrainingSample(
+            token_ids=np.array([1, 2, 3, 4], np.int32),
+            mask=np.array([False, False, True, True]),
+            logprobs=np.array([0.0, 0.0, -0.1, -0.2], np.float32),
+            temperatures=np.ones(4, np.float32),
+            advantages=np.array([0.0, 0.0, 1.0, 1.0], np.float32),
+            env_name="env",
+            payload=PayloadSlice(url=server.url, id=key, num_tokens=4, fields=fields) if key is not None else None,
+        )
+
+    head = wire.TopLogprobs(
+        ids=np.array([3, 7, 4], np.int32).tobytes(),
+        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
+        counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
+    )
+    replayed = wire.SamplingMask(
+        ids=np.array([5, 6, 8], np.int32).tobytes(),
+        counts=np.array([0, 0, 1, 2], np.int32).tobytes(),
+        logprobs=np.log(np.array([1.0, 0.75, 0.25], np.float32)).tobytes(),
+    )
+    plain = wire.SamplingMask(ids=np.array([9], np.int32).tobytes(), counts=np.array([0, 0, 0, 1], np.int32).tobytes())
+    samples = [
+        sample("head", ["top_logprobs"], top_logprobs=head),
+        sample("replayed", ["sampling_mask", "sampling_mask_logprobs"], sampling_mask=replayed),
+        sample("plain", ["sampling_mask"], sampling_mask=plain),
+        # No arrays at all: it shares the micro batch and gets empty rows.
+        sample(None, []),
+    ]
+    with ThreadPoolExecutor(2) as pool:
+        [[truncated]] = prepare_batch(samples[:1], seq_len=3, num_train_workers=1, bin_cost=sum)
+        assert resolve_payloads([truncated], pool)[0] == []
+        np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
+        np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
+        [[truncated]] = prepare_batch(samples[1:2], seq_len=3, num_train_workers=1, bin_cost=sum)
+        assert resolve_payloads([truncated], pool)[0] == []
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.ids, np.int32), [5])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.logprobs, np.float32), [0.0])
+
+        [[packed]] = prepare_batch(samples, seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16)
+        packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
+        assert resolve_payloads([packed], pool)[0] == []
+    assert len(packed.top_logprobs.ids) == 3 * 4
+    tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
+    assert ids.shape == values.shape
+    assert ids.shape[0] == sum(packed.sequence_lengths)
+    rows = {
+        tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
+    }
+    expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
+    assert rows.keys() == expected.keys()
+    for key, value in expected.items():
+        np.testing.assert_allclose(rows[key], value, rtol=1e-6)
+
+
+@pytest.mark.parametrize("support", ["complete", "mismatch"])
+def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
+    import verifiers.v1 as vf
+
+    from prime_rl.transports.payload import _encode_sampler_evidence
+
+    mask = vf.SamplingMask(ids=np.array([5, 6, 8], np.int32), counts=np.array([0, 0, 1, 2], np.int32))
+    head = vf.TopLogprobs(
+        ids=np.array([1, 2, 5, 8, 6 if support == "complete" else 7], np.int32),
+        logprobs=np.array([-0.1, -2.5, 0.0, -0.3, -1.4], np.float32),
+        counts=np.array([0, 2, 1, 2], np.int32),
+    )
+    if support == "mismatch":
+        with pytest.raises(ValueError):
+            _encode_sampler_evidence(mask, head, 4)
+        return
+    sampling_mask, top_logprobs = _encode_sampler_evidence(mask, head, 4)
+    np.testing.assert_array_equal(np.frombuffer(sampling_mask.ids, np.int32), [5, 8, 6])
+    np.testing.assert_array_equal(np.frombuffer(sampling_mask.counts, np.int32), [0, 0, 1, 2])
+    np.testing.assert_array_equal(np.frombuffer(sampling_mask.logprobs, np.float32), np.float32([0.0, -0.3, -1.4]))
+    np.testing.assert_array_equal(np.frombuffer(top_logprobs.ids, np.int32), [1, 2])
+    np.testing.assert_array_equal(np.frombuffer(top_logprobs.logprobs, np.float32), np.float32([-0.1, -2.5]))
+    np.testing.assert_array_equal(np.frombuffer(top_logprobs.counts, np.int32), [0, 2, 0, 0])
 
 
 def test_unfetchable_micro_batches_are_reported():

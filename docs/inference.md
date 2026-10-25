@@ -374,11 +374,11 @@ reordered or mixed evidence still uses support matching and validation.
 
 ### Training arrays by reference
 
-Router replay, score centering and sampling replay give every token a training array: routing rows (layers × experts), the top-k sampler head (~1 KB per sampled token at k = 128) and sampling-mask ids. The train env servers keep these arrays, and only references pass through the orchestrator, so the orchestrator node never holds the arrays of buffered episodes:
+Router replay, score centering and sampling replay give every token a training array: routing rows (layers × experts), the top-k sampler head (~1 KB per sampled token at k = 128) and sampling-mask ids. These arrays never leave an env server inline: the train env servers keep them, and only references pass through the orchestrator, so the orchestrator node never holds the arrays of buffered episodes:
 
-- vLLM returns the arrays inline to the env server as before.
-- When a train episode finishes, each env-server worker keeps its trainable branches' arrays, serves them over HTTP, and sends the orchestrator only `{url, branch -> id}` (in `trace.info["payload"]`).
-- The orchestrator packs references (`batch/bytes` drops accordingly); each trainer rank fetches its micro batches' arrays before the step and assembles them exactly as the packer assembles inline arrays.
+- vLLM returns the arrays to the env server. The episode stream to the orchestrator never carries them.
+- When a train episode finishes, each env-server worker keeps its trainable branches' arrays, serves them over HTTP, and sends the orchestrator only references (in `trace.info["prime_rl_payload"]`).
+- The orchestrator packs one reference per sample; each trainer rank fetches its micro batches' arrays before the step, cuts each to its sample's tokens, concatenates them in packing order and pads them.
 - Every kept array is deleted exactly once, by whoever holds it last: the trainer, once every rank fetched a step's arrays; the orchestrator, when it drops a sample or trace without shipping it (filtered, pruned, stale, or discarded at shutdown); the env server, when an episode it kept never reached the orchestrator. A micro batch whose arrays cannot be fetched is dropped from the loss on every rank that trains it (`payload/dropped_micro_batches`), never trained on zeros.
 
-On multi-node SLURM runs every inference node runs a replica of every launcher-managed env server, and the orchestrator sends each run to the replica with the fewest runs in flight, so env-server memory and CPU spread over all inference nodes. On single-node runs, the env servers run next to the orchestrator. Eval rollouts and rollouts from env servers you run yourself (`serve.address`) keep their arrays inline.
+On multi-node SLURM runs every inference node runs a replica of every launcher-managed env server, and the orchestrator sends each run to the replica with the fewest runs in flight, so env-server memory and CPU spread over all inference nodes. On single-node runs, the env servers run next to the orchestrator. Eval env servers keep no arrays: eval never trains on them. A train env server you run yourself (`serve.address`) must set `keep_training_arrays = true` in its config, or the trainer gets no arrays and runs that need sampling masks or top-k heads stop with an error.

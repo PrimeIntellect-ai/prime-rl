@@ -41,6 +41,13 @@ def _kept(sample: TrainingSample, field: str) -> bool:
     return sample.payload is not None and field in sample.payload.fields
 
 
+# Training arrays reach the trainer only through env servers that keep them.
+_KEEP_ARRAYS_HINT = (
+    "Launcher-managed train env servers keep them; a train env server you run yourself "
+    "(`serve.address`) must set `keep_training_arrays = true`."
+)
+
+
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
     """Remove zero-advantage tokens from the RL component."""
     if sample.advantages is None:
@@ -322,24 +329,21 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and sample.sampling_mask is None and not _kept(sample, "sampling_mask"):
+                if env.requires_sampling_masks and not _kept(sample, "sampling_mask"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
                         f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
                         "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
                         "the inference server config (the rl entrypoint does this automatically) - "
-                        "it requires vLLM's native sampling-mask capture (>= 0.28)."
+                        f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_ARRAYS_HINT}"
                     )
-                mask_logprobs = sample.sampling_mask.logprobs is not None if sample.sampling_mask is not None else False
-                has_heads = (
-                    sample.top_logprobs is not None
-                    or mask_logprobs
-                    or _kept(sample, "top_logprobs")
-                    or _kept(sample, "sampling_mask_logprobs")
-                )
-                if env.requires_top_logprobs and not has_heads:
-                    raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
+                if env.requires_top_logprobs and not (
+                    _kept(sample, "top_logprobs") or _kept(sample, "sampling_mask_logprobs")
+                ):
+                    raise RuntimeError(
+                        f"env {env_name!r} requested sampler top logprobs but returned none. {_KEEP_ARRAYS_HINT}"
+                    )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
