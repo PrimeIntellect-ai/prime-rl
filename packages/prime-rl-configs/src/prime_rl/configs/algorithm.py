@@ -50,8 +50,7 @@ class FrozenModelConfig(VLLMClientConfig):
     prime-rl never launches or updates these — only the trainable policy is
     ever hosted by prime-rl itself. Frozen models are reachable-but-unmanaged:
     ``base_url`` is required, their weights never change, and rollouts or
-    scores from them never go stale (stable prefix cache, no off-policy
-    aging)."""
+    scores from them never go stale (stable prefix cache, no staleness)."""
 
     name: str
     """Served model name, sent as the ``model`` field of every request."""
@@ -61,7 +60,7 @@ class FrozenModelConfig(VLLMClientConfig):
 
 ModelReference: TypeAlias = Literal["policy"] | FrozenModelConfig
 """``"policy"`` (the live policy — weight-updated: prefix caches salted per
-version, sampling logprobs carried, rollouts age off-policy) or an inline
+version, sampling logprobs carried, rollouts go stale as weights update) or an inline
 externally-hosted frozen model."""
 
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
