@@ -169,7 +169,7 @@ fused_lm_head_token_chunk_size = 8192       # default
 # fused_lm_head_token_chunk_size = "disabled"  # vanilla LM head
 ```
 
-Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet).
+Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. In SFT the head returns the summed cross-entropy and computes its gradients chunk by chunk during the forward pass; on Hopper and newer GPUs one fused [quack](https://github.com/Dao-AILab/quack) kernel computes each chunk's loss and logits gradient.
 
 ## Memory-Tight Recipe
 

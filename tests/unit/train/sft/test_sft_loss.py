@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from prime_rl.trainer.models.layers import lm_head as lm_head_module
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, FusedOutputLinear, VanillaOutputLinear
 
 B, S, H, V = 2, 7, 8, 37
@@ -66,3 +67,66 @@ def test_fused_lm_head_with_temperature_keeps_logprob_path(chunk_size):
     torch.testing.assert_close(loss, reference, rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(hidden.grad, ref_hidden_grad, rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(lm_head.weight.grad, ref_weight_grad, rtol=1e-5, atol=1e-5)
+
+
+requires_quack_cross_entropy = pytest.mark.skipif(
+    lm_head_module.get_quack_cross_entropy() is None, reason="quack's cross-entropy kernel needs a Hopper or newer GPU"
+)
+
+
+@pytest.mark.gpu
+@requires_quack_cross_entropy
+@pytest.mark.parametrize("vocab", [37, 32002, 201088])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype):
+    """quack's fused kernel gives the per-token loss and logits gradient of the eager math (the CPU and pre-Hopper
+    path), zero on masked tokens."""
+    torch.manual_seed(0)
+    logits = torch.randn(300, vocab, device="cuda", dtype=dtype) * 3
+    labels = torch.randint(0, vocab, (300,), device="cuda")
+    labels[::3] = IGNORE_INDEX
+
+    def run():
+        loss = torch.empty(300, device="cuda")
+        grad_logits = lm_head_module._cross_entropy(logits.clone(), labels, loss, with_grad=True)
+        return loss, grad_logits.to(dtype)
+
+    fused = run()
+    monkeypatch.setattr(lm_head_module, "get_quack_cross_entropy", lambda: None)
+    torch.testing.assert_close(fused, run())
+
+
+@pytest.mark.gpu
+@requires_quack_cross_entropy
+@pytest.mark.parametrize("vocab, hidden", [(37, 8), (32002, 100), (201088, 1024)])
+@pytest.mark.parametrize("chunk_size", [1, 96, 4096])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("softcap", [None, 20.0])
+def test_fused_lm_head_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, hidden, chunk_size, dtype, softcap):
+    """With quack's kernel the chunked head gives the eager math's loss, with and without gradients, and hidden and
+    weight gradients."""
+    torch.manual_seed(0)
+    hidden_states = torch.randn(1, 300, hidden, device="cuda", dtype=dtype)
+    labels = torch.randint(0, vocab, (1, 300), device="cuda")
+    labels[torch.rand(1, 300, device="cuda") < 0.3] = IGNORE_INDEX
+    labels[:, :100] = IGNORE_INDEX
+    with torch.device("cuda"):
+        lm_head = FusedOutputLinear(hidden, vocab, chunk_size=chunk_size, softcap=softcap)
+    lm_head.weight = torch.nn.Parameter(torch.randn(vocab, hidden, device="cuda", dtype=dtype) * 3 / hidden**0.5)
+
+    def run():
+        lm_head.weight.grad = None
+        inputs = hidden_states.clone().requires_grad_(True)
+        loss = lm_head(inputs, labels)["loss"]
+        (loss * UPSTREAM).backward()
+        with torch.no_grad():
+            eval_loss = lm_head(hidden_states, labels)["loss"]
+        return loss.detach(), eval_loss, inputs.grad, lm_head.weight.grad
+
+    fused = run()
+    monkeypatch.setattr(lm_head_module, "get_quack_cross_entropy", lambda: None)
+    eager = run()
+    torch.testing.assert_close(fused[:2], eager[:2])
+    # In bf16 the weight gradient adds up chunk by chunk in bf16, where one rounding difference can grow to a few ulps
+    grad_tolerance = {"atol": 1e-4, "rtol": 1.6e-2} if dtype == torch.bfloat16 else {}
+    torch.testing.assert_close(fused[2:], eager[2:], **grad_tolerance)

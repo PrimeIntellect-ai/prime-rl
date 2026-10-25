@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from functools import lru_cache
 from typing import TypedDict
 
 import torch
@@ -337,6 +338,40 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None, None, None, None
 
 
+@lru_cache(maxsize=1)
+def get_quack_cross_entropy():
+    """quack's fused cross-entropy kernel, or None before Hopper (the kernel spreads each row over a thread block
+    cluster)."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        return None
+    from quack.cross_entropy import cross_entropy_fwd_out
+
+    return cross_entropy_fwd_out
+
+
+def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool) -> Tensor | None:
+    """Writes the fp32 cross-entropy of each row of ``logits`` into ``loss``, 0 where the label is IGNORE_INDEX. With
+    ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. From
+    Hopper on, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
+    quack_cross_entropy = get_quack_cross_entropy() if logits.is_cuda else None
+    # The kernel loads at least 4 bytes at a time: 16-bit logits need an even vocabulary
+    if quack_cross_entropy is not None and logits.shape[1] * logits.element_size() % 4 == 0:
+        grad_logits = logits if with_grad else None
+        quack_cross_entropy(logits, labels, None, loss, None, grad_logits, None, IGNORE_INDEX)
+        return grad_logits
+
+    valid = labels != IGNORE_INDEX
+    target = labels.clamp(min=0).unsqueeze(-1)
+    logits = logits.float()
+    logz = torch.logsumexp(logits, dim=-1)
+    loss.copy_(torch.where(valid, logz - logits.gather(1, target).squeeze(1), 0.0))
+    if not with_grad:
+        return None
+    grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
+    grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
+    return grad_logits.mul_(valid.unsqueeze(-1))
+
+
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
     """Summed cross-entropy over labels != IGNORE_INDEX, with the gradients computed during forward.
 
@@ -366,38 +401,29 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
         needs_hidden, needs_weight = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
         grad_hidden = torch.empty_like(hidden) if needs_hidden else None
         grad_weight = torch.zeros_like(weight) if needs_weight else None
-        loss = torch.zeros((), device=hidden.device, dtype=torch.float32)
+        loss = torch.empty(hidden.shape[0], device=hidden.device, dtype=torch.float32)
 
         for start in range(0, hidden.shape[0], chunk_size):
             end = min(start + chunk_size, hidden.shape[0])
             hidden_chunk = hidden[start:end]
-            labels_chunk = labels[start:end]
-            valid = labels_chunk != IGNORE_INDEX
-            target = labels_chunk.clamp(min=0).unsqueeze(-1)
 
-            logits = (hidden_chunk @ weight.t()).float()
+            logits = hidden_chunk @ weight.t()
             if softcap is not None:
-                tanh_logits = torch.tanh(logits / softcap)
+                tanh_logits = torch.tanh(logits.float() / softcap)
                 logits = softcap * tanh_logits
-            logz = torch.logsumexp(logits, dim=-1)
-            target_logits = logits.gather(1, target).squeeze(1)
-            loss += torch.where(valid, logz - target_logits, 0.0).sum()
-
-            if needs_hidden or needs_weight:
-                # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
-                grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
-                grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
-                grad_logits = grad_logits.mul_(valid.unsqueeze(-1))
-                if softcap is not None:
-                    grad_logits = grad_logits.mul_(1 - tanh_logits.square())
-                grad_logits = grad_logits.to(hidden.dtype)
-                if needs_hidden:
-                    torch.mm(grad_logits, weight, out=grad_hidden[start:end])
-                if needs_weight:
-                    grad_weight.addmm_(grad_logits.t(), hidden_chunk)
+            grad_logits = _cross_entropy(logits, labels[start:end], loss[start:end], needs_hidden or needs_weight)
+            if grad_logits is None:
+                continue
+            if softcap is not None:
+                grad_logits = grad_logits.mul_(1 - tanh_logits.square())
+            grad_logits = grad_logits.to(hidden.dtype)
+            if needs_hidden:
+                torch.mm(grad_logits, weight, out=grad_hidden[start:end])
+            if needs_weight:
+                grad_weight.addmm_(grad_logits.t(), hidden_chunk)
 
         ctx.save_for_backward(grad_hidden, grad_weight)
-        return loss
+        return loss.sum()
 
     @staticmethod
     def backward(ctx, grad_loss: torch.Tensor):
