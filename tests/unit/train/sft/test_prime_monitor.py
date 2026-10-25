@@ -238,9 +238,9 @@ def test_a_failed_launch_fails_the_run(sdk_runs):
     from prime_rl.monitors.prime import launch_run
 
     config = _sft_config()
-    error = RuntimeError("trainer exited with code 1")
-    with pytest.raises(RuntimeError), launch_run(config, config.monitors.prime):
-        raise error
+    error = RuntimeError("Trainer failed with exit code -9")
+    with pytest.raises(SystemExit), launch_run(config, config.monitors.prime):
+        raise SystemExit(1) from error
     assert sdk_runs[0].failed is error
 
 

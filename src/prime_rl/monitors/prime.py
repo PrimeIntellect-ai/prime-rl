@@ -144,7 +144,8 @@ def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig
     try:
         yield
     except BaseException as e:
-        run.fail(e, timeout=FINISH_TIMEOUT)
+        # A failed component exits the launcher with a SystemExit chained to its error.
+        run.fail(e.__cause__ or e, timeout=FINISH_TIMEOUT)
         raise
     # The finisher component completes the run; this process only exits.
     atexit.unregister(run._atexit_hook)
