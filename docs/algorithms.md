@@ -273,10 +273,12 @@ This is an approximation to the unknown sampler tail, not exact full-distributio
 centering. The IcePop ratio band remains `[0.2, 5]` by default.
 
 The launcher configures probability capture automatically. Standalone inference
-servers need `processed_logprobs` and `max_logprobs >= sampling.logprobs + 2`.
-The renderer requests two extra candidates to recover a head independent of the
-sampled action, excluding ties at the head boundary. Missing heads fail explicitly.
-Compact HTTP transport packs token IDs and probabilities into binary buffers.
+servers need `enable_return_sampling_mask = true`: the sampler captures the head on
+the GPU from the processed distribution, next to the sampling mask, so vLLM returns
+no logprobs for these requests. The renderer requests two extra candidates to recover
+a head independent of the sampled action, excluding ties at the head boundary. Missing
+heads fail explicitly. Compact HTTP transport packs token IDs and probabilities into
+binary buffers.
 
 Metrics report captured sampler `score_centering/head_mass`, modeled
 `score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
