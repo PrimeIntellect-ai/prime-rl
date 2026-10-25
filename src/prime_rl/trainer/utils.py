@@ -131,6 +131,14 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     }
 
 
+def get_peak_memory() -> float:
+    """Peak reserved GPU memory since the last ``torch.cuda.reset_peak_memory_stats()`` in GiB, the maximum over all
+    ranks."""
+    peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
+    dist.all_reduce(peak_memory, op=dist.ReduceOp.MAX)
+    return peak_memory.item()
+
+
 def bind_process_to_gpu_numa_node() -> None:
     """Pin this rank's CPUs to its GPU's NUMA node.
 

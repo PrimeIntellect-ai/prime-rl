@@ -304,7 +304,7 @@ Pulled from the console log and mirrored to W&B.
 | `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
 | `perf/mfu` | MFU, including attention FLOPs |
 | `perf/mfu_6dn` | MFU from the plain 6 x active params x tokens estimate (no attention FLOPs) |
-| `perf/peak_memory` | peak GPU memory (GiB) |
+| `perf/peak_memory` | peak reserved GPU memory of the step (GiB), the maximum over ranks |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Checkpointing
