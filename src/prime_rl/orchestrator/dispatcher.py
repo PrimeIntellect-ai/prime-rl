@@ -14,7 +14,7 @@
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
   naturally on either side of an eval boundary.
-- Staleness never cancels a rollout: tokens past ``max_off_policy_steps`` are
+- Staleness never cancels a rollout: tokens past ``max_staleness`` are
   masked by the sink's queue sweep. Eval episodes are measurements for the
   policy version they started with. Online evals may explicitly cancel them
   when a newer checkpoint is ready.
@@ -306,18 +306,6 @@ class Dispatcher:
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
 
-    def inflight_staleness(self) -> list[int]:
-        """Current staleness of each in-flight live-sourced train episode: the
-        version the batch being collected trains on (v{step-1}) minus the
-        episode's dispatch version."""
-        if self.train_envs is None or self.progress is None:
-            return []
-        return [
-            (self.progress.step - 1) - meta.policy_version
-            for meta in self.inflight.values()
-            if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
-        ]
-
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -398,7 +386,7 @@ class Dispatcher:
     async def on_version_pending(self, step: int) -> None:
         """Block train scheduling across the weight update. Staleness never
         cancels a rollout: it keeps sampling fresh tokens, and the sink masks
-        the ones that age past ``max_off_policy_steps``."""
+        the ones that age past ``max_staleness``."""
         self.policy_update_pending = True
         # Wait for a scheduling call that started before the pending update.
         # No rollout can cross the inference weight swap after this barrier.
@@ -852,12 +840,9 @@ class Dispatcher:
 
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
-        staleness = self.inflight_staleness()
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/off_policy/max": float(max(staleness, default=0)),
-            "dispatcher/off_policy/mean": sum(staleness) / len(staleness) if staleness else 0.0,
         }
