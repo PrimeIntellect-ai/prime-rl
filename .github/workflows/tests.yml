@@ -173,7 +173,7 @@ jobs:
             eval:
               - *runtime
               - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_server,algorithm,monitors}.py'
-              - 'src/prime_rl/{eval,orchestrator,monitors}/**'
+              - 'src/prime_rl/{control,eval,orchestrator,monitors}/**'
               - 'src/prime_rl/entrypoints/{eval,env_server}.py'
               - 'tests/integration/test_gsm8k_eval.py'
               - 'configs/ci/integration/gsm8k-eval.toml'
@@ -324,13 +324,14 @@ jobs:
             with:
               enable-cache: true
               cache-dependency-glob: "uv.lock"
-      # Extras-free on purpose: the GSM8K eval is the no-GPU eval path (Prime
-      # Inference, subprocess runtime), and the torch-carrying extras are
-      # linux-only, so --all-extras quietly installed torch on CI and hid eager
-      # imports of training-side modules. Without the extras this job is the
-      # only eval coverage that runs torch-free, catching that class.
+      # Base deps and the gsm8k env only, so the eval runs without torch, like it does
+      # after a plain `uv sync`. Torch comes with the gpu extra and with other workspace
+      # envs (--all-packages pulls it in through bfcl-v3); the check fails the job if
+      # it gets installed anyway.
       - name: Install dependencies
-        run: uv sync --all-packages --locked
+        run: |
+          uv sync --locked --package prime-rl --package gsm8k
+          uv run --no-sync python -c "import importlib.util; assert importlib.util.find_spec('torch') is None, 'torch is installed'"
       - name: Run eval tests
         env:
           USERNAME_CI: CI_RUNNER

@@ -1,12 +1,12 @@
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Generator
 
 import pytest
 
-from prime_rl.trainer.world import reset_world
 from prime_rl.utils.logger import reset_logger, setup_logger
 from prime_rl.utils.process import cleanup_process
 
@@ -30,9 +30,12 @@ def setup_env():
 
 @pytest.fixture(autouse=True)
 def setup_world():
-    """Auto-fixture to reset the world between tests."""
+    """Auto-fixture to reset the world between tests. Looked up in ``sys.modules`` because
+    the world module imports torch, which the eval integration test runs without."""
     yield
-    reset_world()
+    world = sys.modules.get("prime_rl.trainer.world")
+    if world is not None:
+        world.reset_world()
 
 
 @pytest.fixture(autouse=True, scope="module")
