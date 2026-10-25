@@ -324,8 +324,13 @@ jobs:
             with:
               enable-cache: true
               cache-dependency-glob: "uv.lock"
+      # Extras-free on purpose: the GSM8K eval is the no-GPU eval path (Prime
+      # Inference, subprocess runtime), and the torch-carrying extras are
+      # linux-only, so --all-extras quietly installed torch on CI and hid eager
+      # imports of training-side modules. Without the extras this job is the
+      # only eval coverage that runs torch-free, catching that class.
       - name: Install dependencies
-        run: uv sync --all-extras --all-packages --locked
+        run: uv sync --all-packages --locked
       - name: Run eval tests
         env:
           USERNAME_CI: CI_RUNNER
