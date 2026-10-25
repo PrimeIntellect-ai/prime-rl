@@ -7,22 +7,26 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+import pytest
 import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.episode import EnvInfo, Episode
-from verifiers.v1.types import TopLogprobs, TurnTokens
+from verifiers.v1.types import SamplingMask, TopLogprobs, TurnTokens
 
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.transports import payload
 from prime_rl.transports.payload import PayloadHook, PayloadServer, delete_payloads, resolve_payloads
 
 
-def _episode(rng: np.random.Generator, prompt_len: int, completion_len: int) -> vf.Episode:
+def _episode(
+    rng: np.random.Generator, prompt_len: int, completion_len: int, *, routed: bool = True, masked: bool = False
+) -> vf.Episode:
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
     )
-    routed = rng.integers(0, 128, size=(prompt_len + completion_len - 1, 3, 2)).astype(np.uint8)
+    rows = rng.integers(0, 128, size=(prompt_len + completion_len - 1, 3, 2)).astype(np.uint8)
     counts = rng.integers(1, 5, size=completion_len).astype(np.int32)
     head = TopLogprobs(
         ids=rng.integers(0, 1000, size=int(counts.sum())).astype(np.int32),
@@ -42,11 +46,15 @@ def _episode(rng: np.random.Generator, prompt_len: int, completion_len: int) -> 
                 completion_logprobs=[-0.5] * completion_len,
                 message_spans=[(0, prompt_len)],
                 routed_experts={
-                    "data": base64.b64encode(routed.tobytes()).decode(),
-                    "shape": list(routed.shape),
+                    "data": base64.b64encode(rows.tobytes()).decode(),
+                    "shape": list(rows.shape),
                     "start": 0,
-                },
+                }
+                if routed
+                else None,
                 top_logprobs=head,
+                # A mask the head covers exactly carries the head's logprobs.
+                sampling_mask=SamplingMask(ids=head.ids, counts=head.counts) if masked else None,
             ),
         )
     )
@@ -59,15 +67,23 @@ def _samples(episodes: list[vf.Episode]):
     samples = []
     for episode in episodes:
         for sample in trace_to_samples(episode.traces[0], env_name="env"):
-            sample.temperatures = [1.0] * len(sample.token_ids)
-            sample.advantages = [1.0] * len(sample.token_ids)
+            sample.temperatures = np.ones(len(sample.token_ids), dtype=np.float32)
+            sample.advantages = np.ones(len(sample.token_ids), dtype=np.float32)
             samples.append(sample)
     return samples
 
 
 def test_fetched_batches_equal_inline_batches():
     rng = np.random.default_rng(0)
-    episodes = [_episode(rng, prompt, completion) for prompt, completion in [(40, 300), (5, 30), (20, 90), (8, 12)]]
+    episodes = [
+        _episode(rng, 40, 300),
+        _episode(rng, 5, 30, masked=True),
+        _episode(rng, 20, 90),
+        _episode(rng, 8, 12, masked=True),
+        # Samples without routing must not share a micro batch with routed ones.
+        _episode(rng, 6, 40, routed=False),
+        _episode(rng, 9, 25, routed=False, masked=True),
+    ]
     inline = _samples(copy.deepcopy(episodes))
 
     hook = PayloadHook()
@@ -86,10 +102,12 @@ def test_fetched_batches_equal_inline_batches():
                 failed, urls = resolve_payloads(got_rank, pool)
                 assert failed == [] and urls
                 for want, got in zip(want_rank, got_rank, strict=True):
-                    assert got.input_ids == want.input_ids
+                    assert np.array_equal(got.input_ids, want.input_ids)
                     assert got.routed_experts == want.routed_experts
+                    assert got.sampling_mask == want.sampling_mask
                     assert got.top_logprobs == want.top_logprobs
                     assert got.payloads is None
+                    assert want.sampling_mask is None or want.sampling_mask.logprobs is not None
 
 
 def test_unfetchable_micro_batches_are_reported():
@@ -101,11 +119,35 @@ def test_unfetchable_micro_batches_are_reported():
     [[micro_batch]] = prepare_batch([sample], seq_len=64, num_train_workers=1, bin_cost=sum)
     with ThreadPoolExecutor(1) as pool:
         assert resolve_payloads([micro_batch], pool)[0] == [0]
-    assert micro_batch.routed_experts.shape[0] == len(micro_batch.input_ids)
+    # Still replayable: the model's routing shape, every top-k slot a different expert.
+    routed = micro_batch.routed_experts
+    assert routed.shape == [len(micro_batch.input_ids), 3, 2]
+    rows = np.frombuffer(routed.data, dtype=routed.dtype).reshape(routed.shape)
+    assert (rows[..., 0] != rows[..., 1]).all()
+
+
+def test_keep_frees_what_it_kept_when_it_fails(monkeypatch):
+    hook = PayloadHook()
+    rng = np.random.default_rng(3)
+    first, second = _episode(rng, 6, 8), _episode(rng, 6, 8)
+    episode = Episode(env=first.env, task=first.task, ok=True, traces=[first.traces[0], second.traces[0]])
+    encode = payload.encode_branch_arrays
+    calls = []
+
+    def flaky(branch, num_tokens):
+        calls.append(branch)
+        if len(calls) == 2:
+            raise ValueError("Top logprobs are not aligned to branch tokens")
+        return encode(branch, num_tokens)
+
+    monkeypatch.setattr(payload, "encode_branch_arrays", flaky)
+    with pytest.raises(ValueError):
+        hook.keep(episode, vf.SamplingConfig())
+    assert not hook.server.blobs
 
 
 def test_store_serves_and_deletes():
-    server = PayloadServer()
+    server = PayloadServer("127.0.0.1")
     server.put("a", b"x" * 40)
     server.put("b", b"y" * 40)
     with urllib.request.urlopen(f"{server.url}/b") as response:

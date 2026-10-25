@@ -27,7 +27,7 @@ def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
 
 
 def payload_sink(*, constant=True, batch_size=100) -> TrainSink:
-    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_off_policy_steps=1)
+    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,

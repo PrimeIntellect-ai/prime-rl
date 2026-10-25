@@ -411,9 +411,9 @@ def train(config: SFTConfig):
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
             {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
+                "max_vio/mean": torch.tensor(0.0, device="cuda"),
+                "max_vio/max": torch.tensor(0.0, device="cuda"),
+                "routing_confidence/mean": torch.tensor(0.0, device="cuda"),
             }
             if is_moe_model
             else {}

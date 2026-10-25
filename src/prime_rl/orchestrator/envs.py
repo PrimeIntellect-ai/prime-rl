@@ -214,8 +214,8 @@ class EvalEnv(Env):
 EnvT = TypeVar("EnvT", bound=Env)
 
 
-def replica_address_files(config_dir: Path, split: str, name: str, replicas: int) -> list[Path]:
-    if replicas == 1:
+def replica_address_files(config_dir: Path, split: str, name: str, replicas: int | None) -> list[Path]:
+    if replicas is None:
         return [env_address_file(config_dir, split, name)]
     return [env_address_file(config_dir, split, name, replica) for replica in range(replicas)]
 
@@ -267,7 +267,7 @@ class TrainEnvs(Envs[TrainEnv]):
         *,
         clients,
         renderer_config=None,
-        replicas: int = 1,
+        replicas: int | None = None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
@@ -291,7 +291,7 @@ class EvalEnvs(Envs[EvalEnv]):
         configs: Sequence[EvalSourceConfig],
         addresses: dict[tuple[str, str], str | None],
         config_dir: Path,
-        replicas: int = 1,
+        replicas: int | None = None,
     ):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:

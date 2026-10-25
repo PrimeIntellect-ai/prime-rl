@@ -21,32 +21,34 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import urlparse
 
 import msgspec
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.trajectories import _encode_routed_experts, _encode_sampling_mask, _encode_top_logprobs
-from prime_rl.transports.batch.types import (
-    BranchArrays,
-    MicroBatch,
-    RoutedExperts,
-    SamplingMask,
-    TopLogprobs,
-    TrainingSample,
-)
+from prime_rl.orchestrator.trajectories import encode_branch_arrays
+from prime_rl.transports.batch.types import BranchArrays, MicroBatch, PayloadSlice, RoutedExperts, TrainingSample
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import repeat_to_length
 
 _encoder = msgspec.msgpack.Encoder()
 _decoder = msgspec.msgpack.Decoder(BranchArrays)
+
+
+def advertised_host(bind_address: str | None) -> str:
+    """The host trainer ranks reach this env server at: the host it binds (the launcher
+    binds the node address), else the address the hostname resolves to."""
+    host = urlparse(bind_address).hostname if bind_address else None
+    if host and host not in ("*", "0.0.0.0"):
+        return host
+    return socket.gethostbyname(socket.gethostname())
 
 
 class PayloadServer:
     """One env-server worker's arrays, served at `GET <url>/<id>` and freed by
     `DELETE <url>/<id>`."""
 
-    def __init__(self):
+    def __init__(self, host: str):
         self.blobs: dict[str, bytes] = {}
         self.lock = threading.Lock()
         server = self
@@ -71,7 +73,7 @@ class PayloadServer:
         self.http = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
         self.http.daemon_threads = True
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
-        self.url = f"http://{socket.gethostbyname(socket.gethostname())}:{self.http.server_port}"
+        self.url = f"http://{host}:{self.http.server_port}"
 
     def put(self, key: str, blob: bytes) -> None:
         with self.lock:
@@ -86,38 +88,49 @@ class PayloadServer:
             return self.blobs.get(key)
 
 
+def _fields(arrays: BranchArrays) -> set[str]:
+    fields = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
+    if arrays.sampling_mask is not None and arrays.sampling_mask.logprobs is not None:
+        fields.add("sampling_mask_logprobs")
+    return fields
+
+
 class PayloadHook:
     """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
 
-    def __init__(self):
-        self.server: PayloadServer | None = None
+    def __init__(self, bind_address: str | None = None):
+        self.server = PayloadServer(advertised_host(bind_address))
 
     def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
-        for trace in episode.traces:
-            branches: dict[str, str] = {}
-            fields: set[str] = set()
-            for branch in trace.branches:
-                if not branch.trainable:
-                    continue
-                num_tokens = len(branch.token_ids)
-                arrays = BranchArrays(
-                    routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
-                    sampling_mask=_encode_sampling_mask(branch.sampling_mask, num_tokens),
-                    top_logprobs=_encode_top_logprobs(branch.top_logprobs, num_tokens),
-                )
-                present = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
-                if not present:
-                    continue
-                if self.server is None:
-                    self.server = PayloadServer()
-                key = f"{trace.id}-{branch.index}"
-                self.server.put(key, _encoder.encode(arrays))
-                branches[str(branch.index)] = key
-                fields |= present
-            if branches:
-                trace.info["payload"] = {"url": self.server.url, "branches": branches, "fields": sorted(fields)}
-            for node in trace.nodes:
-                node.routed_experts = node.sampling_mask = node.top_logprobs = None
+        stored: list[str] = []
+        try:
+            for trace in episode.traces:
+                payload: dict[str, Any] = {"url": self.server.url, "branches": {}, "fields": set()}
+                for branch in trace.branches:
+                    if not branch.trainable:
+                        continue
+                    arrays = encode_branch_arrays(branch, len(branch.token_ids))
+                    fields = _fields(arrays)
+                    if not fields:
+                        continue
+                    key = f"{trace.id}-{branch.index}"
+                    self.server.put(key, _encoder.encode(arrays))
+                    stored.append(key)
+                    payload["branches"][str(branch.index)] = key
+                    payload["fields"] |= fields
+                    if arrays.routed_experts is not None:
+                        payload["routed_shape"] = arrays.routed_experts.shape[1:]
+                        payload["routed_dtype"] = arrays.routed_experts.dtype
+                if payload["branches"]:
+                    payload["fields"] = sorted(payload["fields"])
+                    trace.info["payload"] = payload
+                for node in trace.nodes:
+                    node.routed_experts = node.sampling_mask = node.top_logprobs = None
+        except BaseException:
+            # The server never hands this episode to `discard`, so free what it kept here.
+            for key in stored:
+                self.server.delete(key)
+            raise
 
     def discard(self, episode: vf.Episode) -> None:
         for trace in episode.traces:
@@ -139,7 +152,7 @@ def _fetch(url: str) -> BranchArrays | None:
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             return _decoder.decode(response.read())
-    except OSError:
+    except Exception:
         return None
 
 
@@ -158,10 +171,9 @@ def delete_payloads(urls: list[str], pool: ThreadPoolExecutor) -> None:
 
 
 def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> tuple[list[int], list[str]]:
-    """Fetch the micro batches' arrays into their inline fields, assembled as the packer
-    assembles inline arrays: each sample truncated to its slice, concatenated in packing
-    order, and the padding tail filled (routing repeats the micro batch's own rows, as
-    `pad_micro_batch` does; masks and heads get empty rows).
+    """Fetch the micro batches' arrays into their inline fields, assembled with the packer's
+    own helpers: each sample truncated to its slice, concatenated in packing order, and
+    extended over the padding tail.
 
     Returns the indices of micro batches whose arrays could not be fetched (they get
     arrays of the right shapes, and the caller must keep them out of the loss) and the
@@ -172,45 +184,76 @@ def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) 
     for index, mb in enumerate(micro_batches):
         if mb.payloads is None:
             continue
-        parts = [fetched[f"{s.url}/{s.id}"] for s in mb.payloads]
-        if any(part is None for part in parts):
+        if not _assemble(mb, [fetched[f"{s.url}/{s.id}"] for s in mb.payloads]):
             failed.append(index)
-        _assemble(mb, parts)
         mb.payloads = None
     if failed:
         get_logger().warning(f"Could not fetch the payloads of {len(failed)} micro batches")
     return failed, sorted(urls)
 
 
-def _assemble(mb: MicroBatch, parts: list[BranchArrays | None]) -> None:
-    lengths = [s.num_tokens for s in mb.payloads]
-    tail = len(mb.input_ids) - sum(lengths)
-    fields = {name for s in mb.payloads for name in s.fields}
-    if "routed_experts" in fields:
-        rows, shape, dtype = [], None, "uint8"
-        for part, n in zip(parts, lengths, strict=True):
-            routed = part.routed_experts if part is not None else None
-            if routed is not None:
-                shape, dtype = routed.shape[1:], routed.dtype
-                rows.append(np.frombuffer(routed.data, dtype=dtype).reshape(routed.shape)[:n])
-            else:
-                rows.append(None)
-        shape = shape or [1, 1]
-        rows = [r if r is not None else np.zeros((n, *shape), dtype=dtype) for r, n in zip(rows, lengths)]
-        data = b"".join(r.tobytes() for r in rows)
-        row_size = int(np.prod(shape)) * np.dtype(dtype).itemsize
-        data += repeat_to_length(data, tail * row_size) if tail else b""
-        mb.routed_experts = RoutedExperts(data=data, shape=[len(mb.input_ids), *shape], dtype=dtype)
-    for name, flat in (("sampling_mask", ("ids",)), ("top_logprobs", ("ids", "logprobs"))):
-        if name not in fields:
+def _assemble(mb: MicroBatch, parts: list[BranchArrays | None]) -> bool:
+    """Set the micro batch's arrays from its fetched parts; False if a part is missing.
+    A missing part's routing rows repeat the micro batch's other rows, so a micro batch
+    kept out of the loss still routes like real data; its masks and heads are empty."""
+    # Trainer-only, and they pull in torch, which env-server workers importing this module
+    # would otherwise load.
+    from prime_rl.orchestrator.batch import (
+        _slice_routed_experts,
+        _slice_sampling_mask,
+        _slice_top_logprobs,
+        pack_token_arrays,
+        pad_token_arrays,
+    )
+
+    slices = mb.payloads
+    routed = next((s for s in slices if "routed_experts" in s.fields), None)
+    ok = True
+    packed: list[tuple[int, BranchArrays]] = []
+    for s, part in zip(slices, parts, strict=True):
+        if part is None or (routed is not None and part.routed_experts is None):
+            ok = False
+            packed.append((s.num_tokens, BranchArrays()))
             continue
-        columns: dict[str, list[bytes]] = {key: [] for key in (*flat, "counts")}
-        for part, n in zip(parts, lengths, strict=True):
-            head = getattr(part, name) if part is not None else None
-            counts = np.frombuffer(head.counts, dtype=np.int32)[:n] if head is not None else np.zeros(n, np.int32)
-            columns["counts"].append(counts.tobytes())
-            for key in flat:
-                columns[key].append(bytes(getattr(head, key))[: int(counts.sum()) * 4] if head is not None else b"")
-        columns["counts"].append(bytes(4 * tail))
-        joined = {key: b"".join(chunks) for key, chunks in columns.items()}
-        setattr(mb, name, (SamplingMask if name == "sampling_mask" else TopLogprobs)(**joined))
+        packed.append(
+            (
+                s.num_tokens,
+                BranchArrays(
+                    routed_experts=_slice_routed_experts(part.routed_experts, s.num_tokens)
+                    if part.routed_experts is not None
+                    else None,
+                    sampling_mask=_slice_sampling_mask(part.sampling_mask, s.num_tokens)
+                    if part.sampling_mask is not None
+                    else None,
+                    top_logprobs=_slice_top_logprobs(part.top_logprobs, s.num_tokens)
+                    if part.top_logprobs is not None
+                    else None,
+                ),
+            )
+        )
+    if routed is not None and not ok:
+        _fill_routing(packed, routed)
+    arrays = pack_token_arrays(packed)
+    mb.routed_experts, mb.sampling_mask, mb.top_logprobs = (
+        arrays.routed_experts,
+        arrays.sampling_mask,
+        arrays.top_logprobs,
+    )
+    pad_token_arrays(mb, mb.padding)
+    return ok
+
+
+def _fill_routing(packed: list[tuple[int, BranchArrays]], routed: PayloadSlice) -> None:
+    from prime_rl.utils.sequence import repeat_to_length
+
+    shape, dtype = routed.routed_shape, np.dtype(routed.routed_dtype)
+    rows = b"".join(arrays.routed_experts.data for _, arrays in packed if arrays.routed_experts is not None)
+    if not rows:
+        # Distinct expert ids per token: every top-k slot routes to a different expert.
+        rows = np.broadcast_to(np.arange(shape[-1], dtype=dtype), (1, *shape)).tobytes()
+    row_size = int(np.prod(shape)) * dtype.itemsize
+    for index, (num_tokens, arrays) in enumerate(packed):
+        if arrays.routed_experts is None:
+            data = repeat_to_length(rows, num_tokens * row_size)
+            routed_experts = RoutedExperts(data=data, shape=[num_tokens, *shape], dtype=dtype.name)
+            packed[index] = (num_tokens, BranchArrays(routed_experts, arrays.sampling_mask, arrays.top_logprobs))

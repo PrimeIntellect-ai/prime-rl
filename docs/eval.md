@@ -8,6 +8,7 @@ This page covers `uv run eval` — evaluating a model in one or more environment
 
 - [Launch](#launch)
 - [Configuration](#configuration)
+- [Live Concurrency](#live-concurrency)
 - [Resume](#resume)
 - [Monitors](#monitors)
   - [File](#file)
@@ -79,6 +80,19 @@ Per-source `group_size` and `sampling` override the top-level defaults. The top-
 Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`.
 
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
+
+## Live Concurrency
+
+With `--control`, a running eval serves a small API on port 8040 to read and change its episode concurrency, so a shared endpoint's capacity can move between evals without restarting them. `PUT` pins the cap at `target`, outside the configured band too, and `null` hands it back to the adaptive controller. Lowering it cancels nothing: new episodes wait until enough running ones finish.
+
+```bash
+uv run eval @ eval.toml -c 2000 --control
+
+curl localhost:8040/v1/concurrency
+# {"target": null, "cap": 2000, "inflight": 2000}
+curl -X PUT localhost:8040/v1/concurrency -H 'content-type: application/json' -d '{"target": 1500}'
+# {"target": 1500, "cap": 1500, "inflight": 2000}
+```
 
 ## Resume
 
