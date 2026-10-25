@@ -15,6 +15,13 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.diagnostics import (
+    diagnostic_context,
+    log_event,
+    setup_diagnostics,
+    start_resource_sampler,
+    trainer_log_file,
+)
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -88,7 +95,9 @@ def train(config: TrainerConfig):
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,
+        log_file=trainer_log_file(config.output_dir),
     )
+    setup_diagnostics(config.output_dir)
     logger.info(f"Starting RL trainer in {world} (output_dir={config.output_dir})")
 
     # Setup the monitors
@@ -113,6 +122,7 @@ def train(config: TrainerConfig):
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
     )
+    start_resource_sampler()
     if config.model.offload == "full":
         setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
@@ -446,22 +456,36 @@ def train(config: TrainerConfig):
                 )
 
             # Forward pass with per-token temperatures
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(
-                    model,
-                    input_ids,
-                    position_ids,
-                    labels=labels,
-                    temperature=temperatures,
-                    mm_kwargs=mm_kwargs,
-                    mm_forward_policy=mm_forward_policy,
-                    mm_token_type_ids=mm_token_type_ids,
-                    seq_lens=seq_lens,
-                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-                    routed_experts=routed_experts,
-                    sampling_mask=sampling_mask,
-                    topk_ids=topk_ids,
+            with diagnostic_context(step=progress.step, micro_step=micro_step):
+                log_event(
+                    "forward_start",
+                    batch_size=batch_size,
+                    input_shape=list(input_ids.shape),
+                    num_segments=seq_lens.numel(),
+                    cp_rank=cp_rank,
+                    cp_size=cp_size,
                 )
+                try:
+                    with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                        out = forward(
+                            model,
+                            input_ids,
+                            position_ids,
+                            labels=labels,
+                            temperature=temperatures,
+                            mm_kwargs=mm_kwargs,
+                            mm_forward_policy=mm_forward_policy,
+                            mm_token_type_ids=mm_token_type_ids,
+                            seq_lens=seq_lens,
+                            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                            routed_experts=routed_experts,
+                            sampling_mask=sampling_mask,
+                            topk_ids=topk_ids,
+                        )
+                except Exception as error:
+                    log_event("forward_error", error_type=type(error).__name__, error=str(error))
+                    raise
+                log_event("forward_end")
 
             if out.get("logprobs") is None:
                 # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps

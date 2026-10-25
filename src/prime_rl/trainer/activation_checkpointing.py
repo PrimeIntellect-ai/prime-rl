@@ -18,6 +18,7 @@ from torch.utils.checkpoint import (
 )
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
+from prime_rl.trainer.diagnostics import diagnostic_context, log_event
 
 # FSDP's replay-specific hooks emit a different number of profiler markers.
 SAC_IGNORED_OPS.update(
@@ -137,8 +138,27 @@ class TokenChunkedCheckpointWrapper(CheckpointWrapper):
 
     def forward(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         batch_size, seq_len = hidden_states.shape[:2]
+        checkpoint_forward = super().forward
+
+        def run_chunk(start: int, end: int, chunk_args: list, chunk_kwargs: dict) -> torch.Tensor:
+            layer = getattr(self, "_checkpoint_wrapped_module", None)
+            with diagnostic_context(
+                module_id=id(self),
+                layer_type=getattr(layer, "layer_type", None),
+                chunk_start=start,
+                chunk_end=end,
+            ):
+                log_event("token_chunk_start", batch_size=batch_size, seq_len=seq_len)
+                try:
+                    output = checkpoint_forward(hidden_states[:, start:end], *chunk_args, **chunk_kwargs)
+                except Exception as error:
+                    log_event("token_chunk_error", error_type=type(error).__name__, error=str(error))
+                    raise
+                log_event("token_chunk_end")
+                return output
+
         if seq_len <= self.token_chunk_size:
-            return super().forward(hidden_states, *args, **kwargs)
+            return run_chunk(0, seq_len, list(args), dict(kwargs))
 
         def is_token_aligned(value) -> bool:
             return isinstance(value, torch.Tensor) and value.ndim >= 2 and value.shape[:2] == (batch_size, seq_len)
@@ -148,7 +168,7 @@ class TokenChunkedCheckpointWrapper(CheckpointWrapper):
             end = min(start + self.token_chunk_size, seq_len)
             chunk_args = [arg[:, start:end] if is_token_aligned(arg) else arg for arg in args]
             chunk_kwargs = {k: v[:, start:end] if is_token_aligned(v) else v for k, v in kwargs.items()}
-            outputs.append(super().forward(hidden_states[:, start:end], *chunk_args, **chunk_kwargs))
+            outputs.append(run_chunk(start, end, chunk_args, chunk_kwargs))
         return torch.cat(outputs, dim=1)
 
 
