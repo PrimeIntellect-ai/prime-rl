@@ -1,5 +1,10 @@
+from contextvars import ContextVar
+
 import torch
 from torch import Tensor
+
+# The batch's largest top-k, read from host state so the bounded path never syncs.
+_batch_top_k: ContextVar[int | None] = ContextVar("prl_batch_top_k", default=None)
 
 
 def reference_top_p_then_top_k(logits: Tensor, k: Tensor | None, p: Tensor | None) -> Tensor:
@@ -26,20 +31,18 @@ def apply_top_p_then_top_k(logits: Tensor, k: Tensor | None, p: Tensor | None) -
     if k is None or logits.shape[0] == 1:
         return reference_top_p_then_top_k(logits, k, p)
     k = torch.where(k == -1, logits.shape[-1], k)
-    width = int(k.max().item())
+    width = _batch_top_k.get()
+    if width is None:
+        width = int(k.max().item())
     if width >= logits.shape[-1]:
         return reference_top_p_then_top_k(logits, k, p)
-    # One extra candidate detects ties that cross the extraction boundary.
-    values, ids = logits.topk(width + 1, dim=-1)
-    if (values[:, width - 1] == values[:, width]).any().item():
-        return reference_top_p_then_top_k(logits, k, p)
-    values, ids = values[:, :width], ids[:, :width]
-    # Stable descending score/token-ID ordering matches the reference's
-    # ascending stable sort, including a nucleus boundary inside a tie.
-    by_id = ids.argsort(dim=-1, descending=True)
-    ids, values = ids.gather(-1, by_id), values.gather(-1, by_id)
-    by_value = values.argsort(dim=-1, descending=True, stable=True)
-    ids, values = ids.gather(-1, by_value), values.gather(-1, by_value)
+    # Rank by (score, token ID) descending, the reference's stable ascending
+    # order reversed, so boundary ties need no data-dependent fallback.
+    bits = logits.float().view(torch.int32)
+    keys = (bits ^ ((bits >> 31) & 0x7FFFFFFF)).long() << 32
+    keys |= torch.arange(logits.shape[-1], device=logits.device)
+    ids = keys.topk(width, dim=-1).values & 0xFFFFFFFF
+    values = logits.gather(-1, ids)
     remove = torch.arange(width, device=logits.device).unsqueeze(0) >= k.unsqueeze(-1)
     if p is not None:
         probs = (values - logits.logsumexp(dim=-1, keepdim=True)).exp()
@@ -59,3 +62,14 @@ def patch_top_p_then_top_k() -> None:
     topk_topp_sampler.apply_top_k_top_p = apply_top_p_then_top_k
     states.apply_top_k_top_p = apply_top_p_then_top_k
     sampler.apply_top_k_top_p = apply_top_p_then_top_k
+
+    sample_random = sampler.Sampler._sample_random
+
+    def _sample_random(self, processed_logits, expanded_idx_mapping, idx_mapping_np, *args):
+        token = _batch_top_k.set(int(self.sampling_states.top_k.np[idx_mapping_np].max()))
+        try:
+            return sample_random(self, processed_logits, expanded_idx_mapping, idx_mapping_np, *args)
+        finally:
+            _batch_top_k.reset(token)
+
+    sampler.Sampler._sample_random = _sample_random
