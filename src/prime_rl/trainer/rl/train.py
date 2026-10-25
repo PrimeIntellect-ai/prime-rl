@@ -50,6 +50,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     setup_model,
     setup_processor,
+    take_moe_routing_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -348,7 +349,7 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
-        step_tokens_per_expert = 0
+        routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
@@ -566,10 +567,7 @@ def train(config: TrainerConfig):
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in moe_stats.items():
-                    tensor_stats.add(name, value)
-                step_tokens_per_expert += tokens_per_expert
+                routing_stats.append(take_moe_routing_stats(model))
 
             for key, loss_tensor in loss_tensors.items():
                 tensor_stats.add(key, loss_tensor)
@@ -644,6 +642,11 @@ def train(config: TrainerConfig):
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
+
+        if is_moe_model:
+            moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
+            for name, values in moe_stats.items():
+                tensor_stats.add(name, values)
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
