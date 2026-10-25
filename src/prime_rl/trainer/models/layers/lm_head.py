@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import types
-from functools import lru_cache
 from typing import TypedDict
 
 import torch
@@ -338,26 +337,30 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None, None, None, None
 
 
-@lru_cache(maxsize=1)
-def get_quack_cross_entropy():
-    """quack's fused cross-entropy kernel, or None before Hopper (the kernel spreads each row over a thread block
-    cluster)."""
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
-        return None
-    from quack.cross_entropy import cross_entropy_fwd_out
+# The GPUs quack's README supports: H100, B200/B300 and RTX 50
+_QUACK_CROSS_ENTROPY_CAPABILITIES = ((9, 0), (10, 0), (10, 3), (12, 0))
 
-    return cross_entropy_fwd_out
+
+def _quack_cross_entropy_supported(capability: tuple[int, int], dtype: torch.dtype, vocab: int) -> bool:
+    """Whether quack's fused cross-entropy kernel takes rows of ``vocab`` logits of ``dtype`` on a GPU of this compute
+    capability. It loads at least 4 bytes at a time, so 16-bit logits need an even vocabulary, and the 99 KB of shared
+    memory of an RTX 50 hold fp32 rows of at most 128K."""
+    if capability not in _QUACK_CROSS_ENTROPY_CAPABILITIES or vocab * dtype.itemsize % 4:
+        return False
+    return not (capability[0] == 12 and dtype == torch.float32 and vocab > 128 * 1024)
 
 
 def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool) -> Tensor | None:
     """Writes the fp32 cross-entropy of each row of ``logits`` into ``loss``, 0 where the label is IGNORE_INDEX. With
-    ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. From
-    Hopper on, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
-    quack_cross_entropy = get_quack_cross_entropy() if logits.is_cuda else None
-    # The kernel loads at least 4 bytes at a time: 16-bit logits need an even vocabulary
-    if quack_cross_entropy is not None and logits.shape[1] * logits.element_size() % 4 == 0:
+    ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. Where
+    quack supports it, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
+    if logits.is_cuda and _quack_cross_entropy_supported(
+        torch.cuda.get_device_capability(logits.device), logits.dtype, logits.shape[1]
+    ):
+        from quack.cross_entropy import cross_entropy_fwd_out
+
         grad_logits = logits if with_grad else None
-        quack_cross_entropy(logits, labels, None, loss, None, grad_logits, None, IGNORE_INDEX)
+        cross_entropy_fwd_out(logits, labels, None, loss, None, grad_logits, None, IGNORE_INDEX)
         return grad_logits
 
     valid = labels != IGNORE_INDEX

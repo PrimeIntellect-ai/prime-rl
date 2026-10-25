@@ -69,8 +69,29 @@ def test_fused_lm_head_with_temperature_keeps_logprob_path(chunk_size):
     torch.testing.assert_close(lm_head.weight.grad, ref_weight_grad, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "capability, dtype, vocab, supported",
+    [
+        ((9, 0), torch.bfloat16, 151936, True),
+        ((10, 0), torch.bfloat16, 151936, True),
+        ((10, 3), torch.bfloat16, 151936, True),
+        ((12, 0), torch.bfloat16, 202048, True),
+        ((8, 0), torch.bfloat16, 151936, False),
+        ((9, 0), torch.bfloat16, 50257, False),
+        ((9, 0), torch.float32, 50257, True),
+        ((12, 0), torch.float32, 202048, False),
+        ((12, 1), torch.bfloat16, 151936, False),
+        ((11, 0), torch.bfloat16, 151936, False),
+    ],
+)
+def test_quack_cross_entropy_only_on_supported_gpus_and_rows(capability, dtype, vocab, supported):
+    assert lm_head_module._quack_cross_entropy_supported(capability, dtype, vocab) == supported
+
+
 requires_quack_cross_entropy = pytest.mark.skipif(
-    lm_head_module.get_quack_cross_entropy() is None, reason="quack's cross-entropy kernel needs a Hopper or newer GPU"
+    not torch.cuda.is_available()
+    or torch.cuda.get_device_capability() not in lm_head_module._QUACK_CROSS_ENTROPY_CAPABILITIES,
+    reason="quack's cross-entropy kernel does not support this GPU",
 )
 
 
@@ -79,8 +100,8 @@ requires_quack_cross_entropy = pytest.mark.skipif(
 @pytest.mark.parametrize("vocab", [37, 32002, 201088])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype):
-    """quack's fused kernel gives the per-token loss and logits gradient of the eager math (the CPU and pre-Hopper
-    path), zero on masked tokens."""
+    """quack's fused kernel gives the per-token loss and logits gradient of the eager math (the path on CPUs and on
+    GPUs quack does not support), zero on masked tokens."""
     torch.manual_seed(0)
     logits = torch.randn(300, vocab, device="cuda", dtype=dtype) * 3
     labels = torch.randint(0, vocab, (300,), device="cuda")
@@ -92,7 +113,7 @@ def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype):
         return loss, grad_logits.to(dtype)
 
     fused = run()
-    monkeypatch.setattr(lm_head_module, "get_quack_cross_entropy", lambda: None)
+    monkeypatch.setattr(lm_head_module, "_quack_cross_entropy_supported", lambda *args: False)
     torch.testing.assert_close(fused, run())
 
 
@@ -124,7 +145,7 @@ def test_fused_lm_head_cross_entropy_kernel_matches_eager_math(monkeypatch, voca
         return loss.detach(), eval_loss, inputs.grad, lm_head.weight.grad
 
     fused = run()
-    monkeypatch.setattr(lm_head_module, "get_quack_cross_entropy", lambda: None)
+    monkeypatch.setattr(lm_head_module, "_quack_cross_entropy_supported", lambda *args: False)
     eager = run()
     torch.testing.assert_close(fused[:2], eager[:2])
     # In bf16 the weight gradient adds up chunk by chunk in bf16, where one rounding difference can grow to a few ulps
