@@ -65,7 +65,7 @@ gpu = [
     # DSA sparse MLA forward for the default `model.dsa_backend = "cudnn_flashmla"` (sm_90a + sm_100f).
     # FlashMLA is not on PyPI and only an x86_64 wheel is published.
     "flash-mla ; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "flash-linear-attention ; sys_platform == 'linux'",
+    "flash-linear-attention>=0.6.0 ; sys_platform == 'linux'",
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
