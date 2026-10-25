@@ -1,8 +1,9 @@
-import json as json_module
 import logging
 import sys
 import traceback
 from pathlib import Path
+
+import orjson
 
 # Global logger instance
 _LOGGER = None
@@ -50,7 +51,7 @@ def traceback_patcher(record) -> None:
 def json_sink(message) -> None:
     """Sink that outputs flat JSON to stdout for log aggregation (Loki, Grafana, etc.)."""
     log_entry = build_log_entry(message.record)
-    sys.stdout.write(json_module.dumps(log_entry) + "\n")
+    sys.stdout.write(orjson.dumps(log_entry).decode() + "\n")
     sys.stdout.flush()
 
 

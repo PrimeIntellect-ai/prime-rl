@@ -201,8 +201,9 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
         alpha: LoRA alpha scaling parameter
         dropout: LoRA dropout rate
     """
-    import json
     from pathlib import Path
+
+    import orjson
 
     save_path = Path(save_path)
 
@@ -220,5 +221,4 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
     }
 
     config_path = save_path / "adapter_config.json"
-    with open(config_path, "w") as f:
-        json.dump(adapter_config, f, indent=2)
+    config_path.write_bytes(orjson.dumps(adapter_config, option=orjson.OPT_INDENT_2))

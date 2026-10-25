@@ -1,5 +1,4 @@
-import json
-
+import orjson
 import pytest
 
 from prime_rl.entrypoints.eval import expand_shorthands
@@ -21,7 +20,7 @@ def test_expand_shorthands_folds_taskset_and_env_into_one_source() -> None:
         "smoke",
     ]
     expanded = expand_shorthands(argv)
-    source = json.loads(expanded[expanded.index("--source") + 1])
+    source = orjson.loads(expanded[expanded.index("--source") + 1])
     assert source == [
         {
             "env": {

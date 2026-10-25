@@ -13,8 +13,9 @@ every epoch instead."""
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+
+import orjson
 
 from prime_rl import monitors
 from prime_rl.configs.eval import SFTOnlineEvalConfig
@@ -215,7 +216,7 @@ def main():
     config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
-    (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
+    (config_dir / "eval.json").write_bytes(orjson.dumps(dump_resolved_config(config), option=orjson.OPT_INDENT_2))
     setup_logger(config.log.level, json_logging=config.log.json_logging)
     asyncio.run(run_online_eval(config))
 

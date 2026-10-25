@@ -439,14 +439,14 @@ def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
 def test_resolved_json_roundtrips_explicit_none(tmp_path):
     """An explicit None override survives the write/re-parse round-trip used by launches:
     resolved configs are JSON, which keeps nulls (TOML cannot)."""
-    import json
+    import orjson
 
     config = cli(TrainerConfig, args=["--model.compile", "None", "--optim.max_norm", "None"])
     assert config.model.compile is None
     assert config.optim.max_norm is None
 
     path = tmp_path / "cfg.json"
-    path.write_text(json.dumps(dump_resolved_config(config)))
+    path.write_bytes(orjson.dumps(dump_resolved_config(config)))
     reloaded = cli(TrainerConfig, args=["@", str(path)])
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
@@ -734,7 +734,7 @@ def test_single_node_auto_inference_ports_follow_server_port():
 
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
-    import json
+    import orjson
 
     config = RLConfig.model_validate(
         {
@@ -745,7 +745,7 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
         }
     )
     path = tmp_path / "rl.json"
-    path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
+    path.write_bytes(orjson.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
     reloaded = cli(RLConfig, args=["@", str(path)])
     assert reloaded.trainer.weight_broadcast.inference_world_size == 2
     assert reloaded == config

@@ -1,4 +1,3 @@
-import json
 import time
 import uuid
 from collections import defaultdict
@@ -6,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
+import orjson
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
@@ -334,7 +334,7 @@ class SFTDataset(StatefulIterableDataset):
         # JSON-encoded string of one.
         tools = example.get(self.columns.tools) or []
         if isinstance(tools, str):
-            tools = json.loads(tools)
+            tools = orjson.loads(tools)
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"

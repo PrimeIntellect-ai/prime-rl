@@ -1,7 +1,7 @@
 import asyncio
-import json
 
 import httpx
+import orjson
 
 from prime_rl.orchestrator.clients import prefill_logprobs
 
@@ -23,7 +23,7 @@ class _FakeOpenAIClient:
         request = httpx.Request("POST", url, json=body)
         return httpx.Response(
             status_code=200,
-            content=json.dumps(self._payload).encode(),
+            content=orjson.dumps(self._payload),
             request=request,
         )
 

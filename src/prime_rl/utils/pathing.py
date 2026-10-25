@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import shlex
 import shutil
@@ -9,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
+import orjson
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
@@ -188,8 +188,8 @@ def write_resolved_config(output_dir: Path, config: BaseModel, name: str) -> Non
     if not config_dir.exists():
         config_dir = output_dir / "configs" / "resolved"
     config_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", dir=config_dir, delete=False) as f:
-        json.dump(dump_resolved_config(config), f, indent=2)
+    with tempfile.NamedTemporaryFile(mode="wb", dir=config_dir, delete=False) as f:
+        f.write(orjson.dumps(dump_resolved_config(config), option=orjson.OPT_INDENT_2))
     os.replace(f.name, config_dir / f"{name}.json")
     write_launch_artifacts(config_dir, name)
 
@@ -267,7 +267,7 @@ def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
     }
     path = env_dir / f"{source.resolved_name}.json"
-    path.write_text(json.dumps(server_config, indent=2))
+    path.write_bytes(orjson.dumps(server_config, option=orjson.OPT_INDENT_2))
     return path
 
 

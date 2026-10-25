@@ -1,5 +1,6 @@
-import json
 from typing import Any
+
+import orjson
 
 
 def normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
@@ -27,7 +28,7 @@ def deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any
         function = tool_call.get("function", {})
         arguments = function.get("arguments")
         if isinstance(arguments, str):
-            arguments = json.loads(arguments)
+            arguments = orjson.loads(arguments)
         return {
             **tool_call,
             "function": {**function, "arguments": arguments},

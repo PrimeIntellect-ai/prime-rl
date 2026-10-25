@@ -1,9 +1,9 @@
-import json
 import re
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
+import orjson
 import torch
 import torch.distributed as dist
 from huggingface_hub import split_torch_state_dict_into_shards
@@ -87,9 +87,7 @@ def save_state_dict(
             }
             save_index_file = save_dir / SAFE_WEIGHTS_INDEX_NAME
             # Save the index as well
-            with open(save_index_file, "w", encoding="utf-8") as f:
-                content = json.dumps(index, indent=2, sort_keys=True) + "\n"
-                f.write(content)
+            save_index_file.write_bytes(orjson.dumps(index, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS) + b"\n")
     else:
         save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
 
@@ -264,5 +262,6 @@ def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> N
     if world.is_master and num_shards > 1:
         total_size = sum(size for _, _, sizes in flat for size in sizes.values())
         index_json = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-        with open(save_dir / SAFE_WEIGHTS_INDEX_NAME, "w", encoding="utf-8") as f:
-            f.write(json.dumps(index_json, indent=2, sort_keys=True) + "\n")
+        (save_dir / SAFE_WEIGHTS_INDEX_NAME).write_bytes(
+            orjson.dumps(index_json, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS) + b"\n"
+        )

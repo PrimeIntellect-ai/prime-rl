@@ -1,6 +1,6 @@
-import json
 from pathlib import Path
 
+import orjson
 from pydantic import create_model
 from verifiers.v1.serve import EpisodeAssembly
 
@@ -60,8 +60,8 @@ def test_standalone_components_populate_dashboard(tmp_path, monkeypatch):
         "command.txt",
     ]
     config_dir = get_config_dir(run_dir)
-    assert json.loads((config_dir / "trainer.json").read_text())["eval"] == config.eval
-    assert json.loads((config_dir / "trainer.json").read_text())["ckpt"] is None
+    assert orjson.loads((config_dir / "trainer.json").read_bytes())["eval"] == config.eval
+    assert orjson.loads((config_dir / "trainer.json").read_bytes())["ckpt"] is None
     assert (config_dir.parent / "orchestrator.toml").read_text() == toml_path.read_text()
     assert "--max-steps 50" in (config_dir.parent / "command.txt").read_text()
 
@@ -74,7 +74,7 @@ def test_components_write_configs_into_launcher_attempt(tmp_path, monkeypatch):
 
     write_resolved_config(tmp_path, config_type(model={"name": "new-model"}), "trainer")
 
-    assert json.loads((config_dir / "trainer.json").read_text()) == {"model": {"name": "new-model"}}
+    assert orjson.loads((config_dir / "trainer.json").read_bytes()) == {"model": {"name": "new-model"}}
     assert prepare_attempt_dirs(tmp_path) == (config_dir, log_dir)
     assert not (tmp_path / "configs" / "resolved").exists()
     assert get_config_dir(tmp_path) == config_dir
@@ -86,7 +86,7 @@ def test_loaded_trainer_config_round_trips_in_launcher_attempt(tmp_path, monkeyp
         monkeypatch.setenv(key, value)
     config_path = config_dir / "trainer.json"
     config = TrainerConfig(output_dir=tmp_path, ckpt=None, optim={"max_norm": None})
-    original = json.dumps(dump_resolved_config(config), indent=2)
+    original = orjson.dumps(dump_resolved_config(config), option=orjson.OPT_INDENT_2).decode()
     config_path.write_text(original)
     command_path = config_dir.parent / "command.txt"
     command_path.write_text("uv run rl @ rl.toml\n")

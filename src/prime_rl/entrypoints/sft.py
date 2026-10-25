@@ -1,8 +1,9 @@
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import orjson
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
@@ -121,8 +122,7 @@ def sft_config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str
 def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w") as f:
-        json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
+    config_path.write_bytes(orjson.dumps(dump_resolved_config(config, exclude=exclude), option=orjson.OPT_INDENT_2))
 
 
 def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: bool = False) -> None:
@@ -136,11 +136,10 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
         if strip_router:
             # Per-rank processes run bare engines; the sbatch starts the single global router.
             inference_dict["router"] = None
-        with open(config_dir / INFERENCE_CONFIG, "w") as f:
-            json.dump(inference_dict, f, indent=2)
+        (config_dir / INFERENCE_CONFIG).write_bytes(orjson.dumps(inference_dict, option=orjson.OPT_INDENT_2))
 
-    with open(config_dir / ONLINE_EVAL_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(build_online_eval_config(config)), f, indent=2)
+    online_eval = dump_resolved_config(build_online_eval_config(config))
+    (config_dir / ONLINE_EVAL_CONFIG).write_bytes(orjson.dumps(online_eval, option=orjson.OPT_INDENT_2))
 
     # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
@@ -351,7 +350,7 @@ def sft_local(config: SFTConfig):
             "WANDB_SHARED_PRIMARY": "trainer",
             "WANDB_SHARED_FINISHER": "online-eval",
             "WANDB_PROGRAM": "uv run sft",
-            "WANDB_ARGS": json.dumps(sys.argv),
+            "WANDB_ARGS": orjson.dumps(sys.argv).decode(),
         }
 
     with ProcessGroup() as processes:

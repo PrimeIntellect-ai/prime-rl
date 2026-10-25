@@ -10,12 +10,13 @@ worker processes inherit the same logging config.
 """
 
 import datetime
-import json
 import logging
 import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
+
+import orjson
 
 
 class JsonFormatter(logging.Formatter):
@@ -34,7 +35,7 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             entry["exception"] = "".join(traceback.format_exception(*record.exc_info))
-        return json.dumps(entry, default=str)
+        return orjson.dumps(entry, default=str).decode()
 
 
 # Loguru-only level names that stdlib `logging` doesn't recognize.
@@ -83,6 +84,6 @@ def write_logging_config(level: str = "info") -> Path:
     config = build_dict_config(level)
     fd, path_str = tempfile.mkstemp(prefix="prime_rl_logging_", suffix=".json")
     path = Path(path_str)
-    with open(fd, "w", encoding="utf-8") as f:
-        json.dump(config, f)
+    with open(fd, "wb") as f:
+        f.write(orjson.dumps(config))
     return path

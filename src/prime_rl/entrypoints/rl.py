@@ -1,9 +1,10 @@
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+import orjson
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
@@ -65,8 +66,9 @@ def env_server_names(config: RLConfig, split: str) -> list[str]:
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_dir / RL_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
+    (output_dir / RL_CONFIG).write_bytes(
+        orjson.dumps(dump_resolved_config(config, exclude=exclude), option=orjson.OPT_INDENT_2)
+    )
 
 
 def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, Path | str]]:
@@ -87,8 +89,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     filenames = {"trainer": TRAINER_CONFIG, "orchestrator": ORCHESTRATOR_CONFIG, "inference": INFERENCE_CONFIG}
     for name, component in dump_rl_components(config).items():
-        with open(output_dir / filenames[name], "w") as f:
-            json.dump(component, f, indent=2)
+        (output_dir / filenames[name]).write_bytes(orjson.dumps(component, option=orjson.OPT_INDENT_2))
     if config.inference is not None:
         write_pd_configs(config.inference, output_dir)
 
@@ -216,7 +217,7 @@ def rl_local(config: RLConfig):
                 **DEFAULT_COMMON_ENV_VARS,
                 "LOGURU_FORCE_COLORS": "1",
                 "WANDB_PROGRAM": "uv run rl",
-                "WANDB_ARGS": json.dumps(start_command),
+                "WANDB_ARGS": orjson.dumps(start_command).decode(),
                 **config.env_vars,
                 **config.orchestrator.env_vars,
                 **wandb_shared_env,
@@ -242,7 +243,7 @@ def rl_local(config: RLConfig):
                 **DEFAULT_TRAINER_ENV_VARS,
                 "LOGURU_FORCE_COLORS": "1",
                 "WANDB_PROGRAM": "uv run rl",
-                "WANDB_ARGS": json.dumps(start_command),
+                "WANDB_ARGS": orjson.dumps(start_command).decode(),
                 **config.env_vars,
                 **config.trainer.env_vars,
                 **wandb_shared_env,

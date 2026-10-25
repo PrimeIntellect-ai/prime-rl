@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import orjson
 import wandb
 from wandb.errors import CommError, UsageError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
@@ -41,7 +41,7 @@ class WandbMonitor(Monitor):
         wandb_args = os.environ.get("WANDB_ARGS")
         if wandb_args:
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
-            sys.argv = json.loads(wandb_args)
+            sys.argv = orjson.loads(wandb_args)
 
         # W&B advertises Weave on every init when it sees openai/verifiers imported.
         os.environ.setdefault("WANDB_DISABLE_WEAVE", "1")

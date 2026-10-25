@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 import time
 from pathlib import Path
@@ -73,7 +72,7 @@ class FileMonitor(Monitor):
         row = {"step": step, "time": time.time(), **sanitized}
         if self.producer is not None:
             row["producer"] = self.producer
-        self.file.write(json.dumps(row) + "\n")
+        self.file.write(orjson.dumps(row).decode() + "\n")
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
         """Merge the epoch's expected count into ``plan.json`` (atomic replace)."""

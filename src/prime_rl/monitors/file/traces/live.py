@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import sys
 import threading
 import time
@@ -273,7 +272,7 @@ def main() -> None:
         if folded is None:
             sys.exit(f"no live trace {args.trace_id} under {get_live_dir(args.run_dir)}")
         dispatch, trace = folded
-        print(json.dumps({"dispatch": dispatch, "trace": trace}, indent=2, default=str))
+        print(orjson.dumps({"dispatch": dispatch, "trace": trace}, default=str, option=orjson.OPT_INDENT_2).decode())
         return
     rows = live_rows(args.run_dir)
     if not rows:

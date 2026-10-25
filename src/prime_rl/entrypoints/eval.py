@@ -5,7 +5,6 @@ short-circuits. The implementation lives in ``prime_rl.eval.eval``.
 """
 
 import asyncio
-import json
 import os
 import re
 import signal
@@ -15,6 +14,8 @@ import tomllib
 from pathlib import Path
 from subprocess import Popen
 from typing import Any
+
+import orjson
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.utils.config import cli, dump_resolved_config
@@ -43,7 +44,7 @@ def set_nested(target: dict[str, Any], keys: list[str], value: Any) -> None:
 
 def parse_value(raw: str) -> Any:
     """A JSON list/object stays structured; every other value is left to pydantic."""
-    return json.loads(raw) if raw.startswith(("[", "{")) else raw
+    return orjson.loads(raw) if raw.startswith(("[", "{")) else raw
 
 
 def expand_shorthands(argv: list[str]) -> list[str]:
@@ -87,7 +88,7 @@ def expand_shorthands(argv: list[str]) -> list[str]:
                 "The <taskset-id> shorthand describes a single source and cannot be combined "
                 "with a config file that defines [[source]] blocks - use one or the other"
             )
-        out += ["--source", json.dumps([source])]
+        out += ["--source", orjson.dumps([source]).decode()]
     return out
 
 
@@ -142,7 +143,7 @@ def main():
     logger.info("Starting eval")
 
     write_launch_artifacts(config_dir, "eval")
-    (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
+    (config_dir / "eval.json").write_bytes(orjson.dumps(dump_resolved_config(config), option=orjson.OPT_INDENT_2))
     components: list[tuple[str, Path | str]] = [("Eval", config_dir / "eval.json")]
     # One env server per source without an explicit `serve.address`, like the rl launcher's:
     # `env-server @ <path>` binds an OS-assigned port and publishes it to the source's

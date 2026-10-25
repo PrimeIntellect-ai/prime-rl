@@ -1,4 +1,3 @@
-import json
 import os
 import signal
 import subprocess
@@ -6,6 +5,8 @@ import sys
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
+
+import orjson
 
 from prime_rl.configs.inference import InferenceConfig, MooncakeKVCacheOffloadConfig
 from prime_rl.utils.config import cli, dump_resolved_config
@@ -36,7 +37,7 @@ def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
     """
     if not overrides:
         return ""
-    return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
+    return ", " + orjson.dumps(overrides).decode()[1:-1].replace('"', '\\"')
 
 
 def write_config(
@@ -52,8 +53,7 @@ def write_config(
     config_dict = dump_resolved_config(config, exclude=exclude)
     if engine_only:
         config_dict["router"] = None
-    with open(config_path, "w") as f:
-        json.dump(config_dict, f, indent=2)
+    config_path.write_bytes(orjson.dumps(config_dict, option=orjson.OPT_INDENT_2))
     return config_path
 
 
@@ -66,7 +66,7 @@ def write_pd_configs(config: InferenceConfig, output_dir: Path) -> None:
             config.for_pd_role(role), exclude={"deployment", "slurm", "output_dir", "dry_run"}
         )
         role_config["router"] = None
-        (output_dir / f"inference-{role}.json").write_text(json.dumps(role_config, indent=2))
+        (output_dir / f"inference-{role}.json").write_bytes(orjson.dumps(role_config, option=orjson.OPT_INDENT_2))
 
 
 def mooncake_offloads(config: InferenceConfig | None) -> dict[str, MooncakeKVCacheOffloadConfig]:

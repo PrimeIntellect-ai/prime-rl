@@ -17,7 +17,6 @@ to the actual server.
 import fcntl
 import functools
 import importlib.util
-import json
 import os
 import shutil
 import subprocess
@@ -27,6 +26,8 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
+
+import orjson
 
 from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import get_logger
@@ -53,7 +54,7 @@ def register_output_dir(output_dir: Path) -> None:
     """Add the dir to the daemon's registry (idempotent, atomic)."""
     with registry_lock():
         try:
-            dirs = json.loads(DIRS_FILE.read_text())
+            dirs = orjson.loads(DIRS_FILE.read_bytes())
         except (OSError, ValueError):
             dirs = []
         entry = str(output_dir.resolve())
@@ -61,14 +62,14 @@ def register_output_dir(output_dir: Path) -> None:
             return
         dirs.append(entry)
         tmp = DIRS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(dirs))
+        tmp.write_bytes(orjson.dumps(dirs))
         tmp.replace(DIRS_FILE)
 
 
 def find_daemon(timeout: float = 1.0) -> dict | None:
     """The live daemon's record ({pid, url, ...}), or None."""
     try:
-        info = json.loads(DAEMON_FILE.read_text())
+        info = orjson.loads(DAEMON_FILE.read_bytes())
         os.kill(info["pid"], 0)
     except (OSError, ValueError, KeyError, TypeError):
         return None

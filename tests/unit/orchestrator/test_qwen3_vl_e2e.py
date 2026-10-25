@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import httpx
+import orjson
 import pytest
 
 _HF_CACHE = Path("~/.cache/huggingface/hub").expanduser()
@@ -69,7 +69,7 @@ class _FakeOpenAI:
                 },
             ],
         }
-        return httpx.Response(200, content=json.dumps(payload).encode())
+        return httpx.Response(200, content=orjson.dumps(payload))
 
 
 def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():

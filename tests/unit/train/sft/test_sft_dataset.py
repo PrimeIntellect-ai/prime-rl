@@ -1,6 +1,6 @@
-import json
 from collections import Counter
 
+import orjson
 import pytest
 import torch
 from datasets import Dataset, interleave_datasets
@@ -599,7 +599,7 @@ def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer)
 
     tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
     dataset = Dataset.from_list(
-        [{"messages": [{"role": "assistant", "content": "a0"}], "schemas": json.dumps(tools), "tools": []}]
+        [{"messages": [{"role": "assistant", "content": "a0"}], "schemas": orjson.dumps(tools).decode(), "tools": []}]
     )
     seen: list = []
 

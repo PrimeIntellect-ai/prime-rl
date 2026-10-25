@@ -1,7 +1,7 @@
-import json
 from pathlib import Path
 from typing import Callable
 
+import orjson
 import pytest
 import torch
 
@@ -28,7 +28,7 @@ def step_metrics(output_dir: Path, step: int) -> dict:
     metrics = {}
     for path in output_dir.rglob("metrics.jsonl"):
         for line in path.read_text().splitlines():
-            row = json.loads(line)
+            row = orjson.loads(line)
             if row.get("step") == step:
                 metrics.update(row)
     return metrics
