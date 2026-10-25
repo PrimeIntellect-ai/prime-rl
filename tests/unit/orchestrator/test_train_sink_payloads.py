@@ -13,6 +13,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
+from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
 from prime_rl.transports.payload import PayloadHook, sample_payload_urls
 from tests.unit.orchestrator.test_train_sink import episode, trace
 
@@ -57,7 +58,7 @@ def test_sink_deletes_exactly_the_arrays_it_drops():
         s = payload_sink()
         await s.add(episode([queued, *dropped]))
         settle(s)
-        assert set(hook.server.blobs) == {queued.info["payload"]["branches"]["0"]}
+        assert set(hook.server.blobs) == {queued.info[PAYLOAD_INFO_KEY]["branches"]["0"]["id"]}
 
     asyncio.run(run())
 
@@ -79,7 +80,7 @@ def test_sink_deletes_stale_pruned_and_discarded_arrays_but_not_shipped_ones():
         settle(s)
         assert batch is not None
         ids = {url.rsplit("/", 1)[1] for url in sample_payload_urls(batch.samples)}
-        assert ids == {shipped.info["payload"]["branches"]["0"]}
+        assert ids == {shipped.info[PAYLOAD_INFO_KEY]["branches"]["0"]["id"]}
         assert set(hook.server.blobs) == ids
 
     asyncio.run(run())

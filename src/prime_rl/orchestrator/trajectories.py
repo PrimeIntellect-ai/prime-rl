@@ -20,7 +20,14 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
-from prime_rl.transports.batch.types import BranchArrays, PayloadSlice, RoutedExperts, SamplingMask, TopLogprobs
+from prime_rl.transports.batch.types import (
+    PAYLOAD_INFO_KEY,
+    BranchArrays,
+    PayloadSlice,
+    RoutedExperts,
+    SamplingMask,
+    TopLogprobs,
+)
 from prime_rl.utils.logger import get_logger
 
 
@@ -218,7 +225,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     """
     samples: list[TrainingSample] = []
     # Set by the env server when it keeps the arrays (`prime_rl.transports.payload`).
-    payload = trace.info.get("payload")
+    references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
@@ -251,14 +258,11 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 trace_id=trace.id,
                 branch_index=branch.index,
                 payload=PayloadSlice(
-                    url=payload["url"],
-                    id=payload["branches"][str(branch.index)],
+                    url=trace.info[PAYLOAD_INFO_KEY]["url"],
                     num_tokens=len(token_ids),
-                    fields=payload["fields"],
-                    routed_shape=payload.get("routed_shape"),
-                    routed_dtype=payload.get("routed_dtype"),
+                    **references[str(branch.index)],
                 )
-                if payload is not None and str(branch.index) in payload["branches"]
+                if str(branch.index) in references
                 else None,
             )
         )

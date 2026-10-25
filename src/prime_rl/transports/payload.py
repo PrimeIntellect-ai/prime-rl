@@ -2,7 +2,7 @@
 
 An env-server worker keeps each finished train episode's per-branch arrays (exactly what
 `trace_to_samples` would put on the sample) and serves them over HTTP; the trace carries
-only `{url, branch -> id}` in `trace.info["payload"]`. The orchestrator packs `PayloadSlice`
+only references in `trace.info[PAYLOAD_INFO_KEY]`. The orchestrator packs `PayloadSlice`
 references, and each trainer rank fetches its micro batches' arrays before the step and
 assembles them as the packer assembles inline arrays.
 
@@ -28,17 +28,27 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.trajectories import encode_branch_arrays
-from prime_rl.transports.batch.types import BranchArrays, MicroBatch, PayloadSlice, RoutedExperts, TrainingSample
+from prime_rl.transports.batch.types import (
+    PAYLOAD_INFO_KEY,
+    BranchArrays,
+    MicroBatch,
+    PayloadSlice,
+    RoutedExperts,
+    TrainingSample,
+)
 from prime_rl.utils.logger import get_logger
 
 _encoder = msgspec.msgpack.Encoder()
 _decoder = msgspec.msgpack.Decoder(BranchArrays)
 
 
-def advertised_host(bind_address: str | None) -> str:
-    """The host trainer ranks reach this env server at: the host it binds (the launcher
-    binds the node address), else the address the hostname resolves to."""
-    host = urlparse(bind_address).hostname if bind_address else None
+def payload_host(bind_address: str | None) -> str:
+    """The host the payload server binds and trainer ranks reach it at: the env server's
+    own bind host (the launcher binds the node address; unset means the loopback default),
+    or for a wildcard bind, the address the hostname resolves to."""
+    if bind_address is None:
+        return "127.0.0.1"
+    host = urlparse(bind_address).hostname
     if host and host not in ("*", "0.0.0.0"):
         return host
     return socket.gethostbyname(socket.gethostname())
@@ -70,7 +80,7 @@ class PayloadServer:
             def log_message(self, *args: Any) -> None:
                 pass
 
-        self.http = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        self.http = ThreadingHTTPServer((host, 0), Handler)
         self.http.daemon_threads = True
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.url = f"http://{host}:{self.http.server_port}"
@@ -99,13 +109,13 @@ class PayloadHook:
     """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
 
     def __init__(self, bind_address: str | None = None):
-        self.server = PayloadServer(advertised_host(bind_address))
+        self.server = PayloadServer(payload_host(bind_address))
 
     def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
         stored: list[str] = []
         try:
             for trace in episode.traces:
-                payload: dict[str, Any] = {"url": self.server.url, "branches": {}, "fields": set()}
+                references: dict[str, dict[str, Any]] = {}
                 for branch in trace.branches:
                     if not branch.trainable:
                         continue
@@ -116,14 +126,14 @@ class PayloadHook:
                     key = f"{trace.id}-{branch.index}"
                     self.server.put(key, _encoder.encode(arrays))
                     stored.append(key)
-                    payload["branches"][str(branch.index)] = key
-                    payload["fields"] |= fields
+                    references[str(branch.index)] = {"id": key, "fields": sorted(fields)}
                     if arrays.routed_experts is not None:
-                        payload["routed_shape"] = arrays.routed_experts.shape[1:]
-                        payload["routed_dtype"] = arrays.routed_experts.dtype
-                if payload["branches"]:
-                    payload["fields"] = sorted(payload["fields"])
-                    trace.info["payload"] = payload
+                        references[str(branch.index)] |= {
+                            "routed_shape": arrays.routed_experts.shape[1:],
+                            "routed_dtype": arrays.routed_experts.dtype,
+                        }
+                if references:
+                    trace.info[PAYLOAD_INFO_KEY] = {"url": self.server.url, "branches": references}
                 for node in trace.nodes:
                     node.routed_experts = node.sampling_mask = node.top_logprobs = None
         except BaseException:
@@ -134,14 +144,14 @@ class PayloadHook:
 
     def discard(self, episode: vf.Episode) -> None:
         for trace in episode.traces:
-            for key in (trace.info.get("payload") or {}).get("branches", {}).values():
-                self.server.delete(key)
+            for reference in (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {}).values():
+                self.server.delete(reference["id"])
 
 
 def trace_payload_urls(trace: vf.Trace) -> list[str]:
     """URLs of every blob an env server kept for the trace."""
-    payload = trace.info.get("payload")
-    return [f"{payload['url']}/{key}" for key in payload["branches"].values()] if payload else []
+    payload = trace.info.get(PAYLOAD_INFO_KEY)
+    return [f"{payload['url']}/{reference['id']}" for reference in payload["branches"].values()] if payload else []
 
 
 def sample_payload_urls(samples: Iterable[TrainingSample]) -> list[str]:

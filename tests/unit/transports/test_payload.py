@@ -16,7 +16,7 @@ from verifiers.v1.types import SamplingMask, TopLogprobs, TurnTokens
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports import payload
-from prime_rl.transports.payload import PayloadHook, PayloadServer, delete_payloads, resolve_payloads
+from prime_rl.transports.payload import PayloadHook, PayloadServer, delete_payloads, payload_host, resolve_payloads
 
 
 def _episode(
@@ -116,12 +116,13 @@ def test_unfetchable_micro_batches_are_reported():
     PayloadHook().keep(episode, vf.SamplingConfig())
     [sample] = _samples([episode])
     sample.payload.id = "missing"
-    [[micro_batch]] = prepare_batch([sample], seq_len=64, num_train_workers=1, bin_cost=sum)
+    # Truncated, so the reference the trainer sees is the packer's copy.
+    [[micro_batch]] = prepare_batch([sample], seq_len=16, num_train_workers=1, bin_cost=sum)
     with ThreadPoolExecutor(1) as pool:
         assert resolve_payloads([micro_batch], pool)[0] == [0]
     # Still replayable: the model's routing shape, every top-k slot a different expert.
     routed = micro_batch.routed_experts
-    assert routed.shape == [len(micro_batch.input_ids), 3, 2]
+    assert routed.shape == [16, 3, 2]
     rows = np.frombuffer(routed.data, dtype=routed.dtype).reshape(routed.shape)
     assert (rows[..., 0] != rows[..., 1]).all()
 
@@ -144,6 +145,11 @@ def test_keep_frees_what_it_kept_when_it_fails(monkeypatch):
     with pytest.raises(ValueError):
         hook.keep(episode, vf.SamplingConfig())
     assert not hook.server.blobs
+
+
+def test_payload_server_binds_the_env_server_host():
+    assert payload_host(None) == "127.0.0.1"
+    assert payload_host("tcp://10.1.2.3:0") == "10.1.2.3"
 
 
 def test_store_serves_and_deletes():

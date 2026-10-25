@@ -654,6 +654,7 @@ class Orchestrator:
         # step, or a lowered ``max_steps``): never ship beyond the budget.
         if config.max_steps is not None and step > config.max_steps:
             self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+            self.train_sink.release_samples(batch.samples)
             await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
             return
 

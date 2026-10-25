@@ -3,6 +3,7 @@ import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+import msgspec
 import numpy as np
 import torch
 
@@ -370,7 +371,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         if payload is not None:
-            payload = PayloadSlice(url=payload.url, id=payload.id, num_tokens=cut, fields=payload.fields)
+            payload = msgspec.structs.replace(payload, num_tokens=cut)
 
     assert (
         len(input_ids)

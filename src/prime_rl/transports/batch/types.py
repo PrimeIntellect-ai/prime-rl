@@ -37,6 +37,11 @@ class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True)
     counts: bytes
 
 
+# Where an env server that keeps a trace's arrays leaves the references to them:
+# ``trace.info[PAYLOAD_INFO_KEY] = {"url": ..., "branches": {index: {"id", "fields", ...}}}``.
+PAYLOAD_INFO_KEY = "prime_rl_payload"
+
+
 # A sample's training arrays kept by the env-server worker at ``url`` (see
 # ``prime_rl.transports.payload``): the trainer fetches them by ``id`` and keeps the first
 # ``num_tokens``.
