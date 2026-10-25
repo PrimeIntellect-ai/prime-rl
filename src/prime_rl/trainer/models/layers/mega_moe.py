@@ -71,7 +71,7 @@ def num_concurrent_nccl_kernels(dp_replicate: int) -> int:
 def default_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
     """Set ``NCCL_MAX_CTAS`` to ``num_reserved_sms // num_concurrent`` unless it is already set, then check it. In the
     worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so at most ``num_reserved_sms // NCCL_MAX_CTAS`` can run
-    next to a Mega MoE grid. """
+    next to a Mega MoE grid."""
     os.environ.setdefault("NCCL_MAX_CTAS", str(max(num_reserved_sms // num_concurrent, 1)))
     check_nccl_max_ctas(num_reserved_sms, num_concurrent)
 
