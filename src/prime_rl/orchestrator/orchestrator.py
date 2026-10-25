@@ -24,6 +24,7 @@ import asyncio
 import os
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
@@ -80,7 +81,7 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step, write_resolved_config
-from prime_rl.utils.sandboxes import SandboxMetrics, run_label, sweep_sandboxes
+from prime_rl.utils.sandboxes import SandboxMetrics, sweep_run
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -226,13 +227,15 @@ class Orchestrator:
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
-        self.run_label = run_label()
-        set_base_sandbox_labels([label for label in (self.run_name, self.run_label) if label])
-        if self.run_label:
-            # Nothing of this run is in flight yet: a labeled sandbox was leaked by an
-            # earlier attempt of the run.
-            await asyncio.to_thread(sweep_sandboxes, self.run_label)
-            self.sandbox_metrics = SandboxMetrics(self.run_label)
+        if self.run_name:
+            set_base_sandbox_labels([self.run_name])
+        # The launcher-set run scope, shared by every launch of the run dir.
+        self.vf_run_id = os.environ.get("VF_RUN_ID")
+        if self.vf_run_id:
+            # Nothing of this launch is in flight yet: what the sweep finds was leaked by
+            # an earlier launch of the run.
+            await sweep_run(self.vf_run_id, datetime.now(UTC))
+            self.sandbox_metrics = SandboxMetrics(self.vf_run_id)
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat)
@@ -487,8 +490,8 @@ class Orchestrator:
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop(clean_exit)
-            if self.run_label:
-                await asyncio.to_thread(sweep_sandboxes, self.run_label)
+            if self.vf_run_id:
+                await sweep_run(self.vf_run_id, datetime.now(UTC))
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:
