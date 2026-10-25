@@ -7,18 +7,19 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
 )
+from prime_rl.trainer.perf import FlopCounter
 from prime_rl.utils.vlm import get_language_model
 
 
 @pytest.fixture(params=[False, True], ids=["text", "composite"])
-def config(request):
+def config(request, layer_type):
     text = Qwen3_8FlashNextTextConfig(
         vocab_size=32,
         bos_token_id=31,
         eos_token_id=31,
         hidden_size=16,
         num_hidden_layers=1,
-        layer_types=["linear_attention"],
+        layer_types=[layer_type],
         linear_num_key_heads=1,
         linear_num_value_heads=1,
         linear_key_head_dim=16,
@@ -37,6 +38,19 @@ def config(request):
         split_ngram_parts=3,
     )
     return Qwen3_8FlashNextConfig(text_config=text) if request.param else text
+
+
+@pytest.fixture(params=["linear_attention", "full_attention"])
+def layer_type(request):
+    return request.param
+
+
+def test_meta_flop_count_without_cuda(config, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with torch.device("meta"):
+        model = Qwen3_8FlashNextForCausalLM(config)
+    assert all(parameter.is_meta for parameter in model.parameters())
+    assert FlopCounter(model)([16, 32]) > 0
 
 
 @pytest.mark.parametrize("shard_count", [3, 128])
