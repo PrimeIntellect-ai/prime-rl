@@ -6,6 +6,7 @@ finalize through the registered ``PrimeMonitor`` like the RL orchestrator does.
 """
 
 import asyncio
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -175,22 +176,18 @@ def test_online_eval_config_keeps_prime_monitor():
     assert "prime=config.monitors.prime" in online_src
 
 
-def test_online_evals_share_the_trainers_run(tmp_path, monkeypatch):
-    """The online-eval process shares the trainer's run dir and attaches to the run the
-    trainer registered. Only it finishes the run: it drains its final evals after the
-    trainer exits."""
-    from prime_rl.entrypoints.sft import build_online_eval_config
-    from prime_rl.utils.links import ATTEMPT_VAR
-    from prime_rl.utils.process import RUN_FINISHER_VAR
-
+@pytest.fixture
+def sdk_runs(monkeypatch):
+    """Fake ``pr.init`` runs that record their kwargs and how they ended."""
     runs = []
 
     def fake_init(**kwargs):
         run = SimpleNamespace(id=kwargs.get("id", "run-123"), url="https://x/run-123", attached="id" in kwargs)
-        run.kwargs, run.finished, run.flushed = kwargs, False, False
+        run.kwargs, run.finished, run.flushed, run.failed = kwargs, False, False, None
         run._atexit_hook = lambda: None
         run.finish = lambda *a, **k: setattr(run, "finished", True)
         run.flush = lambda *a, **k: setattr(run, "flushed", True)
+        run.fail = lambda error, **k: setattr(run, "failed", error)
         runs.append(run)
         return run
 
@@ -198,9 +195,19 @@ def test_online_evals_share_the_trainers_run(tmp_path, monkeypatch):
     for var in ("RUN_ID", "PRIME_RUNS_MODE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("PRIME_API_KEY", "test-key")
-    monkeypatch.setenv(ATTEMPT_VAR, str(tmp_path / "logs" / "attempt_1"))
-    monkeypatch.setenv(RUN_FINISHER_VAR, "online-eval")
+    monkeypatch.setenv("PRL_RUN_ID", "local-uuid")
+    return runs
 
+
+def test_online_evals_share_the_launchers_run(sdk_runs, tmp_path, monkeypatch):
+    """The sft launcher registers the run and makes its id the run identity; the trainer
+    and the online-eval process attach to it. Only the online-eval process finishes the
+    run: it drains its final evals after the trainer exits."""
+    from prime_rl.entrypoints.sft import build_online_eval_config
+    from prime_rl.monitors.prime import launch_run
+    from prime_rl.utils.process import RUN_FINISHER_VAR
+
+    monkeypatch.setenv(RUN_FINISHER_VAR, "online-eval")
     config = _sft_config(
         {"eval": {"interval": 50, "source": [{"name": "rev", "env": {"taskset": {"id": "harbor"}}}]}, "inference": {}}
     )
@@ -209,14 +216,45 @@ def test_online_evals_share_the_trainers_run(tmp_path, monkeypatch):
     assert eval_config.output_dir == config.run_dir
 
     trainer, online_eval = PrimeMonitor(config.monitors.prime), PrimeMonitor(eval_config.monitors.prime)
-    asyncio.run(trainer.init(config=config, output_dir=tmp_path, producer="trainer"))
-    asyncio.run(online_eval.init(config=eval_config, output_dir=tmp_path, producer="online-eval"))
-    assert online_eval.run.kwargs["id"] == trainer.run.id
+    with launch_run(config, config.monitors.prime):
+        launched = sdk_runs[0]
+        assert launched.kwargs["model"] == "PrimeIntellect/Qwen3-0.6B" and not launched.attached
+        assert os.environ["PRL_RUN_ID"] == os.environ["RUN_ID"] == launched.id
+        asyncio.run(trainer.init(config=config, output_dir=tmp_path, producer="trainer"))
+        asyncio.run(online_eval.init(config=eval_config, output_dir=tmp_path, producer="online-eval"))
+        assert trainer.run.attached and online_eval.run.attached
+        assert trainer.run.id == online_eval.run.id == launched.id
 
-    asyncio.run(trainer.finalize())
-    assert trainer.run.flushed and not trainer.run.finished
-    asyncio.run(online_eval.finalize())
-    assert online_eval.run.finished
+        asyncio.run(trainer.finalize())
+        assert trainer.run.flushed and not trainer.run.finished
+        asyncio.run(online_eval.finalize())
+        assert online_eval.run.finished
+    assert launched.failed is None
+
+
+def test_a_failed_launch_fails_the_run(sdk_runs):
+    """A component's crash only flushes its attached run; the launcher, which registered
+    the run, marks it failed."""
+    from prime_rl.monitors.prime import launch_run
+
+    config = _sft_config()
+    error = RuntimeError("trainer exited with code 1")
+    with pytest.raises(RuntimeError), launch_run(config, config.monitors.prime):
+        raise error
+    assert sdk_runs[0].failed is error
+
+
+@pytest.mark.parametrize("env", [{"RUN_ID": "hosted-1"}, {"PRIME_RUNS_MODE": "disabled"}])
+def test_launch_registers_no_run_it_does_not_own(sdk_runs, monkeypatch, env):
+    """A managed launch pre-created the run, or the monitor opens no platform run."""
+    from prime_rl.monitors.prime import launch_run
+
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    config = _sft_config()
+    with launch_run(config, config.monitors.prime):
+        pass
+    assert sdk_runs == [] and os.environ["PRL_RUN_ID"] == "local-uuid"
 
 
 def test_platform_record_lock_keeps_a_stable_inode(tmp_path):

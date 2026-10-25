@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import atexit
 import os
-import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -12,10 +13,11 @@ from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.monitors import PrimeMonitorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.links import ATTEMPT_VAR, PRIME_LINKS, publish_link, register_links
+from prime_rl.utils.links import PRIME_LINKS, publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.process import RUN_FINISHER_VAR
 from prime_rl.utils.record import read_record, update_record, write_record
@@ -30,8 +32,6 @@ EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
 FINISH_TIMEOUT = 60.0
-# How long an SFT online-eval process waits for the trainer to register the run.
-TRAIN_RUN_TIMEOUT_S = 1200.0
 
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
@@ -84,28 +84,78 @@ def _base_url() -> str | None:
     return base.rstrip("/").removesuffix("/rft") if base else None
 
 
-def wait_for_train_run(output_dir: Path, timeout: float = TRAIN_RUN_TIMEOUT_S) -> str:
-    """The id of the training run this attempt's trainer registered, from the platform
-    record it leaves in the shared run dir."""
-    attempt = os.getenv(ATTEMPT_VAR)
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            record = read_platform_record(output_dir) or {}
-        except (OSError, ValueError):
-            record = {}
-        if record.get("kind") == "train" and record.get("attempt") == attempt and record.get("id"):
-            return record["id"]
-        if time.monotonic() >= deadline:
-            raise RuntimeError(f"The trainer registered no Prime run within {timeout:.0f}s; {OFF_HINT}")
-        time.sleep(1.0)
+def registration(config: OrchestratorConfig | SFTConfig, name: str | None) -> dict[str, Any]:
+    """The ``pr.init`` arguments that register ``config``'s training run."""
+    if isinstance(config, SFTConfig):
+        # SFT trains on a dataset, not on environments, and has no rollouts - the
+        # platform run is registered without both.
+        environments = []
+        training = pr.TrainingSpec(
+            max_steps=config.max_steps or 0,
+            batch_size=config.data.batch_size,
+            seq_len=config.data.seq_len,
+            wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
+        )
+    else:
+        environments = [env.env_id for env in config.train.source]
+        training = pr.TrainingSpec(
+            max_steps=config.max_steps or 0,
+            batch_size=config.batch_size,
+            rollouts_per_example=max(
+                (source.group_size for source in config.train.source), default=config.train.group_size
+            ),
+            seq_len=config.seq_len,
+            wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
+        )
+    return dict(
+        name=name,
+        model=config.model.name,
+        environments=environments,
+        training=training,
+        config=config.model_dump(exclude_none=True, mode="json"),
+    )
+
+
+def register(init_kwargs: dict[str, Any], mode: str) -> pr.Run:
+    try:
+        return pr.init(kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs)
+    except (pr.ConfigurationError, pr.APIError) as e:
+        # Registering fails without a team, or for a team outside the external-runs
+        # allowlist. An attached run's error is the launcher's to explain.
+        if "id" in init_kwargs:
+            raise
+        raise RuntimeError(
+            f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
+            f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
+        ) from e
+
+
+@contextmanager
+def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
+    """Register the launch's Prime run around starting its components, which attach to
+    it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
+    run failed - the SDK leaves an attached run's failure to the process that
+    registered it. A run a managed launch pre-created (``$RUN_ID``) is the platform's."""
+    if prime is None or os.getenv("RUN_ID") or prime_mode() != "online":
+        yield
+        return
+    run = register(registration(config, prime.name), "online")
+    os.environ["PRL_RUN_ID"] = os.environ["RUN_ID"] = run.id
+    try:
+        yield
+    except BaseException as e:
+        run.fail(e, timeout=FINISH_TIMEOUT)
+        raise
+    # The finisher component completes the run; this process only exits.
+    atexit.unregister(run._atexit_hook)
 
 
 class PrimeMonitor(Monitor):
     """Logs metrics and episodes to the Prime platform through ``prime_runs``.
 
-    A training run's processes log to one Prime training run: the rl orchestrator or
-    sft trainer registers it, and an sft online-eval process attaches to its trainer's.
+    A training run's processes log to one Prime training run: the ``rl`` or ``sft``
+    launcher registers it (``launch_run``) and its components attach through ``$RUN_ID``.
+    A component started without a launcher registers its own.
     ``$PRL_RUN_FINISHER`` names the process that finishes a shared run; the others
     only flush. A standalone eval instead opens one evaluation per env and epoch when
     the epoch starts (``log_eval_plan``), streams its episodes into it, and finishes
@@ -139,65 +189,24 @@ class PrimeMonitor(Monitor):
             await self._init_evaluations(config)
             return
         online_eval = isinstance(config, SFTOnlineEvalConfig)
-        init_kwargs: dict[str, Any]
         if run_id := os.getenv("RUN_ID"):
-            # A managed launch pre-created the platform run and injected its id -
-            # attach instead of registering a duplicate. The platform owns the
-            # attached run's failure/completion marking; a clean finish() is
-            # delivered best-effort and does not by itself mark it completed.
+            # The launcher registered the run (or a managed launch pre-created it) -
+            # attach instead of registering a duplicate. The registering process owns
+            # the attached run's failure marking; a clean finish() completes it.
             init_kwargs = {"id": run_id}
         elif online_eval:
-            # The trainer registered the run; its online-eval process logs to it.
-            init_kwargs = {"id": await asyncio.to_thread(wait_for_train_run, output_dir)} if mode == "online" else {}
-        elif isinstance(config, SFTConfig):
-            # SFT trains on a dataset, not on environments, and has no rollouts - the
-            # platform run is registered without both.
-            init_kwargs = dict(
-                name=self.config.name,
-                model=config.model.name,
-                environments=[],
-                training=pr.TrainingSpec(
-                    max_steps=config.max_steps or 0,
-                    batch_size=config.data.batch_size,
-                    seq_len=config.data.seq_len,
-                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
-                ),
-                config=config.model_dump(exclude_none=True, mode="json"),
-            )
+            if mode == "online":
+                raise RuntimeError(
+                    f"An online-eval process logs to its trainer's run: launch it with `sft`, or {OFF_HINT}"
+                )
+            init_kwargs = {}
         elif config is not None:
-            init_kwargs = dict(
-                name=self.config.name,
-                model=config.model.name,
-                environments=[env.env_id for env in config.train.source],
-                training=pr.TrainingSpec(
-                    max_steps=config.max_steps or 0,
-                    batch_size=config.batch_size,
-                    rollouts_per_example=max(
-                        (source.group_size for source in config.train.source), default=config.train.group_size
-                    ),
-                    seq_len=config.seq_len,
-                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
-                ),
-                config=config.model_dump(exclude_none=True, mode="json"),
-            )
+            init_kwargs = registration(config, self.config.name)
         else:
             # The RFT API requires a base model; "unknown" is what the
             # pre-SDK register sent for a config-less init.
             init_kwargs = {"name": self.config.name, "model": "unknown"}
-
-        try:
-            self.run = await asyncio.to_thread(
-                pr.init, kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs
-            )
-        except (pr.ConfigurationError, pr.APIError) as e:
-            # Registering fails without a team, or for a team outside the external-runs
-            # allowlist. An attached run's error is the launcher's to explain.
-            if "id" in init_kwargs:
-                raise
-            raise RuntimeError(
-                f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
-                f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
-            ) from e
+        self.run = await asyncio.to_thread(register, init_kwargs, mode)
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to Prime run {self.run.id} ({self.run.url}){attached}")
@@ -210,11 +219,7 @@ class PrimeMonitor(Monitor):
     def _record_run(self) -> None:
         register_links(self.output_dir, PRIME_LINKS, 1 if self.run.url else 0)
         if self.run.url:
-            # Stamped with the attempt: the online-eval process attaches to this run.
-            update_platform_record(
-                self.output_dir,
-                {"kind": "train", "id": self.run.id, "url": self.run.url, "attempt": os.getenv(ATTEMPT_VAR)},
-            )
+            update_platform_record(self.output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
             publish_link(self.output_dir, PRIME_LINKS, "run", self.run.url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:

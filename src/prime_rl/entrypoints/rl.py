@@ -480,7 +480,6 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
-    # TODO: fetch the run id from the Prime SDK once runs are registered there.
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
     prepare_run(config, ckpt_output_dir)
 
@@ -511,10 +510,13 @@ def rl(config: RLConfig):
 
         pre_download_model(config.trainer.model.name, skip_weights=config.trainer.model.debug.random_init)
 
-    if config.slurm is not None:
-        rl_slurm(config)
-    else:
-        rl_local(config)
+    from prime_rl.monitors.prime import launch_run
+
+    with launch_run(config.orchestrator, None if config.dry_run else config.orchestrator.monitors.prime):
+        if config.slurm is not None:
+            rl_slurm(config)
+        else:
+            rl_local(config)
 
 
 def main():

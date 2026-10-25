@@ -479,10 +479,13 @@ def sft(config: SFTConfig):
         if config.val is not None:
             pre_download_data(config.val.data, config.env_vars)
 
-    if config.slurm is not None:
-        sft_slurm(config)
-    else:
-        sft_local(config)
+    from prime_rl.monitors.prime import launch_run
+
+    with launch_run(config, None if config.dry_run else config.monitors.prime):
+        if config.slurm is not None:
+            sft_slurm(config)
+        else:
+            sft_local(config)
 
 
 def main():
