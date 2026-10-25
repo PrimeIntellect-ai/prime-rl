@@ -4,10 +4,10 @@ RL and SFT examples for the custom [PrimeRL VLM implementations](../../../docs/a
 
 ## Image RL
 
-| Config | Model | Batch / group |
-|---|---|---|
-| [`rl-qwen3.5.toml`](rl-qwen3.5.toml) | `Qwen/Qwen3.5-122B-A10B` | 336 / 16 |
-| [`rl-qwen3.8.toml`](rl-qwen3.8.toml) | `Qwen/Qwen3.8-Flash-Next` | 256 / 16 |
+| Config | Model | Batch / group | CP |
+|---|---|---|---|
+| [`rl-qwen3.5.toml`](rl-qwen3.5.toml) | `Qwen/Qwen3.5-122B-A10B` | 336 / 16 | 4 |
+| [`rl-qwen3.8.toml`](rl-qwen3.8.toml) | `Qwen/Qwen3.8-Flash-Next` | 256 / 16 | 8 |
 
 Both target **4 trainer + 4 inference nodes**, each with 8× H200 GPUs.
 

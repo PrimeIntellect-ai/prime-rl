@@ -41,7 +41,7 @@ dist_timeout_seconds = 7200
 enable_router_replay = true
 
 [trainer.model]
-cp = 4
+cp = 8
 ep = 8
 attn = "flash_attention_3"
 offload = "optimizer"
