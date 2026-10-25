@@ -47,14 +47,13 @@ class VisionPatchEmbed(nn.Module):
         )
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        pixel_values = pixel_values.view(
-            -1,
-            self.in_channels,
-            self.temporal_patch_size,
-            self.patch_size,
-            self.patch_size,
+        patch_width = self.in_channels * self.temporal_patch_size * self.patch_size**2
+        pixel_values = pixel_values.view(-1, patch_width).to(self.proj.weight.dtype)
+        return F.linear(
+            pixel_values,
+            self.proj.weight.view(self.proj.out_channels, patch_width),
+            self.proj.bias,
         )
-        return self.proj(pixel_values.to(self.proj.weight.dtype)).view(pixel_values.shape[0], -1)
 
 
 class VisionMLP(nn.Module):
@@ -198,24 +197,28 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
         embeddings = []
         merge_size = self.spatial_merge_size
         for frames, height, width in grid_thw.tolist():
-            row_positions = torch.linspace(
-                0,
-                self.num_grid_per_side - 1,
-                height,
+            row_positions = torch.arange(height, dtype=torch.float32, device=self.pos_embed.weight.device)
+            column_positions = torch.arange(width, dtype=torch.float32, device=self.pos_embed.weight.device)
+            row_scale = torch.tensor(
+                (self.num_grid_per_side - 1) / (height - 1) if height > 1 else 0.0,
+                dtype=torch.float32,
                 device=self.pos_embed.weight.device,
             )
-            column_positions = torch.linspace(
-                0,
-                self.num_grid_per_side - 1,
-                width,
+            column_scale = torch.tensor(
+                (self.num_grid_per_side - 1) / (width - 1) if width > 1 else 0.0,
+                dtype=torch.float32,
                 device=self.pos_embed.weight.device,
             )
-            row_floor = row_positions.floor().long()
-            column_floor = column_positions.floor().long()
+            row_floor = (row_positions * row_scale).floor().long()
+            column_floor = (column_positions * column_scale).floor().long()
             row_ceil = (row_floor + 1).clamp_max(self.num_grid_per_side - 1)
             column_ceil = (column_floor + 1).clamp_max(self.num_grid_per_side - 1)
-            row_fraction = row_positions - row_floor
-            column_fraction = column_positions - column_floor
+            row_fraction = torch.addcmul(-row_floor.float(), row_positions, row_scale)[:, None]
+            column_fraction = torch.addcmul(-column_floor.float(), column_positions, column_scale)[None, :]
+            weight11 = row_fraction * column_fraction
+            weight10 = torch.addcmul(row_fraction, -row_fraction, column_fraction)
+            weight01 = torch.addcmul(column_fraction, -row_fraction, column_fraction)
+            weight00 = 1 - row_fraction - weight01
 
             indices = torch.stack(
                 [
@@ -225,15 +228,17 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
                     (row_ceil[:, None] * self.num_grid_per_side + column_ceil[None, :]).flatten(),
                 ]
             )
-            weights = torch.stack(
-                [
-                    ((1 - row_fraction)[:, None] * (1 - column_fraction)[None, :]).flatten(),
-                    ((1 - row_fraction)[:, None] * column_fraction[None, :]).flatten(),
-                    (row_fraction[:, None] * (1 - column_fraction)[None, :]).flatten(),
-                    (row_fraction[:, None] * column_fraction[None, :]).flatten(),
-                ]
-            ).to(self.pos_embed.weight.dtype)
-            position_embedding = (self.pos_embed(indices) * weights[..., None]).sum(dim=0).repeat(frames, 1)
+            weights = torch.stack([weight00.flatten(), weight01.flatten(), weight10.flatten(), weight11.flatten()]).to(
+                self.pos_embed.weight.dtype
+            )
+            corner_embeddings = self.pos_embed(indices)
+            # Match inference's fused-add order and rounding after each stage.
+            position_embedding = corner_embeddings[0] * weights[0, :, None]
+            for corner in range(1, 4):
+                position_embedding = torch.addcmul(
+                    position_embedding, corner_embeddings[corner], weights[corner, :, None]
+                )
+            position_embedding = position_embedding.repeat(frames, 1)
             position_embedding = (
                 position_embedding.view(
                     frames,
@@ -254,7 +259,7 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
         hidden_states = hidden_states + self.interpolated_position_embeddings(grid_thw)
         rotary = self.rotary_embeddings(grid_thw)
         rotary = torch.cat((rotary, rotary), dim=-1)
-        position_embeddings = (rotary.cos(), rotary.sin())
+        position_embeddings = (rotary.cos().to(hidden_states.dtype), rotary.sin().to(hidden_states.dtype))
         sequence_lengths = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0])
         cu_seqlens = F.pad(sequence_lengths.cumsum(dim=0, dtype=torch.int32), (1, 0))
         max_seqlen = int(sequence_lengths.max())
