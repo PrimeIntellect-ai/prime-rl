@@ -353,8 +353,8 @@ def train(config: TrainerConfig):
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            score_centering = config.loss.type == "icepop" and config.loss.score_centering
-            if score_centering:
+            sampler_head = getattr(config.loss, "captures_sampler_head", False)
+            if sampler_head:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
                 validate_score_centering_data(micro_batch, vocab_size=vocab_size)
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
@@ -377,6 +377,7 @@ def train(config: TrainerConfig):
             ref_kl_weights = (
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
+            staleness = micro_batch["staleness"].to("cuda") if micro_batch["staleness"] is not None else None
             # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
             routed_experts = micro_batch["routed_experts"]
 
@@ -394,9 +395,9 @@ def train(config: TrainerConfig):
             )
 
             sampler_support_complete = (
-                (sampling_mask >= 0).any(-1) if score_centering and sampling_mask is not None else None
+                (sampling_mask >= 0).any(-1) if sampler_head and sampling_mask is not None else None
             )
-            topk_ids = micro_batch["top_logprobs_ids"] if score_centering else None
+            topk_ids = micro_batch["top_logprobs_ids"] if sampler_head else None
             sampler_topk = micro_batch["top_logprobs_values"].to("cuda") if topk_ids is not None else None
             topk_valid = (topk_ids >= 0).to("cuda") if topk_ids is not None else None
             if topk_ids is not None:
@@ -534,6 +535,7 @@ def train(config: TrainerConfig):
                 sampler_support_complete=sampler_support_complete.squeeze(0).split(sequence_lengths)
                 if sampler_support_complete is not None
                 else None,
+                staleness=staleness.squeeze(0).split(sequence_lengths) if staleness is not None else None,
             )
 
             # Backward pass
@@ -647,6 +649,10 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
+        # Every rank sees the same reduced KL, so the adapted coefficient stays in sync.
+        sampler_kl = getattr(rl_loss_fn, "sampler_kl", None)
+        if sampler_kl is not None and "sampler_kl/kl/mean" in tensor_metrics:
+            sampler_kl.adapt(tensor_metrics["sampler_kl/kl/mean"])
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 

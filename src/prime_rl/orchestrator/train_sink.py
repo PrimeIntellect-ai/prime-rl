@@ -80,6 +80,18 @@ def stale_token_runs(branch: vf.Branch, fallback: int, min_version: int) -> Iter
         offset += len(node.token_ids)
 
 
+def token_staleness(branch: vf.Branch, num_tokens: int, fallback: int, trained_version: int) -> np.ndarray:
+    """Staleness of each of the branch's tokens when training ``trained_version``
+    (see ``node_policy_versions``); context tokens get 0."""
+    staleness = np.zeros(num_tokens, dtype=np.int32)
+    offset = 0
+    for node in branch.nodes:
+        for start, end, version in node_policy_versions(node, fallback):
+            staleness[offset + start : offset + end] = max(0, trained_version - version)
+        offset += len(node.token_ids)
+    return staleness
+
+
 def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, min_version: int) -> int:
     """Remove the sample's stale tokens from every loss component and return
     how many trainable tokens this newly masked; fresher tokens keep training
@@ -306,7 +318,7 @@ class TrainSink:
                 if env.requires_top_logprobs and sample.top_logprobs is None and mask_logprobs is None:
                     raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
-            if self.config.constant_trainer_batch_size:
+            if self.config.constant_trainer_batch_size and self.config.prune_zero_advantages:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
@@ -404,7 +416,7 @@ class TrainSink:
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
-        if not self.config.constant_trainer_batch_size:
+        if not self.config.constant_trainer_batch_size and self.config.prune_zero_advantages:
 
             def prune_selected() -> dict[str, list[TrainingSample]]:
                 pruned = {
@@ -433,6 +445,18 @@ class TrainSink:
                 runs = stale_token_runs(branch, policy.start, min_version)
                 masked += sum(int(trainable[id(branch)][start:end].sum()) for start, end in runs)
         self.rollout_window.metrics.rate("staleness/token/masked", {"": float(masked)}, kept + masked)
+
+        if self.config.ship_token_staleness:
+            for trace_id, trace_samples in selected_by_trace.items():
+                episode = self.episode_by_trace[trace_id]
+                policy = train_work(episode).policy
+                if policy is None:
+                    continue
+                branches = episode.traces[0].branches
+                for sample in trace_samples:
+                    sample.staleness = token_staleness(
+                        branches[sample.branch_index], len(sample.token_ids), policy.start, self.progress.step - 1
+                    )
 
         shipped_ids = set(selected_by_trace)
         traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)

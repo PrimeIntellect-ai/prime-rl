@@ -20,6 +20,7 @@ SAMPLE_DTYPES = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
+    "staleness": np.int32,
 }
 
 
@@ -45,8 +46,10 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
         logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
         counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
     )
+    sample.staleness = np.array([0, 0, 2, 1], np.int32)
     truncated = prepare_sample(sample, seq_len=3)
     np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
+    np.testing.assert_array_equal(truncated.staleness, [0, 0, 2])
     np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
     replayed = make_training_example()
     replayed.sampling_mask = SamplingMask(
@@ -68,6 +71,8 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
     assert len(packed.top_logprobs.ids) == 3 * 4
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    # Samples without staleness pack as fresh tokens; padding is fresh too.
+    assert tensor["staleness"][0].tolist() == [0, 0, 2, 1] + [0] * 12
     ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
     assert ids.shape == values.shape
     assert ids.shape[0] == sum(packed.sequence_lengths)

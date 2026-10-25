@@ -527,6 +527,10 @@ class OrchestratorConfig(BaseConfig):
     batch_size: int = Field(128, ge=1)
     """Samples to train on per step."""
 
+    prune_zero_advantages: bool = True
+    """Remove zero-advantage RL tokens before packing. Disable for advantage-independent
+    RL penalties such as sampler KL; the rl entrypoint does this automatically."""
+
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
@@ -550,6 +554,10 @@ class OrchestratorConfig(BaseConfig):
 
     max_staleness: int = Field(8, ge=0)
     """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
+
+    ship_token_staleness: bool = False
+    """Ship each token's staleness to the trainer (see ``max_staleness``). Required by
+    ``trainer.loss.sampler_kl.min_staleness > 0``; the rl entrypoint enables it automatically."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""

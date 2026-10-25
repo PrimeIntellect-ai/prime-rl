@@ -14,7 +14,7 @@ from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserM
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
+from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens, token_staleness
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
 from prime_rl.utils.logger import setup_logger
@@ -72,8 +72,10 @@ def episode(traces, *, group="g", version=0):
     )
 
 
-def sink(*, constant=True, admitted=True, batch_size=100):
-    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
+def sink(*, constant=True, admitted=True, batch_size=100, prune=True):
+    config = OrchestratorConfig(
+        batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1, prune_zero_advantages=prune
+    )
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
@@ -119,6 +121,20 @@ def test_zero_output_finalization_releases_objects_without_reporting(constant, a
             assert window.discarded == 40
         else:
             assert window.metrics.to_dict()["rollout/queued/pruned"] == 40
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("constant", [True, False])
+def test_sampler_kl_keeps_zero_advantage_tokens(constant):
+    async def run():
+        s = sink(constant=constant, batch_size=1, prune=False)
+        batch = await s.add(episode([trace(advantage=0)]))
+        assert batch is not None and len(batch.samples) == 1
+        sample = batch.samples[0]
+        assert np.count_nonzero(sample.mask) == 2
+        assert sample.rl_weights is None or np.all(np.asarray(sample.rl_weights)[sample.mask] != 0)
+        assert not np.any(sample.advantages)
 
     asyncio.run(run())
 
@@ -173,6 +189,8 @@ def test_mask_stale_tokens_keeps_fresher_tokens():
         WeightVersionSpan(version="3", start=1, end=2),
     ]
     [sample] = trace_to_samples(t, env_name="test")
+    branch = t.branches[sample.branch_index]
+    assert token_staleness(branch, len(sample.token_ids), fallback=1, trained_version=4).tolist() == [0, 0, 3, 1]
     sample.ref_kl_weights = np.ones(4, dtype=np.float32)
     assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2) == 1
     assert sample.mask.tolist() == [False, False, False, True]
