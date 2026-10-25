@@ -27,7 +27,7 @@ def capture_selected_supports(original, logits, cu_num_logits, num_sampled_token
         return None
     # Zero committed tokens makes vLLM's capture kernel skip eval rows before
     # reading any logits. Only replay requests contribute to the support bound.
-    keep = torch.as_tensor(enabled, device=num_sampled_tokens.device)
+    keep = torch.from_numpy(enabled).pin_memory().to(num_sampled_tokens.device, non_blocking=True)
     committed = torch.where(keep, num_sampled_tokens, 0)
     width = max(int(top_k[enabled].max()), int(sampler_rows.max()) + 1)
     tensors = original(logits, cu_num_logits, committed, width, rows_per_request)
