@@ -259,7 +259,9 @@ class TrainSourceConfig(EnvConfig):
             | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
         )
         sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
-        if getattr(sampling, "extra_args", None) == {"prl_replay": self.sampling.truncates_distribution()}:
+        extra_args = dict(getattr(sampling, "extra_args", None) or {})
+        extra_args.pop("prl_sampler_draws", None)  # set by score centering
+        if extra_args == {"prl_replay": self.sampling.truncates_distribution()}:
             supported.add("extra_args")
         if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
             raise ValueError(

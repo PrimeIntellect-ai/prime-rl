@@ -536,8 +536,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
         """Score centering and the KL need the sampler distribution over each token's support: the full
-        replayed support of truncated sampling (``auto`` or on), or a top-k head of untruncated sampling
-        (only when explicitly on)."""
+        replayed support of truncated sampling (``auto`` or on), or K draws / a top-K head of untruncated
+        sampling (only when explicitly on)."""
         loss = self.trainer.loss
         if loss.type not in ("ipo", "icepop", "reinforce") or not loss.needs_sampler_support:
             return self
@@ -551,12 +551,17 @@ class RLConfig(BaseConfig):
                 continue
             if sampling.temperature <= 0:
                 raise ValueError("Score centering and the KL require stochastic sampling (temperature > 0)")
-            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
+            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_k
             if k is None:
                 raise ValueError("Truncated score centering requires a bounded top_k")
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
+            if not sampling.truncates_distribution() and loss.score_centering_estimator == "sampled":
+                sampling.extra_body["extra_args"] = {
+                    **sampling.extra_body.get("extra_args", {}),
+                    "prl_sampler_draws": k,
+                }
             requested = True
         if not requested:
             return self

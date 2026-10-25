@@ -510,10 +510,14 @@ class RLLossConfig(BaseConfig):
     score_centering: bool | Literal["auto"] = "auto"
     """Center the weighted score under the sampler (arXiv:2609.20807). ``auto`` centers exactly over the
     replayed support of truncated sampling and leaves untruncated tokens uncentered; ``true`` also centers
-    untruncated tokens over a captured top-k head plus a proportional tail."""
+    untruncated tokens with ``score_centering_estimator``."""
 
-    score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for untruncated sampling. Truncated sampling captures its full support instead."""
+    score_centering_estimator: Literal["sampled", "topk"] = "sampled"
+    """Estimator for untruncated tokens. ``sampled``: K i.i.d. draws from the sampler, weight 1/K each
+    (unbiased Monte Carlo). ``topk``: the top-K head plus a tail proportional to the trainer's."""
+
+    score_centering_k: int = Field(16, ge=1)
+    """K: draws or head size per untruncated token. Truncated sampling captures its full support instead."""
 
     kl_coeff: float = Field(0.0, ge=0, allow_inf_nan=False)
     """KL(sampler || trainer) coefficient beta_0 over the same support; 0 disables the KL term."""

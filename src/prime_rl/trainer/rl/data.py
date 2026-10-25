@@ -315,9 +315,12 @@ class DataLoader:
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, replayed_only: bool = False) -> None:
+def validate_score_centering_data(
+    batch: TensorMicroBatch, *, vocab_size: int, replayed_only: bool = False, draws: bool = False
+) -> None:
     """Validate sampler evidence on the CPU before the LM head consumes it. ``replayed_only``: only tokens with
-    a sampling mask need it."""
+    a sampling mask need it. ``draws``: tokens without a sampling mask carry i.i.d. sampler draws, which may
+    repeat."""
     mask = batch["loss_mask"]
     if batch["rl_weights"] is not None:
         mask = mask & (batch["rl_weights"] != 0)
@@ -334,15 +337,16 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, r
         raise ValueError("Missing or out-of-vocabulary sampler top logprobs")
     if not torch.isfinite(values[valid]).all() or (values[valid] > 1e-6).any():
         raise ValueError("Sampler top logprobs must be finite and nonpositive")
-    ordered = ids.sort(-1).values
+    support = batch["sampling_mask"][mask] if batch["sampling_mask"] is not None else None
+    replay = (support >= 0).any(-1) if support is not None else torch.zeros_like(valid[:, 0])
+    head = replay | (not draws)
+    ordered = ids[head].sort(-1).values
     if ((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)).any():
         raise ValueError("Duplicate sampler head ids")
     q = values.exp().masked_fill(~valid, 0.0)
-    if (q.sum(-1) > 1.0001).any():
+    if (q[head].sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None:
-        support = batch["sampling_mask"][mask]
-        replay = (support >= 0).any(-1)
+    if support is not None:
         if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
             raise ValueError("Sampler probabilities must normalize over the recorded support")
         sampled = batch["input_ids"][mask]

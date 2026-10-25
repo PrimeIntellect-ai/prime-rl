@@ -21,9 +21,9 @@ pytestmark = [pytest.mark.gpu]
 
 
 WEIGHTINGS = [
-    IPOLossConfig(eps=0.3, score_centering=True),
-    IcePopLossConfig(ratio_low=0.5, ratio_high=2.0, score_centering=True),
-    ReinforceLossConfig(score_centering=True),
+    IPOLossConfig(eps=0.3, score_centering=True, score_centering_estimator="topk"),
+    IcePopLossConfig(ratio_low=0.5, ratio_high=2.0, score_centering=True, score_centering_estimator="topk"),
+    ReinforceLossConfig(score_centering=True, score_centering_estimator="topk"),
 ]
 
 
@@ -56,7 +56,7 @@ def _support_case(replay: bool):
         trainer_support_logprobs=logp[:head].expand(n, -1),
         sampler_support_logprobs=q[:head].log().expand(n, -1),
         support_valid=torch.ones((n, head), dtype=torch.bool),
-        sampler_tail_mass=torch.full((n,), float(q_tail)),
+        support_replayed=torch.full((n,), replay),
     )
     return logits, logp, q, support
 
@@ -99,7 +99,7 @@ def test_kl_matches_dense_kl(replay, kl_staleness):
     logits, logp, q, support = _support_case(replay)
     n = len(q)
     ages = torch.arange(n)
-    config = ReinforceLossConfig(kl_coeff=0.5, kl_staleness=kl_staleness)
+    config = ReinforceLossConfig(kl_coeff=0.5, kl_staleness=kl_staleness, score_centering_estimator="topk")
     inputs = _support_inputs(logp, q, support, torch.zeros(n), policy_ages=ages)
     inputs.loss_weights = None
     result = setup_rl_loss_fn(config).loss(inputs)
@@ -155,15 +155,52 @@ def test_icepop_topk_tail_matches_main():
         trainer_support_logprobs=logp.gather(-1, ids),
         sampler_support_logprobs=q_head,
         support_valid=torch.rand(n, k) > 0.1,
+        support_replayed=torch.zeros(n, dtype=torch.bool),
     )
-    inputs.sampler_tail_mass = 1.0 - q_head.exp().masked_fill(~inputs.support_valid, 0.0).sum(-1)
-    config = IcePopLossConfig(score_centering=True)
+    config = IcePopLossConfig(score_centering=True, score_centering_estimator="topk")
     actual = setup_rl_loss_fn(config).loss(inputs).loss
     expected = _main_icepop_score_centering(config, inputs)
     torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(
         torch.autograd.grad(actual, logits, retain_graph=True)[0], torch.autograd.grad(expected, logits)[0]
     )
+
+
+@pytest.mark.parametrize("config", WEIGHTINGS, ids=lambda c: c.type)
+def test_sampled_estimator_is_unbiased(config):
+    """Over many prefixes, the K-draw center and KL match the exact sums over q in expectation, and the
+    gradient vanishes at constant advantage."""
+    gen = torch.Generator().manual_seed(0)
+    n, vocab, k = 20000, 6, 4
+    logits = torch.randn(vocab, generator=gen).requires_grad_()
+    q = (logits.detach() + 0.5 * torch.randn(vocab, generator=gen)).softmax(-1)
+    sampled = torch.multinomial(q, n, replacement=True, generator=gen)
+    draws = torch.multinomial(q, n * k, replacement=True, generator=gen).view(n, k)
+    full = torch.arange(vocab).expand(n, -1)
+
+    def run(ids, replayed, kl_coeff):
+        cfg = config.model_copy(update={"score_centering_estimator": "sampled", "kl_coeff": kl_coeff})
+        logp = logits.log_softmax(-1).expand(n, -1)
+        inputs = LossInputs(
+            trainer_logprobs=logp.gather(-1, sampled[:, None]).squeeze(-1),
+            inference_logprobs=q.log()[sampled],
+            ref_logprobs=None,
+            advantages=torch.full((n,), 0.0 if kl_coeff else 1.0),
+            loss_mask=torch.ones(n, dtype=torch.bool),
+            trainer_support_logprobs=logp.gather(-1, ids),
+            sampler_support_logprobs=q.log()[ids],
+            support_valid=torch.ones(ids.shape, dtype=torch.bool),
+            support_replayed=torch.full((n,), replayed),
+        )
+        loss = setup_rl_loss_fn(cfg).loss(inputs).loss / n
+        return loss, torch.autograd.grad(loss, logits)[0]
+
+    for kl_coeff in (0.0, 0.5):
+        estimate, estimate_grad = run(draws, False, kl_coeff)
+        exact, exact_grad = run(full, True, kl_coeff)
+        torch.testing.assert_close(estimate, exact, atol=0.01, rtol=0)
+        torch.testing.assert_close(estimate_grad, exact_grad, atol=0.01, rtol=0)
+    torch.testing.assert_close(run(draws, False, 0.0)[1], torch.zeros(vocab), atol=0.02, rtol=0)
 
 
 def test_score_centering_auto_centers_only_replayed_tokens():

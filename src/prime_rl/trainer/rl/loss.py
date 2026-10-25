@@ -37,7 +37,7 @@ class LossInputs:
     trainer_support_logprobs: Float[Tensor, "seq support"] | None = None
     sampler_support_logprobs: Float[Tensor, "seq support"] | None = None
     support_valid: Bool[Tensor, "seq support"] | None = None
-    sampler_tail_mass: Float[Tensor, " seq"] | None = None
+    support_replayed: Bool[Tensor, " seq"] | None = None
     policy_ages: Int[Tensor, " seq"] | None = None
 
 
@@ -187,9 +187,10 @@ def reinforce_weight(config: ReinforceLossConfig, log_p: Tensor, log_q: Tensor) 
 
 class RLLoss:
     """Policy gradient with importance weight ``w`` (set by the loss type), score centering under the sampler
-    and an optional KL(sampler || trainer), all over one support per token: the replayed sampling mask
-    (exact, no tail), or a captured top-k head plus a tail with trainer probabilities proportional to the
-    sampler's."""
+    and an optional KL(sampler || trainer), all over one support per token, as sums ``sum_v u_v f(v)`` that
+    estimate ``E_q[f]``: the replayed sampling mask (exact, ``u_v = q_v``), K i.i.d. sampler draws
+    (``u_v = 1/K``), or a captured top-k head (``u_v = q_v``) plus a tail with trainer probabilities
+    proportional to the sampler's."""
 
     def __init__(self, config: IPOLossConfig | IcePopLossConfig | ReinforceLossConfig):
         self.config = config
@@ -230,10 +231,15 @@ class RLLoss:
         valid = inputs.support_valid[mask]
         log_p = inputs.trainer_support_logprobs[mask].masked_fill(~valid, 0.0)
         log_q = inputs.sampler_support_logprobs[mask].detach().masked_fill(~valid, 0.0)
-        q_tail = inputs.sampler_tail_mass[mask]
         has_support = valid.any(-1)
-        replayed = has_support & (q_tail == 0)
+        replayed = has_support & inputs.support_replayed[mask]
         p, q = log_p.exp().masked_fill(~valid, 0.0), log_q.exp().masked_fill(~valid, 0.0)
+        if config.score_centering_estimator == "sampled":
+            u = torch.where(replayed.unsqueeze(-1), q, valid / valid.sum(-1, keepdim=True).clamp_min(1))
+            q_tail = torch.zeros_like(p[:, 0])
+        else:
+            u = q
+            q_tail = torch.where(replayed, 0.0, (1.0 - q.sum(-1)).clamp_min(0.0))
 
         with torch.no_grad():
             _, w = self.weight(log_p, log_q)
@@ -242,25 +248,27 @@ class RLLoss:
             p_tail = (1.0 - p.detach().sum(-1)).clamp_min(1e-6)
             _, w_tail = self.weight(p_tail.log(), q_tail.log())
             c = q_tail * w_tail / p_tail
-            mass = q * w - c.unsqueeze(-1) * p.detach()
+            mass = u * w - c.unsqueeze(-1) * p.detach()
             centered = replayed if config.score_centering == "auto" else has_support
             mass = mass * (centered & (config.score_centering is not False)).unsqueeze(-1)
         loss = advantages.detach() * (mass * log_p).sum(-1)
 
-        head_mass = p.detach().sum(-1)
+        # E_q[p/q] and the TV E_q|p/q - 1| / 2 over the support; the head adds the tail bucket to the TV.
+        ratio = (log_p.detach() - log_q).exp().masked_fill(~valid, 0.0)
+        head_mass = (u * ratio).sum(-1)
+        p_tail_mass = torch.where(q_tail > 0, (1.0 - head_mass).clamp_min(0.0), 0.0)
         metrics = {
             "score_centering/uncentered": 1.0 - centered.float(),
             "score_centering/tail_mass": q_tail,
             "score_centering/head_mass": head_mass,
-            "score_centering/mask_tv": 0.5
-            * ((p.detach() - q).abs().sum(-1) + (q_tail - (1.0 - head_mass).clamp_min(0.0)).abs()),
+            "score_centering/mask_tv": 0.5 * ((u * (ratio - 1.0)).abs().sum(-1) + (q_tail - p_tail_mass).abs()),
         }
         if config.kl_coeff == 0:
             return loss, metrics
 
         # KL(q || p) over the head plus the tail bucket; the tail vanishes on replayed rows.
         p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
-        kl = (q * (log_q - log_p)).sum(-1) + torch.xlogy(q_tail, q_tail) - q_tail * p_tail.log()
+        kl = (u * (log_q - log_p)).sum(-1) + torch.xlogy(q_tail, q_tail) - q_tail * p_tail.log()
         kl = kl * has_support
         ages = inputs.policy_ages[mask] if inputs.policy_ages is not None else None
         if config.kl_staleness == "inv_sqrt":
@@ -374,7 +382,7 @@ def compute_loss(
     trainer_support_logprobs: list[Tensor] | None = None,
     sampler_support_logprobs: list[Tensor] | None = None,
     support_valid: list[Tensor] | None = None,
-    sampler_tail_mass: list[Tensor] | None = None,
+    support_replayed: list[Tensor] | None = None,
     policy_ages: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
@@ -427,7 +435,7 @@ def compute_loss(
     trainer_support_logprobs = trainer_support_logprobs if trainer_support_logprobs is not None else [None] * n
     sampler_support_logprobs = sampler_support_logprobs if sampler_support_logprobs is not None else [None] * n
     support_valid = support_valid if support_valid is not None else [None] * n
-    sampler_tail_mass = sampler_tail_mass if sampler_tail_mass is not None else [None] * n
+    support_replayed = support_replayed if support_replayed is not None else [None] * n
     policy_ages = policy_ages if policy_ages is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
@@ -443,7 +451,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, q_tail, ages in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, replayed, ages in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -455,7 +463,7 @@ def compute_loss(
         trainer_support_logprobs,
         sampler_support_logprobs,
         support_valid,
-        sampler_tail_mass,
+        support_replayed,
         policy_ages,
         strict=True,
     ):
@@ -471,7 +479,7 @@ def compute_loss(
                 trainer_support_logprobs=t_head,
                 sampler_support_logprobs=q_head,
                 support_valid=valid,
-                sampler_tail_mass=q_tail,
+                support_replayed=replayed,
                 policy_ages=ages,
             )
 

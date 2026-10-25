@@ -360,6 +360,7 @@ def train(config: TrainerConfig):
                     micro_batch,
                     vocab_size=vocab_size,
                     replayed_only=config.loss.score_centering == "auto" and config.loss.kl_coeff == 0,
+                    draws=config.loss.score_centering_estimator == "sampled",
                 )
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -393,11 +394,11 @@ def train(config: TrainerConfig):
             topk_ids = topk_ids.to("cuda") if topk_ids is not None else None
             sampler_topk = micro_batch["top_logprobs_values"].to("cuda") if topk_ids is not None else None
             topk_valid = topk_ids >= 0 if topk_ids is not None else None
-            sampler_tail_mass = None
+            support_replayed = None
             if topk_ids is not None:
-                sampler_tail_mass = (1.0 - sampler_topk.exp().masked_fill(~topk_valid, 0.0).sum(-1)).clamp_min(0.0)
-                if sampling_mask is not None:
-                    sampler_tail_mass = sampler_tail_mass.masked_fill((sampling_mask >= 0).any(-1), 0.0)
+                support_replayed = (
+                    (sampling_mask >= 0).any(-1) if sampling_mask is not None else torch.zeros_like(topk_valid[..., 0])
+                )
 
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
@@ -533,8 +534,8 @@ def train(config: TrainerConfig):
                 if sampler_topk is not None
                 else None,
                 support_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
-                sampler_tail_mass=sampler_tail_mass.squeeze(0).split(sequence_lengths)
-                if sampler_tail_mass is not None
+                support_replayed=support_replayed.squeeze(0).split(sequence_lengths)
+                if support_replayed is not None
                 else None,
                 policy_ages=policy_ages,
             )

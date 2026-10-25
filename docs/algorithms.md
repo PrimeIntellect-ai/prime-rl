@@ -265,14 +265,18 @@ The support is chosen per token:
 
 - **Sampling replay** (truncated sampling, `top_k` and/or `top_p`): the replayed sampling mask with its
   sampler probabilities. `p` and `q` are both normalized over it, so centering and the KL are exact.
-- **Untruncated sampling**: a captured top-`score_centering_topk` sampler head plus the remaining tail,
-  modeled with trainer probabilities proportional to the sampler's. Tail tokens then share one ratio and
-  are accepted or rejected together. Capturing the head makes generation markedly slower.
+- **Untruncated sampling**, by `score_centering_estimator`:
+  - `sampled` (default): K = `score_centering_k` i.i.d. draws `v_k ~ q`, captured on the GPU next to the
+    sampled token. `q_v` in the sums becomes `1/K` per draw, an unbiased Monte Carlo estimate:
+    `sum_v q_v w_v grad log p_v ≈ mean_k w(v_k) grad log p(v_k)`, and the KL becomes `mean_k (log q(v_k) - log p(v_k))`.
+  - `topk`: the top-K sampler head plus the remaining tail, modeled with trainer probabilities proportional to
+    the sampler's. Tail tokens then share one ratio and are accepted or rejected together.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `score_centering` | `"auto"` | `auto`: center replayed tokens exactly, leave untruncated tokens uncentered. `true`: also center untruncated tokens over the top-k head + tail. `false`: off. |
-| `score_centering_topk` | 128 | Captured head size for untruncated sampling. |
+| `score_centering` | `"auto"` | `auto`: center replayed tokens exactly, leave untruncated tokens uncentered. `true`: also center untruncated tokens with the estimator below. `false`: off. |
+| `score_centering_estimator` | `"sampled"` | Untruncated tokens: `sampled` (K draws, weight 1/K) or `topk` (top-K head + tail). |
+| `score_centering_k` | 16 | K: draws or head size per untruncated token. |
 | `kl_coeff` | 0.0 | KL coefficient `beta_0`; 0 disables the KL. |
 | `kl_staleness` | `"none"` | `none`: `beta_t = beta_0`. `inv_sqrt`: `beta_t = 0` at token age 0, `beta_0 / sqrt(age)` otherwise. |
 
@@ -283,7 +287,7 @@ requests.
 Token age is the trainer step minus the policy step whose weights sampled the token, from the inference
 engines' per-token weight-version labels. The launcher enables sampler probability capture whenever the
 loss needs it. Metrics: `score_centering/{uncentered,tail_mass,head_mass,mask_tv}` (sampler tail mass, trainer mass on the
-head, total variation between `p` and `q`), and with the KL `kl`, `kl/beta`, `kl/age0`.
+support `E_q[p/q]`, total variation between `p` and `q`, both estimated from the draws under `sampled`), and with the KL `kl`, `kl/beta`, `kl/age0`.
 
 ### Custom Loss
 
