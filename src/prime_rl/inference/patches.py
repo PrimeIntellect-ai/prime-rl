@@ -33,6 +33,13 @@ def apply_shared_vllm_patches():
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()
+    from prime_rl.inference.vllm.request_replay import patch_request_replay
+
+    patch_request_replay()
+    if os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1":
+        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
+
+        patch_top_p_then_top_k()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -318,7 +325,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
     In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
-    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
+    be finished — most often ``FINISHED_ABORTED`` from a cancelled rollout, a
     client disconnect, or a request timeout — while it still has in-flight KV
     transfers. When such a request's ``finished_recving`` and ``finished_sending``
     both land in the same ``Scheduler.update_from_output`` step, the stock
@@ -330,7 +337,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
 
     The trigger is the abort itself, not weight-update pause/resume: it reproduces
     during normal stepping whenever an aborted request's recv and send complete in
-    the same step (observed with zero off-policy cancellations, driven only by
+    the same step (observed with zero orchestrator cancellations, driven only by
     incidental client-side aborts). Skip already-freed request ids instead of
     asserting — their blocks are freed either way, so dropping the stale
     notification is safe.

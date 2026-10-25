@@ -35,6 +35,7 @@ class LossInputs:
     trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
     sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
     topk_valid: Bool[Tensor, "seq head"] | None = None
+    sampler_support_complete: Bool[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -258,6 +259,9 @@ class IcePopLoss:
                 tail_log_ratio = -rho.log()
                 # The proportional tail has one ratio; MIS accepts all or none.
                 alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
+                if inputs.sampler_support_complete is not None:
+                    # Replay covers the entire distribution, so there is no modeled tail.
+                    alpha = alpha.masked_fill(inputs.sampler_support_complete[inputs.loss_mask], 0.0)
                 mass = mass - alpha.unsqueeze(-1) * p
                 centering_metrics["score_centering/tail_scale"] = alpha
                 centering_metrics["score_centering/head_mass"] = q.sum(-1)
@@ -382,6 +386,7 @@ def compute_loss(
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
+    sampler_support_complete: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -434,6 +439,8 @@ def compute_loss(
     sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
     topk_valid = topk_valid if topk_valid is not None else [None] * n
 
+    sampler_support_complete = sampler_support_complete if sampler_support_complete is not None else [None] * n
+
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
         for k, v in result.metrics.items():
@@ -447,7 +454,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, complete in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -459,6 +466,7 @@ def compute_loss(
         trainer_topk_logprobs,
         sampler_topk_logprobs,
         topk_valid,
+        sampler_support_complete,
         strict=True,
     ):
 
@@ -473,6 +481,7 @@ def compute_loss(
                 trainer_topk_logprobs=t_head,
                 sampler_topk_logprobs=q_head,
                 topk_valid=valid,
+                sampler_support_complete=complete,
             )
 
         if rl_w is None:

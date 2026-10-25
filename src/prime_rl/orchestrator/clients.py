@@ -202,7 +202,7 @@ class AdminPlane:
             transfer_times = await _post_all(
                 self.clients,
                 "/update_weights",
-                json={"weight_dir": weight_dir_posix},
+                json={"weight_dir": weight_dir_posix, "weight_version": step},
                 timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
         finally:
@@ -475,7 +475,7 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path, step: int) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
@@ -499,6 +499,7 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
+            params={"weight_version": step},
             timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
         )
         response.raise_for_status()
