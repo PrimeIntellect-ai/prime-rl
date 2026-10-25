@@ -50,11 +50,15 @@ class HyperConnection(nn.Module):
 
     def mix(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         normalized_states = self.hc_norm(expanded_states)
-        mixing_weights = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
-        mixing_weights = torch.sigmoid(self.input_mix_weight_up(mixing_weights))
+        mixing_logits = self.input_mix_weight_down(normalized_states)
+        mixing_weights = F.silu(mixing_logits.float() / self.stream_count).to(mixing_logits.dtype)
+        mixing_weights = torch.sigmoid(self.input_mix_weight_up(mixing_weights).float())
         mixing_weights = mixing_weights.unflatten(-1, (self.stream_count, self.hidden_size))
-        normalized_streams = normalized_states.unflatten(-1, (self.stream_count, self.hidden_size))
-        block_input = (mixing_weights * normalized_streams).mean(dim=-2)
+        normalized_streams = normalized_states.float().unflatten(-1, (self.stream_count, self.hidden_size))
+        block_input = torch.zeros_like(normalized_streams[..., 0, :], dtype=torch.float32)
+        for stream in range(self.stream_count):
+            block_input = block_input + mixing_weights[..., stream, :] * normalized_streams[..., stream, :]
+        block_input = block_input / self.stream_count
         return block_input.to(expanded_states.dtype), (expanded_states, normalized_states)
 
     def forward(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
@@ -66,9 +70,11 @@ class HyperConnection(nn.Module):
         residual_state: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         expanded_states, normalized_states = residual_state
-        injection_weights = 2.0 * torch.sigmoid(self.block_inject_weight(normalized_states) / self.stream_count)
-        residual_streams = expanded_states.unflatten(-1, (self.stream_count, self.hidden_size))
-        return (residual_streams + block_output.unsqueeze(-2) * injection_weights.unsqueeze(-1)).flatten(-2)
+        injection_logits = self.block_inject_weight(normalized_states)
+        injection_weights = 2.0 * torch.sigmoid(injection_logits.float() / self.stream_count)
+        residual_streams = expanded_states.float().unflatten(-1, (self.stream_count, self.hidden_size))
+        output = residual_streams + block_output.float().unsqueeze(-2) * injection_weights.unsqueeze(-1)
+        return output.flatten(-2).to(expanded_states.dtype)
 
 
 __all__ = ["ExpandedRMSNorm", "HyperConnection"]
