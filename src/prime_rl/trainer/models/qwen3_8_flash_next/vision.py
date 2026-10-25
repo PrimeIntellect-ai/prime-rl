@@ -47,14 +47,13 @@ class VisionPatchEmbed(nn.Module):
         )
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        pixel_values = pixel_values.view(
-            -1,
-            self.in_channels,
-            self.temporal_patch_size,
-            self.patch_size,
-            self.patch_size,
+        patch_width = self.in_channels * self.temporal_patch_size * self.patch_size**2
+        pixel_values = pixel_values.view(-1, patch_width).to(self.proj.weight.dtype)
+        return F.linear(
+            pixel_values,
+            self.proj.weight.view(self.proj.out_channels, patch_width),
+            self.proj.bias,
         )
-        return self.proj(pixel_values.to(self.proj.weight.dtype)).view(pixel_values.shape[0], -1)
 
 
 class VisionMLP(nn.Module):
@@ -254,7 +253,7 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
         hidden_states = hidden_states + self.interpolated_position_embeddings(grid_thw)
         rotary = self.rotary_embeddings(grid_thw)
         rotary = torch.cat((rotary, rotary), dim=-1)
-        position_embeddings = (rotary.cos(), rotary.sin())
+        position_embeddings = (rotary.cos().to(hidden_states.dtype), rotary.sin().to(hidden_states.dtype))
         sequence_lengths = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0])
         cu_seqlens = F.pad(sequence_lengths.cumsum(dim=0, dtype=torch.int32), (1, 0))
         max_seqlen = int(sequence_lengths.max())
