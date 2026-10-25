@@ -76,11 +76,11 @@ def get_model(config, device="cuda"):
     return model
 
 
-def get_image_inputs(config, device="cuda", dtype=torch.bfloat16):
+def get_image_inputs(config, device="cuda", dtype=torch.bfloat16, image_grid=(1, 2, 2)):
     """Create minimal image inputs matching the vision config."""
     vc = config.vision_config
     patch_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
-    image_grid_thw = torch.tensor([[1, 2, 2]], device=device)
+    image_grid_thw = torch.tensor([image_grid], device=device)
     num_patches = int(image_grid_thw.prod().item())
     pixel_values = torch.randn(num_patches, patch_dim, device=device, dtype=dtype)
     num_image_tokens = num_patches // (vc.spatial_merge_size**2)
@@ -157,7 +157,7 @@ def test_vlm_backward(compile_vision):
         for index, block in enumerate(model.model.visual.blocks):
             model.model.visual.blocks[index] = torch.compile(block, backend="eager", fullgraph=True)
 
-    pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
+    pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config, image_grid=(1, 4, 6))
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
@@ -174,6 +174,10 @@ def test_vlm_backward(compile_vision):
 
     assert model.model.language_model.embed_tokens.weight.grad is not None
     assert model.model.visual.patch_embed.proj.weight.grad is not None
+    position_gradient = model.model.visual.pos_embed.weight.grad
+    assert position_gradient is not None
+    assert torch.isfinite(position_gradient).all()
+    assert torch.count_nonzero(position_gradient) > 0
 
 
 @pytest.mark.gpu
