@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import prime_runs as pr
+from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.credentials import missing_prime_credentials
 from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.record import read_record, update_record, write_record
@@ -65,6 +65,16 @@ def prime_mode() -> str:
     return os.getenv(pr.MODE_ENV) or "online"
 
 
+def missing_credentials() -> str | None:
+    """Why an online run cannot authenticate, or None when it can or runs offline."""
+    if prime_mode() != "online" or os.getenv("PRIME_API_KEY") or PrimeConfig().api_key:
+        return None
+    return (
+        "No Prime API key found - the run is not logged to Prime. Authenticate with "
+        f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
+    )
+
+
 def _base_url() -> str | None:
     """$PRIME_API_BASE historically points at the RFT API root (``.../api/v1/rft``);
     the SDK takes the platform base URL. Unset means the SDK resolves it."""
@@ -94,7 +104,7 @@ class PrimeTrainMonitor(Monitor):
 
     @classmethod
     def missing_credentials(cls, config: PrimeTrainMonitorConfig) -> str | None:
-        return missing_prime_credentials()
+        return missing_credentials()
 
     run: pr.Run
 
@@ -218,7 +228,7 @@ class PrimeEvalMonitor(Monitor):
 
     @classmethod
     def missing_credentials(cls, config: PrimeEvalMonitorConfig) -> str | None:
-        return missing_prime_credentials()
+        return missing_credentials()
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         self.mode = prime_mode()

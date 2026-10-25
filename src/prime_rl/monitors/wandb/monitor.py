@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import netrc
 import os
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 import wandb
 from wandb.errors import CommError, UsageError
@@ -16,7 +18,6 @@ from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.credentials import missing_wandb_credentials
 from prime_rl.utils.links import WANDB_LINKS, publish_link, register_links
 from prime_rl.utils.logger import format_time
 
@@ -32,8 +33,26 @@ class WandbMonitor(Monitor):
 
     @classmethod
     def missing_credentials(cls, config: WandbMonitorConfig) -> str | None:
-        # Shared mode ignores ``offline``: it needs the server.
-        return missing_wandb_credentials(offline=config.offline and os.environ.get("WANDB_SHARED_MODE") != "1")
+        """Why ``wandb.init`` cannot authenticate, or None when it can: the API key or
+        identity token variables, else the netrc entry for the W&B host. An offline run
+        needs none; shared mode ignores ``offline``, since it needs the server."""
+        if config.offline and os.environ.get("WANDB_SHARED_MODE") != "1":
+            return None
+        if os.environ.get("WANDB_MODE") in ("offline", "disabled"):
+            return None
+        if os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_IDENTITY_TOKEN_FILE"):
+            return None
+        host = urlparse(os.environ.get("WANDB_BASE_URL", "https://api.wandb.ai")).hostname
+        path = Path(os.environ.get("NETRC", Path.home() / ".netrc")).expanduser()
+        try:
+            if host and netrc.netrc(path).authenticators(host):
+                return None
+        except (OSError, netrc.NetrcParseError):
+            pass
+        return (
+            "No W&B API key found - the run is not logged to W&B. Authenticate with `wandb login` "
+            "(or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
+        )
 
     async def init(
         self,

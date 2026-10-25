@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import prime_rl.monitors.prime as prime_module
 from prime_rl import monitors
 from prime_rl.configs.monitors import PrimeTrainMonitorConfig, WandbMonitorConfig
 from prime_rl.utils.links import ATTEMPT_VAR, publish_link, register_links, wait_for_links
@@ -41,13 +42,16 @@ def test_previous_attempt_links_never_count(tmp_path, attempt, monkeypatch):
     assert wait_for_links(tmp_path, attempt, ["prime"], lambda: True) == {}
 
 
-def test_monitors_without_credentials_are_skipped(tmp_path, attempt, monkeypatch):
+@pytest.mark.parametrize("prime_mode", [None, "online"])
+def test_monitors_without_credentials_are_skipped(tmp_path, attempt, monkeypatch, prime_mode):
     """No Prime or W&B credentials: setup warns, skips both monitors, and registers them
     with no links, so the launcher's banner does not wait on them."""
     for var in ("PRIME_API_KEY", "PRIME_RUNS_MODE", "WANDB_API_KEY", "WANDB_IDENTITY_TOKEN_FILE", "WANDB_MODE"):
         monkeypatch.delenv(var, raising=False)
+    if prime_mode is not None:
+        monkeypatch.setenv("PRIME_RUNS_MODE", prime_mode)
     monkeypatch.setenv("NETRC", str(tmp_path / "missing-netrc"))
-    monkeypatch.setattr("prime_sandboxes.Config", lambda: SimpleNamespace(api_key=None))
+    monkeypatch.setattr(prime_module, "PrimeConfig", lambda: SimpleNamespace(api_key=None))
     warnings: list[str] = []
     monkeypatch.setattr(monitors, "get_logger", lambda: SimpleNamespace(warning=warnings.append, info=print))
 
