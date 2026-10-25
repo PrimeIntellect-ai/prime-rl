@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
+from verifiers.v1.graph import json_safe_record
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.sft import SFTConfig
@@ -60,6 +61,13 @@ def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
 OFF_HINT = "turn the monitor off with --no-monitors.prime"
 
 
+def log_episode_records(run: pr.Run, episodes: list[vf.Episode]) -> None:
+    """Hand the run JSON-safe episode records, not the episodes: the SDK writes what it gets
+    with the stdlib json, which cannot encode the numpy streams of `Episode.to_record`.
+    Blocking: runs in a worker thread."""
+    run.log_episodes([json_safe_record(episode.to_record()) for episode in episodes])
+
+
 def prime_mode() -> str:
     """$PRIME_RUNS_MODE when set, else online. Like the W&B monitor, a configured
     monitor without credentials fails the run instead of leaving it untracked."""
@@ -92,8 +100,9 @@ class PrimeTrainMonitor(Monitor):
     drain, not the SDK's finalize HTTP retries.
 
     ``init``/``finish`` do network I/O and run in worker threads; the log
-    calls are queue puts onto the SDK's uploader thread, which owns retries
-    and backpressure, so they never stall the loop.
+    calls build their records in worker threads and queue them for the SDK's
+    uploader thread, which owns retries and backpressure, so they never stall
+    the loop.
     """
 
     config: PrimeTrainMonitorConfig
@@ -191,8 +200,8 @@ class PrimeTrainMonitor(Monitor):
         stamps at emit time."""
         if subset != "all" or not episodes:
             return
-        # A queue put that can block briefly under backpressure - off the loop.
-        await asyncio.to_thread(self.run.log_episodes, episodes)
+        # Record building and a queue put that can block briefly under backpressure - off the loop.
+        await asyncio.to_thread(log_episode_records, self.run, episodes)
 
     async def finalize(self, paused: bool = False) -> None:
         # Drains queued uploads so the final step's metrics and episodes land,
@@ -374,7 +383,7 @@ class PrimeEvalMonitor(Monitor):
         for env_name, batch in by_env.items():
             run = await self.run_for(env_name, step)
             if run is not None:
-                await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
+                await asyncio.to_thread(log_episode_records, run, batch)
 
     async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
         run = await self.run_for(env_name, step)
