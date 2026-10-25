@@ -64,7 +64,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.constant_trainer_batch_size` | Keep trainer batches constant when samples have no training signal, such as zero advantage on all tokens. Enabled by default. Disable it for faster collection with variable trainer batch sizes. |
 | `orchestrator.train.group_size` | Rollouts generated per task. |
-| `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.max_staleness` | Maximum token staleness (default 8): the version a batch trains on minus the policy version that sampled the token, queue time included. Staler tokens are masked out of the loss; the rest of the sample still trains. Tokens without a policy label (Dynamo engines) take their rollout's dispatch version. A sample is dropped only when nothing is left to train, and rollouts are never cancelled for staleness. The main staleness dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `staleness/token/masked`, `staleness/rollout/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
@@ -141,6 +141,12 @@ Pulled from the console logs and mirrored to W&B.
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
 | orchestrator | `time/wait_for_policy` | **high → trainer bottleneck** |
+| orchestrator | `staleness/token/mean`, `staleness/token/masked` | mean token staleness of the shipped batch, and the share of its tokens masked past `max_staleness` |
+| orchestrator | `staleness/rollout/{mean,max}` | rollout staleness (max token staleness) of the shipped batch |
+| orchestrator | `staleness/rollout/{in_flight,in_queue}/{mean,max}` | in-flight and in-queue split of rollout staleness |
+| orchestrator | `staleness/rollout/dropped` | queued rollouts dropped because every token passed `max_staleness` |
+
+See [Async Training & Staleness](algorithms.md#async-training--staleness) for the token and rollout staleness definitions.
 
 The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window. This warning reports stale, errored, and no-signal counts.
 
@@ -341,7 +347,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-The orchestrator checkpoint keeps the work a restart would otherwise redo, in the same file as the data state. A resume ships the samples that were queued for the next batch first. Every train group that was still running is resumed with the same task: its finished rollouts are kept and only the missing ones run. Saved rollouts that would exceed `max_off_policy_steps` at the resumed step are dropped (their group reruns them); saved rollouts that exceed it by the time their group completes are left out of the group's scoring. Queued samples restored this way train normally but are left out of the first steps' rollout metrics.
+The orchestrator checkpoint keeps the work a restart would otherwise redo, in the same file as the data state. A resume ships the samples that were queued for the next batch first. Every train group that was still running is resumed with the same task: its finished rollouts are kept and only the missing ones run. Restored rollouts are treated like any other queued or finished rollout: their tokens past `max_staleness` at the step they ship are masked out of the loss, and saved group members stay in their group's scoring.
 
 ### Pausing a Live Run
 
