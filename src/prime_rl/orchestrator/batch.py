@@ -171,9 +171,11 @@ def _empty_sampling_mask(num_tokens: int) -> SamplingMask:
 
 def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingMask:
     counts = np.frombuffer(sampling_mask.counts, dtype=np.int32)[:seq_len]
+    size = int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE
     return SamplingMask(
-        ids=sampling_mask.ids[: int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE],
+        ids=sampling_mask.ids[:size],
         counts=counts.tobytes(),
+        logprobs=sampling_mask.logprobs[:size] if sampling_mask.logprobs is not None else None,
     )
 
 
@@ -341,6 +343,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             f"sampling_mask counts: {len(mask_counts)}, input_ids: {len(input_ids)}"
         )
         assert len(sampling_mask.ids) == int(mask_counts.sum()) * _SAMPLING_MASK_ITEMSIZE
+        assert sampling_mask.logprobs is None or len(sampling_mask.logprobs) == len(sampling_mask.ids)
 
     return MicroBatch(
         input_ids=input_ids,
@@ -431,6 +434,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # Sampling masks are per-token optional (unlike routed_experts): samples
     # without them get zero-count backfill instead of constraining packing.
     has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
+    has_mask_logprobs = any(
+        sample.sampling_mask is not None and sample.sampling_mask.logprobs is not None for sample in bin_content.samples
+    )
     has_top_logprobs = any(sample.top_logprobs is not None for sample in bin_content.samples)
 
     # Each sample's per-token arrays, concatenated once the bin is walked.
@@ -447,7 +453,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     streams: dict[str, list[np.ndarray] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
-    sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    sampling_mask: SamplingMask | None = (
+        SamplingMask(ids=b"", counts=b"", logprobs=b"" if has_mask_logprobs else None) if has_sampling_mask else None
+    )
     top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
@@ -503,6 +511,13 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+            if sampling_mask.logprobs is not None:
+                # NaN marks mask rows that carry no sampler logprobs.
+                sampling_mask.logprobs += (
+                    sample_mask.logprobs
+                    if sample_mask.logprobs is not None
+                    else np.full(len(sample_mask.ids) // _SAMPLING_MASK_ITEMSIZE, np.nan, np.float32).tobytes()
+                )
         if top_logprobs is not None:
             head = sample.top_logprobs
             if head is None:
@@ -723,6 +738,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"sampling_mask ids/counts inconsistent after packing: "
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
+        assert micro_batch.sampling_mask.logprobs is None or len(micro_batch.sampling_mask.logprobs) == len(
+            micro_batch.sampling_mask.ids
+        ), "sampling_mask logprobs/ids inconsistent after packing"
 
     if micro_batch.top_logprobs is not None:
         _validate_top_logprobs(micro_batch.top_logprobs, num_tokens)
