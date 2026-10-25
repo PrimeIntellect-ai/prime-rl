@@ -276,6 +276,10 @@ The support is chosen per token:
 | `kl_coeff` | 0.0 | KL coefficient `beta_0`; 0 disables the KL. |
 | `kl_staleness` | `"none"` | `none`: `beta_t = beta_0`. `inv_sqrt`: `beta_t = 0` at token age 0, `beta_0 / sqrt(age)` otherwise. |
 
+Standalone inference servers need `enable_return_sampling_mask = true`: the sampler captures its probabilities
+on the GPU from the processed distribution, next to the sampling mask, so vLLM returns no logprobs for these
+requests.
+
 Token age is the trainer step minus the policy step whose weights sampled the token, from the inference
 engines' per-token weight-version labels. The launcher enables sampler probability capture whenever the
 loss needs it. Metrics: `score_centering/{uncentered,tail_mass,head_mass,mask_tv}` (sampler tail mass, trainer mass on the

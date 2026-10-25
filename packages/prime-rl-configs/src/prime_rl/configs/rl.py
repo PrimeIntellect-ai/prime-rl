@@ -545,7 +545,7 @@ class RLConfig(BaseConfig):
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
         explicit = loss.score_centering is True or loss.kl_coeff > 0
-        requested = []
+        requested = False
         for sampling in samplings:
             if not (sampling.truncates_distribution() or explicit):
                 continue
@@ -557,20 +557,15 @@ class RLConfig(BaseConfig):
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
-            requested.append(sampling.logprobs + 2)
+            requested = True
         if not requested:
             return self
+        # The sampler's probabilities are captured on the GPU next to the sampling mask.
         if self.inference is not None:
-            if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
-                raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
-            self.inference.vllm.logprobs_mode = "processed_logprobs"
-            limit = getattr(self.inference.vllm, "max_logprobs", 20)
-            if limit != -1:
-                self.inference.vllm.max_logprobs = max(limit, *requested)
+            self.inference.enable_return_sampling_mask = True
         else:
             warnings.warn(
-                "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
-                stacklevel=2,
+                "Score centering requires `enable_return_sampling_mask = true` on the external server", stacklevel=2
             )
         return self
 

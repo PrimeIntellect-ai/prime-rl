@@ -147,7 +147,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.run_dir == config.run_dir
     assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
-    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.inference.enable_return_sampling_mask
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
 
 
@@ -1348,7 +1348,6 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
         }
     )
     assert config.orchestrator.train.source[0].sampling.logprobs == top_k
-    assert config.inference.vllm.max_logprobs >= top_k + 2
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 

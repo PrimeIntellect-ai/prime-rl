@@ -9,7 +9,7 @@ import torch
 
 REPLAY_KEY = "prl_replay"
 _paired: ContextVar[np.ndarray | None] = ContextVar("prl_paired", default=None)
-_capture: ContextVar[tuple[np.ndarray, np.ndarray] | None] = ContextVar("prl_capture", default=None)
+_capture: ContextVar[tuple[np.ndarray, np.ndarray, np.ndarray, list] | None] = ContextVar("prl_capture", default=None)
 
 
 def wants_replay(params) -> bool:
@@ -20,14 +20,17 @@ def capture_selected_supports(original, logits, cu_num_logits, num_sampled_token
     selection = _capture.get()
     if selection is None:
         return original(logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request)
-    enabled, top_k = selection
+    enabled, top_k, sampler_rows, processed = selection
+    if sampler_rows.any():
+        processed.extend([logits, cu_num_logits, num_sampled_tokens])
     if not enabled.any():
         return None
     # Zero committed tokens makes vLLM's capture kernel skip eval rows before
     # reading any logits. Only replay requests contribute to the support bound.
     keep = torch.as_tensor(enabled, device=num_sampled_tokens.device)
     committed = torch.where(keep, num_sampled_tokens, 0)
-    tensors = original(logits, cu_num_logits, committed, int(top_k[enabled].max()), rows_per_request)
+    width = max(int(top_k[enabled].max()), int(sampler_rows.max()) + 1)
+    tensors = original(logits, cu_num_logits, committed, width, rows_per_request)
     paired = _paired.get()
     if paired is not None and paired.any():
         from prime_rl.inference.vllm.paired_capture import pack_support_logprobs
@@ -71,8 +74,13 @@ def patch_request_replay():
         if not hasattr(self, "_prime_capture"):
             self._prime_capture = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
             self._prime_paired = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
+            self._prime_sampler_rows = np.zeros(self.sampling_states.max_num_reqs, dtype=np.int64)
+            self._prime_draws = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
+        extra_args = sampling_params.extra_args or {}
         self._prime_capture[req_idx] = wants_replay(sampling_params)
-        self._prime_paired[req_idx] = (sampling_params.extra_args or {}).get("prl_paired_capture", False)
+        self._prime_paired[req_idx] = extra_args.get("prl_paired_capture", False)
+        self._prime_sampler_rows[req_idx] = extra_args.get("prl_sampler_rows", 0)
+        self._prime_draws[req_idx] = bool(extra_args.get("prl_sampler_draws"))
         return add_request(self, req_idx, sampling_params)
 
     call = Sampler.__call__
@@ -80,15 +88,29 @@ def patch_request_replay():
     @wraps(call)
     def sample(self, logits, input_batch):
         indices = input_batch.idx_mapping_np
-        enabled = getattr(self, "_prime_capture", np.zeros(self.sampling_states.max_num_reqs, dtype=bool))
-        token = _capture.set((enabled[indices], self.sampling_states.top_k.np[indices]))
-        paired = getattr(self, "_prime_paired", None)
-        paired_token = _paired.set(paired[indices] if paired is not None else None)
-        try:
+        if not hasattr(self, "_prime_capture"):
             return call(self, logits, input_batch)
+        sampler_rows, processed = self._prime_sampler_rows[indices], []
+        token = _capture.set(
+            (self._prime_capture[indices], self.sampling_states.top_k.np[indices], sampler_rows, processed)
+        )
+        paired_token = _paired.set(self._prime_paired[indices])
+        try:
+            output = call(self, logits, input_batch)
         finally:
             _capture.reset(token)
             _paired.reset(paired_token)
+        if processed:
+            from prime_rl.inference.vllm.paired_capture import pack_sampler_rows
+
+            output.sampling_mask_tensors = pack_sampler_rows(
+                output.sampling_mask_tensors,
+                *processed,
+                output.sampled_token_ids,
+                sampler_rows,
+                self._prime_draws[indices],
+            )
+        return output
 
     from_logits = SamplingMaskTensors.from_logits
 
@@ -106,7 +128,8 @@ def patch_request_replay():
     @wraps(from_new_request)
     def new_request(cls, tokenizer, request, *args, **kwargs):
         state = from_new_request(cls, tokenizer, request, *args, **kwargs)
-        if not wants_replay(request.sampling_params):
+        params = request.sampling_params
+        if not (wants_replay(params) or (params is not None and (params.extra_args or {}).get("prl_sampler_rows"))):
             state.sampling_mask_chunks = DiscardChunks()
         return state
 
