@@ -63,13 +63,57 @@ Expected signature for a custom loss:
 """
 
 
-@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
+def _selective_log_softmax_fwd(logits: Tensor, index: Tensor) -> tuple[Tensor, Tensor]:
+    logits_fp32 = logits.float()
+    target_logits = torch.gather(logits_fp32, -1, index.unsqueeze(-1)).squeeze(-1)
+    # A mask rather than a scatter, so the compiled logsumexp reads the logits without materializing a copy
+    is_target = torch.arange(logits.shape[-1], device=logits.device) == index.unsqueeze(-1)
+    non_target_logits = torch.where(is_target, -torch.inf, logits_fp32)
+    logprobs = -torch.nn.functional.softplus(non_target_logits.logsumexp(dim=-1) - target_logits)
+    return logprobs, target_logits
+
+
+@torch.compile(dynamic=True)
+def _selective_log_softmax_bwd(
+    logits: Tensor, index: Tensor, target_logits: Tensor, logprobs: Tensor, grad_output: Tensor
+) -> Tensor:
+    grad_output = grad_output.float()
+    logz = target_logits - logprobs
+    # -p_j for the non-targets, and 1 - p_target = -expm1(logprob) at the target, which stays accurate as p -> 1
+    grad_logits = -grad_output.unsqueeze(-1) * torch.exp(logits.float() - logz.unsqueeze(-1))
+    target_grad = grad_output * -torch.expm1(logprobs)
+    is_target = torch.arange(logits.shape[-1], device=logits.device) == index.unsqueeze(-1)
+    return torch.where(is_target, target_grad.unsqueeze(-1), grad_logits).to(logits.dtype)
+
+
+class _SelectiveLogSoftmax(torch.autograd.Function):
+    """Saves only the input logits and per-token values, and recomputes the softmax in backward, so no logits-sized
+    fp32 copy is kept between forward and backward."""
+
+    @staticmethod
+    def forward(ctx, logits: Tensor, index: Tensor) -> Tensor:
+        logprobs, target_logits = _selective_log_softmax_fwd(logits, index)
+        ctx.save_for_backward(logits, index, target_logits, logprobs)
+        return logprobs.to(logits.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor, None]:
+        logits, index, target_logits, logprobs = ctx.saved_tensors
+        return _selective_log_softmax_bwd(logits, index, target_logits, logprobs, grad_output), None
+
+
+@jaxtyped(typechecker=typechecker)
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
-    logprobs = logits.log_softmax(dim=-1)
-    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+    """``log_softmax(logits)[index]``, computed in fp32 as ``-softplus(logsumexp_{j != index}(logits) - logits[index])``.
+
+    Gathering from ``log_softmax`` rounds a confident target's logprob and gradient to exactly 0 once its margin
+    passes ~16.6 in fp32 (~5.5 in bf16) while the non-target gradients survive; excluding the target from the
+    logsumexp keeps both accurate (Barron et al., "A Fix for Softmax and Cross-Entropy", arXiv:2610.31642).
+    """
+    return _SelectiveLogSoftmax.apply(logits, index)
 
 
 def selective_topk_log_softmax(
@@ -99,12 +143,15 @@ def selective_log_softmax_with_sampling_mask(
     """
     full_logprobs = selective_log_softmax(logits, index)
     replay = sampling_replay_mask(sampling_mask, index)
-    mask_logits = torch.gather(logits, -1, sampling_mask.clamp_min(0).long())
-    mask_logits = torch.where(sampling_mask >= 0, mask_logits, float("-inf"))
+    mask_logits = torch.gather(logits, -1, sampling_mask.clamp_min(0).long()).float()
+    # Like selective_log_softmax, renormalize as -softplus(logsumexp over the other mask ids - target)
+    is_other = (sampling_mask >= 0) & (sampling_mask != index.unsqueeze(-1))
+    mask_logits = torch.where(is_other, mask_logits, torch.finfo(torch.float32).min)
     mask_logits = torch.where(replay.unsqueeze(-1), mask_logits, 0.0)
-    logz_masked = torch.logsumexp(mask_logits, dim=-1)
-    target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
-    return torch.where(replay, target_logits - logz_masked, full_logprobs)
+    logz_other = torch.logsumexp(mask_logits, dim=-1)
+    target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1).float()
+    masked_logprobs = -torch.nn.functional.softplus(logz_other - target_logits)
+    return torch.where(replay, masked_logprobs.to(logits.dtype), full_logprobs)
 
 
 @jaxtyped(typechecker=typechecker)

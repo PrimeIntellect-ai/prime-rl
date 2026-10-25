@@ -161,6 +161,97 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
     torch.testing.assert_close(vanilla(hidden0.detach())["logits"], logits.detach(), rtol=0, atol=1e-6)
 
 
+def _confident_label_logits(vocab: int, dtype: torch.dtype = torch.float32) -> tuple[torch.Tensor, torch.Tensor]:
+    """[4, vocab] logits whose labels lead logsumexp of the others by margins of ~21 to ~73, past the ~16.6 where
+    fp32 log_softmax rounds the label's logprob and gradient to exactly 0."""
+    generator = torch.Generator().manual_seed(0)
+    logits = 0.1 * torch.randn(4, vocab, generator=generator)
+    labels = torch.tensor([3, vocab - 11, vocab - 4, vocab // 2])
+    logits[torch.arange(4), labels] = torch.tensor([30.0, 50.0, 80.0, 40.0])
+    return logits.to(dtype), labels
+
+
+def _fp64_label_logprobs_and_grad(
+    logits: torch.Tensor, labels: torch.Tensor, sampling_mask: torch.Tensor | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """fp64 logprob ``-softplus(logsumexp_{j != label} - z_label)`` over the vocab (or the sampling mask), and its
+    gradient ``onehot - softmax`` w.r.t. the logits."""
+    logits = logits.double()
+    label_logits = logits.gather(-1, labels.unsqueeze(-1))
+    others = logits.scatter(-1, labels.unsqueeze(-1), -torch.inf)
+    if sampling_mask is not None:
+        in_mask = torch.zeros_like(logits, dtype=torch.bool).scatter_(
+            -1, sampling_mask.clamp_min(0), sampling_mask >= 0
+        )
+        others = others.masked_fill(~in_mask, -torch.inf)
+    nll = torch.nn.functional.softplus(others.logsumexp(-1, keepdim=True) - label_logits)
+    grad = -torch.exp(others - label_logits - nll)
+    grad.scatter_(-1, labels.unsqueeze(-1), -torch.expm1(-nll))
+    return -nll.squeeze(-1), grad
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_fused_lm_head_confident_label_logprob_and_gradient(replay):
+    vocab = 8203  # two vocab chunks, with labels in both
+    logits, labels = _confident_label_logits(vocab)
+    n = logits.shape[0]
+    sampling_mask = torch.stack([labels, (labels + 1) % vocab, (labels + 2) % vocab, torch.full_like(labels, -1)], -1)
+    sampling_mask = sampling_mask if replay else None
+    # One-hot hidden states make the head's logits exactly weight.T, and the weight gradient the logit gradient
+    lm = FusedOutputLinear(n, vocab, chunk_size=3)
+    lm.weight = torch.nn.Parameter(logits.t().contiguous())
+    out = lm(
+        torch.eye(n).unsqueeze(0),
+        labels.unsqueeze(0),
+        torch.ones(1, n),
+        sampling_mask.unsqueeze(0) if replay else None,
+    )
+    out["logprobs"].sum().backward()
+
+    expected_logprobs, expected_grad = _fp64_label_logprobs_and_grad(logits, labels, sampling_mask)
+    logprobs, grad = out["logprobs"].squeeze(0), lm.weight.grad.t()
+    assert torch.all(logprobs < 0)
+    torch.testing.assert_close(logprobs, expected_logprobs.float(), rtol=1e-5, atol=0)
+    torch.testing.assert_close(grad, expected_grad.float(), rtol=1e-4, atol=0)
+    label_grad = grad.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+    torch.testing.assert_close(grad.sum(-1) - label_grad, -label_grad, rtol=1e-4, atol=0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_selective_log_softmax_confident_label_logprob_and_gradient(dtype):
+    logits, labels = _confident_label_logits(1000, dtype)
+    if dtype == torch.bfloat16:
+        # Margins of ~6 to ~43
+        logits[torch.arange(4), labels] = torch.tensor([13.0, 17.0, 30.0, 50.0], dtype=dtype)
+    logits = logits.unsqueeze(0).requires_grad_(True)
+    logprobs = selective_log_softmax(logits, labels.unsqueeze(0))
+    logprobs.sum().backward()
+
+    expected_logprobs, expected_grad = _fp64_label_logprobs_and_grad(logits.detach().squeeze(0), labels)
+    rtol = 1e-5 if dtype == torch.float32 else 1e-2
+    assert logprobs.dtype == dtype
+    assert torch.all(logprobs < 0)
+    torch.testing.assert_close(logprobs.squeeze(0).double(), expected_logprobs, rtol=rtol, atol=0)
+    torch.testing.assert_close(logits.grad.squeeze(0).double(), expected_grad, rtol=10 * rtol, atol=0)
+
+
+def test_selective_log_softmax_with_sampling_mask_confident_label():
+    from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask
+
+    logits, labels = _confident_label_logits(1000)
+    sampling_mask = torch.stack([labels, labels + 1, labels + 2, torch.full_like(labels, -1)], -1)
+    # Label alone in its mask: logprob 0 with finite gradients
+    sampling_mask[3, 1:] = -1
+    logits = logits.unsqueeze(0).requires_grad_(True)
+    logprobs = selective_log_softmax_with_sampling_mask(logits, labels.unsqueeze(0), sampling_mask.unsqueeze(0))
+    logprobs.sum().backward()
+
+    expected_logprobs, expected_grad = _fp64_label_logprobs_and_grad(logits.detach().squeeze(0), labels, sampling_mask)
+    assert torch.all(logprobs[0, :3] < 0)
+    torch.testing.assert_close(logprobs.squeeze(0), expected_logprobs.float(), rtol=1e-5, atol=0)
+    torch.testing.assert_close(logits.grad.squeeze(0), expected_grad.float(), rtol=1e-4, atol=0)
+
+
 def test_fused_lm_head_requires_labels():
     """Test that FusedOutputLinear raises assertion error when labels is None."""
     torch.manual_seed(0)
