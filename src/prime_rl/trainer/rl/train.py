@@ -58,6 +58,7 @@ from prime_rl.trainer.utils import (
     MemoryProfiler,
     TensorStats,
     begin_backward,
+    broadcast_pause,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
@@ -72,7 +73,7 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
-from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool

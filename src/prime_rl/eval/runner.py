@@ -24,6 +24,8 @@ import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.control.server import serve
+from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
@@ -163,9 +165,6 @@ class EvalRunner:
     async def start(self) -> None:
         self.dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
         if self.config.control is not None:
-            from prime_rl.control.server import serve
-            from prime_rl.eval.control import create_app
-
             app = create_app(self.concurrency)
             self.control_task = asyncio.create_task(serve(app, self.config.control), name="control")
         await self.periodic_logger.start()

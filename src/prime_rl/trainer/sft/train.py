@@ -48,6 +48,7 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
+    broadcast_pause,
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
@@ -58,7 +59,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
