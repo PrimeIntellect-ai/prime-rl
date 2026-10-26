@@ -188,6 +188,18 @@ class RLLoss:
     def weight(self, log_p: Tensor, log_q: Tensor) -> tuple[Tensor, Tensor]:
         return self.weight_fn(self.config, log_p.detach(), log_q.detach())
 
+    @property
+    def sparse_logit_grad(self) -> bool:
+        """Whether every token's logit gradient lies on its label and support even without replay: REINFORCE
+        centered over K draws (weights 1/K sum to one, so the softmax terms cancel) and no KL."""
+        config = self.config
+        return (
+            config.type == "reinforce"
+            and config.score_centering is True
+            and config.score_centering_estimator == "sampled"
+            and config.kl_coeff == 0
+        )
+
     def loss(self, inputs: LossInputs) -> LossOutputs:
         config = self.config
         mask = inputs.loss_mask

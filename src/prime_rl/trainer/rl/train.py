@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
+from dataclasses import replace
 from functools import partial
 import time
 import asyncio
@@ -19,7 +20,13 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch, validate_score_centering_data
+from prime_rl.trainer.rl.data import (
+    DataLoader,
+    FakeDataLoader,
+    TensorMicroBatch,
+    prepare_micro_batch,
+    validate_score_centering_data,
+)
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_ragged_for_cp,
@@ -31,6 +38,8 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    Loss,
+    RLLoss,
     compute_entropy,
     compute_loss,
     _mismatch_kl_from_log_ratio,
@@ -41,7 +50,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.models.layers.lm_head import TokenSupport
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -82,6 +91,21 @@ from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
+def sparse_head_backward(micro_batch: TensorMicroBatch, support: TokenSupport, rl_loss_fn: Loss) -> bool:
+    """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
+    stream), and each is replayed against a support holding its label or centered by a loss whose softmax terms
+    cancel (``RLLoss.sparse_logit_grad``)."""
+    if micro_batch["ce_weights"] is not None or micro_batch["ref_kl_weights"] is not None:
+        return False
+    if isinstance(rl_loss_fn, RLLoss) and rl_loss_fn.sparse_logit_grad:
+        return True
+    rl_tokens = micro_batch["loss_mask"][0]
+    if micro_batch["rl_weights"] is not None:
+        rl_tokens = rl_tokens & (micro_batch["rl_weights"][0] != 0)
+    replay = support_replay_mask(support, micro_batch["input_ids"][0], support.row_index())
+    return bool(replay[rl_tokens].all())
+
+
 def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
@@ -398,7 +422,9 @@ def train(config: TrainerConfig):
                     offsets=micro_batch["support_offsets"],
                     replayed=micro_batch["support_replayed"],
                     logprobs=micro_batch["support_logprobs"],
-                ).to("cuda")
+                )
+                support = replace(support, sparse_backward=sparse_head_backward(micro_batch, support, rl_loss_fn))
+                support = support.to("cuda")
                 label_support = support.shift_left()
 
             mm_kwargs = micro_batch.pop("mm_kwargs")

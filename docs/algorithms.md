@@ -305,6 +305,12 @@ kl_coeff = 0.01
 kl_estimator = "k1"
 ```
 
+The fused LM head skips its dense softmax backward when every rl token's logit gradient lies on its label and
+support (no ce / ref_kl stream in the micro batch): tokens replayed against their sampling mask (any loss), or
+REINFORCE centered over K draws without a KL, whose centering weights sum to one. Without replay a KL of either
+estimator has a dense gradient, so this config takes the dense backward; with top-p / top-k replay the same loss
+is sparse.
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).

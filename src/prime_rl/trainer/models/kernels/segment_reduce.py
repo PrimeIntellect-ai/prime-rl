@@ -44,3 +44,33 @@ def segment_logsumexp(x: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
 def segment_sum(x: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
     """Sum of each CSR row ``x[offsets[i]:offsets[i + 1]]`` in a fixed order."""
     return _segment_reduce(x, offsets, logsumexp=False)
+
+
+@triton.jit
+def _csr_matmul_kernel(
+    offsets_ptr, cols_ptr, vals_ptr, dense_ptr, out_ptr, H, BLOCK_K: tl.constexpr, BLOCK_H: tl.constexpr
+):
+    row = tl.program_id(0)
+    h = tl.program_id(1) * BLOCK_H + tl.arange(0, BLOCK_H)
+    start = tl.load(offsets_ptr + row)
+    end = tl.load(offsets_ptr + row + 1)
+    acc = tl.zeros([BLOCK_H], tl.float32)
+    for block_start in range(start, end, BLOCK_K):
+        k = block_start + tl.arange(0, BLOCK_K)
+        cols = tl.load(cols_ptr + k, mask=k < end, other=0).to(tl.int64)
+        vals = tl.load(vals_ptr + k, mask=k < end, other=0.0)
+        tile = tl.load(
+            dense_ptr + cols[:, None] * H + h[None, :], mask=(k < end)[:, None] & (h < H)[None, :], other=0.0
+        )
+        acc += tl.sum(vals[:, None] * tile.to(tl.float32), axis=0)
+    tl.store(out_ptr + row.to(tl.int64) * H + h, acc.to(out_ptr.dtype.element_ty), mask=h < H)
+
+
+def csr_matmul(offsets: torch.Tensor, cols: torch.Tensor, vals: torch.Tensor, dense: torch.Tensor, out: torch.Tensor):
+    """``out[i] = sum_k vals[k] * dense[cols[k]]`` over the CSR row ``offsets[i]:offsets[i + 1]``, accumulated in
+    fp32 in a fixed order (deterministic). Writes every row of ``out``."""
+    rows, hidden = out.shape
+    if rows:
+        grid = (rows, triton.cdiv(hidden, 256))
+        _csr_matmul_kernel[grid](offsets, cols, vals, dense, out, hidden, BLOCK_K=16, BLOCK_H=256)
+    return out

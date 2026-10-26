@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TypedDict
 
 import torch
@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from prime_rl.trainer.models.kernels.segment_reduce import segment_logsumexp, segment_sum
+from prime_rl.trainer.models.kernels.segment_reduce import csr_matmul, segment_logsumexp, segment_sum
 from prime_rl.utils.logger import get_logger
 
 # Same as torch's cross entropy loss
@@ -35,6 +35,8 @@ class TokenSupport:
     offsets: Tensor  # int64 [N + 1], CPU
     replayed: Tensor  # bool [N]: the row is the sampling mask the token was drawn from
     logprobs: Tensor | None = None  # float32 [E], the sampler's logprobs
+    # The loss's logit gradient lies on each token's label and support entries (see FusedOutputLinear)
+    sparse_backward: bool = False
 
     @property
     def num_rows(self) -> int:
@@ -42,7 +44,8 @@ class TokenSupport:
 
     def rows(self, start: int, end: int) -> TokenSupport:
         first, last = int(self.offsets[start]), int(self.offsets[end])
-        return TokenSupport(
+        return replace(
+            self,
             ids=self.ids[first:last],
             offsets=self.offsets[start : end + 1] - first,
             replayed=self.replayed[start:end],
@@ -52,17 +55,16 @@ class TokenSupport:
     def shift_left(self) -> TokenSupport:
         """Align with labels: drop the first token's row and append an empty one."""
         shifted = self.rows(1, self.num_rows)
-        return TokenSupport(
-            ids=shifted.ids,
+        return replace(
+            shifted,
             offsets=torch.cat([shifted.offsets, shifted.offsets[-1:]]),
             replayed=torch.cat([shifted.replayed, shifted.replayed.new_zeros(1)]),
-            logprobs=shifted.logprobs,
         )
 
     def to(self, device: torch.device | str) -> TokenSupport:
-        return TokenSupport(
+        return replace(
+            self,
             ids=self.ids.to(device),
-            offsets=self.offsets,
             replayed=self.replayed.to(device),
             logprobs=self.logprobs.to(device) if self.logprobs is not None else None,
         )
@@ -102,7 +104,10 @@ class FusedOutputLinear(torch.nn.Linear):
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
     as ``loss``, computing the gradients chunk by chunk in the forward pass (see ``_ChunkedCrossEntropySumFn``).
     With ``temperature`` it returns per-token ``logprobs`` and ``entropy``, and with a ``support`` (label-aligned)
-    also ``support_logprobs`` per support entry (see ``_SequenceChunkedLogProbEntropyFn``).
+    also ``support_logprobs`` per support entry (see ``_SequenceChunkedLogProbEntropyFn``). With
+    ``support.sparse_backward`` the backward skips the dense softmax term: the caller guarantees each token's logit
+    gradient lies on its label and support entries (replayed tokens, or a loss whose weights on ``logprobs`` and
+    ``support_logprobs`` cancel per token).
     With ``softcap`` the logits are capped to ``softcap * tanh(logits / softcap)`` before anything else.
     """
 
@@ -147,6 +152,7 @@ class FusedOutputLinear(torch.nn.Linear):
             offsets,
             replay,
             self.softcap,
+            support is not None and support.sparse_backward,
         )
         return PrimeLmOutput(
             logprobs=logprobs.reshape(b, s), entropy=entropy.reshape(b, s), support_logprobs=support_logprobs
@@ -207,6 +213,70 @@ def _support_flat_index(
     return torch.where(in_range, flat, 0), in_range
 
 
+def _sparse_logit_backward(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    labels: torch.Tensor,
+    inv_temperature: torch.Tensor,
+    logz: torch.Tensor,
+    support_ids: torch.Tensor,
+    support_rows: torch.Tensor,
+    offsets: torch.Tensor,
+    replay: torch.Tensor,
+    label_logits: torch.Tensor,
+    entry_logits: torch.Tensor,
+    grad_logprobs: torch.Tensor | None,
+    grad_support: torch.Tensor | None,
+    softcap: float | None,
+    needs_grad: tuple[bool, bool],
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Hidden and weight gradients from a logit gradient that lies on each token's label and support entries.
+
+    Per token the logit gradient is ``g_label * e_label + sum_e g_e * e_id - p * net`` with ``net = g_label +
+    sum_e g_e``. Replayed tokens normalize ``p`` over their support, so the last term stays on it; for the others the
+    caller guarantees ``net = 0``. The gradient is one [N, V] CSR matrix (each token's label, then its entries),
+    multiplied into ``weight`` and, sorted by vocab id, into ``hidden``."""
+    n, device = hidden.shape[0], hidden.device
+    rows = support_rows.long()
+    label_grad = grad_logprobs.float() if grad_logprobs is not None else torch.zeros_like(logz)
+    entry_grad = grad_support.float() if grad_support is not None else torch.zeros_like(entry_logits)
+    net = label_grad + segment_sum(entry_grad, offsets.to(device))
+    entry_grad = entry_grad - torch.where(replay[rows], torch.exp(entry_logits - logz[rows]) * net[rows], 0.0)
+
+    label_grad = label_grad * inv_temperature
+    entry_grad = entry_grad * inv_temperature[rows]
+    if softcap is not None:
+        # The saved logits are softcap * tanh(raw / softcap) / T.
+        label_grad = label_grad * (1 - (label_logits / (softcap * inv_temperature)).square())
+        entry_grad = entry_grad * (1 - (entry_logits / (softcap * inv_temperature[rows])).square())
+
+    # Token-major CSR with the label first in each row.
+    row_offsets = offsets.to(device) + torch.arange(n + 1, device=device)
+    label_pos = row_offsets[:-1]
+    entry_pos = torch.arange(rows.numel(), device=device) + rows + 1
+    nnz = n + rows.numel()
+    cols = torch.empty(nnz, device=device, dtype=torch.int32)
+    vals = torch.empty(nnz, device=device, dtype=torch.float32)
+    cols[label_pos] = labels.int()
+    cols[entry_pos] = support_ids
+    vals[label_pos] = label_grad
+    vals[entry_pos] = entry_grad
+
+    grad_hidden = grad_weight = None
+    if needs_grad[0]:
+        grad_hidden = csr_matmul(row_offsets, cols, vals, weight.contiguous(), torch.empty_like(hidden))
+    if needs_grad[1]:
+        sorted_cols, order = torch.sort(cols, stable=True)
+        vocab_offsets = torch.searchsorted(
+            sorted_cols, torch.arange(weight.shape[0] + 1, device=device, dtype=torch.int32)
+        )
+        token = torch.repeat_interleave(
+            torch.arange(n, device=device, dtype=torch.int32), row_offsets.diff(), output_size=nnz
+        )
+        grad_weight = csr_matmul(vocab_offsets, token[order], vals[order], hidden, torch.empty_like(weight))
+    return grad_hidden, grad_weight
+
+
 class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
     @staticmethod
     def forward(  # type: ignore[override]
@@ -221,6 +291,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         offsets: torch.Tensor | None = None,  # [N + 1] int64 CPU, CSR row offsets of the entries
         replay: torch.Tensor | None = None,  # [N] bool
         softcap: float | None = None,
+        sparse_backward: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
@@ -252,6 +323,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         support_logprobs = (
             torch.empty(support_ids.shape, device=device, dtype=torch.float32) if support_ids is not None else None
         )
+        if sparse_backward:
+            # The sparse backward needs the logits at the label and support entries, not the full rows.
+            label_logits = torch.empty((n,), device=device, dtype=torch.float32)
+            entry_logits = torch.empty(support_ids.shape, device=device, dtype=torch.float32)
 
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
@@ -298,6 +373,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 support_logz = segment_logsumexp(support_logits, (offsets[start : end + 1] - first).to(device))
                 logz_chunk = torch.where(replay[start:end], support_logz, logz_full)
                 support_logprobs[first:last] = support_logits - logz_chunk[rows_chunk]
+                if sparse_backward:
+                    entry_logits[first:last] = support_logits
+            if sparse_backward:
+                label_logits[start:end] = target_logits
             logz[start:end] = logz_chunk
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_full - (t / s)
@@ -306,6 +385,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             False
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, support_ids, support_rows, replay)
+        if sparse_backward:
+            ctx.sparse_logits = (label_logits, entry_logits)
+        ctx.sparse_backward = sparse_backward
         ctx.offsets = offsets
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
@@ -324,6 +406,24 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         offsets: torch.Tensor | None = ctx.offsets
         chunk_size: int = ctx.chunk_size
         softcap: float | None = ctx.softcap
+        if ctx.sparse_backward:
+            grad_hidden, grad_weight = _sparse_logit_backward(
+                hidden,
+                weight,
+                labels,
+                inv_temperature,
+                logz,
+                support_ids,
+                support_rows,
+                offsets,
+                replay,
+                *ctx.sparse_logits,
+                grad_logprobs,
+                grad_support,
+                softcap,
+                ctx.needs_input_grad[:2],
+            )
+            return grad_hidden, grad_weight, None, None, None, None, None, None, None, None, None
 
         n, _ = hidden.shape
         device = hidden.device
@@ -391,7 +491,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 if needs_weight:
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
-        return grad_hidden, grad_weight, None, None, None, None, None, None, None, None
+        return grad_hidden, grad_weight, None, None, None, None, None, None, None, None, None
 
 
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):

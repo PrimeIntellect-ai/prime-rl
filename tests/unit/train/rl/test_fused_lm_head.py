@@ -1,9 +1,11 @@
+import dataclasses
 import itertools
 
 import pytest
 import torch
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
+from prime_rl.configs.trainer import IPOLossConfig, ReinforceLossConfig
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import (
     FusedOutputLinear,
@@ -13,6 +15,8 @@ from prime_rl.trainer.models.layers.lm_head import (
 )
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.rl.loss import (
+    LossInputs,
+    RLLoss,
     compute_entropy,
     selective_log_softmax_with_support,
     shift_tensor_left,
@@ -72,6 +76,49 @@ def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
     for grad, ref in zip(actual, expected, strict=True):
         atol, rtol = (1e-2, 3e-2) if dtype == torch.bfloat16 else (5e-6, 1e-4)
         torch.testing.assert_close(grad, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("replay", [True, False])
+@pytest.mark.parametrize("softcap", [None, 30.0])
+def test_fused_head_sparse_backward_matches_dense(replay, softcap):
+    """Replayed tokens keep any loss's logit gradient on their support; without replay, REINFORCE centered over
+    K draws does."""
+    torch.manual_seed(0)
+    n, h, v = 9, 16, 8203
+    hidden = torch.randn(1, n, h, device="cuda", requires_grad=True)
+    lm = FusedOutputLinear(h, v, chunk_size=4, softcap=softcap).to("cuda")
+    labels = torch.randint(0, v, (1, n), device="cuda")
+    rows = [[label, (label + 7) % v, (label + 4001) % v][: 1 + i % 3] for i, label in enumerate(labels[0].tolist())]
+    if not replay:
+        rows = [[(i + 11) % v for i in row] for row in rows]
+    support = _token_support(rows, [replay] * n, device="cuda")
+    counts = support.offsets.diff().to("cuda")
+    support = dataclasses.replace(support, logprobs=-counts.float().log()[support.row_index().long()])
+    temperature = torch.linspace(0.6, 1.4, n, device="cuda").unsqueeze(0)
+    if replay:
+        config = IPOLossConfig(score_centering=True, kl_coeff=0.1)
+    else:
+        config = ReinforceLossConfig(score_centering=True, score_centering_estimator="sampled")
+        assert RLLoss(config).sparse_logit_grad
+    grads = []
+    for sparse in (False, True):
+        out = lm(hidden, labels, temperature, dataclasses.replace(support, sparse_backward=sparse))
+        logprobs = out["logprobs"][0]
+        inputs = LossInputs(
+            trainer_logprobs=logprobs,
+            inference_logprobs=logprobs.detach() - 0.1,
+            ref_logprobs=None,
+            advantages=torch.randn(n, device="cuda", generator=torch.Generator("cuda").manual_seed(1)),
+            loss_mask=torch.ones(n, dtype=torch.bool, device="cuda"),
+            trainer_support_logprobs=out["support_logprobs"],
+            sampler_support_logprobs=support.logprobs,
+            support_rows=support.row_index(),
+            support_replayed=support.replayed,
+        )
+        grads.append(torch.autograd.grad(RLLoss(config).loss(inputs).loss, (hidden, lm.weight)))
+    for dense, sparse in zip(*grads, strict=True):
+        torch.testing.assert_close(sparse, dense, atol=1e-6, rtol=1e-5)
 
 
 def _baseline_logprobs_and_entropy(
