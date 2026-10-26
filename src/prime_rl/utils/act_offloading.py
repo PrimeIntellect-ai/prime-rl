@@ -6,6 +6,7 @@ import psutil
 import torch
 from torch.autograd.graph import saved_tensors_hooks
 from torch.distributed.tensor import DTensor
+from torch.multiprocessing.reductions import StorageWeakRef
 
 from prime_rl.configs.trainer import ActivationOffloadingConfig
 
@@ -72,6 +73,8 @@ class OffloadActivations(saved_tensors_hooks):
         self.min_tensor_size_bytes = min_offload_size  # we don't want to bother with small tensors
         self.param_slots = [(module, name) for module in model.modules() for name in module._parameters]
         self.tracker = {}  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
+        self.cpu_copies = {}
+        self.shared_copies = {}
         self.tensor_id: int = 0
         self.is_first_forward_call = True
         self.is_first_backward_call = True
@@ -168,6 +171,20 @@ class OffloadActivations(saved_tensors_hooks):
                     # Sync in, offload, and add an event to sync back later
                     self.s1.wait_stream(self.s0)
 
+                key = (
+                    activation.untyped_storage()._cdata,
+                    activation.storage_offset(),
+                    activation.numel(),
+                    activation.dtype,
+                )
+                copy = self.cpu_copies.get(key) if activation.is_contiguous() else None
+                if copy is not None and not copy[0].expired():
+                    cpu_tensor = copy[1]
+                    self.tracker[tensor_id] = (cpu_tensor.view(activation.shape), True)
+                    shared = self.shared_copies.setdefault(cpu_tensor.data_ptr(), [1, None])
+                    shared[0] += 1
+                    return tensor_id
+
                 stream = self.s1 if self.use_streams else self.s0
                 with stream:
                     try:
@@ -179,6 +196,8 @@ class OffloadActivations(saved_tensors_hooks):
                         cpu_tensor,
                         True,
                     )  # True = (in future) modified
+                    if activation.is_contiguous():
+                        self.cpu_copies[key] = (StorageWeakRef(activation.untyped_storage()), cpu_tensor)
 
                 if self.use_streams:
                     event = self.s1.record_event()
@@ -204,12 +223,22 @@ class OffloadActivations(saved_tensors_hooks):
 
                 self.is_first_backward_call = False
                 self.is_first_forward_call = True
+                self.cpu_copies.clear()
 
             assert unpack_tensor_id in self.tracker, f"untracked tensor with id {unpack_tensor_id}"
 
             maybe_gpu_tensor, modified = self.tracker[unpack_tensor_id]
             if modified:
-                gpu_tensor = maybe_gpu_tensor.to(torch.accelerator.current_accelerator(), non_blocking=True)
+                shared = self.shared_copies.get(maybe_gpu_tensor.data_ptr())
+                if shared is not None and shared[1] is not None:
+                    gpu_tensor = shared[1].view(maybe_gpu_tensor.shape)
+                else:
+                    gpu_tensor = maybe_gpu_tensor.to(torch.accelerator.current_accelerator(), non_blocking=True)
+                if shared is not None:
+                    shared[0] -= 1
+                    shared[1] = gpu_tensor
+                    if shared[0] == 0:
+                        del self.shared_copies[maybe_gpu_tensor.data_ptr()]
                 maybe_gpu_tensor = gpu_tensor
 
             # clear tensor from tracking
