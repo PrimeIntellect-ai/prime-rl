@@ -2,9 +2,6 @@ import threading
 import uuid
 from collections.abc import Callable
 
-import torch
-import torch.distributed as dist
-
 from prime_rl.control.types import Action, ActionNotFoundError, ActionType, ControlConflictError, InvalidActionError
 from prime_rl.utils.logger import get_logger
 
@@ -80,10 +77,3 @@ class Controller:
             raise InvalidActionError("The orchestrator pauses at a step you name: pass the trainer's accepted 'step'.")
         if not self.requires_step and step is not None:
             raise InvalidActionError("The trainer pauses at its next step and takes no 'step'.")
-
-
-def broadcast_pause(controller: Controller, step: int) -> bool:
-    """Whether the master's controller pauses at ``step``, applied by every rank."""
-    paused = torch.tensor(controller.update(step), device="cuda")
-    dist.broadcast(paused, src=0)
-    return bool(paused.item())
