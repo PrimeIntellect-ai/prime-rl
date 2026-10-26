@@ -546,6 +546,7 @@ class Orchestrator:
             if isinstance(item, GroupCancellation):
                 assert item.kind == "train"  # eval groups are never dropped
                 train_batch = await self.train_sink.cancel(item)
+                self.forget_consumed_group(item.group_id)
                 await self.handle_train_result(train_batch)
                 continue
             if isinstance(item, DispatchFailure):
