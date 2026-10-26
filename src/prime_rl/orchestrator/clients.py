@@ -222,23 +222,26 @@ class AdminPlane:
         async with self._modelexpress_lock:
             if not version_uid:
                 raise ValueError("modelexpress requires version_uid")
-            await _pause_engines(self.clients, step=step, roles=self.roles)
+            pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
             if on_paused is not None:
                 on_paused()
 
-            async def install(client):
+            async def install(client) -> float:
+                start = time.perf_counter()
                 response = await client.post(
                     "/update_weights_from_modelexpress",
-                    json={"version_uid": version_uid},
+                    json={"version_uid": version_uid, "weight_version": step},
                     timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
                 )
                 response.raise_for_status()
+                return time.perf_counter() - start
 
             results = await asyncio.gather(*(install(client) for client in self.clients), return_exceptions=True)
             for result in results:
                 if isinstance(result, BaseException):
                     raise result
-            await _resume_engines(self.clients)
+            resume_times = await _resume_engines(self.clients)
+            self.update_times = {"pause": pause_times, "transfer": results, "resume": resume_times}
 
     async def initialize_modelexpress(
         self,
