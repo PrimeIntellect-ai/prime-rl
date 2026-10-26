@@ -90,12 +90,12 @@ class RowShardedLookup:
 class NGramTable(nn.Module):
     """One hashed n-gram embedding table and its hash layout, looked up through a swappable strategy."""
 
-    def __init__(self, num_rows: int, head_dim: int, max_ngram_size: int, num_columns: int) -> None:
+    def __init__(self, num_rows: int, head_dim: int, max_ngram_size: int, num_heads: int) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.empty(num_rows, head_dim))
         self.register_buffer("layer_multipliers", torch.zeros(max_ngram_size, dtype=torch.long))
-        self.register_buffer("ngram_heads_vocab_sizes", torch.zeros(num_columns, dtype=torch.long))
-        self.register_buffer("ngram_heads_offsets", torch.zeros(num_columns, dtype=torch.long))
+        self.register_buffer("ngram_heads_vocab_sizes", torch.zeros(num_heads, dtype=torch.long))
+        self.register_buffer("ngram_heads_offsets", torch.zeros(num_heads, dtype=torch.long))
         self.lookup: LocalLookup | RowShardedLookup = LocalLookup()
 
     def set_lookup(self, lookup: LocalLookup | RowShardedLookup) -> None:
@@ -122,7 +122,7 @@ class NGramHasher(nn.Module, ABC):
         super().__init__()
         self.max_ngram_size = max_ngram_size
         self.heads_per_ngram = heads_per_ngram
-        self.num_columns = (max_ngram_size - 1) * heads_per_ngram
+        self.num_heads = (max_ngram_size - 1) * heads_per_ngram
         self.min_rows_per_head = min_rows_per_head
         self.rows_multiple_of = rows_multiple_of
         self.cp_context = CPContext()
@@ -138,8 +138,8 @@ class NGramHasher(nn.Module, ABC):
 
     def _head_sizes(self, table_index: int) -> list[int]:
         return [
-            nth_prime_after(self.min_rows_per_head - 1, table_index * self.num_columns + column + 1)
-            for column in range(self.num_columns)
+            nth_prime_after(self.min_rows_per_head - 1, table_index * self.num_heads + head + 1)
+            for head in range(self.num_heads)
         ]
 
     def map_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
@@ -186,8 +186,8 @@ class NGramHasher(nn.Module, ABC):
         id_blocks = []
         for ngram in range(2, self.max_ngram_size + 1):
             mixed = torch.bitwise_xor(mixed, shifted_tokens[ngram - 1][:, None] * multipliers[:, ngram - 1])
-            columns = slice((ngram - 2) * self.heads_per_ngram, (ngram - 1) * self.heads_per_ngram)
-            id_blocks.append(torch.remainder(mixed[..., None], sizes[:, columns]) + offsets[:, columns])
+            order_heads = slice((ngram - 2) * self.heads_per_ngram, (ngram - 1) * self.heads_per_ngram)
+            id_blocks.append(torch.remainder(mixed[..., None], sizes[:, order_heads]) + offsets[:, order_heads])
         return torch.cat(id_blocks, dim=-1)
 
 
@@ -214,7 +214,7 @@ class NGramEmbeddings(nn.Module):
         self.tables = nn.ModuleDict(
             {
                 str(decoder_index): NGramTable(
-                    hasher.table_rows(table_index), head_dim, hasher.max_ngram_size, hasher.num_columns
+                    hasher.table_rows(table_index), head_dim, hasher.max_ngram_size, hasher.num_heads
                 )
                 for decoder_index, table_index in self.table_indices.items()
             }

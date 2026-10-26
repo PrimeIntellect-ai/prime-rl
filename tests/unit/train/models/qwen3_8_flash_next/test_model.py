@@ -86,6 +86,13 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     apply_prime_to_hf(converted, operations)
     assert model.is_hf_state_dict(converted)
     assert any(name.startswith("model.visual.") for name in converted) == model.is_vlm
+    model_prefix = "model.language_model" if hasattr(restored, "text_config") else "model"
+    hf_ple_prefix = f"{model_prefix}.layers.0.ple.ple_embedding"
+    hf_table_keys = {f"{hf_ple_prefix}.ngram_embedding.shard_{index}.weight" for index in range(shard_count)}
+    assert {key for key in converted if key.startswith(f"{hf_ple_prefix}.ngram_embedding.")} == hf_table_keys
+    for buffer in ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets"):
+        assert torch.equal(converted[f"{hf_ple_prefix}.{buffer}"], original[f"{model_prefix}.ngram.tables.0.{buffer}"])
+    assert not any(".ngram.tables." in key for key in converted)
     apply_hf_to_prime(converted, operations)
     assert converted.keys() == original.keys()
     for name, value in original.items():

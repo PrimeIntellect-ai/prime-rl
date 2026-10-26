@@ -13,7 +13,7 @@ from prime_rl.trainer.models.layers.ngram import NGramTable, RowShardedLookup
 
 HEAD_DIM = 4
 MAX_NGRAM_SIZE = 3
-NUM_COLUMNS = 4
+NUM_HEADS = 4
 
 IDS_BY_RANK = {
     (9, (4,)): [
@@ -69,7 +69,7 @@ def test_row_sharded_lookup_matches_full_table(process_group, num_rows, mesh_sha
     local_row_count = max(0, min(rows_per_rank, num_rows - first_local_row))
 
     full_weight = torch.arange(num_rows * HEAD_DIM, dtype=torch.float32, device="cuda").view(num_rows, HEAD_DIM)
-    table = NGramTable(num_rows, HEAD_DIM, MAX_NGRAM_SIZE, NUM_COLUMNS).cuda()
+    table = NGramTable(num_rows, HEAD_DIM, MAX_NGRAM_SIZE, NUM_HEADS).cuda()
     with torch.no_grad():
         table.weight.copy_(full_weight)
     parallelize_module(table, device_mesh=head_mesh, parallelize_plan=NGramRowParallel())
@@ -78,8 +78,7 @@ def test_row_sharded_lookup_matches_full_table(process_group, num_rows, mesh_sha
 
     ids_by_rank = [torch.tensor(ids, device="cuda") for ids in IDS_BY_RANK[num_rows, mesh_shape]]
     upstream_grads = [
-        _integer_upstream_grad(r, torch.Size((ids.shape[0], NUM_COLUMNS * HEAD_DIM)))
-        for r, ids in enumerate(ids_by_rank)
+        _integer_upstream_grad(r, torch.Size((ids.shape[0], NUM_HEADS * HEAD_DIM))) for r, ids in enumerate(ids_by_rank)
     ]
 
     output = table(ids_by_rank[rank])
@@ -102,7 +101,7 @@ def test_row_sharded_lookup_matches_full_table(process_group, num_rows, mesh_sha
 def test_row_parallel_shards_meta_weight_and_keeps_requires_grad(process_group):
     head_mesh = _head_mesh((4,))
     with torch.device("meta"):
-        table = NGramTable(10, HEAD_DIM, MAX_NGRAM_SIZE, NUM_COLUMNS)
+        table = NGramTable(10, HEAD_DIM, MAX_NGRAM_SIZE, NUM_HEADS)
     table.weight.requires_grad_(False)
 
     parallelize_module(table, device_mesh=head_mesh, parallelize_plan=NGramRowParallel())
