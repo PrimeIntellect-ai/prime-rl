@@ -42,3 +42,16 @@ def test_parameter_views_stay_on_gpu():
     weight_storage = model.weight.untyped_storage().data_ptr()
     assert any(t.untyped_storage().data_ptr() == weight_storage for t in offloader.kept.values())
     assert all(t.untyped_storage().data_ptr() != weight_storage for t in offloader.on_cpu.values())
+
+
+def test_tensor_saved_twice_is_offloaded_once():
+    model = nn.Linear(256, 256).cuda()
+    x = torch.randn(4096, 256, device="cuda", requires_grad=True)
+    shared = torch.randn(4096, 256, device="cuda")
+    offloader = OffloadActivations(model)
+    with offloader:
+        loss = (x * shared).sum() + (x.sin() * shared.view(-1)[: 4096 * 256].view(4096, 256)).sum()
+    assert len(offloader.on_cpu) == 2
+    loss.backward()
+    assert not offloader.on_cpu and not offloader.aliases and not offloader.refs
+    assert torch.equal(x.grad, shared + x.detach().cos() * shared)
