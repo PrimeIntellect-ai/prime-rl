@@ -51,6 +51,7 @@ from prime_rl.trainer.model import (
     setup_model,
     setup_processor,
 )
+from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -111,6 +112,7 @@ def train(config: TrainerConfig):
         heart = Heartbeat(config.heartbeat)
 
     # Set precision
+    setup_moe_comm_env(config.model)
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
