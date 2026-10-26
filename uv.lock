@@ -1803,8 +1803,8 @@ dependencies = [
 
 [[package]]
 name = "flash-linear-attention"
-version = "0.5.2"
-source = { git = "https://github.com/fla-org/flash-linear-attention#a95475391465272cd3dc11e47d4a7772522dc9b7" }
+version = "0.6.0"
+source = { git = "https://github.com/fla-org/flash-linear-attention#413ad2c655ece57b94bc9ddc51fdbd43cf09d984" }
 dependencies = [
     { name = "einops" },
     { name = "transformers" },
@@ -7773,7 +7773,7 @@ requires-dist = [
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.13.dev16" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.13.dev17" },
     { name = "rich", specifier = ">=11.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
