@@ -282,6 +282,11 @@ class TrainerLogConfig(LogConfig):
     """Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``."""
 
 
+class GCConfig(BaseConfig):
+    interval: int = Field(50, ge=1)
+    """Run a scheduled garbage collection every N training steps, in place of Python's automatic collections that would run at unpredictable times."""
+
+
 class HeartbeatConfig(BaseConfig):
     url: str
     """URL to send the heartbeat to."""

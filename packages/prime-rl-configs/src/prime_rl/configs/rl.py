@@ -407,6 +407,14 @@ class RLConfig(BaseConfig):
                     "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
                 },
             )
+            # A resumable step needs both checkpoints in the same step directory.
+            require_equal(
+                "ckpt.output_dir",
+                {
+                    "trainer.ckpt.output_dir": trainer.ckpt.output_dir,
+                    "orchestrator.ckpt.output_dir": orchestrator.ckpt.output_dir,
+                },
+            )
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(

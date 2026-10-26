@@ -35,6 +35,7 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
 )
+from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
@@ -48,6 +49,7 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
+    broadcast_pause,
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
@@ -58,7 +60,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
@@ -104,6 +106,7 @@ def train(config: SFTConfig):
         heart = Heartbeat(config.heartbeat)
 
     # Set precision
+    setup_moe_comm_env(config.model)
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
@@ -273,7 +276,7 @@ def train(config: SFTConfig):
         # Labels without a temperature make the LM head return the summed cross-entropy directly.
         labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
 
-        with maybe_activation_offloading(config.model.ac_offloading):
+        with maybe_activation_offloading(config.model.ac_offloading, model):
             out = forward(
                 model,
                 input_ids,
@@ -424,9 +427,9 @@ def train(config: SFTConfig):
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
             {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
+                "max_vio/mean": torch.tensor(0.0, device="cuda"),
+                "max_vio/max": torch.tensor(0.0, device="cuda"),
+                "routing_confidence/mean": torch.tensor(0.0, device="cuda"),
             }
             if is_moe_model
             else {}
