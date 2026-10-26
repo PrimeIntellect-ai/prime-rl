@@ -24,6 +24,7 @@ def apply_shared_vllm_patches():
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_glm5_next_kda_conv_weights()
     monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
@@ -297,6 +298,34 @@ def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
     Mxfp8OnlineMoEMethod._setup_kernel = _setup_kernel
 
 
+def monkey_patch_glm5_next_kda_conv_weights():
+    """Make GLM-5.3 Flash's merged KDA conv weight a view of the q/k/v conv weights.
+
+    vLLM builds `_merged_conv_weight` once as a `torch.cat` copy, so weight updates never reach it.
+    After loading, store the three weights as slices of one buffer and point the cache at it;
+    reloads copy into parameter storage in place, so updates land in the buffer.
+
+    Remove when vLLM keeps the q/k/v conv weights in one merged parameter
+    (https://github.com/vllm-project/vllm/pull/60991).
+    """
+    from vllm.models.glm5next.common.kda import Glm5NextLinearAttention
+    from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
+
+    @torch.no_grad()
+    def process_weights_after_loading(self) -> None:
+        for module in self.modules():
+            if isinstance(module, Glm5NextLinearAttention):
+                convs = (module.q_conv1d, module.k_conv1d, module.v_conv1d)
+                merged = torch.cat([conv.weight.data for conv in convs])
+                for conv, part in zip(convs, merged.chunk(3)):
+                    conv.weight.data = part
+                # merged shape needs to be [3C, K] instead of [3C, 1, K]
+                module._merged_conv_weight = merged.flatten(1)
+
+    Glm5NextForCausalLM.process_weights_after_loading = process_weights_after_loading
+    Glm5NextForConditionalGeneration.process_weights_after_loading = process_weights_after_loading
+
+
 def monkey_patch_online_fp8_parameter_cast():
     """Pass plain tensors to vLLM's compiled block-FP8 caster.
 
@@ -325,7 +354,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
     In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
-    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
+    be finished — most often ``FINISHED_ABORTED`` from a cancelled rollout, a
     client disconnect, or a request timeout — while it still has in-flight KV
     transfers. When such a request's ``finished_recving`` and ``finished_sending``
     both land in the same ``Scheduler.update_from_output`` step, the stock
@@ -337,7 +366,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
 
     The trigger is the abort itself, not weight-update pause/resume: it reproduces
     during normal stepping whenever an aborted request's recv and send complete in
-    the same step (observed with zero off-policy cancellations, driven only by
+    the same step (observed with zero orchestrator cancellations, driven only by
     incidental client-side aborts). Skip already-freed request ids instead of
     asserting — their blocks are freed either way, so dropping the stale
     notification is safe.
