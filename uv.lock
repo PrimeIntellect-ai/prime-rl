@@ -6338,7 +6338,7 @@ wheels = [
 
 [[package]]
 name = "scaleswe"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/swe/scaleswe" }
 dependencies = [
     { name = "datasets" },
