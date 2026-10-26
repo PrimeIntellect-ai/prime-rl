@@ -7,16 +7,12 @@ FP8 quantization vendored from vLLM (Apache 2.0).
 
 import functools
 
+import deep_select
 import torch
 import triton
 import triton.language as tl
 
 from prime_rl.utils.logger import get_logger
-
-try:
-    import deep_select
-except ImportError:
-    deep_select = None
 
 FP8_MAX = 448.0
 FP8_MIN = -448.0
@@ -30,7 +26,7 @@ DEEP_SELECT_MAX_TOPK = 4096
 @functools.cache
 def _deep_select_supported(device: torch.device) -> bool:
     """DeepSelect is built for sm_90a, sm_100a and sm_103a only."""
-    supported = deep_select is not None and torch.cuda.get_device_capability(device) in ((9, 0), (10, 0), (10, 3))
+    supported = torch.cuda.get_device_capability(device) in ((9, 0), (10, 0), (10, 3))
     get_logger().info(f"DSA indexer top-k uses {'DeepSelect' if supported else 'torch.topk'}")
     return supported
 
