@@ -119,7 +119,7 @@ VLLM_ENGINE_READY_TIMEOUT_S = "7200"
 
 [orchestrator]
 batch_size = 336
-max_off_policy_steps = 8
+max_staleness = 8
 
 # Adaptive episode cap: starts at 96 and grows or backs off with engine pressure.
 [orchestrator.concurrency]
