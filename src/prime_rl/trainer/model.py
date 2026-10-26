@@ -195,11 +195,12 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
 
 
-def freeze_layers(model: nn.Module, num_layers: int, language_model_attr: str | None = None) -> None:
+def freeze_layers(model: nn.Module, num_layers: int) -> None:
     """Freeze the input embeddings and the first ``num_layers`` decoder layers."""
     if model.config.tie_word_embeddings:
         raise ValueError("freeze_layers freezes the input embeddings, which are tied to the LM head in this model")
-    language_model = get_language_model(model, override=language_model_attr)
+    # Resolved like frozen_weight_keys, which picks the frozen weights to skip.
+    language_model = get_language_model(model)
     if num_layers > len(language_model.layers):
         raise ValueError(f"freeze_layers={num_layers} exceeds the model's {len(language_model.layers)} layers")
     embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
@@ -962,7 +963,7 @@ def setup_model(
         if config.lora is not None:
             freeze_all_except_lora(model)
     if config.freeze_layers > 0:
-        freeze_layers(model, config.freeze_layers, config.vlm.language_model_attr if config.vlm is not None else None)
+        freeze_layers(model, config.freeze_layers)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
