@@ -139,6 +139,13 @@ async def custom_init_app_state(
        routing and ``routed_experts`` export survive the migration off the
        legacy ``/v1/generate`` endpoint.
     """
+    if getattr(args, "renderer", None) is not None:
+        from prime_rl.inference.vllm.renderer import install_renderer
+
+        install_renderer(engine_client, args.renderer, args.tokenizer or args.model)
+        # The renderer parses tool calls, which vLLM returns only with auto tool choice.
+        args.enable_auto_tool_choice = True
+
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
