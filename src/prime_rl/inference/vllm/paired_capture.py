@@ -16,7 +16,7 @@ def pack_support_logprobs(tensors, logits, cu_num_logits, paired):
     # Complete bounded supports let us normalize K gathered logits, not V.
     values = values.log_softmax(-1)
     bits = values.contiguous().view(torch.int32) ^ NEG_INF_BITS
-    enabled = torch.as_tensor(paired, device=logits.device).unsqueeze(-1)
+    enabled = torch.from_numpy(paired).pin_memory().to(logits.device, non_blocking=True).unsqueeze(-1)
     packed_ids = torch.where(enabled, ids, tensors.token_ids.long())
     packed = (torch.where(enabled, bits, 0).long() << 32) | packed_ids
     return tensors._replace(token_ids=packed)
@@ -31,17 +31,18 @@ def pack_sampler_rows(tensors, logits, cu_num_logits, num_sampled, sampled, num_
 
     selected = np.flatnonzero(num_rows)
     width = int(num_rows.max())
-    x = logits[cu_num_logits[:-1].long()[selected]].float()
+    index = torch.from_numpy(selected).pin_memory().to(logits.device, non_blocking=True)
+    x = logits[cu_num_logits[:-1].long()[index]].float()
     if draws[selected].all():
         alternatives = torch.multinomial(x.softmax(-1), width, replacement=True)
     elif not draws[selected].any():
         alternatives = x.topk(width).indices
     else:
-        use_draws = torch.as_tensor(draws[selected], device=x.device).unsqueeze(-1)
+        use_draws = torch.from_numpy(draws[selected]).pin_memory().to(x.device, non_blocking=True).unsqueeze(-1)
         alternatives = torch.where(
             use_draws, torch.multinomial(x.softmax(-1), width, replacement=True), x.topk(width).indices
         )
-    ids = torch.cat([sampled[selected].view(-1, 1).long(), alternatives], dim=1)
+    ids = torch.cat([sampled[index].view(-1, 1).long(), alternatives], dim=1)
     values = (x.gather(1, ids) - x.logsumexp(-1, keepdim=True)).clamp_min(-9999.0)
     packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
 
@@ -53,9 +54,10 @@ def pack_sampler_rows(tensors, logits, cu_num_logits, num_sampled, sampled, num_
             token_ids, token_ids.new_zeros((num_reqs, 1), dtype=torch.uint8), counts, x.shape[1]
         )
     token_ids = torch.nn.functional.pad(tensors.token_ids.long(), (0, max(0, width + 1 - tensors.token_ids.shape[1])))
-    index = torch.as_tensor(selected, device=x.device)
     token_ids[index, : width + 1] = packed
-    row_counts = torch.as_tensor(num_rows[selected] + 1, device=x.device, dtype=torch.int32)
+    row_counts = (
+        torch.from_numpy((num_rows[selected] + 1).astype(np.int32)).pin_memory().to(x.device, non_blocking=True)
+    )
     counts = tensors.counts.index_put((index,), torch.where(num_sampled[index] > 0, row_counts, 0))
     return tensors._replace(token_ids=token_ids, counts=counts)
 
