@@ -90,18 +90,18 @@ class DeepseekV41DecoderLayer(nn.Module):
 
         attn_pre = pre_mix
         if self.pipeline_part != "moe":
-            attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
+            attn_pre, post, comb, attn_in = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
             attn_out, state = self.self_attn(self.input_layernorm(attn_in).to(dtype), packed=packed, state=state)
-            mhc_states = self.attn_hc.update_states(post, comb, attn_out, streams)
+            mhc_states = self.attn_hc.update_states(post, comb, attn_out, mhc_states)
             if self.pipeline_part == "attention":
                 return (mhc_states, attn_pre, *state.as_tuple())
 
-        ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
+        ffn_pre, post, comb, ffn_in = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
         # The routed and shared experts' outputs are summed by the write-back kernel.
         mlp_out, shared_out = self.mlp(
             self.post_attention_layernorm(ffn_in).to(dtype), routed_experts=routed_experts, split_shared_output=True
         )
-        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, streams, shared_out)
+        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, mhc_states, shared_out)
         return (mhc_states, ffn_pre, *state.as_tuple())
 
 
