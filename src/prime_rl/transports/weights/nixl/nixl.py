@@ -21,7 +21,6 @@ from torch.distributed.tensor._utils import compute_local_shape_and_global_offse
 
 from prime_rl.configs.shared import NIXLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import init_nixl_broadcast
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import wait_for_master
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
@@ -42,6 +41,7 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerTensor,
     TrainerTensorTable,
 )
+from prime_rl.utils.weights import resolve_wire_dtype
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 
@@ -123,7 +123,7 @@ class NIXLWeightSender(WeightSender):
         self,
         state_dict: dict[str, torch.Tensor],
         transfer_groups: TransferGroupIndex,
-        keep_in_fp32: Callable[[str], bool],
+        keep_in_fp32: Callable[[str], bool] | None,
     ) -> list[StagedTensorShard]:
         local_shards: list[StagedTensorShard] = []
         for name, value in state_dict.items():
@@ -132,7 +132,7 @@ class NIXLWeightSender(WeightSender):
                 continue
             full_shape = tuple(value.shape)
             group_index = self.find_transfer_group_index(name, transfer_groups)
-            wire_dtype = torch.float32 if keep_in_fp32(name) else torch.bfloat16
+            wire_dtype = resolve_wire_dtype(keep_in_fp32, name, torch.bfloat16)
 
             # Unsharded tensors are identical on every rank, so rank 0 serves the only copy.
             if not isinstance(value, DTensor):
@@ -327,7 +327,6 @@ class NIXLWeightSender(WeightSender):
     def initialize_transfer(self, model: nn.Module) -> None:
         if self.initialized:
             return
-        model = cast(PreTrainedModelPrimeRL, model)
         state_dict = model.state_dict()
         transfer_groups = self.build_transfer_group_index(state_dict)
         self.transfer_group_names = transfer_groups.group_names
@@ -335,7 +334,7 @@ class NIXLWeightSender(WeightSender):
             self.staged_shards = self.collect_local_tensor_shards(
                 state_dict,
                 transfer_groups,
-                model.keep_in_fp32_for_weight_transfer,
+                getattr(model, "keep_in_fp32_for_weight_transfer", None),
             )
         self.prepare_staging_buffers()
         table_fragments = self.gather_trainer_table_fragments()
