@@ -217,6 +217,12 @@ class CompressionLayout:
             starts[entry_doc_idx, None] + entry_pos[:, None] + torch.arange(compress_rate, device=device)[None, :]
         )
 
+        # These sizes follow the document lengths, which change from one micro batch to the next.
+        # Marked dynamic up front, the compiled layers trace them symbolically on their first
+        # compile instead of recompiling once per field as each size first changes.
+        for tensor in (entry_tok_idx, entry_doc_idx, entry_local_idx, first_entry_of_doc):
+            torch._dynamo.maybe_mark_dynamic(tensor, 0)
+
         return cls(
             entry_tok_idx=entry_tok_idx,
             entry_doc_idx=entry_doc_idx,
