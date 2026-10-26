@@ -56,7 +56,10 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    client = engine_client(request)
+    await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
+    await client.update_weight_version(str(data["weight_version"]))
     return {"status": "ok"}
 
 
@@ -73,7 +76,7 @@ async def prefetch_weights(request: Request):
 
 
 @router.post("/load_lora_adapter")
-async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
+async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
     """Wrapper around vLLM's /v1/load_lora_adapter.
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
@@ -101,6 +104,7 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    await engine_client(raw_request).update_weight_version(weight_version)
     return {"status": "ok"}
 
 
