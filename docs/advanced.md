@@ -164,8 +164,6 @@ The built-in VLM registry covers:
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
 | Qwen3.8 Flash Next | `qwen4_exp` | `model.visual` | `model.language_model` |
 
-Qwen3.8 supports text and still-image inputs; video inputs are not supported by its trainer implementation. See the [Qwen3.5 and Qwen3.8 image RL examples](../examples/extra/vlm/README.md) for long-context, multi-node recipes with Muon, a frozen vision encoder and NCCL weight updates.
-
 ### Enabling VLM Mode
 
 Add `[model.vlm]` to your RL or SFT config:
