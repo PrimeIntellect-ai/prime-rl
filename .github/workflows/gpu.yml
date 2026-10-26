@@ -23,7 +23,7 @@ jobs:
       || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     permissions:
       contents: read
-      actions: read
+      actions: write
       pull-requests: write
     outputs:
       run: ${{ steps.decide.outputs.run }}
@@ -85,6 +85,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/gpu-ci"
+      - name: Cancel this PR's older GPU runs
+        if: steps.decide.outputs.run == 'true' && github.event.pull_request != null
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          older_runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/gpu.yml/runs" -f branch="$HEAD_REF" -F per_page=100 \
+            --jq ".workflow_runs[] | select(.status != \"completed\" and .run_number < $RUN_NUMBER and (.event == \"pull_request\" or .event == \"pull_request_review\")) | .id")
+          for run_id in $older_runs; do
+            echo "Cancelling older GPU run $run_id"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" --silent \
+              || echo "::warning::Could not cancel GPU run $run_id, it may have finished already"
+          done
 
   unit-gpu:
     name: Unit (GPU)
@@ -95,9 +109,6 @@ jobs:
       options: --gpus all
     timeout-minutes: 45
     if: needs.gate.outputs.run == 'true'
-    concurrency:
-      group: ${{ needs.gate.outputs.run == 'true' && format('gpu-ci-{0}-unit-gpu', github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id) || format('noop-{0}-unit-gpu', github.run_id) }}
-      cancel-in-progress: ${{ github.event.pull_request != null }}
     steps:
       - name: Install Git
         run: |
@@ -140,9 +151,6 @@ jobs:
       options: --gpus all
     timeout-minutes: 60
     if: needs.gate.outputs.run == 'true'
-    concurrency:
-      group: ${{ needs.gate.outputs.run == 'true' && format('gpu-ci-{0}-integration-{1}', github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id, matrix.test) || format('noop-{0}-integration-{1}', github.run_id, matrix.test) }}
-      cancel-in-progress: ${{ github.event.pull_request != null }}
     strategy:
       fail-fast: false
       # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
