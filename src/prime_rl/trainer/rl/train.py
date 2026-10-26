@@ -57,6 +57,7 @@ from prime_rl.trainer.model import (
     setup_model,
     setup_processor,
 )
+from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -64,6 +65,7 @@ from prime_rl.trainer.utils import (
     MemoryProfiler,
     TensorStats,
     begin_backward,
+    broadcast_pause,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
@@ -78,7 +80,7 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
-from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
@@ -116,6 +118,7 @@ def train(config: TrainerConfig):
         heart = Heartbeat(config.heartbeat)
 
     # Set precision
+    setup_moe_comm_env(config.model)
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
@@ -481,7 +484,7 @@ def train(config: TrainerConfig):
                 )
 
             # Forward pass with per-token temperatures
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading, model):
                 out = forward(
                     model,
                     input_ids,

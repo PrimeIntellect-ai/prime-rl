@@ -593,11 +593,14 @@ class Dispatcher:
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
-        try:
-            episode: vf.WireEpisode = task.result()
-        except asyncio.CancelledError:
+        if task.cancelled():
             return
-        except Exception as exc:
+        # Read the exception rather than re-raise it with ``task.result()``: re-raising adds this
+        # frame, which holds ``task``, to the exception's traceback, a reference cycle that keeps
+        # the env request's frames (and its partial episode) alive until a full garbage collection,
+        # which the orchestrator only runs every few hours.
+        exc = task.exception()
+        if isinstance(exc, Exception):
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
@@ -619,6 +622,7 @@ class Dispatcher:
                 )
             )
             return
+        episode: vf.WireEpisode = task.result()
 
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
