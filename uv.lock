@@ -4426,22 +4426,6 @@ wheels = [
 ]
 
 [[package]]
-name = "openai-harmony"
-version = "0.0.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/92/2d038d096f29179c7c9571b431f9e739f87a487121901725e23fe338dd9d/openai_harmony-0.0.8.tar.gz", hash = "sha256:6e43f98e6c242fa2de6f8ea12eab24af63fa2ed3e89c06341fb9d92632c5cbdf", size = 284777, upload-time = "2025-11-05T19:07:06.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/c6/2502f416d46be3ec08bb66d696cccffb57781a499e3ff2e4d7c174af4e8f/openai_harmony-0.0.8-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:029ec25ca74abe48fdb58eb9fdd2a8c1618581fc33ce8e5653f8a1ffbfbd9326", size = 2627806, upload-time = "2025-11-05T19:06:57.063Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/d2/ce6953ca87db9cae3e775024184da7d1c5cb88cead19a2d75b42f00a959c/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e4f709815924ec325b9a890e6ab2bbb0ceec8e319a4e257328eb752cf36b2efc", size = 2948463, upload-time = "2025-11-05T19:06:48.17Z" },
-    { url = "https://files.pythonhosted.org/packages/25/3f/1a192b93bb47c6b44cd98ba8cc1d3d2a9308f1bb700c3017e6352da11bda/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c007d277218a50db8839e599ed78e0fffe5130f614c3f6d93ae257f282071a29", size = 2953260, upload-time = "2025-11-05T19:06:55.406Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/f8/93b582cad3531797c3db7c2db5400fd841538ccddfd9f5e3df61be99a630/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:8565d4f5a0638da1bffde29832ed63c9e695c558611053add3b2dc0b56c92dbc", size = 3127044, upload-time = "2025-11-05T19:06:59.553Z" },
-    { url = "https://files.pythonhosted.org/packages/60/c3/3d1e01e2dba517a91760e4a03e4f20ffc75039a6fe584d0e6f9b5c78fd15/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:007b0476a1f331f8130783f901f1da6f5a7057af1a4891f1b6a31dec364189b5", size = 3205080, upload-time = "2025-11-05T19:07:05.078Z" },
-]
-
-[[package]]
 name = "opencv-python-headless"
 version = "4.13.0.92"
 source = { registry = "https://pypi.org/simple" }
@@ -4646,6 +4630,7 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/88/ca56e5b17df4763bbb552c7be3abe432b51db3c51f6327a3848b88ad7c08/oss_harmony-0.0.11.tar.gz", hash = "sha256:ccad467b71d61490df1f2204b7a064990833338615ac135536c5b3a8e2d03a15", size = 2198780, upload-time = "2026-05-13T20:49:11.767Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/4c/400a7e375943ff06447c8cd3920819d2e37c808d0cfea3296b159e961610/oss_harmony-0.0.11-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:83ca71b85be6e2f8e93527673cd2eff4da9180608ee5d4197bd4f01afc4fa6be", size = 3337401, upload-time = "2026-05-13T20:49:00.051Z" },
     { url = "https://files.pythonhosted.org/packages/fd/e9/0b33d4c592e1422c9faeaf1cfe10731328ecf3504e900dc7921109affd55/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f1f74ef7f8be32fa1dcfe1644839af5f0873acce78b5668c2aa39f26d83218ff", size = 3493239, upload-time = "2026-05-13T20:48:49.588Z" },
     { url = "https://files.pythonhosted.org/packages/89/68/001d7429a692b2db0c03bd49b756f834716b64afc0bbbece96824e8f0af8/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d877c6b526cdbdf55068bae8f05c60398e929c9e296c7f69a1d533339708be80", size = 3567858, upload-time = "2026-05-13T20:48:57.904Z" },
     { url = "https://files.pythonhosted.org/packages/4b/c9/720aed1527d87f82e07a7f35c3c81c6d9198a8d1223bdbd298b3c66a72db/oss_harmony-0.0.11-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:036505bfb39c6b50edcf717349518d269bb375207f7f8e95f517e938b8f2e0c8", size = 3695703, upload-time = "2026-05-13T20:49:02.857Z" },
@@ -6154,7 +6139,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
     { name = "openai" },
-    { name = "openai-harmony" },
+    { name = "oss-harmony" },
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
@@ -6170,7 +6155,7 @@ requires-dist = [
     { name = "jinja2" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
-    { name = "openai-harmony", specifier = ">=0.0.4" },
+    { name = "oss-harmony", specifier = ">=0.0.11" },
     { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
