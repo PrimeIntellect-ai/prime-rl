@@ -11,6 +11,7 @@ from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    GCConfig,
     HeartbeatConfig,
     ResumeConfig,
     TrainerLogConfig,
@@ -25,11 +26,6 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
-
-
-class GCConfig(BaseConfig):
-    interval: int = Field(50, ge=1)
-    """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
 class ActivationCheckpointConfig(BaseConfig):
