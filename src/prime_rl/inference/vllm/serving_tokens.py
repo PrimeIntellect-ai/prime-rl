@@ -155,6 +155,8 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
         extra_args = sampling_params.extra_args or {}
+        if extra_args.get("prl_sampler_draws") and not extra_args.get("prl_compact_logprobs", False):
+            return self.create_error_response("Sampler draws require compact logprobs (prl_compact_logprobs=True)")
         if extra_args.get("prl_compact_logprobs", False):
             if request.stream or sampling_params.logprobs is None:
                 return self.create_error_response(
