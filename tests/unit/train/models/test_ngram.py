@@ -1,13 +1,23 @@
+import re
+from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 import prime_rl.trainer.models.layers.ngram as ngram_module
+import prime_rl.trainer.optim as optim
+from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.layers.ngram import NGramEmbeddings, owner_counts
-from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
+from prime_rl.trainer.models.qwen3_8_flash_next import (
+    Qwen3_8FlashNextConfig,
+    Qwen3_8FlashNextForCausalLM,
+    Qwen3_8FlashNextTextConfig,
+)
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import NGRAM_HASH_SEED, Qwen38NGramHasher
 from prime_rl.utils.cp import CPContext
+from prime_rl.utils.vlm import get_language_model
 
 GOLDEN_PATH = Path(__file__).parents[4] / "benchmarks/scripts/ngram-module/golden/main_1810d5b9a.pt"
 CONFIG_NAMES = ["tiny_text", "tiny_composite_4gram", "tiny_truncated"]
@@ -21,6 +31,22 @@ REAL_CONFIG_FIELDS = [
     "heads_per_ngram",
     "make_ngram_vocab_size_divisible_by",
 ]
+MAIN_TABLE_NAME = re.compile(
+    r"(.+)\.layers\.(\d+)\.ple\.ple_embedding\."
+    r"(ngram_embedding\.weight|layer_multipliers|ngram_heads_vocab_sizes|ngram_heads_offsets)"
+)
+NO_PARALLELISM = SimpleNamespace(
+    ep_enabled=False,
+    dp_shard_enabled=False,
+    cp_enabled=False,
+    dp_replicate_enabled=False,
+    world_mesh=None,
+)
+
+
+class RecordingMuon:
+    def __init__(self, params, **kwargs) -> None:
+        self.param_groups = params
 
 
 @pytest.fixture(scope="module")
@@ -41,6 +67,26 @@ def _embeddings(config: Qwen3_8FlashNextTextConfig) -> NGramEmbeddings:
 def _hash_case(golden: dict, config_name: str, case_name: str) -> dict:
     (case,) = [case for case in golden["hash_cases"] if (case["config"], case["case"]) == (config_name, case_name)]
     return case
+
+
+def _model(golden: dict, config_name: str, device: str) -> Qwen3_8FlashNextForCausalLM:
+    text_config = _text_config(golden, config_name)
+    is_composite = golden["configs"][config_name]["composite"]
+    config = Qwen3_8FlashNextConfig(text_config=text_config) if is_composite else text_config
+    with torch.device(device):
+        return Qwen3_8FlashNextForCausalLM(config)
+
+
+def _branch_name(main_name: str) -> str:
+    match = MAIN_TABLE_NAME.fullmatch(main_name)
+    if match is None:
+        return main_name
+    model_prefix, decoder_index, name = match.groups()
+    return f"{model_prefix}.ngram.tables.{decoder_index}.{name.removeprefix('ngram_embedding.')}"
+
+
+def _zero_block(block_input: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    return torch.zeros_like(block_input)
 
 
 @pytest.mark.parametrize("config_name", CONFIG_NAMES)
@@ -125,6 +171,103 @@ def test_cp_rank_hash_matches_full_row_slice(golden, monkeypatch, config_name, c
 
         for decoder_index, expected in case["ngram_ids"].items():
             assert torch.equal(ngram_ids[:, embeddings.hash_positions[decoder_index]], expected[local_slice])
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_model_checkpoint_keys_match_main(golden, config_name):
+    model = _model(golden, config_name, "cpu")
+    model.init_buffers_post_meta()
+    state_dict = model.state_dict()
+
+    assert sorted(state_dict) == sorted(_branch_name(name) for name in golden["prime_keys"][config_name])
+    assert sorted(model.convert_to_hf(dict(state_dict))) == golden["hf_keys"][config_name]
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_model_exports_main_table_layouts(golden, config_name):
+    model = _model(golden, config_name, "cpu")
+    model.init_buffers_post_meta()
+    model_prefix = "model.language_model" if golden["configs"][config_name]["composite"] else "model"
+
+    hf_state_dict = model.convert_to_hf(model.state_dict())
+
+    for expected in golden["layouts"][config_name]:
+        checkpoint_prefix = f"{model_prefix}.layers.{expected['decoder_index']}.ple.ple_embedding"
+        for name in LAYOUT_BUFFERS:
+            assert torch.equal(hf_state_dict[f"{checkpoint_prefix}.{name}"], expected[name])
+        shard_prefix = f"{checkpoint_prefix}.ngram_embedding.shard_"
+        shard_rows = sum(value.shape[0] for key, value in hf_state_dict.items() if key.startswith(shard_prefix))
+        assert shard_rows == expected["num_rows"]
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_model_active_params_match_main(golden, config_name):
+    model = _model(golden, config_name, "meta")
+
+    assert model.num_active_params() == golden["num_active_params"][config_name]
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_model_optimizer_groups_match_main(golden, monkeypatch, config_name):
+    monkeypatch.setattr(optim, "Muon", RecordingMuon)
+    monkeypatch.setattr(optim, "_warmup_muon_mesh", lambda mesh: None)
+    model = _model(golden, config_name, "meta")
+    named_params = list(model.named_parameters())
+    names = {id(param): name for name, param in named_params}
+
+    optimizer = optim._create_muon_optimizer(MuonConfig(), named_params, NO_PARALLELISM, model)
+
+    muon_group, *middle_groups, adamw_group = optimizer.param_groups
+    groups = {
+        "muon": [muon_group],
+        "expert": [group for group in middle_groups if "distributed_mesh_name" in group],
+        "router": [group for group in middle_groups if "distributed_mesh_name" not in group],
+        "adamw": [adamw_group],
+    }
+    actual = {
+        group_name: sorted(names[id(param)] for group in group_list for param in group["params"])
+        for group_name, group_list in groups.items()
+    }
+    expected = {
+        group_name: sorted(_branch_name(name) for name in group_names)
+        for group_name, group_names in golden["param_groups"][config_name].items()
+    }
+    assert actual == expected
+
+
+@pytest.mark.parametrize("case_name", CASE_NAMES)
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_model_forward_feeds_main_ngram_ids_to_ple(golden, config_name, case_name):
+    case = _hash_case(golden, config_name, case_name)
+    model = _model(golden, config_name, "cpu")
+    model.init_buffers_post_meta()
+    language_model = get_language_model(model)
+    ple_calls = {}
+    ple_hooks = []
+
+    def record_ple_call(decoder_index, module, args, output):
+        expanded_states, _, cu_seqlens = args
+        ple_calls[decoder_index] = (expanded_states, cu_seqlens, output)
+
+    for decoder_index, layer in enumerate(language_model.layers):
+        for block in (getattr(layer, "linear_attn", None), getattr(layer, "self_attn", None), layer.mlp):
+            if block is not None:
+                block.forward = _zero_block
+        if layer.ple is not None:
+            torch.nn.init.normal_(layer.ple.conv1d.weight)
+            ple_hooks.append(layer.ple.register_forward_hook(partial(record_ple_call, decoder_index)))
+
+    language_model(input_ids=case["input_ids"], seq_lens=case["cu_seqlens"].diff())
+    for hook in ple_hooks:
+        hook.remove()
+
+    main_ngram_ids = torch.stack([case["ngram_ids"][index] for index in language_model.ngram.hash_positions], dim=1)
+    assert torch.equal(language_model.ngram.hash(case["input_ids"], case["cu_seqlens"]), main_ngram_ids)
+    assert ple_calls.keys() == case["ngram_ids"].keys()
+    for decoder_index, (expanded_states, cu_seqlens, output) in ple_calls.items():
+        ple = language_model.layers[decoder_index].ple
+        embeddings = language_model.ngram.embed(main_ngram_ids, decoder_index)
+        assert torch.equal(output, ple(expanded_states, embeddings, cu_seqlens))
 
 
 @pytest.mark.parametrize(

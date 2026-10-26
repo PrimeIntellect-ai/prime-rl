@@ -7,6 +7,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_pa
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.ngram import NGramEmbeddings, NGramTable
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import (
@@ -20,7 +21,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next im
 )
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
+from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen38NGramHasher
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
 from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel
@@ -57,20 +58,13 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
                 indexer_compression_ratio=config.indexer_compress_ratio,
             )
 
-        ple_layer_ids = sorted(set(config.ple_layer_ids))
-        if layer_index + 1 in ple_layer_ids:
+        if layer_index + 1 in config.ple_layer_ids:
             self.ple = PositionLearningEnhancement(
                 hidden_size=config.hidden_size,
                 stream_count=config.hc_count,
                 embedding_dim=config.ple_embed_dim,
-                ngram_size=config.ngram_size,
-                heads_per_ngram=config.heads_per_ngram,
-                ngram_vocab_size=config.ngram_vocab_size_base,
-                token_vocab_size=config.vocab_size,
-                eos_token_id=config.eos_token_id,
-                vocab_size_divisor=config.make_ngram_vocab_size_divisible_by,
-                ngram_layer_index=ple_layer_ids.index(layer_index + 1),
                 conv_kernel_size=config.ple_conv_kernel_size,
+                conv_dilation=config.ngram_size,
                 norm_eps=config.rms_norm_eps,
             )
         else:
@@ -98,13 +92,13 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        input_ids: torch.LongTensor,
+        ngram_embeddings: torch.Tensor | None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
-            hidden_states = hidden_states + self.ple(hidden_states, input_ids, cu_seqlens)
+            hidden_states = hidden_states + self.ple(hidden_states, ngram_embeddings, cu_seqlens)
 
         block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
@@ -145,6 +139,12 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         super().__init__(config)
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.ngram = NGramEmbeddings(
+            Qwen38NGramHasher(config),
+            table_decoder_indices=[layer_id - 1 for layer_id in sorted(set(config.ple_layer_ids))],
+            num_layers=config.num_hidden_layers,
+            head_dim=config.ple_embed_dim // ((config.ngram_size - 1) * config.heads_per_ngram),
+        )
         self.layers = nn.ModuleList(
             Qwen3_8FlashNextDecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
@@ -168,6 +168,8 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 module.reset_parameters()
             elif isinstance(module, PositionLearningEnhancement):
                 module.reset_parameters()
+            elif isinstance(module, NGramTable):
+                module.reset_parameters(config.initializer_range)
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens
@@ -199,13 +201,14 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        ngram_ids = self.ngram.hash(input_ids, cu_seqlens)
 
         hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
-                input_ids,
+                self.ngram.embed(ngram_ids, layer_index),
                 position_embeddings,
                 cu_seqlens,
                 routed_experts=layer_routed_experts,
@@ -399,10 +402,9 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         language_model.rotary_emb.reset_parameters()
         if self.is_vlm:
             self.model.visual.rotary_pos_emb.reset_parameters()
+        language_model.ngram.reset_layouts()
         for module in self.modules():
-            if isinstance(module, NGramEmbedding):
-                module.reset_parameters()
-            elif isinstance(module, MoE):
+            if isinstance(module, MoE):
                 module.tokens_per_expert.zero_()
                 module.routing_confidence_sum.zero_()
                 if module.router.selection_bias is not None:

@@ -45,10 +45,7 @@ def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return any(
-        name.endswith("mlp.experts.gate_proj") or name.endswith("ple_embedding.ngram_embedding.weight")
-        for name in state_dict
-    )
+    return any(name.endswith("mlp.experts.gate_proj") or ".ngram.tables." in name for name in state_dict)
 
 
 def conversion_chain(config) -> list[ConvOp]:
@@ -77,13 +74,18 @@ def conversion_chain(config) -> list[ConvOp]:
         )
 
     for layer_index in (layer_id - 1 for layer_id in sorted(text_config.ple_layer_ids)):
-        prefix = f"{model_prefix}.layers.{layer_index}.ple.ple_embedding.ngram_embedding"
+        checkpoint_prefix = f"{model_prefix}.layers.{layer_index}.ple.ple_embedding"
+        runtime_prefix = f"{model_prefix}.ngram.tables.{layer_index}"
         operations.append(
             NGramEmbeddingWeights(
-                checkpoint_prefix=prefix,
-                runtime_weight=f"{prefix}.weight",
+                checkpoint_prefix=f"{checkpoint_prefix}.ngram_embedding",
+                runtime_weight=f"{runtime_prefix}.weight",
                 shard_count=text_config.split_ngram_parts,
             )
+        )
+        operations.extend(
+            Rename(f"{checkpoint_prefix}.{buffer}", f"{runtime_prefix}.{buffer}")
+            for buffer in ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
         )
     return operations
 
