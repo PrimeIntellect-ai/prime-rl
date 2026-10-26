@@ -26,18 +26,26 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
+    monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()
+    from prime_rl.inference.vllm.request_replay import patch_request_replay
+
+    patch_request_replay()
+    if os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1":
+        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
+
+        patch_top_p_then_top_k()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
-    monkey_patch_deepseek_v41_streaming_weight_update()
+    register_deepseek_v41_text_model()
 
 
 @dataclass
@@ -254,38 +262,13 @@ def _patch_attn_sink_loading(module):
     module.DeepseekV4Model.load_weights = load_weights
 
 
-def monkey_patch_deepseek_v41_streaming_weight_update():
-    """Stream DeepSeek-V4.1 weight updates instead of holding the whole model on the GPU.
+def register_deepseek_v41_text_model():
+    """Serve DeepSeek-V4.1 checkpoints as text-only models (see `DeepseekV41TextForCausalLM`)."""
+    from vllm import ModelRegistry
 
-    The vision-language wrapper's ``load_weights`` sorts every weight before loading any, so the
-    vision and text groups each reach their loader in one piece. A weight update streamed from
-    the trainer arrives as GPU tensors, and sorting it would hold the whole ~1.1 TB update on
-    the GPU. Once the model is loaded, updates carry only text weights, so they go straight to
-    the language model, unsorted.
-    """
-    from vllm.logger import init_logger
-    from vllm.models.deepseek_v41.nvidia import vl_model
-
-    original_load_weights = vl_model.DeepseekV41ForCausalLM.load_weights
-    if getattr(original_load_weights, "_prime_rl_streams_updates", False):
-        return
-
-    def load_weights(self, weights):
-        if not getattr(self, "_weights_finalized", False):
-            return original_load_weights(self, weights)
-
-        def text_weights():
-            for name, weight in self.hf_to_vllm_mapper.apply(weights):
-                prefix, dot, rest = name.partition(".")
-                if prefix != "language_model" or not dot:
-                    raise ValueError(f"DeepSeek-V4.1 weight updates carry only text weights, got {name}")
-                yield rest, weight
-
-        return {f"language_model.{name}" for name in self.language_model.load_weights(text_weights())}
-
-    load_weights._prime_rl_streams_updates = True
-    vl_model.DeepseekV41ForCausalLM.load_weights = load_weights
-    init_logger("vllm.prime_rl.deepseek_v41").info("DeepSeek-V4.1 weight updates stream to the language model.")
+    ModelRegistry.register_model(
+        "DeepseekV41ForCausalLM", "prime_rl.inference.vllm.deepseek_v41:DeepseekV41TextForCausalLM"
+    )
 
 
 def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
@@ -359,7 +342,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
     In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
-    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
+    be finished — most often ``FINISHED_ABORTED`` from a cancelled rollout, a
     client disconnect, or a request timeout — while it still has in-flight KV
     transfers. When such a request's ``finished_recving`` and ``finished_sending``
     both land in the same ``Scheduler.update_from_output`` step, the stock
@@ -371,7 +354,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
 
     The trigger is the abort itself, not weight-update pause/resume: it reproduces
     during normal stepping whenever an aborted request's recv and send complete in
-    the same step (observed with zero off-policy cancellations, driven only by
+    the same step (observed with zero orchestrator cancellations, driven only by
     incidental client-side aborts). Skip already-freed request ids instead of
     asserting — their blocks are freed either way, so dropping the stale
     notification is safe.
@@ -741,6 +724,36 @@ def monkey_patch_strip_routed_experts_from_chat():
     logger.info(
         "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
     )
+
+
+def monkey_patch_skip_prompt_routing_for_chat():
+    """Start chat requests' routed experts at the end of the prompt.
+
+    Chat responses drop routed_experts (``monkey_patch_strip_routed_experts_from_chat``), but with
+    ``enable_return_routed_experts`` the engine still materializes every prompt's routing rows and
+    ships them to the API server each turn: about 258 B per token, so tens of MB for a long eval
+    prompt that is thrown away. Setting ``routed_experts_prompt_start`` to the prompt length keeps
+    only the completion's rows. A request that sets its own start keeps it.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.logger import init_logger
+    from vllm.sampling_params import SamplingParams
+
+    if getattr(OpenAIServingChat._log_inputs, "_prime_rl_skips_prompt_routing", False):
+        return
+    original_log_inputs = OpenAIServingChat._log_inputs
+
+    # The chat route calls _log_inputs right after it builds each prompt's SamplingParams, with the rendered prompt.
+    def _log_inputs(self, request_id, inputs, params, lora_request):
+        if isinstance(params, SamplingParams) and params.routed_experts_prompt_start == 0:
+            prompt_ids = self._extract_prompt_components(inputs).token_ids
+            if prompt_ids is not None:
+                params.routed_experts_prompt_start = len(prompt_ids)
+        return original_log_inputs(self, request_id, inputs, params, lora_request)
+
+    _log_inputs._prime_rl_skips_prompt_routing = True
+    OpenAIServingChat._log_inputs = _log_inputs
+    init_logger("vllm.prime_rl.routed_experts").info("Chat requests return routed experts only for their completions.")
 
 
 def _patch_qwen35_moe_lora_format():

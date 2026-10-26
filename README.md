@@ -51,6 +51,7 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
+| Muse Glimmer, text only (`muse_glimmer`) | `meta-models/Muse-Glimmer-30B` | no | — | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ✅ |
 | Trinity (`afmoe`) | `arcee-ai/Trinity-Mini`, … | yes | ✅ | ✅ |
 | GLM-4 · GLM-4.5 MoE · INTELLECT-3 (`glm4_moe`) | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5-Air`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | yes | ✅ | ✅ |
@@ -193,7 +194,7 @@ Check out the [docs](docs) directory for in-depth guides on how to use prime-rl.
 - [**Training**](docs/training.md) - RL, SFT, checkpointing, observability, rules of thumb
 - [**Eval**](docs/eval.md) - Standalone evals against any inference server, online evals, resume, platform upload
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
-- [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
+- [**Algorithms**](docs/algorithms.md) - Async training and staleness, the AIPO loss, advantage and filter plugins, trajectory merging
 - [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA
 - [**Development**](docs/development.md) - Test suite, pre-commit hooks, adding a new model
 

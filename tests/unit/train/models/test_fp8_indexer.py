@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 
 pytestmark = [
@@ -109,3 +110,22 @@ def test_selection_agreement(segments):
     mean, p1 = agreement.mean().item(), agreement.quantile(0.01).item()
     assert mean > AGREEMENT_MEAN, f"mean set agreement {mean} below {AGREEMENT_MEAN}"
     assert p1 > AGREEMENT_P1, f"p1 set agreement {p1} below {AGREEMENT_P1}"
+
+
+@pytest.mark.parametrize("segments", SEGMENTS, ids=SEGMENT_IDS)
+def test_query_chunks_match_one_pass(segments, monkeypatch):
+    """Scoring the queries in chunks picks exactly what one pass over all of them picks.
+
+    The keys are a few distinct rows repeated, so most scores tie and the picks depend on how
+    `topk` breaks ties. Chunks of 64 queries leave a ragged last chunk.
+    """
+    ks, ke = ranges(segments)
+    q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()
+    k = torch.randn(7, DIM, device="cuda").bfloat16()[torch.randint(0, 7, (NUM_K,), device="cuda")]
+    w = torch.randn(NUM_Q, HEADS, device="cuda").bfloat16()
+
+    one_pass = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
+    monkeypatch.setattr(fp8_indexer_module, "LOGITS_CHUNK_BYTES", 1)
+    chunked = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
+
+    assert torch.equal(chunked, one_pass)

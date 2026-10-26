@@ -25,17 +25,6 @@ class _MixesMatmul(torch.autograd.Function):
         return torch.mm(grad, w), torch.mm(grad.t(), x, out_dtype=torch.float32).to(w.dtype)
 
 
-def _fused_hyper_connection():
-    """prime-kernels' fused mHC projection, gates and collapse (the variant that also hands on the
-    streams when the build has it) when it is built for this GPU, else None."""
-    import prime_kernels
-
-    if "mhc_projection" in prime_kernels.KERNELS and prime_kernels.is_available("mhc_projection"):
-        kernel = prime_kernels.load("mhc_projection")
-        return getattr(kernel, "hyper_connection_streams", kernel.hyper_connection)
-    return None
-
-
 class DeepseekV41HyperConnection(nn.Module):
     """V4.1's mHC gates for one sublayer, computed from the streams entering it.
 
@@ -56,7 +45,6 @@ class DeepseekV41HyperConnection(nn.Module):
         self.base = nn.Parameter(torch.empty(mix))
         # One scale per gate: `pre`, `post`, `comb`.
         self.scale = nn.Parameter(torch.empty(3))
-        self.fused = _fused_hyper_connection()
 
     def forward(self, mhc_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hc = self.hc_mult
@@ -79,24 +67,10 @@ class DeepseekV41HyperConnection(nn.Module):
 
     def gates_and_collapse(
         self, mhc_states: torch.Tensor, pre_mix: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """`forward`'s gates, the streams collapsed by `pre_mix` (the previous sublayer's `pre`), and the
-        streams for `update_states` to read. The fused kernel returns them as a view whose gradient its
-        backward adds in place of autograd's separate sum of the two stream gradients."""
-        if self.fused is not None:
-            out = self.fused(
-                mhc_states,
-                self.fn,
-                self.scale,
-                self.base,
-                pre_mix,
-                rms_eps=self.input_norm.eps,
-                hc_eps=self.hc_eps,
-                sinkhorn_iters=self.hc_sinkhorn_iters,
-            )
-            return out if len(out) == 5 else (*out, mhc_states)
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """`forward`'s gates and the streams collapsed by `pre_mix` (the previous sublayer's `pre`)."""
         pre, post, comb = self(mhc_states)
-        return pre, post, comb, collapse_streams(mhc_states, pre_mix), mhc_states
+        return pre, post, comb, collapse_streams(mhc_states, pre_mix)
 
     @staticmethod
     def update_states(
@@ -117,12 +91,12 @@ class DeepseekV41HyperConnection(nn.Module):
 
 
 def collapse_streams(mhc_states: torch.Tensor, pre: torch.Tensor) -> torch.Tensor:
-    """`(b, t, hc, d)` streams weighted by `(b, t, hc)` fp32 `pre` into one fp32 `(b, t, d)` sequence.
+    """`(b, t, hc, d)` streams weighted by `(b, t, hc)` fp32 `pre` into one `(b, t, d)` sequence.
 
-    It stays fp32 into the next RMSNorm, so collapse and norm round to bf16 once, as vLLM's fused
-    collapse-norm kernel does.
+    The sum runs in fp32 and is rounded to the streams' dtype before the next RMSNorm, as vLLM's
+    collapse kernels write it.
     """
-    return (pre.unsqueeze(-1) * mhc_states.float()).sum(dim=2)
+    return (pre.unsqueeze(-1) * mhc_states.float()).sum(dim=2).to(mhc_states.dtype)
 
 
 def identity_pre_mix(mhc_states: torch.Tensor) -> torch.Tensor:

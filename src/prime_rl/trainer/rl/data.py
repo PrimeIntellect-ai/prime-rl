@@ -17,6 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 
 
 class TensorMicroBatch(TypedDict):
@@ -30,8 +31,9 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
-    env_names: list[str]
+    env_names: list[str]  # One per sequence, parallel to sequence_lengths
     sequence_lengths: list[int]
+    padding: int  # Trailing padding tokens, folded into the last sequence's length
 
     # Per-sequence branch identity, parallel to sequence_lengths; None on
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
@@ -130,8 +132,9 @@ class FakeDataLoader:
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
-            "env_names": ["fake"] * input_ids.shape[0],
+            "env_names": ["fake"] * len(sequence_lengths),
             "sequence_lengths": sequence_lengths,
+            "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
@@ -163,8 +166,9 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
-            "env_names": ["fake"] * self.seq_len,
+            "env_names": ["fake"],
             "sequence_lengths": [self.seq_len],
+            "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
@@ -230,7 +234,7 @@ class DataLoader:
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
-        """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
+        """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
@@ -240,7 +244,6 @@ class DataLoader:
                     dtype=_torch_dtype(packed_routed_experts.dtype),
                 )
                 .reshape(packed_routed_experts.shape)
-                .to(torch.int32)
                 .unsqueeze(0)
             )
         sampling_mask = None
@@ -254,48 +257,57 @@ class DataLoader:
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
         top_ids = top_values = None
-        if (head := micro_batch.top_logprobs) is not None:
-            counts = np.frombuffer(head.counts, dtype=np.int32)
+        # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
+        heads = [
+            head
+            for head in (micro_batch.top_logprobs, packed_sampling_mask)
+            if head is not None and head.logprobs is not None
+        ]
+        if heads:
+            head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
+            counts = sum(head_counts)
+            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
+            order = np.argsort(rows, kind="stable")
             width = max(int(counts.max(initial=0)), 1)
             valid = np.arange(width)[None, :] < counts[:, None]
             ids = np.full((len(counts), width), -1, dtype=np.int32)
             values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.frombuffer(head.ids, dtype=np.int32)
-            values[valid] = np.frombuffer(head.logprobs, dtype=np.float32)
+            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
             top_ids = torch.from_numpy(ids).unsqueeze(0)
             top_values = torch.from_numpy(values).unsqueeze(0)
+
+        def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
+            """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
+            (which stays read-only) that also widens it to the trainer's dtype."""
+            values = getattr(micro_batch, name)
+            if values is None:
+                return None
+            return torch.from_numpy(np.frombuffer(values, MICRO_BATCH_DTYPES[name]).astype(dtype)).unsqueeze(0)
+
         return TensorMicroBatch(
-            input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
-            position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
-            advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-            inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-            ref_logprobs=torch.tensor(micro_batch.ref_logprobs, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_logprobs is not None
-            else None,
-            loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-            temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            input_ids=stream("input_ids", np.int64),
+            position_ids=stream("position_ids", np.int64),
+            advantages=stream("advantages", np.float32),
+            inference_logprobs=stream("inference_logprobs", np.float32),
+            ref_logprobs=stream("ref_logprobs", np.float32),
+            loss_mask=stream("loss_mask", np.bool_),
+            temperatures=stream("temperatures", np.float32),
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
+            padding=micro_batch.padding,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
-            mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
-            if micro_batch.mm_token_type_ids is not None
-            else None,
+            mm_token_type_ids=stream("mm_token_type_ids", np.int64),
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
             top_logprobs_ids=top_ids,
             top_logprobs_values=top_values,
-            rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.rl_weights is not None
-            else None,
-            ce_weights=torch.tensor(micro_batch.ce_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ce_weights is not None
-            else None,
-            ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_kl_weights is not None
-            else None,
+            rl_weights=stream("rl_weights", np.float32),
+            ce_weights=stream("ce_weights", np.float32),
+            ref_kl_weights=stream("ref_kl_weights", np.float32),
         )
 
 
@@ -321,8 +333,14 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -
     q = values.exp().masked_fill(~valid, 0.0)
     if (q.sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
-        raise ValueError("Top-k score centering requires untruncated sampling")
+    if batch["sampling_mask"] is not None:
+        support = batch["sampling_mask"][mask]
+        replay = (support >= 0).any(-1)
+        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
+            raise ValueError("Sampler probabilities must normalize over the recorded support")
+        sampled = batch["input_ids"][mask]
+        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
+            raise ValueError("Sampled token is missing from the recorded support")
 
 
 def _torch_dtype(name: str) -> torch.dtype:

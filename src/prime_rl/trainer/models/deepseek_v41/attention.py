@@ -38,6 +38,7 @@ import torch.distributed._functional_collectives as funcol
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.attention import (
+    VLLM_INDEXER_FP8_AMAX_FLOOR,
     CompressionLayout,
     SparseAttnInputs,
 )
@@ -65,17 +66,6 @@ try:
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
-
-
-def _index_topk_op(num_heads: int, head_dim: int, block_size: int):
-    """prime-kernels' fused indexer top-k when it is built for this GPU and shape, else prime-rl's chunked one."""
-    import prime_kernels
-
-    if "dsa_indexer_topk" in prime_kernels.KERNELS and prime_kernels.is_available("dsa_indexer_topk"):
-        kernel = prime_kernels.load("dsa_indexer_topk")
-        if kernel.unsupported_shape_reason(num_heads, head_dim, block_size) is None:
-            return kernel.dsv41_index_topk
-    return dsv41_index_topk
 
 
 @dataclass(frozen=True)
@@ -256,7 +246,6 @@ class DeepseekV41Indexer(nn.Module):
         self.uses_candidates = 0 <= config.candidate_source_layer_id < layer_idx
         self.candidate_block_size = config.candidate_block_size
         self.candidate_topk_blocks = config.candidate_topk_blocks
-        self.index_topk_op = _index_topk_op(self.num_heads, self.head_dim, self.candidate_block_size)
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
         if self.owns_k:
@@ -305,6 +294,7 @@ class DeepseekV41Indexer(nn.Module):
                 self.compress_ratio,
                 segments.max_seqlen_q,
                 segments.max_seqlen_k,
+                VLLM_INDEXER_FP8_AMAX_FLOOR,
             )
             return top_k.unsqueeze(0), index_k, state.candidates
 
@@ -312,7 +302,7 @@ class DeepseekV41Indexer(nn.Module):
         # entries of its own document whose sources all lie at or before it.
         entry_start = layout.first_entry_of_doc[packed.tok_doc_idx]
         entry_stop = entry_start + (packed.position_ids[0] + 1) // self.compress_ratio
-        top_k, candidates = self.index_topk_op(
+        top_k, candidates = dsv41_index_topk(
             q[0],
             index_k,
             w[0],
@@ -324,6 +314,7 @@ class DeepseekV41Indexer(nn.Module):
             layout.max_entries_per_doc,
             self.candidate_block_size,
             self.candidate_topk_blocks,
+            VLLM_INDEXER_FP8_AMAX_FLOOR,
         )
         return top_k.unsqueeze(0), index_k, candidates if emit else state.candidates
 
@@ -377,6 +368,17 @@ class DeepseekV41Attention(nn.Module):
         # V4.1 has no heavily compressed layers: a query reads its window and at most `index_topk` entries.
         self.max_slots = config.sliding_window + config.index_topk
 
+        if (
+            self.kv_precision == "fp8"
+            and layer_idx in config.kv_source_layer_ids
+            and self.compress_ratio
+            and torch.cuda.is_available()
+            and torch.cuda.get_device_capability()[0] == 10
+        ):
+            raise NotImplementedError(
+                "On SM100, vLLM stores V4.1's compressed KV entries as NVFP4 (`nvfp4_ds_mla`), which the trainer "
+                'does not model yet. Set `model.dsv4_kv_precision = "bf16"` to train without KV rounding.'
+            )
         self.compressor = (
             DeepseekV41Compressor(config, self.compress_ratio, rotary_emb)
             if layer_idx in config.kv_source_layer_ids
@@ -392,13 +394,17 @@ class DeepseekV41Attention(nn.Module):
 
     def attention_flops(self, seq_len: int) -> int:
         # Each query attends its window plus, on a compressed layer, at most `index_topk` entries. The
-        # indexer scores all of them forward only, under no_grad, and only on its source layers.
+        # indexer scores forward only, under no_grad, and only on its source layers: every entry, or
+        # only its candidate blocks' entries on the layers that read them.
         attended_tokens = min(seq_len, self.config.sliding_window)
         indexer_flops = 0
         if self.compress_ratio:
             compressed_len = seq_len // self.compress_ratio
             if self.indexer is not None:
-                indexer_flops = 2 * self.indexer.num_heads * self.indexer.head_dim * seq_len * compressed_len
+                scored = compressed_len
+                if self.indexer.uses_candidates:
+                    scored = min(scored, self.indexer.candidate_topk_blocks * self.indexer.candidate_block_size)
+                indexer_flops = 2 * self.indexer.num_heads * self.indexer.head_dim * seq_len * scored
             attended_tokens += min(compressed_len, self.config.index_topk)
         return indexer_flops + quadratic_attention_flops(
             num_heads=self.num_heads,

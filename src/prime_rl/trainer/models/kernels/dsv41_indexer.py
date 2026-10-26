@@ -106,6 +106,7 @@ def dsv41_index_topk(
     max_entries_per_doc: int,
     block_size: int,
     topk_blocks: int,
+    amax_floor: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Top-k entries per query, plus the candidate blocks when `emit_candidates`.
 
@@ -118,15 +119,18 @@ def dsv41_index_topk(
             scores, or None.
         emit_candidates: also return this layer's own candidate blocks.
         max_entries_per_doc: width of the doc-local view the candidate source ranks blocks over.
+        amax_floor: lower bound on each query head's and key's absolute maximum before its UE8M0 scale is taken.
 
     Returns `(S_q, topk)` int64 entry indices, -1 where a query has fewer readable entries, and
     the candidate blocks (an empty tensor unless `emit_candidates`).
     """
     S_q, H, D = q.shape
     S_k = k.shape[0]
-    q_fp8, q_scales = per_token_group_quant_fp8(q.reshape(S_q * H, D).contiguous(), group_size=D, use_ue8m0=True)
+    q_fp8, q_scales = per_token_group_quant_fp8(
+        q.reshape(S_q * H, D).contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor
+    )
     k = torch.nn.functional.pad(k, (0, 0, 0, -S_k % KEY_ALIGNMENT))
-    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
+    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
     q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
     w = (w.float() * q_scales.view(S_q, H)).contiguous()
 
@@ -161,7 +165,7 @@ def dsv41_index_topk(
 
 @dsv41_index_topk.register_fake
 def _dsv41_index_topk_fake(
-    q, k, w, ks, ke, topk, candidates, emit_candidates, max_entries_per_doc, block_size, topk_blocks
+    q, k, w, ks, ke, topk, candidates, emit_candidates, max_entries_per_doc, block_size, topk_blocks, amax_floor
 ):
     cand_shape = (q.shape[0], topk_blocks) if emit_candidates else (0, 0)
     return q.new_empty((q.shape[0], topk), dtype=torch.int64), q.new_empty(cand_shape, dtype=torch.int32)

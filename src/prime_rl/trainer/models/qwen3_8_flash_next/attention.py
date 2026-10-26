@@ -22,8 +22,6 @@ class IndexedGatedAttention(nn.Module):
         indexer_token_budget: int,
         indexer_compression_ratio: int,
     ) -> None:
-        import prime_kernels
-
         super().__init__()
         self.num_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
@@ -46,8 +44,11 @@ class IndexedGatedAttention(nn.Module):
         )
 
         self.cp_context = CPContext()
-        # Resolve once before torch.compile traces the layer; the loader caches the module.
-        self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
+        # Resolve before compilation on GPU trainers; CPU-only FLOP counting needs no kernels.
+        if torch.cuda.is_available():
+            import prime_kernels
+
+            self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
 
     def attention_flops(self, seq_len: int) -> int:
         # The indexer scores every compressed block, forward only (no_grad); attention reads `token_budget` tokens.

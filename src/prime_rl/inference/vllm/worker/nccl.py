@@ -67,12 +67,13 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
 
 
 class RowChunkWriter:
-    """Writes the trainer's row chunks of DeepSeek-V4.1's engram tables straight into their storage.
+    """Copies the trainer's chunks of DeepSeek-V4.1's engram tables into vLLM's tables in place.
 
-    vLLM keeps each table as fp8 rows plus ue8m0 scales, usually in pinned host memory shared by
-    the node's DP replicas. The layerwise reload would rebuild a table on the GPU before copying it
-    back, which a ~98 GB table does not fit, so the chunks bypass it: the tables are captured before
-    the reload starts, and the reload, receiving none of their weights, puts them back as they were.
+    The trainer sends each ~98 GB table as row chunks (`<table>.weight`, `.scale`, `.row_start`)
+    after the regular layers. vLLM stores a table as fp8 rows plus ue8m0 scales, usually in pinned
+    host memory shared by the node's DP replicas. The layerwise reload would rebuild a whole table on
+    the GPU, which it does not fit, so this filter takes the chunks out of the stream and copies each
+    into the rows it covers. The reload never sees a table weight and leaves the tables untouched.
     """
 
     FIELDS = ("weight", "scale", "row_start")
@@ -205,7 +206,9 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = RowChunkWriter(model).filter(self.nccl_broadcast_receiver.receive_state_dict())
+        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
+        if self.model_runner.model_config.hf_config.model_type == "deepseek_v41":
+            state_iter = RowChunkWriter(model).filter(state_iter)
         load_weights_checkpoint_layerwise(
             model,
             state_iter,

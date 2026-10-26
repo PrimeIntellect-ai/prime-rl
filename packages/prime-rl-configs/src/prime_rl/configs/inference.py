@@ -461,7 +461,10 @@ class InferenceConfig(BaseConfig):
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
     enable_return_sampling_mask: bool = False
-    """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
+    """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Requests opt in with ``extra_args.prl_replay = true``; only these requests require positive temperature and bounded top-k. Evaluation requests need not opt in. Request-scoped capture currently requires non-speculative decoding."""
+
+    top_p_before_top_k: bool = True
+    """With sampling-mask capture, apply top-p to the full temperature-scaled distribution before the top-k cap. Applies engine-wide on the V2 runner and uses a sorting-based reference sampler. Has no effect without sampling-mask capture. The final support can contain less than top_p of the original mass when the cap binds. Set false to use vLLM's top-k-before-top-p order."""
 
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
@@ -667,6 +670,12 @@ class InferenceConfig(BaseConfig):
         # cache-discount billing counters parse them off /inference/v1/generate.
         if "enable_prompt_tokens_details" not in extra_fields:
             namespace.enable_prompt_tokens_details = True
+
+        # vLLM's SWA bounded replay (DeepSeek-V4.1) prefills later layers on each request's last
+        # window only, so the first tokens of that window get approximate states the trainer
+        # never computes. Compute every window exactly unless overridden.
+        if "swa_bounded_replay" not in extra_fields:
+            namespace.swa_bounded_replay = False
 
         # The orchestrator generates through /inference/v1/generate, a scale-out
         # endpoint that vLLM registers only with `--enable-scale-out`.

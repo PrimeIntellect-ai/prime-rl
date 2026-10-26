@@ -16,7 +16,7 @@ import torch
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import is_prime
+from prime_rl.trainer.models.layers.ngram import is_prime
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 
 LAYER_SEED_PRIME = 10007
