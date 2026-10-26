@@ -772,7 +772,7 @@ def mark_dynamic_int_args() -> None:
     for arg in DYNAMIC_INT_ARGS:
         # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
         # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
-        pattern = rf".*(\['{arg}'\]|\.{arg})"
+        pattern = rf".*(\['{arg}'\]|\.{arg}$)"
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)
