@@ -48,6 +48,7 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
+    broadcast_pause,
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
@@ -58,7 +59,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
@@ -411,9 +412,9 @@ def train(config: SFTConfig):
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
             {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
+                "max_vio/mean": torch.tensor(0.0, device="cuda"),
+                "max_vio/max": torch.tensor(0.0, device="cuda"),
+                "routing_confidence/mean": torch.tensor(0.0, device="cuda"),
             }
             if is_moe_model
             else {}
