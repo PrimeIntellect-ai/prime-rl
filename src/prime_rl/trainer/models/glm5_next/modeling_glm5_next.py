@@ -186,7 +186,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
     def __init__(self, config: Glm5NextTextConfig, dsa_backend: DSABackend = "tilelang") -> None:
         super().__init__(config)
         _check_supported(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             Glm5NextDecoderLayer(config, layer_idx, dsa_backend) for layer_idx in range(config.num_hidden_layers)
         )
