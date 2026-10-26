@@ -296,7 +296,7 @@ function renderPlatformLink(meta) {
     button.hidden = true;
     link.classList.add("disabled");
     link.removeAttribute("href");
-    link.title = "enable the prime monitor (--monitors.prime) to sync this run to the platform";
+    link.title = "the prime monitor was off for this run (--no-monitors.prime)";
     return;
   }
   const targets =
@@ -461,7 +461,7 @@ const INFERENCE_PANELS = [
 ];
 
 const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_ratio|is_masked|masked_|unmasked_|max_vio|routing_|ref_kl|val)[/_]?/;
-const ORCH_KEY_RE = /^(train|batch|off_policy|curriculum|eval)\//;
+const ORCH_KEY_RE = /^(train|batch|staleness|curriculum|eval)\//;
 
 function rowProducer(row, meta) {
   if (typeof row.producer === "string") return row.producer; // stamped by FileMonitor
