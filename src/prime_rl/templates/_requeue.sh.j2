@@ -96,7 +96,7 @@ SMOKE_TEST_SH
 {%- endif %}
 {%- if watchdog %}
 
-# Kill the job's main command when the trainer makes no progress: the trainer master
+# Kill the job's main command (its whole process group) when the trainer makes no progress: the trainer master
 # writes "step <n>" to trainer_step_path after every step and "done <n>" once it has
 # finished (after the final checkpoint). The limit applies from the first step of this job
 # until "done", so startup and the final evals that drain after the trainer are not bounded.
@@ -110,9 +110,9 @@ watch_trainer() {
         case "$phase" in done*) return ;; esac
         if [ $(($(date +%s) - mtime)) -ge {{ step_timeout }} ]; then
             echo "[watchdog] no trainer step for $(($(date +%s) - mtime))s (last: $phase, limit: {{ step_timeout }}s) - killing the job"
-            kill -TERM "$pid" 2>/dev/null
+            kill -TERM -- -"$pid" 2>/dev/null
             sleep 60
-            kill -KILL "$pid" 2>/dev/null
+            kill -KILL -- -"$pid" 2>/dev/null
             return
         fi
     done
@@ -131,7 +131,9 @@ launch() {
         return 1
     fi
 {%- endif %}
-    "$@" <&0 &
+    # In its own process group, so the watchdog's kill reaches every process the command
+    # starts (single-node: uv run -> rl -> trainer), not only the top one.
+    setsid "$@" <&0 &
     pid=$!
 {%- if watchdog %}
     watch_trainer "$pid" &
