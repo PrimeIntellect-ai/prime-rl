@@ -63,14 +63,34 @@ def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
         )
 
 
-def reserve_sms_for_comm(num_reserved_sms: int) -> int:
-    """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
+def num_concurrent_nccl_kernels(dp_replicate: int) -> int:
+    """NCCL kernels FSDP can run at once: an all-gather and a reduce-scatter, plus an all-reduce under HSDP."""
+    return 3 if dp_replicate > 1 else 2
+
+
+def default_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
+    """Set ``NCCL_MAX_CTAS`` to ``num_reserved_sms // num_concurrent`` unless it is already set, then check it. In the
+    worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so at most ``num_reserved_sms // NCCL_MAX_CTAS`` can run
+    next to a Mega MoE grid."""
+    os.environ.setdefault("NCCL_MAX_CTAS", str(max(num_reserved_sms // num_concurrent, 1)))
+    check_nccl_max_ctas(num_reserved_sms, num_concurrent)
+
+
+def check_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
+    """Raise unless ``num_concurrent`` NCCL kernels of ``NCCL_MAX_CTAS`` CTAs fit in the reserved SMs."""
     nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
-    if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
+    max_ctas = num_reserved_sms // num_concurrent
+    if max_ctas < 1 or nccl_max_ctas is None or not nccl_max_ctas.isdigit() or not 1 <= int(nccl_max_ctas) <= max_ctas:
         raise ValueError(
-            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, so `NCCL_MAX_CTAS` must be set to at most "
-            f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
+            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, which must fit {num_concurrent} concurrent NCCL "
+            f"kernels, so `NCCL_MAX_CTAS` must be an integer in [1, {max_ctas}] (got {nccl_max_ctas!r}); unset it "
+            f"to use {max_ctas} or raise `num_reserved_sms`."
         )
+
+
+def reserve_sms_for_comm(num_reserved_sms: int, num_concurrent: int) -> int:
+    """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
+    check_nccl_max_ctas(num_reserved_sms, num_concurrent)
     total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
     return max(total - num_reserved_sms, 1)
 
