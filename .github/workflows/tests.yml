@@ -173,7 +173,7 @@ jobs:
             eval:
               - *runtime
               - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_server,algorithm,monitors}.py'
-              - 'src/prime_rl/{eval,orchestrator,monitors}/**'
+              - 'src/prime_rl/{control,eval,orchestrator,monitors}/**'
               - 'src/prime_rl/entrypoints/{eval,env_server}.py'
               - 'tests/integration/test_gsm8k_eval.py'
               - 'configs/ci/integration/gsm8k-eval.toml'
@@ -324,8 +324,9 @@ jobs:
             with:
               enable-cache: true
               cache-dependency-glob: "uv.lock"
+      # Runs the eval without torch; --all-packages would install it (via bfcl-v3).
       - name: Install dependencies
-        run: uv sync --all-extras --all-packages --locked
+        run: uv sync --locked --package prime-rl --package gsm8k
       - name: Run eval tests
         env:
           USERNAME_CI: CI_RUNNER
