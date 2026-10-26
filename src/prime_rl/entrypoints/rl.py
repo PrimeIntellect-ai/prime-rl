@@ -506,9 +506,7 @@ def rl(config: RLConfig):
                 ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
                 resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
 
-    if config.dry_run:
-        get_logger().info("Dry run: not cleaning stale rollouts and broadcasts")
-    elif resume_step is not None:
+    if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
         clean_future_steps(config.run_dir, resume_step)
     else:

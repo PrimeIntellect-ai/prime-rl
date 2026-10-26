@@ -71,10 +71,11 @@ async def sweep_run(run_id: str, before: datetime) -> None:
 
 def sweep_previous_run(run_dir: Path) -> None:
     """Sweep the run that last used ``run_dir``. A clean start deletes the run dir and its
-    id with it, so its sandboxes can only be swept before."""
+    id with it, so its sandboxes can only be swept before; a failed sweep raises and keeps
+    the id for a retry."""
     path = run_id_file(run_dir)
-    if path.exists():
-        asyncio.run(sweep_run(path.read_text().strip(), datetime.now(UTC)))
+    if path.exists() and _has_prime_key():
+        asyncio.run(sweep([path.read_text().strip()], before=datetime.now(UTC), unique_labels=True))
 
 
 @contextmanager
