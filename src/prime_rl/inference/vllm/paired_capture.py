@@ -21,7 +21,7 @@ def pack_support_logprobs(tensors, logits, cu_num_logits, paired):
     ids = ids.gather(-1, order)
     values = values.gather(-1, order)
     bits = values.contiguous().view(torch.int32) ^ NEG_INF_BITS
-    enabled = torch.as_tensor(paired, device=logits.device).unsqueeze(-1)
+    enabled = torch.from_numpy(paired).pin_memory().to(logits.device, non_blocking=True).unsqueeze(-1)
     packed_ids = torch.where(enabled, ids, tensors.token_ids.long())
     packed = (torch.where(enabled, bits, 0).long() << 32) | packed_ids
     return tensors._replace(token_ids=packed)

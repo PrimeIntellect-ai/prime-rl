@@ -15,7 +15,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sandboxes import ENV_LABEL_PREFIX
+from prime_rl.utils.sandboxes import ENV_LABEL_PREFIX, sweep_previous_run
 
 
 def get_log_dir(output_dir: Path) -> Path:
@@ -367,7 +367,13 @@ def has_run_artifacts(run_dir: Path) -> bool:
 
 
 def validate_run_dir(
-    run_dir: Path, *, output_dir: Path, resuming: bool, clean: bool, ckpt_output_dir: Path | None = None
+    run_dir: Path,
+    *,
+    output_dir: Path,
+    resuming: bool,
+    clean: bool,
+    ckpt_output_dir: Path | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Validate the run directory before training starts.
 
@@ -376,13 +382,16 @@ def validate_run_dir(
     would overwrite or interleave with the first run's artifacts.
 
     When ckpt_output_dir is set, checkpoints live there instead of under
-    run_dir, so the guard and clean logic check both locations.
+    run_dir, so the guard and clean logic check both locations. A dry run deletes nothing.
     """
     if resuming:
         return
     if clean:
         if not run_dir.resolve().is_relative_to(output_dir.resolve()):
             raise ValueError(f"clean requires the run directory ({run_dir}) to remain under output_dir ({output_dir})")
+        if dry_run:
+            return
+        sweep_previous_run(run_dir)
         logger = get_logger()
         dirs_to_clean = [run_dir]
         if ckpt_output_dir is not None and ckpt_output_dir != run_dir:
@@ -408,8 +417,8 @@ def validate_run_dir(
 
 def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None:
     """Set the run identity and prepare the run directory of a launcher's ``config`` (``run``, ``run_dir``,
-    ``output_dir``, ``clean``, ``resume``): validate it (with ``clean``, unless ``$NEVER_CLEAN`` is set, delete it
-    first) and create it and ``ckpt_output_dir``.
+    ``output_dir``, ``clean``, ``resume``): validate it (with ``clean``, unless ``$NEVER_CLEAN`` is set or it is a dry
+    run, delete it first) and create it and ``ckpt_output_dir``.
 
     The run identity is runtime-only, never sub-config: ``$PRL_RUN_ID`` / ``$PRL_RUN_NAME`` carry it between
     processes, and every spawned process inherits them. Components launched standalone have no run identity."""
@@ -423,6 +432,7 @@ def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None
         resuming=config.resume is not None,
         clean=clean,
         ckpt_output_dir=ckpt_output_dir,
+        dry_run=config.dry_run,
     )
     config.run_dir.mkdir(parents=True, exist_ok=True)
     if ckpt_output_dir is not None:

@@ -80,7 +80,7 @@ rm -f "$TRAINER_DONE"{% if num_infer_nodes > 0 %} "$ORCHESTRATOR_DONE"{% endif %
 
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 export PRL_RUN_NAME={{ run_name }}
-export PRL_STABLE_RUN_ID={{ stable_run_id }}
+export VF_RUN_ID={{ vf_run_id }}
 export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 

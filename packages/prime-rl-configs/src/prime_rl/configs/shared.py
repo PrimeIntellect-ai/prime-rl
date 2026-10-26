@@ -16,7 +16,7 @@ PROTECTED_ENV_VARS = frozenset(
         "CUDA_VISIBLE_DEVICES",
         "PRL_RUN_ID",
         "PRL_RUN_NAME",
-        "PRL_STABLE_RUN_ID",
+        "VF_RUN_ID",
         "WANDB_RUN_ID",
         "WANDB_SHARED_MODE",
         "WANDB_SHARED_LABEL",
@@ -268,6 +268,11 @@ class LogConfig(BaseConfig):
 class TrainerLogConfig(LogConfig):
     ranks_filter: list[int] = [0]
     """Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``."""
+
+
+class GCConfig(BaseConfig):
+    interval: int = Field(50, ge=1)
+    """Run a scheduled garbage collection every N training steps, in place of Python's automatic collections that would run at unpredictable times."""
 
 
 class HeartbeatConfig(BaseConfig):

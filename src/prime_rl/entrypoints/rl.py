@@ -37,7 +37,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
-from prime_rl.utils.sandboxes import run_label, stable_run_id, sweep_on_exit, sweep_previous_run
+from prime_rl.utils.sandboxes import stable_run_id, sweep_on_exit
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -160,7 +160,7 @@ def rl_local(config: RLConfig):
             )
 
     # Exits after the processes stop: a component killed by SIGKILL skips its own sweep.
-    with sweep_on_exit(run_label()), ProcessGroup() as processes:
+    with sweep_on_exit(os.environ["VF_RUN_ID"]), ProcessGroup() as processes:
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
@@ -332,7 +332,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=True,
             run_name=config.run.name,
-            stable_run_id=os.environ["PRL_STABLE_RUN_ID"],
+            vf_run_id=os.environ["VF_RUN_ID"],
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -379,7 +379,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=False,
             run_name=config.run.name,
-            stable_run_id=os.environ["PRL_STABLE_RUN_ID"],
+            vf_run_id=os.environ["VF_RUN_ID"],
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -488,12 +488,10 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     # TODO: fetch the run id from the Prime SDK once runs are registered there.
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    if config.clean and not os.environ.get("NEVER_CLEAN") and config.resume is None:
-        sweep_previous_run(config.run_dir)
     prepare_run(config, ckpt_output_dir)
-    # Unlike $PRL_RUN_ID (one per launch), this id is shared by every launch of the run
-    # dir; the run's sandboxes are labeled and swept by it.
-    os.environ["PRL_STABLE_RUN_ID"] = stable_run_id(config.run_dir)
+    # Unlike $PRL_RUN_ID (one per launch), the run scope is shared by every launch of the
+    # run dir; verifiers labels the run's sandboxes and tunnels with it, and we sweep by it.
+    os.environ["VF_RUN_ID"] = stable_run_id(config.run_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
@@ -510,7 +508,9 @@ def rl(config: RLConfig):
                 ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
                 resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
 
-    if resume_step is not None:
+    if config.dry_run:
+        get_logger().info("Dry run: not cleaning stale rollouts and broadcasts")
+    elif resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
         clean_future_steps(config.run_dir, resume_step)
     else:
