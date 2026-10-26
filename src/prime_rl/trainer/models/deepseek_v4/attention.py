@@ -220,8 +220,11 @@ class CompressionLayout:
         # These sizes follow the document lengths, which change from one micro batch to the next.
         # Marked dynamic up front, the compiled layers trace them symbolically on their first
         # compile instead of recompiling once per field as each size first changes.
-        for tensor in (entry_tok_idx, entry_doc_idx, entry_local_idx, first_entry_of_doc):
+        for tensor in (entry_tok_idx, entry_doc_idx, entry_local_idx):
             torch._dynamo.maybe_mark_dynamic(tensor, 0)
+        # Unbacked, unlike the others: a backed dynamic size is assumed to be at least 2, so a row
+        # holding a single document would still compile a graph of its own.
+        torch._dynamo.decorators.mark_unbacked(first_entry_of_doc, 0)
 
         return cls(
             entry_tok_idx=entry_tok_idx,
