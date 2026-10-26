@@ -96,8 +96,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
     for split, source in env_servers(config):
-        # Only the train sink and the trainer delete kept arrays, so eval servers send them inline.
-        write_env_server_config(output_dir, split, source, config.orchestrator.log, split == "train")
+        write_env_server_config(output_dir, split, source, config.orchestrator.log)
 
 
 def rl_local(config: RLConfig):
@@ -365,6 +364,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
             **modelexpress_vars,
@@ -403,6 +403,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,

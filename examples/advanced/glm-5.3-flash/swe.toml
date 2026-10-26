@@ -34,6 +34,8 @@ type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
+# Trainer nodes peak near 3 TB host RAM with AdamW offloaded; the orchestrator's 128K rollout buffer tips them over.
+orchestrator_on_inference = true
 
 [slurm]
 job_name = "glm53-flash-swe"

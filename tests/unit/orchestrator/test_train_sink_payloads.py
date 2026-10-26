@@ -11,6 +11,7 @@ import verifiers.v1 as vf
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
@@ -84,3 +85,15 @@ def test_sink_deletes_stale_pruned_and_discarded_arrays_but_not_shipped_ones():
         assert set(hook.server.blobs) == ids
 
     asyncio.run(run())
+
+
+def test_eval_sink_deletes_the_arrays_of_eval_episodes():
+    """Env servers keep arrays for every episode; eval never trains, so its sink frees them."""
+    hook = PayloadHook()
+    evaluated = episode([kept(hook)])
+    evaluated.run = vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=0))
+    env = SimpleNamespace(examples=[None, None], config=SimpleNamespace(group_size=1))
+    sink = EvalSink(eval_envs=SimpleNamespace(get=lambda name: env))
+    assert sink.add(evaluated) is None
+    sink.payload_pool.shutdown(wait=True)
+    assert not hook.server.blobs

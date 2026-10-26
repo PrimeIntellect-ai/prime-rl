@@ -254,9 +254,7 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
     return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_server_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, keep_training_arrays: bool = False
-) -> Path:
+def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
@@ -269,7 +267,6 @@ def write_env_server_config(
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
-        "keep_training_arrays": keep_training_arrays,
     }
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(server_config, indent=2))

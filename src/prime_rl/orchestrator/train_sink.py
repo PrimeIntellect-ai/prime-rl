@@ -42,10 +42,7 @@ def _kept(sample: TrainingSample, field: str) -> bool:
 
 
 # Training arrays reach the trainer only through env servers that keep them.
-_KEEP_ARRAYS_HINT = (
-    "Launcher-managed train env servers keep them; a train env server you run yourself "
-    "(`serve.address`) must set `keep_training_arrays = true`."
-)
+_KEEP_ARRAYS_HINT = "Serve the env with prime-rl's `env-server` entrypoint, which keeps them for the trainer."
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
