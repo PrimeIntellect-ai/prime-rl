@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -145,14 +147,6 @@ def encode_branch_arrays(branch: vf.Branch, num_tokens: int) -> BranchArrays:
     )
 
 
-def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
-    return RoutedExperts(
-        data=routed_experts.data,
-        shape=list(routed_experts.shape),
-        dtype=routed_experts.dtype,
-    )
-
-
 def _routed_experts_row_size(routed_experts: RoutedExperts) -> int:
     return routed_experts.shape[1] * routed_experts.shape[2] * np.dtype(routed_experts.dtype).itemsize
 
@@ -222,44 +216,47 @@ def pack_token_arrays(parts: Sequence[tuple[int, BranchArrays]]) -> BranchArrays
     """Concatenate samples' routing rows, sampling masks and top-k heads in packing order.
     Each part is a sample's token count and arrays. Routing must be on every part or none;
     masks and heads are per-token optional, so parts without them get empty rows."""
-    has_sampling_mask = any(arrays.sampling_mask is not None for _, arrays in parts)
-    has_mask_logprobs = any(
-        arrays.sampling_mask is not None and arrays.sampling_mask.logprobs is not None for _, arrays in parts
-    )
-    has_top_logprobs = any(arrays.top_logprobs is not None for _, arrays in parts)
-    routed_experts: RoutedExperts | None = None
-    sampling_mask: SamplingMask | None = (
-        SamplingMask(ids=b"", counts=b"", logprobs=b"" if has_mask_logprobs else None) if has_sampling_mask else None
-    )
-    top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
-    for num_tokens, arrays in parts:
-        if arrays.routed_experts is not None:
-            if routed_experts is None:
-                routed_experts = _copy_routed_experts(arrays.routed_experts)
-            else:
-                assert routed_experts.dtype == arrays.routed_experts.dtype
-                assert routed_experts.shape[1:] == arrays.routed_experts.shape[1:]
-                routed_experts.data += arrays.routed_experts.data
-                routed_experts.shape[0] += arrays.routed_experts.shape[0]
-        if sampling_mask is not None:
-            mask = arrays.sampling_mask if arrays.sampling_mask is not None else _empty_sampling_mask(num_tokens)
-            sampling_mask.ids += mask.ids
-            sampling_mask.counts += mask.counts
-            if sampling_mask.logprobs is not None:
-                # NaN marks mask rows that carry no sampler logprobs.
-                sampling_mask.logprobs += (
-                    mask.logprobs
-                    if mask.logprobs is not None
-                    else np.full(len(mask.ids) // _SAMPLING_MASK_ITEMSIZE, np.nan, np.float32).tobytes()
-                )
-        if top_logprobs is not None:
-            head = arrays.top_logprobs
-            if head is None:
-                top_logprobs.counts += b"\0" * (num_tokens * 4)
-            else:
-                top_logprobs.ids += head.ids
-                top_logprobs.logprobs += head.logprobs
-                top_logprobs.counts += head.counts
+    routed = [arrays.routed_experts for _, arrays in parts if arrays.routed_experts is not None]
+    routed_experts = None
+    if routed:
+        assert len(routed) == len(parts), "routing must be on every part or none"
+        assert all(r.dtype == routed[0].dtype and r.shape[1:] == routed[0].shape[1:] for r in routed)
+        routed_experts = RoutedExperts(
+            data=b"".join(r.data for r in routed),
+            shape=[sum(r.shape[0] for r in routed), *routed[0].shape[1:]],
+            dtype=routed[0].dtype,
+        )
+    sampling_mask = None
+    if any(arrays.sampling_mask is not None for _, arrays in parts):
+        masks = [
+            arrays.sampling_mask if arrays.sampling_mask is not None else _empty_sampling_mask(num_tokens)
+            for num_tokens, arrays in parts
+        ]
+        logprobs = None
+        if any(mask.logprobs is not None for mask in masks):
+            # NaN marks mask rows that carry no sampler logprobs.
+            logprobs = b"".join(
+                mask.logprobs
+                if mask.logprobs is not None
+                else np.full(len(mask.ids) // _SAMPLING_MASK_ITEMSIZE, np.nan, np.float32).tobytes()
+                for mask in masks
+            )
+        sampling_mask = SamplingMask(
+            ids=b"".join(mask.ids for mask in masks),
+            counts=b"".join(mask.counts for mask in masks),
+            logprobs=logprobs,
+        )
+    top_logprobs = None
+    if any(arrays.top_logprobs is not None for _, arrays in parts):
+        heads = [arrays.top_logprobs for _, arrays in parts]
+        top_logprobs = TopLogprobs(
+            ids=b"".join(head.ids for head in heads if head is not None),
+            logprobs=b"".join(head.logprobs for head in heads if head is not None),
+            counts=b"".join(
+                head.counts if head is not None else bytes(num_tokens * 4)
+                for head, (num_tokens, _) in zip(heads, parts, strict=True)
+            ),
+        )
     return BranchArrays(routed_experts=routed_experts, sampling_mask=sampling_mask, top_logprobs=top_logprobs)
 
 
@@ -274,23 +271,41 @@ def pad_token_arrays(micro_batch: MicroBatch, padding_size: int) -> None:
         micro_batch.top_logprobs.counts += b"\0" * (padding_size * 4)
 
 
-def payload_host(bind_address: str | None) -> str:
-    """The host the payload server binds and trainer ranks reach it at: the env server's
-    own bind host (the launcher binds the node address; unset means the loopback default),
-    or for a wildcard bind, the address the hostname resolves to."""
+def payload_host(bind_address: str | None) -> tuple[str, str]:
+    """The host the payload server binds and the host trainer ranks reach it at: the env
+    server's own bind host (the launcher binds the node address; unset means the loopback
+    default), or for a wildcard bind, every interface and a routable address of this node."""
     if bind_address is None:
-        return "127.0.0.1"
+        return "127.0.0.1", "127.0.0.1"
     host = urlparse(bind_address).hostname
     if host and host not in ("*", "0.0.0.0"):
-        return host
-    return socket.gethostbyname(socket.gethostname())
+        return host, host
+    return "0.0.0.0", _routable_address()
+
+
+def _routable_address() -> str:
+    """A non-loopback address of this node: the hostname often maps to 127.0.1.1."""
+    _, _, addresses = socket.gethostbyname_ex(socket.gethostname())
+    if routable := [address for address in addresses if not address.startswith("127.")]:
+        return routable[0]
+    # Connecting a UDP socket sends nothing; it only picks the outbound interface.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("10.255.255.255", 1))
+        return probe.getsockname()[0]
+
+
+class _HTTPServer(ThreadingHTTPServer):
+    # Every trainer rank fetches its blobs at once at step start; the default backlog
+    # of 5 drops connections, which retry only after a second or more.
+    request_queue_size = 1024
+    daemon_threads = True
 
 
 class PayloadServer:
     """One env-server worker's arrays, served at `GET <url>/<id>` and freed by
     `DELETE <url>/<id>`."""
 
-    def __init__(self, host: str):
+    def __init__(self, bind_host: str, url_host: str | None = None):
         self.blobs: dict[str, bytes] = {}
         self.lock = threading.Lock()
         server = self
@@ -312,10 +327,9 @@ class PayloadServer:
             def log_message(self, *args: Any) -> None:
                 pass
 
-        self.http = ThreadingHTTPServer((host, 0), Handler)
-        self.http.daemon_threads = True
+        self.http = _HTTPServer((bind_host, 0), Handler)
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
-        self.url = f"http://{host}:{self.http.server_port}"
+        self.url = f"http://{url_host or bind_host}:{self.http.server_port}"
 
     def put(self, key: str, blob: bytes) -> None:
         with self.lock:
@@ -341,7 +355,7 @@ class PayloadHook:
     """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
 
     def __init__(self, bind_address: str | None = None):
-        self.server = PayloadServer(payload_host(bind_address))
+        self.server = PayloadServer(*payload_host(bind_address))
 
     def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
         stored: list[str] = []
@@ -351,7 +365,15 @@ class PayloadHook:
                 for branch in trace.branches:
                     if not branch.trainable:
                         continue
-                    arrays = encode_branch_arrays(branch, len(branch.token_ids))
+                    try:
+                        arrays = encode_branch_arrays(branch, len(branch.token_ids))
+                    except ValueError as error:
+                        # Keep the episode: eval never needs the arrays, and a train run
+                        # that needs them stops at the train sink's guard.
+                        get_logger().warning(
+                            f"Not keeping the arrays of trace {trace.id} branch {branch.index}: {error}"
+                        )
+                        continue
                     fields = _fields(arrays)
                     if not fields:
                         continue
@@ -369,7 +391,7 @@ class PayloadHook:
                 for node in trace.nodes:
                     node.routed_experts = node.sampling_mask = node.top_logprobs = None
         except BaseException:
-            # The server never hands this episode to `discard`, so free what it kept here.
+            # `discard` finds only references already in `trace.info`; free the rest here.
             for key in stored:
                 self.server.delete(key)
             raise
@@ -390,12 +412,20 @@ def sample_payload_urls(samples: Iterable[TrainingSample]) -> list[str]:
     return [f"{s.payload.url}/{s.payload.id}" for s in samples if s.payload is not None]
 
 
-def _fetch(url: str) -> BranchArrays | None:
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            return _decoder.decode(response.read())
-    except Exception:
-        return None
+def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
+    """The blob at `url`, or None if it is gone (404) or every attempt failed."""
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                return _decoder.decode(response.read())
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return None
+        except Exception:
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(0.5 * 2**attempt)
+    return None
 
 
 def _delete(url: str) -> None:
@@ -445,6 +475,7 @@ def _assemble(mb: MicroBatch, fetched: dict[str, BranchArrays | None]) -> bool:
         if s is None:
             parts.append((num_tokens, BranchArrays()))
             continue
+        assert s.num_tokens == num_tokens, f"reference holds {s.num_tokens} tokens, its sequence {num_tokens}"
         part = fetched[f"{s.url}/{s.id}"]
         arrays = _cut(part, s, num_tokens) if part is not None else None
         if arrays is None:

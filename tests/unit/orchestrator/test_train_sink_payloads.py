@@ -3,6 +3,7 @@ delivered trace is either shipped in a batch (the trainer deletes it) or deleted
 sink when it drops the sample or trace."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,6 +12,7 @@ import verifiers.v1 as vf
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
@@ -97,3 +99,26 @@ def test_eval_sink_deletes_the_arrays_of_eval_episodes():
     assert sink.add(evaluated) is None
     sink.payload_pool.shutdown(wait=True)
     assert not hook.server.blobs
+
+
+def test_dispatcher_deletes_the_arrays_of_returned_episodes_it_drops():
+    """A dropped group's task may already have returned its episode: no sink sees it."""
+
+    async def run() -> None:
+        hook = PayloadHook()
+        returned = episode([kept(hook)])
+        dispatcher = Dispatcher.__new__(Dispatcher)
+        dispatcher.payload_pool = ThreadPoolExecutor(1)
+
+        async def done():
+            return returned
+
+        finished = asyncio.ensure_future(done())
+        await finished
+        running = asyncio.ensure_future(asyncio.sleep(60))
+        await dispatcher._cancel_claimed([finished, running])
+        dispatcher.payload_pool.shutdown(wait=True)
+        assert running.cancelled()
+        assert not hook.server.blobs
+
+    asyncio.run(run())

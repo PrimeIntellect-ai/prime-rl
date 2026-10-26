@@ -18,7 +18,7 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transports import payload
 from prime_rl.transports.batch import types as wire
-from prime_rl.transports.batch.types import MicroBatch, PayloadSlice, TrainingSample, encode_array
+from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, MicroBatch, PayloadSlice, TrainingSample, encode_array
 from prime_rl.transports.payload import (
     PayloadHook,
     PayloadServer,
@@ -272,29 +272,51 @@ def test_unfetchable_micro_batches_are_reported():
     assert (rows[..., 0] != rows[..., 1]).all()
 
 
-def test_keep_frees_what_it_kept_when_it_fails(monkeypatch):
-    hook = PayloadHook()
-    rng = np.random.default_rng(3)
+def _two_trace_episode(rng: np.random.Generator) -> Episode:
     first, second = _episode(rng, 6, 8), _episode(rng, 6, 8)
-    episode = Episode(env=first.env, task=first.task, ok=True, traces=[first.traces[0], second.traces[0]])
+    return Episode(env=first.env, task=first.task, ok=True, traces=[first.traces[0], second.traces[0]])
+
+
+def _failing_second_encode(monkeypatch, error: Exception) -> None:
     encode = payload.encode_branch_arrays
     calls = []
 
     def flaky(branch, num_tokens):
         calls.append(branch)
         if len(calls) == 2:
-            raise ValueError("Top logprobs are not aligned to branch tokens")
+            raise error
         return encode(branch, num_tokens)
 
     monkeypatch.setattr(payload, "encode_branch_arrays", flaky)
-    with pytest.raises(ValueError):
+
+
+def test_keep_frees_what_it_kept_when_it_fails(monkeypatch):
+    hook = PayloadHook()
+    episode = _two_trace_episode(np.random.default_rng(3))
+    _failing_second_encode(monkeypatch, MemoryError())
+    with pytest.raises(MemoryError):
         hook.keep(episode, vf.SamplingConfig())
     assert not hook.server.blobs
 
 
+def test_keep_skips_a_branch_whose_arrays_do_not_encode(monkeypatch):
+    """The episode still succeeds (eval never needs the arrays); the branch gets no
+    reference, so a train run that needs it stops at the train sink."""
+    hook = PayloadHook()
+    episode = _two_trace_episode(np.random.default_rng(4))
+    _failing_second_encode(monkeypatch, ValueError("Top logprobs are not aligned to branch tokens"))
+    hook.keep(episode, vf.SamplingConfig())
+    first, second = episode.traces
+    assert PAYLOAD_INFO_KEY in first.info and PAYLOAD_INFO_KEY not in second.info
+    assert len(hook.server.blobs) == 1
+    assert all(node.routed_experts is None for node in second.nodes)
+
+
 def test_payload_server_binds_the_env_server_host():
-    assert payload_host(None) == "127.0.0.1"
-    assert payload_host("tcp://10.1.2.3:0") == "10.1.2.3"
+    assert payload_host(None) == ("127.0.0.1", "127.0.0.1")
+    assert payload_host("tcp://10.1.2.3:0") == ("10.1.2.3", "10.1.2.3")
+    bind, url = payload_host("tcp://*:5000")
+    assert bind == "0.0.0.0" and not url.startswith("127.")
 
 
 def test_store_serves_and_deletes():
