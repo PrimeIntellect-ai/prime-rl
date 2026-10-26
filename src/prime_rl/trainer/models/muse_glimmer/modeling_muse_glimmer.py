@@ -158,7 +158,7 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
 
     def __init__(self, config: MuseGlimmerTextConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         # Token embeddings are RMS-normalized (no weight) instead of scaled by sqrt(hidden_size).
         self.embed_norm = MuseGlimmerRMSNorm(eps=config.rms_norm_eps)
         self.layers = nn.ModuleList(

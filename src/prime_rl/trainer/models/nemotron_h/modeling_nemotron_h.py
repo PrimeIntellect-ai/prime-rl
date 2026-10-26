@@ -161,7 +161,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
         )

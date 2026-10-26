@@ -174,10 +174,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 class DeepseekV4Model(DeepseekV4PreTrainedModel):
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.layers = nn.ModuleList(
