@@ -31,11 +31,10 @@ class TokenSupport:
     """Per-token sampler support as CSR rows: token ``i`` owns entries ``offsets[i]:offsets[i + 1]``. ``offsets``
     stays on the host, so slicing rows never waits on the device."""
 
-    ids: Tensor  # int32 [E]
-    offsets: Tensor  # int64 [N + 1], CPU
-    replayed: Tensor  # bool [N]: the row is the sampling mask the token was drawn from
-    logprobs: Tensor | None = None  # float32 [E], the sampler's logprobs
-    # The loss's logit gradient lies on each token's label and support entries (see FusedOutputLinear)
+    ids: Tensor
+    offsets: Tensor
+    replayed: Tensor
+    logprobs: Tensor | None = None
     sparse_backward: bool = False
 
     @property
@@ -246,11 +245,9 @@ def _sparse_logit_backward(
     label_grad = label_grad * inv_temperature
     entry_grad = entry_grad * inv_temperature[rows]
     if softcap is not None:
-        # The saved logits are softcap * tanh(raw / softcap) / T.
         label_grad = label_grad * (1 - (label_logits / (softcap * inv_temperature)).square())
         entry_grad = entry_grad * (1 - (entry_logits / (softcap * inv_temperature[rows])).square())
 
-    # Token-major CSR with the label first in each row.
     row_offsets = offsets.to(device) + torch.arange(n + 1, device=device)
     label_pos = row_offsets[:-1]
     entry_pos = torch.arange(rows.numel(), device=device) + rows + 1
@@ -286,9 +283,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         labels: torch.Tensor,  # [N]
         inv_temperature: torch.Tensor,  # [N]
         chunk_size: int,
-        support_ids: torch.Tensor | None = None,  # [E] int32
-        support_rows: torch.Tensor | None = None,  # [E] int32, the token of each entry
-        offsets: torch.Tensor | None = None,  # [N + 1] int64 CPU, CSR row offsets of the entries
+        support_ids: torch.Tensor | None = None,
+        support_rows: torch.Tensor | None = None,
+        offsets: torch.Tensor | None = None,
         replay: torch.Tensor | None = None,  # [N] bool
         softcap: float | None = None,
         sparse_backward: bool = False,
@@ -324,7 +321,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             torch.empty(support_ids.shape, device=device, dtype=torch.float32) if support_ids is not None else None
         )
         if sparse_backward:
-            # The sparse backward needs the logits at the label and support entries, not the full rows.
             label_logits = torch.empty((n,), device=device, dtype=torch.float32)
             entry_logits = torch.empty(support_ids.shape, device=device, dtype=torch.float32)
 
@@ -341,7 +337,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
             if support_ids is not None:
-                # The chunk's entries are one contiguous slice; each lives in exactly one vocab chunk.
                 first, last = int(offsets[start]), int(offsets[end])
                 ids_chunk, rows_chunk = support_ids[first:last], support_rows[first:last] - start
                 support_logits = torch.full((last - first,), float("-inf"), device=device, dtype=torch.float32)
@@ -468,7 +463,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     # Replayed rows get softmax gradient only on support ids. Set masked-out
                     # logits to -inf before exp: a masked-out logit above the sampling-mask
                     # logZ would overflow exp() to inf (and inf * 0 = NaN in the grads).
-                    # Out-of-chunk entries mark a spare trailing slot.
                     in_support = torch.zeros(scaled_logits.numel() + 1, dtype=torch.bool, device=device)
                     in_support[torch.where(in_range, flat, scaled_logits.numel())] = True
                     masked_out = replay_chunk.unsqueeze(-1) & ~in_support[:-1].view(scaled_logits.shape)

@@ -422,8 +422,6 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Token-aligned sampler support: replays sampling masks and, for score centering, carries the
-            # sampler logprobs. The LM head gets it aligned with the labels.
             support = label_support = None
             if micro_batch["support_offsets"] is not None and (
                 score_centering or bool(micro_batch["support_replayed"].any())
@@ -533,7 +531,6 @@ def train(config: TrainerConfig):
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
 
-            # Undo the label shift: the head saw every token's entries but the first's, in order.
             trainer_support = None
             if score_centering and support is not None and support.logprobs is not None:
                 first_row = int(support.offsets[1])

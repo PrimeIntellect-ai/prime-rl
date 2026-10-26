@@ -121,7 +121,6 @@ def test_kl_matches_dense_kl(replay, kl_staleness, estimator):
     beta = (
         torch.full((n,), 0.5) if kl_staleness == "none" else torch.where(ages > 0, 0.5 / ages.clamp_min(1).sqrt(), 0.0)
     )
-    # Every token is one action of the same prefix: exact sums KL over q per token, k1 takes log q(a) - log p(a).
     kl = (q * (q.log() - logp)).sum() if estimator == "exact" else q.log() - logp
     reference = (beta * kl).sum()
     torch.testing.assert_close(result.loss, reference)
