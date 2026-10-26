@@ -116,6 +116,13 @@ def train(config: SFTConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
+    # On this branch the trainer exports the swe-marathon checkpoints to Hugging Face instead of training.
+    from prime_rl.trainer.sft import hf_export
+
+    hf_export.run(config, parallel_dims)
+    asyncio.run(monitors.finalize(paused=False))
+    return
+
     total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
     assert total_micro_batches % micro_batches_per_step == 0, (
