@@ -13,6 +13,7 @@ from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserM
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.control.types import ConfigUpdate
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -75,7 +76,8 @@ def episode(traces, *, group="g", version=0):
 def sink(*, constant=True, admitted=True, batch_size=100):
     config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
-        config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
+        config=SimpleNamespace(group_size=1),
+        sampling_at=lambda step: vf.SamplingConfig(temperature=1.0),
         requires_sampling_masks=False,
         requires_top_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
@@ -261,5 +263,24 @@ def test_partial_window_and_shutdown_release():
         assert window.attempts == 1
         assert window.metrics.to_dict()["rollout/queued/cancelled"] == 1
         assert s.take_rollout_window(force=True) is None
+
+    asyncio.run(run())
+
+
+def test_reconfigure_applies_new_batch_size_and_staleness():
+    async def run():
+        s = sink(batch_size=4)
+        await s.add(episode([trace()], group="a"))
+        await s.add(episode([trace()], group="b"))
+        config = OrchestratorConfig(batch_size=2, max_staleness=1)
+        s.reconfigure(ConfigUpdate(revision=1, step=1, config=config, changes=()))
+        assert len((await s.take_batch()).samples) == 2
+
+        s.progress.step = 2
+        await s.add(episode([trace()], group="c"))
+        config = OrchestratorConfig(batch_size=2, max_staleness=0)
+        s.reconfigure(ConfigUpdate(revision=2, step=2, config=config, changes=()))
+        await s.take_batch()
+        assert not s.pending_batch
 
     asyncio.run(run())
