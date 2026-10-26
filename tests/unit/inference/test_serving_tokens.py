@@ -120,7 +120,7 @@ def test_generate_response_post_process_preserves_prompt_metadata():
 
 
 def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, draws: bool = False):
-    """The packed int64 mask the patched sampler hands to the server."""
+    """The packed int64 mask the patched sampler hands to the server (pinned host copies need CUDA)."""
     from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
 
     logits = torch.full((len(sampled_ids), 8), -torch.inf)
@@ -139,6 +139,7 @@ def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, d
     return PackedSamplingMask(ids=mask.token_ids, counts=np.diff(mask.offsets).astype(np.int32))
 
 
+@pytest.mark.gpu
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("replay", [False, True])
@@ -242,6 +243,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
     assert responses[1]["ec_transfer_params"] == {"ec": "kept"}
 
 
+@pytest.mark.gpu
 def test_gpu_capture_sampler_draws_round_trip():
     logq = {1: float(np.log(0.6)), 2: float(np.log(0.3)), 5: float(np.log(0.1))}
     mask = _gpu_capture(logq, [2, 5], replay=False, draws=True)
