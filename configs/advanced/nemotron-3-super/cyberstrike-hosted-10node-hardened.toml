@@ -1,0 +1,868 @@
+# Nemotron 3.5 Super — 200-step real-data RL on 10 nodes (80 H200 GPUs).
+# Runtime-hardened resume: tunnel/slot health, RLM executable install, bounded 404 retries,
+# max_inflight 800, 8-hour agent rollout timeout, full 300-rollout eval every 40 steps.
+# 4 trainer nodes (CP16/EP16) + 6 inference replicas (TP2/DP4, EP8).
+# Do not launch until source_ref names a pushed commit containing PRL_CRASH_DIAGNOSTICS support.
+# Logs per trainer rank: <run_dir>/diagnostics/trainer-*.log (prime-rl),
+# python-*.log (Torch/stdlib), and events-*.jsonl (EP/chunk/resources).
+# Native/C++ output remains in torchrun's existing per-rank stdout/stderr logs under
+# <run_dir>/logs/attempt_*/trainer/torchrun/; hosted CLI rank filtering does not erase them.
+# Hosted run: prime train configs/advanced/nemotron-3-super/cyberstrike-hosted.toml --volume nemotron-training -y
+
+# Base image + source overlay: image provides the heavy wheels (lockfile matches the
+# branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
+image_tag = "v0.10.1.dev74"
+# REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
+source_ref = "281216328e40be6972b41046003a2632e8020447"
+gpu_type = "H200_141GB"
+
+max_steps = 200
+seq_len = 655360
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+VLLM_HTTP_TIMEOUT_KEEP_ALIVE = "120"
+# Bring-up insurance: INIT,NET only logs during NCCL communicator setup (a startup
+# burst, not per-step), so if this run's allocation stalls at the trainer<->inference
+# NCCL broadcast it names the stuck rank/transport instead of hanging silently.
+NCCL_DEBUG = "INFO"
+NCCL_DEBUG_SUBSYS = "INIT,NET"
+# Per-rank trainer logs, EP/chunk events, and host/GPU sampling on the run volume.
+PRL_CRASH_DIAGNOSTICS = "1"
+PRL_DIAGNOSTICS_SAMPLE_INTERVAL = "30"
+TORCH_LOGS = "recompiles"
+
+[log]
+level = "debug"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+# Four trainer nodes (32 GPUs) plus six one-node inference replicas (48 GPUs).
+# TP2/DP4 gives four DP schedulers per inference node, 24 total. Keep the proven
+# CP16/EP16 trainer layout; no two-node trainer reduction.
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 6
+orchestrator_on_inference = true
+
+[monitors.wandb]
+project = "nemotron-3.5-super-cyberstrike"
+name = "nemotron-3.5-super-cyberstrike-10node-hardened"
+
+[weight_broadcast]
+type = "nccl"
+# The trainer waits for the inference pool to join each step's weight broadcast, but the
+# receiver can't join until it finishes the current (very long, deep-rollout) eval epoch.
+# The 3600s default tripped "TimeoutError: No receiver joined the broadcast within 3600s"
+# (transports/weights/base.py:87) ~hourly on the huge step-0 batch+eval, SIGTERM-restarting
+# the whole run in a loop (0 steps sealed in 5h, run fjg2r4ydcyitj7f59thvofmh). The source
+# comment there prescribes raising weight_broadcast.timeout; 12h comfortably covers the
+# step-0 eval epoch. It's a c10d store wait (wait_for_master), independent of
+# dist_timeout_seconds (the NCCL watchdog), so this doesn't delay genuine-hang detection.
+timeout = 43200
+
+[ckpt]
+interval = 10
+keep_last = 1
+
+[resume]
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+
+[trainer]
+# Raised 3600->9000 (2.5h): the NCCL watchdog killed step 0's weight-transfer collective
+# at the 1h default once collection ran long (the 2nd timeout loop, after weight_broadcast).
+# With batch_size=32 step 0 is ~1h, so 9000 gives margin without a huge genuine-hang delay.
+dist_timeout_seconds = 9000
+enable_router_replay = false
+
+[trainer.model]
+attn = "flash_attention_3"
+# cp 8->16 (2026-10-25): trainer was OOM-crash-looping (exit-137 host-RAM OOM from activation
+# offload) at seq_len=655360 on BOTH 2 and 4 nodes -- activation memory is cp-bound, so node
+# count didn't help. cp=16 shards the 640K seq 16-way (40K tok/rank vs 80K) -> ~halves per-rank
+# activation + host-RAM offload, keeping full seq_len. On 32 GPUs: dp_shard=32/(cp16)=2; ep MUST
+# be a multiple of cp (parallel_dims) so ep 8->16 (ep=16 divides dp_shard*cp=32). Risk: dp_shard=2
+# may raise param/optim GPU memory -- verify trainer stays alive (no exit-137) at bring-up.
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+token_chunk_size = 8192
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.0
+max_norm = 1.0
+
+[trainer.ckpt]
+skip_optimizer = false
+
+[orchestrator]
+# batch_size = number of EPISODES (rollouts) per training step, NOT groups (verified in
+# orchestrator/train_sink.py: pending_batch is keyed by trace_id and cut when
+# len(pending_batch) >= batch_size). So distinct prompts/step = batch_size / group_size.
+# 128 / 16 = 8 prompts/step (the shipped baseline). batch_size=32 would be only 2
+# prompts/step -> far too under-diverse. Keep it a multiple of group_size (16). NOTE: the
+# step-0 crash-loop was the long EVAL epoch blocking the weight broadcast, NOT this batch —
+# fixed by the raised timeouts + smaller eval group_size, so batch_size stays at baseline.
+batch_size = 128
+max_off_policy_steps = 32
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 1.0
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[[orchestrator.train.source]]
+name = "cyberstrike"
+group_size = 16
+
+[orchestrator.train.source.curriculum.sampler]
+type = "difficulty_pool"
+
+[orchestrator.train.source.curriculum.sampler.pools.hard]
+threshold = 0.25
+weight = 0.4
+
+[orchestrator.train.source.curriculum.sampler.pools.normal]
+threshold = 0.75
+weight = 1.0
+
+[orchestrator.train.source.curriculum.sampler.pools.easy]
+threshold = 1.0
+weight = 0.2
+
+[orchestrator.train.source.env]
+id = "prime/cyberstrike-env@0.1.4"
+
+[orchestrator.train.source.env.taskset]
+id = "cyberstrike-harbor"
+dataset = "cyberstrike-vendor@72702ad4d19f"
+registry_path = "/volume/datasets/cyberstrike/registry.json"
+artifact_max_bytes = 1073741824
+
+[orchestrator.train.source.env.taskset.task]
+reward_key = "continuous_reward"
+
+[orchestrator.train.source.env.agent.harness]
+id = "rlm"
+version = "5cdeebad72fd2b2cfa300f5c4b45d74066b97f5a"
+max_depth = 0
+builtin_tools = ["bash", "edit", "ipython"]
+allow_git = false
+forward_env = []
+exec_timeout = 3600
+# Client requirement: no turn limit. max_total_turns stays unset (None = uncapped).
+# Disable the 10M cumulative new-token budget; context compaction remains enabled.
+max_total_tokens = 0
+
+[orchestrator.train.source.env.agent.harness.env]
+# Tasks run the agent as a non-root user, so verifiers installs rlm as root while the
+# agent's `uv sync --script` runs as that user; a uv cache root touched first is EACCES
+# for the agent. Root's only uv call is nano-rlm's `uv tool install`, which forwards
+# RLM_EXTRA_UV_ARGS, so `--no-cache` there leaves no root-owned cache and the agent
+# creates this one itself. (The agent's cache must persist: uv keeps the script's venv in it.)
+UV_CACHE_DIR = "/tmp/vf-uv-cache"
+RLM_EXTRA_UV_ARGS = "--no-cache"
+# Some task images run the agent as a non-root user whose $HOME/.config is not
+# agent-writable; uv's standalone installer then fails writing its receipt and shell
+# completions there (HarnessError: "failed to prepare uv script: ... uv-receipt.json:
+# Permission denied"). Install uv unmanaged + skip profile writes so the installer only
+# drops the binary at UV_INSTALL_DIR and touches nothing under the agent's home. Verified
+# in Docker across non-writable-.config, non-writable-$HOME, healthy, and root images.
+UV_UNMANAGED_INSTALL = "1"
+INSTALLER_NO_MODIFY_PATH = "1"
+
+[orchestrator.train.source.env.agent.harness.compaction]
+summarize_at_tokens = 524288
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+region = "us"
+idle_timeout = 3600.0
+creates_per_min = 60
+allow = []
+labels = [
+    "nemotron-3.5-super-cyberstrike-10node-hardened",
+]
+
+[orchestrator.train.source.env.agent.timeout]
+# Set to 14400 (4h): measured on vnt6/fjg2/j2x8mw the real rollout tail maxes at ~138 min
+# across ~2550 rollouts and NONE hit the original 28800 (8h) cap. 5400 (90 min) truncated the
+# ~5-14% long tail (biasing the held-out curve); 14400 gives ~3x margin over the 138-min max
+# for training to lengthen rollouts, and the off-policy staleness sweep drops stuck stragglers.
+# A rollout timeout stops the trace as `rollout_timeout` (not an error) and still scores.
+rollout = 28800.0
+setup = 3600.0
+finalize = 3600.0
+scoring = 3600.0
+
+[orchestrator.train.source.env.timeout]
+episode = 86400.0
+
+[orchestrator.train.source.env.retries]
+rules = [
+    { type = "ProviderError", max_retries = 3 },
+    { type = "SandboxError", max_retries = 3 },
+    { type = "HarnessError", max_retries = 3 },
+]
+
+# Env-server backpressure: seven workers x 128 episodes = an 896-episode train-side
+# backstop, not a measured safe node limit. The current run scaled workers normally
+# without saturation. Keep the bounded pool and monitor worker health after the
+# max_inflight increase. max_concurrent is a per-worker asyncio.Semaphore.
+[orchestrator.train.source.serve]
+max_concurrent = 128
+
+[orchestrator.train.source.serve.pool]
+type = "elastic"
+max_workers = 7
+multiplex = 128
+
+[orchestrator.train.source.select.include]
+keys = [
+    "admidio-security-remediation-defensive",
+    "airflow-connection-writeonly-defensive",
+    "analytics-portal-authorization-defensive",
+    "archive-intake-java-defensive",
+    "artifact-proxy-gateway-defensive",
+    "ashfold-attestation-portal-defensive",
+    "attestation-decode-desk",
+    "authlib-oauth-cache-harden",
+    "backstage-pass-orchestrator-defensive",
+    "backup-restore-trust-boundary-defensive",
+    "basalt-chunk-ingest-desk-defensive",
+    "basalt-ssh-frame-desk-defensive",
+    "bash-prepress-spool-runner-defensive",
+    "binary-telemetry-codec-defensive",
+    "bondmesh-attestation-relay-defensive",
+    "brackwater-billing-portal-defensive",
+    "brimstone-geothermal-injection-defensive",
+    "bursary-award-desk-defensive",
+    "c-aegis-envelope-parser-defensive",
+    "c-atelier-rendition-desk-defensive-v5",
+    "c-cache-artifact-race-defensive-v17-fixed",
+    "c-cartography-plate-compositor-defensive",
+    "c-cjson-buffer-safety-defensive",
+    "c-cobalt-capsule-desk-defensive",
+    "c-composite-cure-defensive",
+    "c-conservation-packet-defensive",
+    "c-coretray-workbench-defensive-v12-2",
+    "c-depot-works-register-defensive",
+    "c-dome-cue-lifecycle-defensive",
+    "c-ember-pour-ledger-defensive",
+    "c-exhibit-packet-defensive",
+    "c-folio-dispatch-defensive",
+    "c-foundry-handoff-defensive",
+    "c-furnace-docket-defensive",
+    "c-gallery-media-buffer-defensive-v3",
+    "c-gateway-context-hardening-defensive",
+    "c-hatchery-custody-defensive",
+    "c-museum-loan-defensive",
+    "c-mvt-case-relay-multiboundary-hardening",
+    "c-nocodb-request-policy-defensive",
+    "c-orbit-manifest-defensive",
+    "c-packed-container-decompressor-defensive",
+    "c-phonetics-lessons-defensive-v7",
+    "c-quire-line-shift-defensive-v4",
+    "c-railcar-evidence-hub-defensive",
+    "c-reactor-lifetime-audit-defensive",
+    "c-rehearsal-workbench-defensive-v6",
+    "c-repository-intake-defensive",
+    "c-rotorline-blade-repair-defensive",
+    "c-runtime-hardening-defensive",
+    "c-selvedge-cutting-defensive",
+    "c-synthetic-ambiguities-arithmetic-defensive",
+    "c-synthetic-binary-reward-defensive",
+    "c-theater-cuebook-defensive-v11",
+    "c-validator-succession-defensive-new",
+    "c-vxforge-codec-defensive",
+    "c-wheelset-handoff-defensive",
+    "c_cve_2023_30623_wip_interpolation_pull_request_defensive",
+    "c_cve_2026_8723_qs_strictnullhand_defensive",
+    "caption-restoration-mastering-service-defensive",
+    "cares-resolver-hardening",
+    "cartograph-tile-provenance-gateway-defensive",
+    "casbin-policy-parse-defensive",
+    "casevault-batch-boundary-audit",
+    "chert-hearth-attest-defensive",
+    "ci4ms_unvalidated_vulnerable_defensive",
+    "cinder-kiln-release-authz-defensive",
+    "cjson-memory-safety-defensive",
+    "classdef-configuration-desk-defensive",
+    "columnar-ingest-defensive",
+    "component-validation-gateway-defensive",
+    "cpp-acoustic-render-workers-defensive-v3",
+    "cpp-archive-extraction-policy-defensive",
+    "cpp-artifact-loader-memory-defensive",
+    "cpp-buffer-transfer-planner-defensive",
+    "cpp-cairn-survey-desk-defensive",
+    "cpp-calibration-relay-vault-defensive",
+    "cpp-chalkline-inference-router-defensive",
+    "cpp-deferred-teardown-service-defensive-v4",
+    "cpp-ember-fused-rot-defensive",
+    "cpp-exrlite-frameaudit-defensive-v5",
+    "cpp-facetloom-mesh-defensive-v2",
+    "cpp-icc-profile-reader-defensive-v8",
+    "cpp-kimberlite-relay-defensive",
+    "cpp-mesa-map-relay-defensive-v13",
+    "cpp-multilingual-label-spooler-defensive-v5",
+    "cpp-ops-authorization-sidecar-defensive",
+    "cpp-railhub-lifetime-boundary-defensive",
+    "cpp-raster-band-workbench-defensive-v10",
+    "cpp-recorder-segment-journal-defensive",
+    "cpp-rundown-materialization-defensive",
+    "cpp-sensor-mesh-gateway-defensive-v16",
+    "cpp-shale-lot-desk-defensive",
+    "cpp-stateweave-dispatch-defensive-v10",
+    "cpp-strata-ledger-defensive",
+    "cpp-telemetry-bus-defensive",
+    "cpp-telemetry-pack-defensive",
+    "curl-transport-hardening-c-defensive",
+    "databridge-connector-isolation-defensive",
+    "directus-authenticated-security-hardening-defensive",
+    "document-service-cluster-defensive",
+    "docvault-api-audit-defensive",
+    "dolerite-ingress-desk-defensive",
+    "driftloom-ci-cache-exfiltration-defensive",
+    "echo-multi-cwe-source-audit-defensive",
+    "edge-gateway-hardening-defensive",
+    "event-store-concurrency-integrity-defensive",
+    "express-api-trust-boundary-defensive",
+    "ferrite-gauge-relay-defensive",
+    "ferrite-ingress-desk-defensive",
+    "ferrite-pack-splice-desk-defensive",
+    "file-service-security-hardening-defensive",
+    "file-sharing-trust-boundaries-defensive",
+    "flask-upload-boundary-defensive",
+    "flowise-authorization-boundary-defensive",
+    "forgelink-seal-lineage-defensive",
+    "garnet-exempt-relay-defensive",
+    "gateway-integrity-access-defensive",
+    "gateway-path-bypass-defensive",
+    "geometry-asset-intake-defensive",
+    "git-object-intake-defensive",
+    "glasswing-supply-chain-triage-defensive",
+    "gneiss-chunk-relay-desk-defensive",
+    "go-artifact-registry-integrity-defensive",
+    "go-artifact-snapshot-publication-defensive",
+    "go-breakglass-broker-defensive",
+    "go-clienthello-route-guard-defensive",
+    "go-cluster-bootstrap-defensive-v10",
+    "go-delegated-scope-defensive-v11",
+    "go-dispatch-docket-defensive",
+    "go-dns-resolver-integrity-defensive",
+    "go-entitlement-decision-plane-defensive",
+    "go-feed-record-ingest-defensive",
+    "go-gatekeep-navigation-defensive",
+    "go-jobplane-execution-isolation-defensive",
+    "go-ledger-reconcile-defensive",
+    "go-ledgerweave-lifecycle-defensive",
+    "go-microscope-workflow-defensive-v3",
+    "go-newsletter-campaign-manager-defensive",
+    "go-oauth2-auth-session-defensive",
+    "go-postgres-ledger-defensive",
+    "go-rehearsal-cue-spool-defensive-v4",
+    "go-release-bundle-desk-defensive",
+    "go-release-ledger-defensive",
+    "go-release-metadata-verify-defensive",
+    "go-route-bundle-defensive-v15",
+    "go-routemesh-headerchain-defensive-v9",
+    "go-routeweave-canonicalization-defensive-v5",
+    "go-schema-ref-defensive",
+    "go-snapshot-import-desk-defensive",
+    "go-stream-relay-gateway-defensive",
+    "go-tideglass-review-capsule-hardening",
+    "go-update-metadata-verification-defensive",
+    "go-voucher-redemption-desk-defensive",
+    "go-webhook-relay-defensive",
+    "go-websocket-origin-boundary-defensive-v10",
+    "go_cve_2024_23897_synthetic_deterministic_revalidation_defensive",
+    "go_cve_2026_39397_payload_puck_createpuckplug_createpuckplug_defensive",
+    "goproxy-tunnel-identity-boundary-defensive",
+    "grain-receiving-settlement-controller-defensive",
+    "grav-defensive-audit",
+    "grpc-rbac-transport-hardening",
+    "gunicorn-te-smuggling-harden",
+    "haproxy-http-chain-c-defensive",
+    "http-framing-proxy-c-defensive",
+    "http-header-injection-defensive",
+    "ingress-policy-reconciliation-defensive",
+    "integration-broker-trust-boundaries-defensive",
+    "java-aegisstamp-firmware-approval-defensive-v3",
+    "java-apinizer-expression-boundary-defensive-v13",
+    "java-artifact-approval-defensive-v3",
+    "java-camel-security-boundaries-defensive",
+    "java-clinical-feed-defensive-v6",
+    "java-codeql-xml-hardening-defensive-v16",
+    "java-crypto-profile-defensive-v5",
+    "java-directory-filter-defensive-v5",
+    "java-ghidra-boundary-hardening-defensive",
+    "java-http-framing-relay-defensive",
+    "java-identity-join-defensive",
+    "java-jackson-databind-review-defensive",
+    "java-junit-security-boundaries-defensive",
+    "java-kafka-security-boundaries-defensive",
+    "java-keycloak-registration-boundaries-defensive",
+    "java-netty-boundaries-defensive",
+    "java-ofbiz-hardening-defensive",
+    "java-profile-import-defensive-v13",
+    "java-rule-effect-admission-defensive",
+    "java-signed-telemetry-collector-defensive-v4",
+    "java-spel-boundary-defensive-v15",
+    "java-synthetic-dispatch-service-defensive",
+    "java-tomcat-security-defensive",
+    "java-verdantfolio-xml-boundary-defensive-v13",
+    "java-xml-import-defensive-v10",
+    "java-xpath-policy-lifecycle-defensive-v10",
+    "java_synthetic_containment_preserving_defensive",
+    "javascript-cache-client-defensive",
+    "javascript-callback-client-defensive",
+    "javascript-clearing-waterfall-defensive",
+    "javascript-csp-policy-defensive-1",
+    "javascript-document-store-defensive",
+    "javascript-forge-artifact-custody-defensive",
+    "javascript-handoff-lifecycle-race-defensive",
+    "javascript-intake-gateway-defensive",
+    "javascript-ledger-guard-defensive",
+    "javascript-openapi-generator-defensive",
+    "javascript-partner-relay-defensive",
+    "javascript-preview-isolation-defensive",
+    "javascript-registry-authorization-normalization-defensive-v2",
+    "javascript-release-graph-defensive",
+    "javascript-resumable-boundary-defensive",
+    "javascript-shell-boundary-defensive",
+    "javascript-template-policy-defensive-v4",
+    "javascript-websocket-auth-defensive",
+    "jdom-parser-ownership-defensive",
+    "jinja-tenant-render-defensive",
+    "js-emberline-artifact-broker-defensive",
+    "js-emberline-release-gate-defensive",
+    "js-forgeci-code-injection-defensive",
+    "js-record-query-guard-defensive",
+    "kiln-mandate-relay-defensive",
+    "kv-cache-proxy-defensive",
+    "langgraph-checkpoint-isolation-defensive",
+    "ledgerline-registry-boundary-defensive",
+    "libexpat-xml-parsing-defensive",
+    "libtiff-multipage-decode-lifecycle-defensive",
+    "libxml2-expand-budget-defensive",
+    "lodash-template-imports-defensive",
+    "lodestone-block-authority-desk-defensive",
+    "lodestone-sample-rewrite-defensive",
+    "logsentry-observability-defensive",
+    "loom-merge-expr-desk-defensive",
+    "lumina-specimen-custody-desk-defensive",
+    "maddy-unsanitized-injection",
+    "magento-blocklist-defensive",
+    "malware-detection-ir-cti-fusion-analysis-prototype",
+    "malware-detection-ir-independent-phases-analysis-prototype",
+    "malware-sideload-lateral-triage-defensive",
+    "mattermost-terminal-rendering-defensive",
+    "memcached-request-parsing-defensive",
+    "merchant-operations-gateway-defensive",
+    "metrics-ingest-gateway-defensive",
+    "millstone-report-broker-defensive",
+    "miniz-size-wrap-defensive",
+    "model-registry-serialization-defensive",
+    "mosquitto-broker-hardening",
+    # EXCLUDED 2026-10-24: multi-cwe-document-portal-defensive dies at harness startup
+    # (HarnessError "ACP process closed its stdout", 0 turns, ~20s) on every run. Root cause
+    # not yet found (not OOM, not the LD_LIBRARY_PATH hypothesis). Removed pending diagnosis.
+    "multipart-keep-filename-harden",
+    "multitenant-export-security-defensive",
+    "nightglass-edge-intrusion-defensive",
+    "nimbus-aerostat-ballast-clearance-defensive",
+    "node-ledger-query-desk-defensive",
+    "olivine-lot-desk-defensive",
+    "onyx-aead-sniffer-desk-defensive",
+    "openstamanager_sqli_defensive",
+    "openvpn-control-plane-c-defensive",
+    "ops-brief-boundary-harden",
+    "ota-slot-provisioning-defensive",
+    "pairvault-batch-route-audit",
+    "parse-server-prototype-pollution-defensive",
+    "partner-data-gateway-defensive",
+    "partner-gateway-boundary-defensive",
+    "partner-portal-cors-defensive",
+    "passkey-ceremony-broker-rust-defensive",
+    "pelagic-lading-clearance-defensive",
+    "perl-zoning-permit-clearance-defensive",
+    "pgbouncer-pool-multiplex-defensive",
+    "php-automation-engine-defensive",
+    "php-bagisto-catalog-hardening-defensive",
+    "php-detection-correlator-defensive",
+    "php-export-pipeline-sink-defensive-v4-2",
+    "php-grant-ledger-custody-defensive",
+    "php-migration-route-handoff-defensive",
+    "php-nextcloud-file-sharing-defensive",
+    "php-restore-upload-defensive-v7",
+    "php-signed-bundle-defensive-v7",
+    "php-template-bundle-runtime-defensive-v3",
+    "php-tribunal-docket-disclosure-defensive",
+    "php-widget-composer-boundary-defensive-v9",
+    "php_cve_2026_31824_sylius_promotion_condition_defensive",
+    "pinehold-evidence-custody-defensive",
+    "pipeforge-pipeline-orchestrator-defensive",
+    "planetarium-cue-custody-service-defensive",
+    "png-meta-overflow-defensive",
+    "policy-engine-order-defensive",
+    "policy-export-isolation-defensive",
+    "py-dispatch-rpc-pickle-harden",
+    "py-mq-relay-pickle-harden",
+    "py-synthetic-administrator-subscriptions-defensive",
+    "py-synthetic-clearinghouse-interpolation-r1-6",
+    "py_cve_2024_23897_synthetic_boundaries_controlled_defensive",
+    "py_synthetic_independent_documenting_defensive",
+    "pyrite-assay-index-defensive",
+    "python-archive-runner-defensive",
+    "python-artifact-relay-defensive",
+    "python-async-cache-race-defensive",
+    "python-async-context-defensive",
+    "python-beacon-relay-defensive",
+    "python-bollard-channel-defensive",
+    "python-build-plan-compiler-defensive",
+    "python-c2-traffic-analysis-v8",
+    "python-caching-resolver-audit-defensive",
+    "python-cask-hold-defensive-v3",
+    "python-config-resolver-defensive",
+    "python-course-catalog-service-defensive",
+    "python-delegate-staging-defensive",
+    "python-delegation-lifecycle-defensive",
+    "python-django-network-inventory-defensive",
+    "python-ecdsa-strict-verification-defensive",
+    "python-endpoint-network-fusion-analysis-v7",
+    "python-esdk-cache-integrity-defensive",
+    "python-fastapi-boundary-hardening-defensive",
+    "python-federation-replay-integrity-defensive",
+    "python-feed-ingest-service-defensive",
+    "python-gateway-request-framing-defensive",
+    "python-git-policy-defensive-v9",
+    "python-glasswing-cache-triage-defensive-v38",
+    "python-http-downgrade-gateway-defensive",
+    "python-incident-timeline-analysis-v15",
+    "python-inkmark-snippet-defensive",
+    "python-instrument-run-archive-defensive",
+    "python-jinja-sandbox-defensive",
+    "python-jwt-manifest-defensive-v12",
+    "python-keras-artifact-hardening-defensive",
+    "python-latchwire-tls-peer-defensive-v4",
+    "python-lease-queue-defensive",
+    "python-linux-persistence-defensive-v7",
+    "python-lutewell-packet-defensive",
+    "python-mailing-list-archive-defensive",
+    "python-manifest-lint-service-defensive",
+    "python-manuscript-intake-portal-defensive",
+    "python-merge-policy-defensive",
+    "python-modelhub-revision-fence-defensive",
+    "python-oriole-credential-triage-defensive-v18",
+    "python-package-relay-defensive",
+    "python-paper-cache-defensive",
+    "python-partner-catalog-feed-defensive",
+    "python-pipeline-drift-triage-defensive-v38",
+    "python-plugin-bundle-intake-defensive",
+    "python-policy-expression-defensive",
+    "python-print-bureau-desk-defensive",
+    "python-promptforge-provenance-defensive-v22",
+    "python-provider-lifecycle-defensive",
+    "python-pyansys-geometry-injection-defensive-2",
+    "python-qiskit-integrity-hardening-defensive",
+    "python-queryloom-regex-budget-defensive-v13",
+    "python-record-framer-defensive",
+    "python-relay-policy-defensive-v3",
+    "python-release-pipeline-defensive-v22",
+    "python-report-template-render-defensive",
+    "python-rescuebridge-component-containment-defensive",
+    "python-runbook-forge-defensive",
+    "python-sandpiper-model-triage-defensive-v2",
+    "python-sealbox-crypto-desk-defensive",
+    "python-snapshot-vault-defensive-v13",
+    "python-tornado-native-security-defensive",
+    "python-urllib3-relay-integrity-defensive",
+    "python-webhook-dispatch-defensive",
+    "python-webhook-egress-desk-defensive",
+    "python-workflow-engine-defensive-v17",
+    "python-workflow-engine-defensive-v28",
+    "quarkus-authentication-authorization-defensive",
+    "quarry-webhook-broker-defensive",
+    "quartz-corpus-index-defensive",
+    "quartz-proto-arena-defensive",
+    "quay-ferry-berth-clearance-desk-defensive",
+    "quill-telemetry-gateway-defensive",
+    "rb_cve_2024_27281_synthetic_sentinelmesh_engineering_defensive",
+    "rb_cve_2025_8088_synthetic_sentinelmesh_spreadsheet_defensive",
+    "rb_cve_2026_45321_router_pull_request_t_misconfigurati_defensive",
+    "rb_cve_2026_45758_guardrails_infrastructure_approximately_defensive",
+    "reconciliation-api-gateway-defensive",
+    "report-sharing-portal-defensive",
+    "rolling-stock-workpack-desk-defensive",
+    "ruby-conduit-spool-lifecycle-defensive",
+    "ruby-graphql-schema-loader-defensive",
+    "ruby-incident-escalation-bridge-defensive",
+    "ruby-loofah-sanitization-serializing-defensive",
+    "ruby-plugin-host-loading-defensive-v9",
+    "ruby-report-boundary-chain-defensive",
+    "ruby-scoped-config-resolver-defensive",
+    "ruby-tuyere-desk-defensive",
+    "rust-artifact-vault-boundary-defensive-v3",
+    "rust-artifact-vault-identity-defensive",
+    "rust-buildtool-backdoor-wss-c2-ssh-pivot-triage-fusion",
+    "rust-crossbeam-channel-lifecycle-defensive",
+    "rust-filing-entity-resolution-defensive",
+    "rust-frameledger-ffi-length-defensive",
+    "rust-jwt-claims-defensive-v7",
+    "rust-metered-settlement-defensive",
+    "rust-millcast-job-wrapper-defensive-v7",
+    "rust-plugin-reload-lifetime-defensive-v8",
+    "rust-relay-framing-mesh-defensive",
+    "rust-signed-ticket-defensive",
+    "rust-team-drive-sync-defensive",
+    "rust-trial-site-registry-defensive",
+    "rust-webhook-origin-defensive-v16",
+    "s3-streaming-auth-rust-defensive",
+    "saltmarsh-rollout-integrity-defensive",
+    "saml-authentication-broker-defensive",
+    "schema-compiler-inject-harden",
+    "scoria-capsule-desk-defensive",
+    "seedbank-germplasm-accession-desk-defensive",
+    "session-broker-jwt-defensive",
+    "shipyard-tenant-hardening-defensive",
+    "signed-policy-registry-defensive",
+    "slate-fcgi-demux-defensive",
+    "slate-mqtt-ingest-defensive",
+    "slate-xml-ingest-defensive",
+    "sluice-gauge-threshold-desk-defensive",
+    "spire-peer-resolver-defensive",
+    "spring-graphql-api-hardening-defensive",
+    "sqlite-schema-cache-defensive",
+    "ssh-transport-gateway-c-defensive",
+    "starlette-static-prefix-harden",
+    "streamidentifi-sctp-reassembly-defensive",
+    "swift-nio-http-gateway-defensive",
+    "switchyard-pipeline-authority-defensive",
+    "telemetry-format-boundary-harden",
+    "telemetry-ingest-gateway",
+    "tenant-audit-portal-defensive",
+    "thalamus-spectrum-registry-defensive",
+    "thornwick-telemetry-bridge-defensive",
+    "trustlink-device-auth-defensive",
+    "trustweave-archive-import-audit",
+    "ts-cve-2026-extension-gateway-chain-defensive",
+    "tuff-assay-desk-defensive",
+    "tuff-charge-desk-defensive",
+    "typescript-contextseal-verifier-defensive-v12",
+    "typescript-federated-roster-resolution-defensive",
+    "typescript-field-validation-defensive-v13",
+    "typescript-frostgate-relay-defensive",
+    "typescript-image-proxy-defensive-v12",
+    "typescript-jwks-cache-defensive-v15",
+    "typescript-meterion-entitlement-defensive",
+    "typescript-mfa-recovery-codes-defensive-v5",
+    "typescript-mirror-job-invocation-defensive",
+    "typescript-nested-field-binder-defensive-v8",
+    "typescript-rivermark-ledger-defensive",
+    "typescript-server-action-queue-defensive",
+    "typescript-session-expiry-defensive",
+    "typescript-vaultbox-containment-defensive",
+    "url-preview-desk-defensive",
+    "varnish-cache-coherency-defensive",
+    "vaultsvc-defensive-audit",
+    "vesper-protocol-amendment-defensive",
+    "water-abstraction-ledger",
+    "webhook-dispatch-boundary-desk-defensive",
+    "weblate-localization-boundary-defensive",
+    "webpack-devserver-origin-trust-harden",
+    "wustite-cast-desk-defensive",
+]
+
+[orchestrator.concurrency]
+# AIMD observes KV, running requests, queue depth, and preemptions. Six inference
+# replicas x DP4 = 24 DP schedulers. initial 512 averages ~21 episodes/scheduler;
+# max 800 averages ~33. This follows the 600->700 probe based on low measured
+# KV, zero waiting, and unsaturated env gates, not a claimed safe ceiling.
+min_inflight = 384
+initial_inflight = 512
+max_inflight = 800
+
+[orchestrator.renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[orchestrator.eval]
+# Skip the multi-hour base-policy eval. Keep the full 300-rollout eval and
+# pass@1..6 metrics at steps 40/80/120/160/200 instead of every 20 steps.
+interval = 40
+skip_first_step = true
+
+[[orchestrator.eval.source]]
+name = "cyberstrike-heldout"
+# Six samples per held-out task = 300 rollouts per eval. Preserve the existing
+# pass@1..6 metric quality; reduce wall-clock cost through skip_first_step and
+# interval=40 rather than reducing group_size.
+group_size = 6
+
+[orchestrator.eval.source.env]
+id = "prime/cyberstrike-env@0.1.4"
+
+[orchestrator.eval.source.env.taskset]
+id = "cyberstrike-harbor"
+dataset = "cyberstrike-vendor@72702ad4d19f"
+registry_path = "/volume/datasets/cyberstrike/registry.json"
+artifact_max_bytes = 1073741824
+
+[orchestrator.eval.source.env.taskset.task]
+reward_key = "continuous_reward"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "rlm"
+version = "5cdeebad72fd2b2cfa300f5c4b45d74066b97f5a"
+max_depth = 0
+builtin_tools = ["bash", "edit", "ipython"]
+allow_git = false
+forward_env = []
+exec_timeout = 3600
+# Client requirement: no turn limit. max_total_turns stays unset (None = uncapped).
+# Disable the 10M cumulative new-token budget; context compaction remains enabled.
+max_total_tokens = 0
+
+[orchestrator.eval.source.env.agent.harness.env]
+UV_CACHE_DIR = "/tmp/vf-uv-cache"
+RLM_EXTRA_UV_ARGS = "--no-cache"
+# uv install receipt/completions can't write to a non-root agent's $HOME/.config on some
+# images; install unmanaged + skip profile writes (see train block). Binary-only install.
+UV_UNMANAGED_INSTALL = "1"
+INSTALLER_NO_MODIFY_PATH = "1"
+
+[orchestrator.eval.source.env.agent.harness.compaction]
+summarize_at_tokens = 524288
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+region = "us"
+idle_timeout = 3600.0
+creates_per_min = 60
+allow = []
+labels = [
+    "nemotron-3.5-super-cyberstrike-10node-hardened",
+]
+
+[orchestrator.eval.source.env.agent.timeout]
+# Set to 14400 (4h): measured on vnt6/fjg2/j2x8mw the real rollout tail maxes at ~138 min
+# across ~2550 rollouts and NONE hit the original 28800 (8h) cap. 5400 (90 min) truncated the
+# ~5-14% long tail (biasing the held-out curve); 14400 gives ~3x margin over the 138-min max
+# for training to lengthen rollouts, and the off-policy staleness sweep drops stuck stragglers.
+# A rollout timeout stops the trace as `rollout_timeout` (not an error) and still scores.
+rollout = 28800.0
+setup = 3600.0
+finalize = 3600.0
+scoring = 3600.0
+
+[orchestrator.eval.source.env.timeout]
+episode = 86400.0
+
+[orchestrator.eval.source.env.retries]
+rules = [
+    { type = "ProviderError", max_retries = 3 },
+    { type = "SandboxError", max_retries = 3 },
+    { type = "HarnessError", max_retries = 3 },
+]
+
+# Env-server backpressure for the eval pool (eval epoch runs ~300 concurrent -> 3 workers covers
+# it). Same caveat as train: runaway-backstop consistent with the target, not a measured limit.
+[orchestrator.eval.source.serve]
+max_concurrent = 128
+
+[orchestrator.eval.source.serve.pool]
+type = "elastic"
+max_workers = 3
+multiplex = 128
+
+[orchestrator.eval.source.select.include]
+keys = [
+    "aether-hangar-clearance-desk-defensive",
+    "atlas-callback-dispatch-desk-defensive",
+    "ats-cache-variant-cpp-defensive",
+    "c-acoustic-score-production-defensive-v5",
+    "c-berth-window-coordination-defensive",
+    "c-cobalt-batch-defensive",
+    "c-http2-session-accounting-defensive",
+    "c-planetarium-cue-defensive",
+    "c-synthetic-interpretation-inconsistent-defensive",
+    "commerce-state-assignment-defensive",
+    "cpp-inspection-codebook-compiler-defensive-v10",
+    "cpp-tufa-gateway-defensive",
+    "distributed-control-plane-authorization-defensive",
+    "ferrite-fleet-control-defensive",
+    "flowise-url-fetch-ssrf-defensive",
+    "foundry-heat-lot-certification-defensive",
+    "frostwatch-consignment-custody-defensive",
+    "go-siyuan-icon-defensive",
+    "granite-mac-ledger-defensive",
+    "halyard-command-bus-defensive",
+    "infostealer-doh-exfiltration-triage-defensive",
+    "insight-vault-defensive",
+    "java-artifact-intake-defensive",
+    "java-kiln-evidence-defensive-v2",
+    "java-manifest-signature-verify-defensive",
+    "java-project-import-defensive",
+    "javascript-depot-allocation-defensive-v8",
+    "javascript-misskey-federation-defensive",
+    "kerberos-s4u-delegation-java-defensive",
+    "libexpat-parser-hardening-c-defensive",
+    "mesh-control-plane-defensive",
+    "python-bootstrap-provisioning-defensive-v15",
+    "python-cache-attestation-defensive",
+    "python-calendar-boundary-defensive",
+    "python-filelock-racebound-defensive",
+    "python-jit-privilege-concurrency-defensive",
+    "python-metadata-evaluator-defensive-v13",
+    "python-mitmproxy-boundary-hardening-defensive",
+    "python-postmortem-archive-defensive",
+    "python-tenant-config-snapshot-defensive",
+    "reef-fragment-custody-service-defensive",
+    "ruby-admin-ops-chain-defensive",
+    "ruby-spanvault-query-comment-defensive",
+    "rust-command-queue-defensive-v7",
+    "rust-route-ledger-scope-defensive",
+    "settlement-run-desk",
+    "snip_it_001_defensive",
+    "superset-metadata-deserialization-defensive",
+    "tuf-split-grant-lifecycle-defensive",
+    "typescript-stream-router-defensive",
+]
+
+[inference.vllm]
+max_model_len = 655360
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "nemotron_v3"
+# TP2/DP4 with EP8: 64/512 experts per GPU and four DP schedulers per node.
+# Startup confirmed EP8. Keep sticky_least_loaded routing and Mamba prefix caching:
+# current logs show ~95% prefix hits and essentially zero waiting. TP4 would halve
+# DP lanes without reducing KV heads/GPU, so it is not a latency default here.
+tensor_parallel_size = 2
+data_parallel_size = 4
+enable_expert_parallel = true
+enable_prefix_caching = true
+gpu_memory_utilization = 0.85
+mamba_cache_dtype = "float32"
+safetensors_load_strategy = "prefetch"
+max_num_seqs = 256
+max_num_batched_tokens = 8192
+all2all_backend = "allgather_reducescatter"
+dtype = "bfloat16"
+seed = 0
