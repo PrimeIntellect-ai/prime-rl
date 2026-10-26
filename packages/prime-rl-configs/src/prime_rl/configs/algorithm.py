@@ -219,6 +219,9 @@ class GRPOAlgoConfig(BaseAlgoConfig):
             return {"type": "linear", **value}
         return value
 
+    violation_reward: float | None = Field(None, allow_inf_nan=False)
+    """Reward for a rollout whose task scoring the env skipped (``trace.info["scoring_skipped"]``): a truncation under ``scoring.skip_on_truncated`` (a turn, token, or budget limit), or a stop declared with ``skip_scoring`` such as a format check. It replaces the rollout's shaped reward before the baseline, so the length penalty does not apply to it; the penalty's ``pass_rate`` still counts the rollout as 0. Set it below the task's failing reward (e.g. ``-0.1`` for rewards in [0, 1]) to rank violations under well-formed failures. None keeps the rollout's own reward: it has none, so 0."""
+
     length_weighted_baseline: bool = False
     """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
 
