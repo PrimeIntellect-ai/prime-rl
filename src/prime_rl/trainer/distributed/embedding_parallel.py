@@ -1,25 +1,46 @@
-import torch.distributed as dist
+from functools import partial
+
+import torch
+import torch.distributed._functional_collectives as funcol
 import torch.nn.functional as F
-from torch.distributed.tensor import Shard
+from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import distribute_module
 from torch.distributed.tensor.parallel import RowwiseParallel
 
 
 class EmbeddingParallel(RowwiseParallel):
-    """Vocabulary-parallel embedding with uneven token batches on each rank."""
+    """Vocabulary-parallel embedding with local backward and uneven token batches.
 
-    def __init__(self) -> None:
-        super().__init__(input_layouts=Shard(0), output_layouts=Shard(0))
+    Lookup runs on plain local weights so dense backward never constructs the
+    global table gradient. IDs and vectors are routed only to their owning rank.
+    """
 
-    def _prepare_input_fn(self, input_layouts, desired_input_layouts, module, inputs, device_mesh):
-        indices = inputs[0]
-        self.local_tokens = indices.shape[0]
-        max_tokens = indices.new_tensor(self.local_tokens)
-        dist.all_reduce(max_tokens, op=dist.ReduceOp.MAX, group=device_mesh.get_group())
-        # TODO: Avoid the D2H sync in max_tokens.item(); F.pad needs the dynamic
-        # cross-rank token count on the host to size the padded tensor.
-        indices = F.pad(indices, (0, 0, 0, max_tokens.item() - self.local_tokens))
-        return super()._prepare_input_fn(input_layouts, desired_input_layouts, module, (indices,), device_mesh)
+    def _apply(self, module: torch.nn.Module, device_mesh: DeviceMesh) -> torch.nn.Module:
+        if not isinstance(module, torch.nn.Embedding):
+            raise TypeError("EmbeddingParallel requires nn.Embedding")
+        if module.padding_idx is not None or module.max_norm is not None or module.scale_grad_by_freq or module.sparse:
+            raise ValueError(
+                "EmbeddingParallel requires padding_idx=None, max_norm=None, scale_grad_by_freq=False and sparse=False"
+            )
+        distribute_module(module, device_mesh, self._partition_embedding_fn)
+        module.forward = partial(self._forward, module, device_mesh)
+        return module
 
-    def _prepare_output_fn(self, output_layouts, use_local_output, module, outputs, device_mesh):
-        output = super()._prepare_output_fn(output_layouts, use_local_output, module, outputs, device_mesh)
-        return output[: self.local_tokens]
+    def _forward(self, module: torch.nn.Embedding, device_mesh: DeviceMesh, input: torch.Tensor) -> torch.Tensor:
+        weight = module.weight.to_local(grad_placements=module.weight.placements)
+        shard_rows = max(1, (module.num_embeddings + device_mesh.size() - 1) // device_mesh.size())
+        start = device_mesh.get_local_rank() * shard_rows
+
+        sorted_ids, order = input.flatten().sort(stable=True)
+        send_counts = torch.bincount(sorted_ids // shard_rows, minlength=device_mesh.size())
+        recv_counts = funcol.all_to_all_single(send_counts, None, None, device_mesh)
+        # Stacking waits on the asynchronous counts; transfer both lists in one D2H copy.
+        send, recv = torch.stack((send_counts, recv_counts)).cpu().tolist()
+        recv_ids = funcol.all_to_all_single(sorted_ids, recv, send, device_mesh)
+        vectors = F.embedding(recv_ids - start, weight)
+        sorted_vectors = funcol.all_to_all_single_autograd(vectors, send, recv, device_mesh)
+
+        # Restore local token/head order; each destination is written exactly once.
+        output = torch.empty_like(sorted_vectors)
+        output[order] = sorted_vectors
+        return output.view(*input.shape, module.embedding_dim)

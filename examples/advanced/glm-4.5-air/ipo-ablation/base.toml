@@ -4,7 +4,7 @@
 #   uv run rl @ examples/advanced/glm-4.5-air/ipo-ablation/base.toml @ examples/advanced/glm-4.5-air/ipo-ablation/icepop.toml
 #
 # The arms differ only in [trainer.loss]. Same recipe as ../swe.toml with three changes that make the
-# trainer-inference mismatch harder to handle: router replay off, up to 64 steps off-policy, and an
+# trainer-inference mismatch harder to handle: router replay off, staleness up to 64 steps, and an
 # output-token term in the length penalty. 2 trainer nodes (Muon, CP 4 ulysses) and 4 single-node
 # TP=8 BF16 inference replicas, batch 256 x group 16 at 131k context.
 
@@ -40,7 +40,6 @@ name = "zai-org/GLM-4.5-Air"
 [trainer.model]
 attn = "flash_attention_3"
 cp = 4
-cp_style = "ulysses"
 
 [trainer.model.ac_offloading]
 max_inflight_activations = 1
@@ -52,7 +51,7 @@ type = "muon"
 
 [orchestrator]
 batch_size = 256
-max_off_policy_steps = 64
+max_staleness = 64
 
 [orchestrator.train]
 group_size = 16

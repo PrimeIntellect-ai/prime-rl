@@ -119,6 +119,7 @@ def bwd(
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
     assert indices_dtype == T.int32
+    assert D_tail == 0 or D_tail % 4 == 0
 
     if sm_scale is None:
         sm_scale = (D + D_tail) ** (-0.5)
@@ -145,6 +146,7 @@ def bwd(
     NS = tilelang.cdiv(topk, block_size)
 
     split_store = 2
+    has_tail = D_tail > 0
 
     @T.prim_func
     def sparse_mla_bwd_kernel(
@@ -159,25 +161,27 @@ def bwd(
     ):
         with T.Kernel(S, B, kv_group * NH, threads=threads) as (s_i, by, bz):
             Q_shared = T.alloc_shared([block_H, D], dtype)
-            Q_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
             KV_shared = T.alloc_shared([BS, D], dtype)
-            KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
             mask = T.alloc_fragment([BS], "bool")
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dQ_shared = T.alloc_shared([block_H, D], dtype)
-            dQ_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
+            if has_tail:
+                Q_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
+                KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
+                dQ_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
 
             acc_p = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dp = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dq = T.alloc_fragment([block_H, D], accum_dtype)
-            acc_dq_tail = T.alloc_fragment([block_H, D_tail], accum_dtype)
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
-            acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
-            acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
+            if has_tail:
+                acc_dq_tail = T.alloc_fragment([block_H, D_tail], accum_dtype)
+                acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
+                acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
 
             # See sparse_mla_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
             # live in [0, S_kv - 1). Using this single bound makes the kernel work for
@@ -185,11 +189,13 @@ def bwd(
             max_kv_i = S_kv - 2
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
-            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
+            if has_tail:
+                T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
             T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
 
             T.clear(acc_dq)
-            T.clear(acc_dq_tail)
+            if has_tail:
+                T.clear(acc_dq_tail)
 
             for i_i in T.Pipelined(NS, num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
@@ -203,9 +209,12 @@ def bwd(
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
-                for bi_i, d_i in T.Parallel(BS, D_tail):
-                    KV_tail_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i]
-                T.gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
+                if has_tail:
+                    for bi_i, d_i in T.Parallel(BS, D_tail):
+                        KV_tail_shared[bi_i, d_i] = KV[
+                            by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i
+                        ]
+                    T.gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_p[h_i, bi_i] = T.exp2(
@@ -225,7 +234,8 @@ def bwd(
 
                 T.copy(acc_dp, dP_shared_cast)
                 T.gemm(dP_shared_cast, KV_shared, acc_dq, policy=T.GemmWarpPolicy.FullCol)
-                T.gemm(dP_shared_cast, KV_tail_shared, acc_dq_tail, policy=T.GemmWarpPolicy.FullCol)
+                if has_tail:
+                    T.gemm(dP_shared_cast, KV_tail_shared, acc_dq_tail, policy=T.GemmWarpPolicy.FullCol)
 
                 T.gemm(
                     dP_shared_cast,
@@ -237,17 +247,25 @@ def bwd(
                 )
                 T.gemm(P_shared_cast, dO_shared, acc_dkv, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
 
-                T.clear(acc_dkv_tail)
-                T.gemm(dP_shared_cast, Q_tail_shared, acc_dkv_tail, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
+                if has_tail:
+                    T.clear(acc_dkv_tail)
+                    T.gemm(
+                        dP_shared_cast,
+                        Q_tail_shared,
+                        acc_dkv_tail,
+                        transpose_A=True,
+                        policy=T.GemmWarpPolicy.FullCol,
+                    )
 
                 for s in range(split_store):
                     for bi_i, d_i in T.Parallel(BS, D):
                         if bi_i < BS // split_store:
                             acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
 
-                    for bi_i, d_i in T.Parallel(BS, D_tail):
-                        if bi_i < BS // split_store:
-                            acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
+                    if has_tail:
+                        for bi_i, d_i in T.Parallel(BS, D_tail):
+                            if bi_i < BS // split_store:
+                                acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
                         T.atomic_addx4(
@@ -260,22 +278,25 @@ def bwd(
                             acc_dkv_shared[bi_i, d_i * 4],
                         )
 
-                    for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
-                                bz // NH,
-                                D + d_i * 4,
-                            ],
-                            acc_dkv_tail_shared[bi_i, d_i * 4],
-                        )
+                    if has_tail:
+                        for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
+                            T.atomic_addx4(
+                                dKV[
+                                    by,
+                                    Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    bz // NH,
+                                    D + d_i * 4,
+                                ],
+                                acc_dkv_tail_shared[bi_i, d_i * 4],
+                            )
 
             T.copy(acc_dq, dQ_shared)
-            T.copy(acc_dq_tail, dQ_tail_shared)
+            if has_tail:
+                T.copy(acc_dq_tail, dQ_tail_shared)
 
             T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
-            T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
+            if has_tail:
+                T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
 
     return sparse_mla_bwd_kernel
 
@@ -318,7 +339,7 @@ def tilelang_sparse_mla_backward(
     grad_out = grad_out.contiguous()
     H, dim_plus_tail_dim = q.shape[2:]
     kv_group = kv.shape[2]
-    D = 512
+    D = out.shape[-1]
     D_tail = dim_plus_tail_dim - D
     topk = indices.shape[-1]
 
@@ -364,11 +385,16 @@ def cudnn_sparse_mla_backward(
 
         dq, dkv = flash_attn_bwd_sm90(*args, softmax_scale=sm_scale, topk_idxs=flat_indices)
     else:
-        # Untested: no SM100 hardware has run this path. A -inf sink leaves the softmax unchanged.
-        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
+        # A -inf sink leaves the softmax unchanged.
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+            flash_attn_bwd_sm100,
+            flash_attn_bwd_sm100_workspace_size,
+        )
 
         no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
-        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale)
+        workspace_bytes = flash_attn_bwd_sm100_workspace_size(B * S, B * S_kv, D_qk, H)
+        workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
+        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale, workspace=workspace)
     return dq.view_as(q), dkv.view_as(kv)
 
 

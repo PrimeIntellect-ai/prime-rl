@@ -52,7 +52,6 @@ name = "zai-org/GLM-4.5-Air"
 [trainer.model]
 attn = "flash_attention_3"
 cp = 4
-cp_style = "ulysses"
 
 [trainer.model.ac]
 
@@ -68,7 +67,7 @@ type = "muon"
 
 [orchestrator]
 batch_size = 256
-max_off_policy_steps = 32
+max_staleness = 32
 
 [orchestrator.train]
 group_size = 16
