@@ -9,13 +9,12 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
-from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage
+from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage, WeightVersionSpan
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
-from prime_rl.orchestrator.train_sink import TrainSink
+from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
 from prime_rl.utils.logger import setup_logger
@@ -74,7 +73,7 @@ def episode(traces, *, group="g", version=0):
 
 
 def sink(*, constant=True, admitted=True, batch_size=100):
-    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_off_policy_steps=1)
+    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
@@ -160,10 +159,24 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
         assert ref() is None
         window = s.take_rollout_window(force=True)
         assert window.attempts == 0 and window.traces == 0
-        assert window.metrics.to_dict()["off_policy/dropped"] == 1
+        assert window.metrics.to_dict()["staleness/rollout/dropped"] == 1
         assert s.take_rollout_window(force=True) is None
 
     asyncio.run(run())
+
+
+def test_mask_stale_tokens_keeps_fresher_tokens():
+    t = trace()
+    # Unlabelled tokens take the episode's dispatch version (the fallback).
+    t.nodes[2].weight_versions = [
+        WeightVersionSpan(version="default", start=0, end=1),
+        WeightVersionSpan(version="3", start=1, end=2),
+    ]
+    [sample] = trace_to_samples(t, env_name="test")
+    sample.ref_kl_weights = np.ones(4, dtype=np.float32)
+    assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2) == 1
+    assert sample.mask.tolist() == [False, False, False, True]
+    assert sample.ref_kl_weights.tolist() == [1.0, 1.0, 0.0, 1.0]
 
 
 def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
@@ -205,11 +218,11 @@ def test_failures_and_cancellations_accumulate_until_reporting():
             assert s.take_rollout_window() is None
             assert not s.pending_group_failures
         for i in range(4):
-            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "stale"))
+            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "overload"))
         assert s.take_rollout_window() is None
         window = s.take_rollout_window(force=True)
         assert window.attempts == window.discarded == 12
-        assert window.stale == 4
+        assert window.cancelled == 4
         assert window.errored == 8
         assert window.metrics.to_dict()["train/agg/all/dispatch_failure/mean"] == 1
         assert not s.pending_group_cancellations
@@ -236,36 +249,42 @@ def test_partial_window_and_shutdown_release():
     asyncio.run(run())
 
 
-def test_resumed_group_scores_only_members_within_max_off_policy_steps():
+def test_resume_restores_queued_traces_and_open_groups():
     async def run():
         s = sink()
-        env = s.train_envs.get("test")
-        env.config.group_size = 3
-        env.algorithm = GRPOAlgorithm(GRPOAlgoConfig(), None)
-        s.progress.step = 10  # trains v9; max_off_policy_steps=1 keeps v8 and newer
-        right, wrong, saved = trace(), trace(), trace()
-        wrong.rewards = saved.rewards = {"correct": vf.Reward(score=0.0)}
-        for t, version in ((saved, 7), (right, 9), (wrong, 9)):
-            await s.add(episode([t], version=version))
-        assert set(s.pending_batch) == {right.id, wrong.id}
-        assert s.pending_batch[right.id][0].advantages[-1] == 0.5
-        assert s.rollout_window.metrics.to_dict()["off_policy/dropped"] == 1
+        s.progress.step = 9  # trains v8; max_staleness=1 keeps v7 and newer
+        queued = trace()
+        await s.add(episode([queued], group="queued", version=7))
+        s.train_envs.get("test").config.group_size = 3
+        saved = trace()
+        await s.add(episode([saved], group="open", version=7))
+        state = s.state_dict({"open": ("test", vf.Task(vf.TaskData(idx=0, prompt="task")))})
 
-        s.on_result = lambda group: pytest.fail("an all-stale group reached the curriculum")
-        for _ in range(3):
-            await s.add(episode([trace()], group="old", version=7))
-        assert set(s.pending_batch) == {right.id, wrong.id}
-        assert s.rollout_window.metrics.to_dict()["off_policy/dropped"] == 4
+        r = sink()
+        r.train_envs.get("test").config.group_size = 3
+        r.progress.step = 10  # v7 is now past max_staleness
+        requests = r.load_state_dict(state)
+        assert [(request.group_id, request.rollouts) for request in requests] == [("open", 2)]
+        r._drop_stale()  # restored traces go through the same staleness sweep
+        assert not r.pending_batch
+        assert r.rollout_window.metrics.to_dict()["staleness/rollout/dropped"] == 1
+
+        # The stale saved member stays in its group and completes it with the rerun members
+        fresh = [trace(), trace()]
+        for t in fresh:
+            await r.add(episode([t], group="open", version=9))
+        assert "open" not in r.pending_groups
+        assert set(r.pending_batch) == {t.id for t in fresh}
 
     asyncio.run(run())
 
 
 def test_orphan_payload_sweep_keeps_the_versions_of_live_work():
-    """Rollouts can outlive max_off_policy_steps, so the sweep bound follows the oldest live work."""
+    """Rollouts can outlive max_staleness, so the sweep bound follows the oldest live work."""
     from prime_rl.orchestrator.orchestrator import Orchestrator
 
     orchestrator = object.__new__(Orchestrator)
-    orchestrator.config = SimpleNamespace(max_off_policy_steps=2)
+    orchestrator.config = SimpleNamespace(max_staleness=2)
     orchestrator.train_sink = sink()
     orchestrator.dispatcher = SimpleNamespace(inflight={"task": SimpleNamespace(kind="train", policy_version=6)})
     orchestrator.unread_payloads = {19: {"/payloads/v4/a.bin"}}

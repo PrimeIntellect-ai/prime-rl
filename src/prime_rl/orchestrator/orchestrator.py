@@ -51,6 +51,7 @@ from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
@@ -68,11 +69,12 @@ from prime_rl.orchestrator.utils import (
     delete_files_in_background,
     delete_payloads_before,
     episode_group_id,
-    episode_staleness,
     eval_work,
     intercept_vf_logging,
+    max_rollout_staleness,
     min_fresh_version,
     release_and_trim,
+    rollout_staleness,
     set_default_executor,
     train_work,
     trim_process_memory,
@@ -125,6 +127,7 @@ class Orchestrator:
     concurrency: ConcurrencyController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
+    gc: GarbageCollector | None
     periodic_logger: PeriodicLogger
 
     # Set by ``setup()`` only when relevant config is present
@@ -153,6 +156,7 @@ class Orchestrator:
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
         self.policy = Policy(version=0, model_name="")
+        self.gc = GarbageCollector(config.gc.interval) if config.gc else None
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
@@ -352,7 +356,6 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             dispatch_per_minute=config.dispatch_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -423,6 +426,8 @@ class Orchestrator:
         # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
+        if self.gc is not None:
+            self.gc.start()
         await self.periodic_logger.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
@@ -563,6 +568,7 @@ class Orchestrator:
             if isinstance(item, GroupCancellation):
                 assert item.kind == "train"  # eval groups are never dropped
                 train_batch = await self.train_sink.cancel(item)
+                self.forget_consumed_group(item.group_id)
                 await self.handle_train_result(train_batch)
                 continue
             if isinstance(item, DispatchFailure):
@@ -625,7 +631,7 @@ class Orchestrator:
         self.progress.total_samples += window.traces
         self.progress.total_problems += window.groups
         metrics = {
-            "off_policy/dropped": 0.0,
+            "staleness/rollout/dropped": 0.0,
             "rollout/queued/pruned": 0.0,
             "rollout/queued/cancelled": 0.0,
         } | window.metrics.to_dict()
@@ -649,7 +655,7 @@ class Orchestrator:
                 f"({window.discarded / window.attempts:.1%}): stale={window.stale}, "
                 f"errored={window.errored}, cancelled={window.cancelled}, "
                 f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
-                "Review max_off_policy_steps, episode errors, and reward signal."
+                "Review max_staleness, episode errors, and reward signal."
             )
         return metrics
 
@@ -757,19 +763,23 @@ class Orchestrator:
                 "time/send_batch": send_batch_time,
                 "step": step,
             }
-            # Staleness of the shipped cohort, decomposed into its in-flight and
-            # in-queue shares. Queue drops are reported with rollout windows.
-            staleness = [episode_staleness(episode, step) for episode in effective]
+            # Token and rollout staleness of the shipped cohort. Queue drops and
+            # masked tokens are reported with rollout windows.
+            staleness = [s for episode in effective if (s := rollout_staleness(episode, step)) is not None]
             if staleness:
-                totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
+                rollouts = [s.rollout for s in staleness]
+                in_flight = [s.in_flight for s in staleness]
+                in_queue = [s.in_queue for s in staleness]
                 metrics |= {
-                    "off_policy/mean": sum(totals) / len(totals),
-                    "off_policy/max": float(max(totals)),
-                    "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
-                    "off_policy/in_flight/max": float(max(in_flight)),
-                    "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
-                    "off_policy/in_queue/max": float(max(in_queue)),
+                    "staleness/rollout/mean": sum(rollouts) / len(rollouts),
+                    "staleness/rollout/max": float(max(rollouts)),
+                    "staleness/rollout/in_flight/mean": sum(in_flight) / len(in_flight),
+                    "staleness/rollout/in_flight/max": float(max(in_flight)),
+                    "staleness/rollout/in_queue/mean": sum(in_queue) / len(in_queue),
+                    "staleness/rollout/in_queue/max": float(max(in_queue)),
                 }
+                if num_tokens := sum(s.token_count for s in staleness):
+                    metrics["staleness/token/mean"] = sum(s.token_sum for s in staleness) / num_tokens
             for env_name, env_pool in effective.by_env().items():
                 metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
             return metrics
@@ -797,13 +807,15 @@ class Orchestrator:
             await self.wait_for_version(step, reason="before shutdown")
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
-        # and with a tight ``max_off_policy_steps`` it never fills at all (the
+        # and with a tight ``max_staleness`` it never fills at all (the
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
         # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
         if self.release_future is not None:
             await asyncio.shield(self.release_future)
+        if self.gc is not None:
+            self.gc.run(step)
         payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
         self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
@@ -901,6 +913,8 @@ class Orchestrator:
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
         payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
+        if self.gc is not None:
+            payload |= self.gc.gauges()
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean
@@ -918,13 +932,13 @@ class Orchestrator:
         n_effective = effective.num_traces
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
+        max_staleness = max_rollout_staleness(effective, step)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Max Off-Policy {max_off_policy_steps} | "
+            f"Max Staleness {max_staleness} | "
             f"Truncation {eff.is_truncated.mean():.1%} | Timeout {eff.is_timeout.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -942,7 +956,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
+                f"Max Staleness {max_rollout_staleness(env_eff_pool, step)} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {env_eff.is_timeout.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -1080,7 +1094,7 @@ class Orchestrator:
             if (policy := train_work(episode).policy) is not None:
                 versions.append(policy.start)
         versions += [int(Path(file).parent.name[1:]) for files in self.unread_payloads.values() for file in files]
-        return min([min_fresh_version(step + 1, self.config.max_off_policy_steps), *versions])
+        return min([min_fresh_version(step + 1, self.config.max_staleness), *versions])
 
     async def stop(self, clean_exit: bool) -> None:
         """Bounded best-effort teardown of all components. Has a global
