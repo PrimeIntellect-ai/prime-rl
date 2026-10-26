@@ -308,6 +308,11 @@ class PackedContext:
         slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
         window_indices = torch.where(slots <= tok_idx[:, None], slots, IGNORE_SLOT).to(torch.int32)
 
+        # `n_queries` follows this rank's row length, which changes with the documents packed into it.
+        torch._dynamo.maybe_mark_dynamic(position_ids, 1)
+        torch._dynamo.maybe_mark_dynamic(tok_doc_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(window_indices, 0)
+
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,

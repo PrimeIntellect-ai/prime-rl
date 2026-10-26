@@ -253,6 +253,12 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
+            # This rank's row length changes with the documents packed into it. Marked dynamic up front,
+            # each layer type traces it symbolically on its first compile instead of recompiling the first
+            # time a rank sees a new length. Marked per layer: every layer type compiles on its own input.
+            for tensor in (mhc_states, input_ids, routed_experts_layer):
+                if tensor is not None:
+                    torch._dynamo.maybe_mark_dynamic(tensor, 1)
             mhc_states = decoder_layer(
                 mhc_states,
                 input_ids=input_ids,
