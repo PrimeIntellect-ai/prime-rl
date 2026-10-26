@@ -24,11 +24,23 @@ def apply_shared_vllm_patches():
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_glm5_next_kda_conv_weights()
     monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
+    monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
+    monkey_patch_engine_gc()
+    monkey_patch_packed_aux_outputs()
+    monkey_patch_aux_output_store()
+    from prime_rl.inference.vllm.request_replay import patch_request_replay
+
+    patch_request_replay()
+    if os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1":
+        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
+
+        patch_top_p_then_top_k()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -85,6 +97,81 @@ def monkey_patch_packed_sampling_masks():
 
     RequestState.__init__ = _init
     RequestState._new_completion_output = _new_completion_output
+
+
+ENGINE_GC_THRESHOLDS = (50_000, 20, 100)
+
+
+def monkey_patch_engine_gc():
+    """Freeze the startup heap and raise GC thresholds in EngineCore (vLLM only freezes) and the GPU workers."""
+    import gc
+
+    from vllm.v1.engine import core
+    from vllm.v1.worker.gpu_worker import Worker
+
+    original_freeze_gc_heap = core.freeze_gc_heap
+    original_compile_or_warm_up_model = Worker.compile_or_warm_up_model
+
+    def freeze_gc_heap():
+        original_freeze_gc_heap()
+        gc.set_threshold(*ENGINE_GC_THRESHOLDS)
+
+    def compile_or_warm_up_model(self, *args, **kwargs):
+        result = original_compile_or_warm_up_model(self, *args, **kwargs)
+        gc.collect()
+        gc.freeze()
+        gc.set_threshold(*ENGINE_GC_THRESHOLDS)
+        return result
+
+    core.freeze_gc_heap = freeze_gc_heap
+    Worker.compile_or_warm_up_model = compile_or_warm_up_model
+
+
+def monkey_patch_packed_aux_outputs():
+    """Send each step's routed experts from the output worker to EngineCore as one ``PackedAuxOutputs``."""
+    from vllm.distributed.aux_output_connector.worker import AuxOutputWorkerConnector
+
+    from prime_rl.inference.vllm.routed_experts import PackedAuxOutputs
+
+    original_process_output = AuxOutputWorkerConnector.process_output
+
+    def process_output(self, pending):
+        outputs = original_process_output(self, pending)
+        return PackedAuxOutputs.pack(outputs) if outputs else outputs
+
+    AuxOutputWorkerConnector.process_output = process_output
+
+
+AUX_OUTPUT_STORE_HEADROOM = 2
+
+
+def monkey_patch_aux_output_store():
+    """Keep routed-experts store eviction from rescanning referenced keys, and size the store above the KV cache.
+
+    Eviction skips keys referenced by running requests, and they pile up at the front of the LRU, so every ``put``
+    on a full store rescans them. Their position never affects which keys are evicted, so move them to the end.
+    At full KV the referenced keys alone can exceed a store of exactly KV size and ``put`` raises, so the worker
+    builds it at ``AUX_OUTPUT_STORE_HEADROOM`` times vLLM's size (anonymous mmap: unused slots cost no memory).
+    """
+    from itertools import takewhile
+
+    from vllm.distributed.aux_output_connector import worker as aux_worker
+    from vllm.distributed.aux_output_connector.store import BlockObjectStore
+
+    original_evict_to_fit = BlockObjectStore._evict_to_fit
+
+    def _evict_to_fit(self, protected: set[str]) -> None:
+        if len(self._lru) > self.num_slots:
+            for key in list(takewhile(self._references.__contains__, self._lru)):
+                self._lru.move_to_end(key)
+        original_evict_to_fit(self, protected)
+
+    class _RoomyBlockObjectStore(BlockObjectStore):
+        def __init__(self, *, max_bytes: int, object_nbytes: int):
+            super().__init__(max_bytes=AUX_OUTPUT_STORE_HEADROOM * max_bytes, object_nbytes=object_nbytes)
+
+    BlockObjectStore._evict_to_fit = _evict_to_fit
+    aux_worker.BlockObjectStore = _RoomyBlockObjectStore
 
 
 def monkey_patch_deepseek_v4_c128_boundary():
@@ -211,6 +298,34 @@ def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
     Mxfp8OnlineMoEMethod._setup_kernel = _setup_kernel
 
 
+def monkey_patch_glm5_next_kda_conv_weights():
+    """Make GLM-5.3 Flash's merged KDA conv weight a view of the q/k/v conv weights.
+
+    vLLM builds `_merged_conv_weight` once as a `torch.cat` copy, so weight updates never reach it.
+    After loading, store the three weights as slices of one buffer and point the cache at it;
+    reloads copy into parameter storage in place, so updates land in the buffer.
+
+    Remove when vLLM keeps the q/k/v conv weights in one merged parameter
+    (https://github.com/vllm-project/vllm/pull/60991).
+    """
+    from vllm.models.glm5next.common.kda import Glm5NextLinearAttention
+    from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
+
+    @torch.no_grad()
+    def process_weights_after_loading(self) -> None:
+        for module in self.modules():
+            if isinstance(module, Glm5NextLinearAttention):
+                convs = (module.q_conv1d, module.k_conv1d, module.v_conv1d)
+                merged = torch.cat([conv.weight.data for conv in convs])
+                for conv, part in zip(convs, merged.chunk(3)):
+                    conv.weight.data = part
+                # merged shape needs to be [3C, K] instead of [3C, 1, K]
+                module._merged_conv_weight = merged.flatten(1)
+
+    Glm5NextForCausalLM.process_weights_after_loading = process_weights_after_loading
+    Glm5NextForConditionalGeneration.process_weights_after_loading = process_weights_after_loading
+
+
 def monkey_patch_online_fp8_parameter_cast():
     """Pass plain tensors to vLLM's compiled block-FP8 caster.
 
@@ -239,7 +354,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
     In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
-    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
+    be finished — most often ``FINISHED_ABORTED`` from a cancelled rollout, a
     client disconnect, or a request timeout — while it still has in-flight KV
     transfers. When such a request's ``finished_recving`` and ``finished_sending``
     both land in the same ``Scheduler.update_from_output`` step, the stock
@@ -251,7 +366,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
 
     The trigger is the abort itself, not weight-update pause/resume: it reproduces
     during normal stepping whenever an aborted request's recv and send complete in
-    the same step (observed with zero off-policy cancellations, driven only by
+    the same step (observed with zero orchestrator cancellations, driven only by
     incidental client-side aborts). Skip already-freed request ids instead of
     asserting — their blocks are freed either way, so dropping the stale
     notification is safe.
@@ -621,6 +736,36 @@ def monkey_patch_strip_routed_experts_from_chat():
     logger.info(
         "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
     )
+
+
+def monkey_patch_skip_prompt_routing_for_chat():
+    """Start chat requests' routed experts at the end of the prompt.
+
+    Chat responses drop routed_experts (``monkey_patch_strip_routed_experts_from_chat``), but with
+    ``enable_return_routed_experts`` the engine still materializes every prompt's routing rows and
+    ships them to the API server each turn: about 258 B per token, so tens of MB for a long eval
+    prompt that is thrown away. Setting ``routed_experts_prompt_start`` to the prompt length keeps
+    only the completion's rows. A request that sets its own start keeps it.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.logger import init_logger
+    from vllm.sampling_params import SamplingParams
+
+    if getattr(OpenAIServingChat._log_inputs, "_prime_rl_skips_prompt_routing", False):
+        return
+    original_log_inputs = OpenAIServingChat._log_inputs
+
+    # The chat route calls _log_inputs right after it builds each prompt's SamplingParams, with the rendered prompt.
+    def _log_inputs(self, request_id, inputs, params, lora_request):
+        if isinstance(params, SamplingParams) and params.routed_experts_prompt_start == 0:
+            prompt_ids = self._extract_prompt_components(inputs).token_ids
+            if prompt_ids is not None:
+                params.routed_experts_prompt_start = len(prompt_ids)
+        return original_log_inputs(self, request_id, inputs, params, lora_request)
+
+    _log_inputs._prime_rl_skips_prompt_routing = True
+    OpenAIServingChat._log_inputs = _log_inputs
+    init_logger("vllm.prime_rl.routed_experts").info("Chat requests return routed experts only for their completions.")
 
 
 def _patch_qwen35_moe_lora_format():

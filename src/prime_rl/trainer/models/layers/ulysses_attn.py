@@ -39,15 +39,6 @@ import torch.distributed as dist
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 
-# Populated by `update_ulysses_params` before each forward pass so the
-# patched attention path can reach the *full* (un-sharded) cu_seqlens / max_seqlen at call time.
-ULYSSES_PARAMS: dict = {}
-
-
-def update_ulysses_params(cu_seqlens: torch.Tensor, max_seqlen: int) -> None:
-    ULYSSES_PARAMS["cu_seqlens"] = cu_seqlens
-    ULYSSES_PARAMS["max_seqlen"] = int(max_seqlen)
-
 
 def _replicate_kv_heads(t: torch.Tensor, cp_size: int) -> torch.Tensor:
     """Replicate KV heads so a GQA tensor with fewer heads than cp_size can be
@@ -184,14 +175,13 @@ def substitute_ulysses_attn(
         flash_attn_version = 2
 
     def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
-        # cu_seqlens / max_seqlen passed in are for the *local* sharded sequence;
-        # ulysses needs the *full* ones (each rank holds the full seq after a2a).
-        cu_seqlens_full = ULYSSES_PARAMS["cu_seqlens"]
-        max_seqlen_full = ULYSSES_PARAMS["max_seqlen"]
-
+        # cu_seqlens / max_seqlen cover the full sequence, which each rank holds after the all-to-all.
         window_size = (-1, -1)
+        is_causal = getattr(self, "is_causal", True)
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
+            if not is_causal:
+                raise NotImplementedError("Sliding-window attention supports causal attention only")
             window_size = (sliding_window - 1, 0)
 
         return ulysses_flash_attn_varlen_func(
@@ -199,11 +189,11 @@ def substitute_ulysses_attn(
             q,
             k,
             v,
-            cu_seqlens_q=cu_seqlens_full,
-            cu_seqlens_k=cu_seqlens_full,
-            max_seqlen_q=max_seqlen_full,
-            max_seqlen_k=max_seqlen_full,
-            causal=True,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            causal=is_causal,
             cp_group=process_group,
             cp_size=cp_size,
             flash_attn_version=flash_attn_version,

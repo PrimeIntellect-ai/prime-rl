@@ -48,11 +48,12 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path"), 3))
 
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
+        params={"weight_version": 3},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
 

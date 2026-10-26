@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -1803,8 +1803,8 @@ dependencies = [
 
 [[package]]
 name = "flash-linear-attention"
-version = "0.5.2"
-source = { git = "https://github.com/fla-org/flash-linear-attention#a95475391465272cd3dc11e47d4a7772522dc9b7" }
+version = "0.6.0"
+source = { git = "https://github.com/fla-org/flash-linear-attention#413ad2c655ece57b94bc9ddc51fdbd43cf09d984" }
 dependencies = [
     { name = "einops" },
     { name = "transformers" },
@@ -1816,6 +1816,146 @@ version = "1.0.0+cu.13.0.torch.2.13.b7643bd"
 source = { url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl" }
 wheels = [
     { url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl", hash = "sha256:0bdb32340979c739659b305537dbe0445ba9f3148a4ce2f97f4fd170887c01e4" },
+]
+
+[[package]]
+name = "flashinfer-cubin"
+version = "0.7.0.post1"
+source = { registry = "https://flashinfer.ai/whl" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_cubin-0.7.0.post1-py3-none-any.whl", hash = "sha256:f5b5fbf6e914b358219b845ed3ee586ffc1ae3c9768c8b135115ac14afbceed3" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache"
+version = "0.7.0.post1+cu130"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "flashinfer-jit-cache-sm100a" },
+    { name = "flashinfer-jit-cache-sm103a" },
+    { name = "flashinfer-jit-cache-sm110a" },
+    { name = "flashinfer-jit-cache-sm120f" },
+    { name = "flashinfer-jit-cache-sm121a" },
+    { name = "flashinfer-jit-cache-sm80" },
+    { name = "flashinfer-jit-cache-sm89" },
+    { name = "flashinfer-jit-cache-sm90a" },
+]
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:dcad7b6519e85b9332d1a18c84046797ce26206d4f15b9e484e2abc66f50d6fb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm110a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm121a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.0.post1+cu130" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache"
+version = "0.7.0.post1+cu130"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "flashinfer-jit-cache-sm100a" },
+    { name = "flashinfer-jit-cache-sm103a" },
+    { name = "flashinfer-jit-cache-sm120f" },
+    { name = "flashinfer-jit-cache-sm80" },
+    { name = "flashinfer-jit-cache-sm89" },
+    { name = "flashinfer-jit-cache-sm90a" },
+]
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:9630eeb32396adb89ce8ffa8465fedd14549eb2e2ad3aff182d9e69be4a12075" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.0.post1+cu130" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm100a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm100a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:09d34f7a7ac5ef0ffeceefcb02c3926b9812d79d1922b3eda09a28902c98ef96" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm100a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:3654aad2bbaebf7ede45590e5fc241035fec92219e505ea2d2d8b77b0d88ee91" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm103a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm103a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f68545c055e52d674df5ba590a7e35414ccdd0fc6817e697fa0c302129f75f17" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm103a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:cd1e327d17be3e9683595d9461e1cf594a069923c940a5c91e7ed809dd7f8f1f" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm110a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm110a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:a77273cb80cb81a98b827f495ca0204e8db83a3aabbbacdc576ecd4808fbd92f" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm120f"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm120f-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:bfa5e2025a7a09755bdaa102b3ddc03809081a5c0bf06bb5e910407a43bb3acb" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm120f-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:1c8b5a3614fdc9ad4f0e26502c5438657e28d667d165b05ff0383ca8d208568f" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm121a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm121a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:1bf568b1c7452a697ad313a82aed8102b15204d9843ad2247d9778ca84513f75" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm80"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm80-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:aebb89a7781caa17e42e5b43782f88cc679f8bc9a5e218d9d4a3fe5f91800a65" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm80-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b142aef0b32682a80ff2fd55aa74630678820776ffe03ecc183f4a01ada1c02a" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm89"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm89-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:284f4be6e2ce311b2666903d49fd21f9e6318f1c99bbfdaccf1bbdce28512970" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm89-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:056a86546f8970ad4f345eecc4cccb3f36e9b4491109a26cc0fcc3703578a0ca" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm90a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm90a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:a5b1eb7505895d799896ba4f206bdbead53ca3300c6659dd5a91d3be547df918" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm90a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:9f6398cf38d3d772ce9244f5c7882ee572ec3dbcb495313839d6f908b1ea3ea6" },
 ]
 
 [[package]]
@@ -4815,7 +4955,7 @@ wheels = [
 [[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.13.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -4823,7 +4963,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:21f826110588e60bb0b7374d989be5430019b2d977e4de3b23015bc10e361b4c" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:695d61bd1b9ba99969ca7ac1410f5a35c1d1c747dab13a92c6f9c3a8def9b41a" },
 ]
 
 [package.metadata]
@@ -4832,7 +4972,7 @@ requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
 [[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.13.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -4840,7 +4980,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:a03cb868008c8299c61ffc636a469246a1635f40ccaa7c59cb0d50524bee318d" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:c181b28773116970f08c130d2576ea89d81174820b2cfa03006dcfed4c23d462" },
 ]
 
 [package.metadata]
@@ -4925,6 +5065,9 @@ all = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -4978,6 +5121,9 @@ gpu = [
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -4997,8 +5143,8 @@ gpu = [
     { name = "vllm", version = "0.32.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 kernels = [
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 quack = [
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
@@ -5039,6 +5185,10 @@ requires-dist = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.0.post1", index = "https://flashinfer.ai/whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
@@ -5053,9 +5203,9 @@ requires-dist = [
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "prime", specifier = ">=0.8.0" },
-    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
-    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -5156,7 +5306,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.7"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5168,9 +5318,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/63/95f7b0e0e99566c0889125e5eca90bfc1beaafa8de4d2e6d3d8367bebe06/prime_sandboxes-0.4.7.tar.gz", hash = "sha256:72382facabe083b5f9618bfcc057cf1b0211fe103d66cad06d0310567b416adb", size = 150626, upload-time = "2026-10-18T21:44:11.863Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/87/634781f00347fea92d04341aa75d9fc1ff3d3068f6def6ad691faa7e0ea6/prime_sandboxes-0.5.0.tar.gz", hash = "sha256:c64a63ad33bf6363af2fa5375ec052c00f7938feb7bdc82b914e013c50b7f468", size = 157237, upload-time = "2026-10-20T17:29:53.505Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/4a/7b6c90fb950ce5d9d4e8e2493fd461e2abd78595a0c49526d02b68440794/prime_sandboxes-0.4.7-py3-none-any.whl", hash = "sha256:309600da3ee596ce36ed75a7b0956d7883f3e4fc385f026e80c9df887ea1a948", size = 81661, upload-time = "2026-10-18T21:44:10.272Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/cd/7879c0831d9becd58f59869d39ae979b64b1304a8ef0302c9ae800a07eb0/prime_sandboxes-0.5.0-py3-none-any.whl", hash = "sha256:ebdfbfccacb8da2c156fa649f769506800e65d34b6ce102c2f0cbba675fdb64a", size = 84916, upload-time = "2026-10-20T17:29:51.692Z" },
 ]
 
 [[package]]
@@ -7619,11 +7769,11 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.4" },
-    { name = "prime-sandboxes", specifier = ">=0.4.7" },
+    { name = "prime-sandboxes", specifier = ">=0.5.0" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.12" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.13.dev17" },
     { name = "rich", specifier = ">=11.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },

@@ -17,7 +17,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
-from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
+from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp, validate_cp_seq_lens
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.utils.logger import format_time, setup_logger
@@ -49,6 +49,7 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
+    broadcast_pause,
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
@@ -59,7 +60,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
@@ -257,15 +258,10 @@ def train(config: SFTConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
+            validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
             defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
             if not defer_vlm_cp_to_model:
-                input_ids, position_ids = setup_cp_params(
-                    input_ids,
-                    position_ids,
-                    cp_rank,
-                    cp_size,
-                    seq_lens=seq_lens,
-                )
+                input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -275,7 +271,7 @@ def train(config: SFTConfig):
         # Labels without a temperature make the LM head return the summed cross-entropy directly.
         labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
 
-        with maybe_activation_offloading(config.model.ac_offloading):
+        with maybe_activation_offloading(config.model.ac_offloading, model):
             out = forward(
                 model,
                 input_ids,
@@ -418,9 +414,9 @@ def train(config: SFTConfig):
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
             {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
+                "max_vio/mean": torch.tensor(0.0, device="cuda"),
+                "max_vio/max": torch.tensor(0.0, device="cuda"),
+                "routing_confidence/mean": torch.tensor(0.0, device="cuda"),
             }
             if is_moe_model
             else {}
@@ -568,6 +564,7 @@ def train(config: SFTConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
+        mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
@@ -575,7 +572,7 @@ def train(config: SFTConfig):
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
-        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_moe_model:
             for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
                 value = moe_stats[name].item()
@@ -614,6 +611,7 @@ def train(config: SFTConfig):
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
             "perf/mfu": mfu,
+            "perf/mfu_6dn": mfu_6dn,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))

@@ -1,6 +1,6 @@
 # Algorithms
 
-This page covers the math and the configurable algorithmic components: the algorithm abstraction and its algorithms, how off-policy training works, the loss components and advantage functions, curricula, and how multi-turn rollouts get merged into training samples.
+This page covers the math and the configurable algorithmic components: the algorithm abstraction and its algorithms, how async training and staleness work, the loss components and advantage functions, curricula, and how multi-turn rollouts get merged into training samples.
 
 ## Table of Contents
 
@@ -10,7 +10,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Customizing Components](#customizing-components)
   - [Per-Env Algorithms](#per-env-algorithms)
   - [The Algorithm Classes](#the-algorithm-classes)
-- [Async / Off-Policy Training](#async--off-policy-training)
+- [Async Training & Staleness](#async-training--staleness)
 - [Loss](#loss)
   - [Loss Components](#loss-components)
   - [IPO Loss](#ipo-loss)
@@ -54,7 +54,7 @@ Model *roles* are algorithm-local vocabulary — each algorithm names its refere
 
 So for `opd` set `[orchestrator.train.algo.teacher]`; for `sft` set `[orchestrator.train.algo.sampling.source]`; `opsd` needs neither. `opd`'s teacher must be a frozen endpoint — it is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero); `opsd`'s teacher *is* the live policy by definition (self-distillation conditioned on a demonstration), so it exposes no reference to configure.
 
-Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
+Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and go stale as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
 ### The Algorithms
 
@@ -161,7 +161,7 @@ The pipeline calls `score_group` directly and `score_episode` through `finalize_
 
 The algorithm config states which loss component its action tokens feed (`action_loss_type`, a class variable on each config class). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). Writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.train.algo.advantage`.
 
-## Async / Off-Policy Training
+## Async Training & Staleness
 
 `prime-rl` is asynchronous by default. The trainer and inference always run one step overlapped: while the trainer is producing $\pi_n$ from rollouts at step $n$, inference is already generating the rollouts for step $n+1$ using $\pi_{n-1}$. With matched trainer and inference step times this produces fully-overlapped pipeline parallelism — neither side ever idles.
 
@@ -173,6 +173,13 @@ At step $n = 1, 2, 3, \dots$:
 - **Inference** produces rollouts $(x_n, y_n)$ from policy $\pi_{\max(0,\,n-1)}$.
 
 Step indices are 1-indexed; policy versions are 0-indexed, with $\pi_0$ the base model. At step 1 inference samples from $\pi_0$.
+
+Long rollouts span several weight updates, and finished rollouts can wait in the queue before a batch ships. Staleness measures how far behind the trained policy the sampled tokens are:
+
+- **Token staleness** is the policy version a batch trains on ($n-1$ at step $n$) minus the policy version that sampled the token. Engines label each sampled token with that version. Tokens without a label (Dynamo engines) take their rollout's dispatch version.
+- **Rollout staleness** is the max token staleness of the rollout. It splits into **in-flight** staleness (weight updates between the rollout's oldest token and its completion) and **in-queue** staleness (weight updates while the rollout waits to ship).
+
+`orchestrator.max_staleness` (default 8) bounds token staleness. The orchestrator masks tokens past the bound out of the loss, and drops a sample only when no token is left to train. Rollouts are never cancelled for staleness.
 
 ## Loss
 
@@ -253,9 +260,16 @@ score_centering = true
 score_centering_topk = 128
 ```
 
-Training sampling must be untruncated (`top_p = 1`, no `top_k`) with positive
-temperature. The captured head retains full-vocabulary normalization. The trainer
-approximates the remaining sampler mass as proportional to its own tail.
+Training sampling requires positive temperature. With untruncated sampling
+(`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
+and the trainer approximates the remaining sampler mass as proportional to its own tail.
+
+With bounded top-k (optionally combined with top-p), the launcher captures at least
+`top_k` probabilities and enables sampling replay. The renderer retains the complete
+recorded support; the trainer normalizes over that same support and computes exact
+centering on it, without a tail approximation. `score_centering_topk` only controls
+the captured head for untruncated sampling. The existing sampling-replay limits and
+eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
 
 With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is
 `A * (w_a * grad(log p_a) - sum_v q_v*w_v*grad(log p_v))`. The correction applies
