@@ -5,7 +5,6 @@ from typing import Generic, Protocol, TypeVar
 import torch
 from torch.distributed import ProcessGroup
 
-from prime_rl.trainer.diagnostics import log_event
 from prime_rl.trainer.distributed.collectives import (
     all_to_all_single,
     all_to_all_single_equal,
@@ -340,21 +339,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
 
         num_routed_tokens = routed_input.shape[0]
         num_received_tokens = int(output_splits.sum())
-        log_event(
-            "ep_dispatch_start",
-            ep_degree=ep_degree,
-            input_shape=list(routed_input.shape),
-            input_splits=input_splits.tolist(),
-            output_splits=output_splits.tolist(),
-            num_routed_tokens=num_routed_tokens,
-            num_received_tokens=num_received_tokens,
-        )
-        try:
-            routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits, num_received_tokens)
-        except Exception as error:
-            log_event("ep_dispatch_error", error_type=type(error).__name__, error=str(error))
-            raise
-        log_event("ep_dispatch_end", output_shape=list(routed_input.shape))
+        routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits, num_received_tokens)
         experts_per_rank = self.num_experts // ep_degree
         routed_input, num_tokens_per_expert, permutation = permute_for_grouped_gemm(
             routed_input,
@@ -376,22 +361,9 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
 
     def combine(self, routed_output: torch.Tensor, state: TorchDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
-        log_event(
-            "ep_combine_start",
-            ep_degree=self.group.size(),
-            input_shape=list(routed_output.shape),
-            input_splits=state.input_splits.tolist(),
-            output_splits=state.output_splits.tolist(),
-            output_size=state.num_routed_tokens,
+        routed_output = self._combine_tokens(
+            routed_output, state.input_splits, state.output_splits, state.num_routed_tokens
         )
-        try:
-            routed_output = self._combine_tokens(
-                routed_output, state.input_splits, state.output_splits, state.num_routed_tokens
-            )
-        except Exception as error:
-            log_event("ep_combine_error", error_type=type(error).__name__, error=str(error))
-            raise
-        log_event("ep_combine_end", output_shape=list(routed_output.shape))
         return _combine_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
