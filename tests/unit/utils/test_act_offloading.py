@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import pytest
 import torch
 from torch import nn
@@ -55,3 +57,24 @@ def test_tensor_saved_twice_is_offloaded_once():
     loss.backward()
     assert not offloader.on_cpu and not offloader.aliases and not offloader.refs
     assert torch.equal(x.grad, shared + x.detach().cos() * shared)
+
+
+def test_activations_saved_on_a_side_stream():
+    def run(offloader=None):
+        x = torch.linspace(-2, 2, 4096 * 1024, device="cuda").view(4096, 1024).requires_grad_()
+        side = torch.cuda.Stream()
+        with offloader or nullcontext():
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                torch.cuda._sleep(20_000_000)
+                y = x.exp()
+            torch.cuda.current_stream().wait_stream(side)
+            loss = y.sum() + (x * 2).sin().sum()
+        if offloader is not None:
+            with torch.cuda.stream(offloader.copy_stream):
+                torch.cuda._sleep(20_000_000)
+        loss.backward()
+        return x.grad
+
+    reference = run()
+    assert torch.equal(run(OffloadActivations(nn.Linear(1, 1).cuda(), max_inflight=1)), reference)

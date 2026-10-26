@@ -17,8 +17,9 @@ class OffloadActivations(saved_tensors_hooks):
 
     In the forward pass, at most ``max_inflight`` activations stay on the GPU while their copies
     to CPU run. In the backward pass, the next ``max_inflight`` activations are copied back
-    ahead of use. GPU memory is always allocated on the compute stream, and the compute stream
-    waits on copy events before it reads that memory.
+    ahead of use. Copies are ordered against the stream that saves or unpacks a tensor, which is
+    not always the compute stream: autograd runs a backward node on the stream of its forward op.
+    GPU memory is always allocated on the compute stream.
 
     Tensors that share storage with a parameter of ``model`` stay on the GPU. A compiled block saves
     the local tensors of unsharded DTensor parameters (e.g. EP experts), and FSDP frees and refills
@@ -73,11 +74,12 @@ class OffloadActivations(saved_tensors_hooks):
                 return tensor_id
             self.copies[key] = (StorageWeakRef(tensor.untyped_storage()), tensor_id)
 
+        stream = torch.cuda.current_stream()
         while len(self.offloading) >= self.max_inflight:
             _, event = self.offloading.pop(next(iter(self.offloading)))
-            self.compute_stream.wait_event(event)
+            stream.wait_event(event)
 
-        self.copy_stream.wait_stream(self.compute_stream)
+        self.copy_stream.wait_stream(stream)
         with torch.cuda.stream(self.copy_stream):
             cpu_tensor = torch.empty_like(tensor, device="cpu", pin_memory=True)
             cpu_tensor.copy_(tensor, non_blocking=True)
@@ -119,12 +121,16 @@ class OffloadActivations(saved_tensors_hooks):
             if i not in self.prefetched:
                 self.prefetch(i)
 
-        self.compute_stream.wait_event(event)
+        stream = torch.cuda.current_stream()
+        stream.wait_event(event)
+        if stream != self.compute_stream:
+            tensor.record_stream(stream)
         return tensor if shape is None else tensor.view(shape)
 
     def prefetch(self, tensor_id: int) -> None:
         cpu_tensor = self.on_cpu[tensor_id]
-        tensor = torch.empty_like(cpu_tensor, device="cuda")
+        with torch.cuda.stream(self.compute_stream):
+            tensor = torch.empty_like(cpu_tensor, device="cuda")
         self.copy_stream.wait_stream(self.compute_stream)
         with torch.cuda.stream(self.copy_stream):
             tensor.copy_(cpu_tensor, non_blocking=True)
