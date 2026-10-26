@@ -1,3 +1,4 @@
+import itertools
 import json
 import re
 import warnings
@@ -20,6 +21,7 @@ from transformers.utils import (
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.vlm import get_layer_prefix
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
@@ -128,20 +130,46 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
     return next(iter(fqns))
 
 
+def get_consuming_layers(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, int]:
+    """Map each n-gram table's state-dict keys to the index of the decoder layer that consumes the table."""
+    from prime_rl.trainer.models.layers.ngram import NGramEmbeddings
+
+    fqn_layers = {
+        resolve_fqn(model, f"{name}.tables.{decoder_index}.{tensor_name}"): int(decoder_index)
+        for name, module in model.named_modules()
+        if isinstance(module, NGramEmbeddings)
+        for decoder_index, table in module.tables.items()
+        for tensor_name, _ in itertools.chain(table.named_parameters(), table.named_buffers())
+    }
+    if not fqn_layers:
+        return {}
+    return {key: fqn_layers[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in fqn_layers}
+
+
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
 
-def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
+def partition_weights(
+    state_dict: dict[str, Tensor],
+    world_size: int,
+    dtype: torch.dtype,
+    layer_prefix: str,
+    consuming_layers: dict[str, int],
+) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
 
-    All keys of one decoder layer share an owner, so per-rank prime->HF conversion
-    (which stacks/unstacks tensors within a layer) always sees complete layers.
+    All keys of one decoder layer share an owner, including the keys `consuming_layers`
+    assigns to it, so per-rank prime->HF conversion (which stacks/unstacks tensors
+    within a layer) always sees complete layers.
     """
     key_to_unit: dict[str, str] = {}
     unit_bytes: dict[str, int] = {}
     for key, value in state_dict.items():
-        match = _LAYER_RE.match(key)
-        unit = match.group(1) if match else ""
+        if key in consuming_layers:
+            unit = f"{layer_prefix}{consuming_layers[key]}"
+        else:
+            match = _LAYER_RE.match(key)
+            unit = match.group(1) if match else ""
         key_to_unit[key] = unit
         itemsize = dtype.itemsize if isinstance(value, DTensor) else value.element_size()
         unit_bytes[unit] = unit_bytes.get(unit, 0) + value.numel() * itemsize
@@ -166,13 +194,24 @@ def get_chunked_conversion_ops(model: nn.Module, state_dict: dict[str, Tensor]) 
     """Match independent chunked conversions to weights actually present, including wrapper prefixes."""
     from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
+    from prime_rl.trainer.models.layers.ngram import NGramTable
 
     if not isinstance(model, PreTrainedModelPrimeRL):
         return {}
     operations = {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, ChunkedConvOp)}
-    if not operations:
+    table_weights = {
+        resolve_fqn(model, f"{name}.weight") for name, module in model.named_modules() if isinstance(module, NGramTable)
+    }
+    if not operations and not table_weights:
         return {}
-    return {key: operations[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in operations}
+    fqns = {key: resolve_fqn(model, key) for key in state_dict}
+    unchunked_table_weights = [key for key, fqn in fqns.items() if fqn in table_weights and fqn not in operations]
+    if unchunked_table_weights:
+        raise ValueError(
+            f"NGramTable weights {unchunked_table_weights} match no ChunkedConvOp in the conversion chain. "
+            "Without one, a weight transfer would send each table as a single tensor."
+        )
+    return {key: operations[fqn] for key, fqn in fqns.items() if fqn in operations}
 
 
 def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
@@ -193,7 +232,10 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     """
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
+    state_dict = model.state_dict()
+    owners = partition_weights(
+        state_dict, world.world_size, dtype, get_layer_prefix(model.config), get_consuming_layers(model, state_dict)
+    )
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")

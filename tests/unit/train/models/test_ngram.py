@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,9 +16,13 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
 )
+from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import NGramEmbeddingWeights
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import NGRAM_HASH_SEED, Qwen38NGramHasher
+from prime_rl.transports.weights.nccl import filter_state_dict_by_layers, get_max_layer_num, preprocess_layer_checkpoint
+from prime_rl.transports.weights.nixl.nixl import LAYER_RE, NIXLWeightSender
 from prime_rl.utils.cp import CPContext
-from prime_rl.utils.vlm import get_language_model
+from prime_rl.utils.vlm import get_language_model, get_layer_prefix
+from prime_rl.utils.weights import _LAYER_RE, get_chunked_conversion_ops, get_consuming_layers, partition_weights
 
 GOLDEN_PATH = Path(__file__).parents[4] / "benchmarks/scripts/ngram-module/golden/main_1810d5b9a.pt"
 CONFIG_NAMES = ["tiny_text", "tiny_composite_4gram", "tiny_truncated"]
@@ -268,6 +273,114 @@ def test_model_forward_feeds_main_ngram_ids_to_ple(golden, config_name, case_nam
         ple = language_model.layers[decoder_index].ple
         embeddings = language_model.ngram.embed(main_ngram_ids, decoder_index)
         assert torch.equal(output, ple(expanded_states, embeddings, cu_seqlens))
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_nccl_layer_packets_match_main(golden, config_name):
+    model = _model(golden, config_name, "meta")
+    state_dict = model.state_dict()
+    layer_prefix = get_layer_prefix(model.config)
+    main_keys = golden["prime_keys"][config_name]
+    main_num_layers = get_max_layer_num(dict.fromkeys(main_keys), layer_prefix)
+    main_packets = [(-1, sorted(_branch_name(key) for key in main_keys if not key.startswith(layer_prefix)))]
+    main_packets += [
+        (layer, sorted(_branch_name(key) for key in main_keys if key.startswith(f"{layer_prefix}{layer}.")))
+        for layer in range(main_num_layers)
+    ]
+
+    packets = filter_state_dict_by_layers(
+        state_dict,
+        get_max_layer_num(state_dict, layer_prefix),
+        layer_prefix,
+        get_consuming_layers(model, state_dict),
+    )
+
+    assert [(layer, sorted(packet)) for layer, packet in packets] == main_packets
+    main_table_weights = [_branch_name(key) for key in main_keys if key.endswith(".ngram_embedding.weight")]
+    assert sorted(get_chunked_conversion_ops(model, state_dict)) == sorted(main_table_weights)
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_nccl_layer_packet_sends_main_table_buffers(golden, config_name):
+    model = _model(golden, config_name, "cpu")
+    model.init_buffers_post_meta()
+    state_dict = model.state_dict()
+    layer_prefix = get_layer_prefix(model.config)
+    chunked_ops = get_chunked_conversion_ops(model, state_dict)
+
+    packets = dict(
+        filter_state_dict_by_layers(
+            state_dict,
+            get_max_layer_num(state_dict, layer_prefix),
+            layer_prefix,
+            get_consuming_layers(model, state_dict),
+        )
+    )
+
+    for expected in golden["layouts"][config_name]:
+        decoder_index = expected["decoder_index"]
+        packet = {key: value for key, value in packets[decoder_index].items() if key not in chunked_ops}
+        hf_packet = preprocess_layer_checkpoint(model, packet, decoder_index)
+        for name in LAYOUT_BUFFERS:
+            assert torch.equal(hf_packet[f"{layer_prefix}{decoder_index}.ple.ple_embedding.{name}"], expected[name])
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_nixl_transfer_groups_match_main(golden, config_name):
+    model = _model(golden, config_name, "meta")
+    state_dict = model.state_dict()
+    main_layers = {}
+    for key in golden["prime_keys"][config_name]:
+        if state_dict[_branch_name(key)].is_floating_point():
+            match = LAYER_RE.search(key)
+            main_layers[_branch_name(key)] = None if match is None else int(match.group(1))
+    main_layer_numbers = sorted({layer for layer in main_layers.values() if layer is not None})
+
+    groups = NIXLWeightSender.build_transfer_group_index(state_dict, get_consuming_layers(model, state_dict))
+
+    assert groups.group_names == ["non_layer", *(f"layer.{layer}" for layer in main_layer_numbers)]
+    assert {
+        key: groups.group_names[NIXLWeightSender.find_transfer_group_index(key, groups)] for key in main_layers
+    } == {key: "non_layer" if layer is None else f"layer.{layer}" for key, layer in main_layers.items()}
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_partition_units_match_main(golden, config_name):
+    model = _model(golden, config_name, "meta")
+    state_dict = model.state_dict()
+    main_units = defaultdict(set)
+    for key in golden["prime_keys"][config_name]:
+        match = _LAYER_RE.match(key)
+        main_units[match.group(1) if match else ""].add(_branch_name(key))
+
+    owners = partition_weights(
+        state_dict,
+        len(main_units),
+        torch.bfloat16,
+        get_layer_prefix(model.config),
+        get_consuming_layers(model, state_dict),
+    )
+
+    owner_keys = defaultdict(set)
+    for key, owner in owners.items():
+        owner_keys[owner].add(key)
+    assert sorted(map(sorted, owner_keys.values())) == sorted(map(sorted, main_units.values()))
+
+
+@pytest.mark.parametrize("config_name", CONFIG_NAMES)
+def test_table_without_chunked_conversion_raises(golden, monkeypatch, config_name):
+    model = _model(golden, config_name, "meta")
+    state_dict = model.state_dict()
+    unchunked_weight = list(get_chunked_conversion_ops(model, state_dict))[-1]
+    chain_without_op = [
+        op
+        for op in model.conversion_chain(model.config)
+        if not (isinstance(op, NGramEmbeddingWeights) and op.runtime_weight == unchunked_weight)
+    ]
+    monkeypatch.setattr(type(model), "conversion_chain", classmethod(lambda cls, config: chain_without_op))
+
+    with pytest.raises(ValueError, match=re.escape(f"NGramTable weights {[unchunked_weight]} match no ChunkedConvOp")):
+        get_chunked_conversion_ops(model, state_dict)
 
 
 @pytest.mark.parametrize(
