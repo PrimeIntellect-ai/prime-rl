@@ -546,9 +546,8 @@ class RLConfig(BaseConfig):
         for sampling in samplings:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
-            if k is None:
-                raise ValueError("Truncated score centering requires a bounded top_k")
+            # Replayed requests carry their whole support, whatever its size; logprobs only opts into it.
+            k = (sampling.top_k or 1) if sampling.truncates_distribution() else loss.score_centering_topk
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
@@ -564,8 +563,7 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
-        masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND). Only opted-in requests capture
+        masks the trainer replays. Only opted-in requests capture
         masks; eval requests retain independent sampling settings."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"

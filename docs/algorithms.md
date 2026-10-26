@@ -257,9 +257,9 @@ Training sampling requires positive temperature. With untruncated sampling
 (`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
 and the trainer approximates the remaining sampler mass as proportional to its own tail.
 
-With bounded top-k (optionally combined with top-p), the launcher captures at least
-`top_k` probabilities and enables sampling replay. The renderer retains the complete
-recorded support; the trainer normalizes over that same support and computes exact
+With truncated sampling (top-p, top-k, or both), the launcher enables sampling replay
+and the server captures the sampler's probability for every token of each recorded
+support, at any width. The renderer retains the complete recorded support; the trainer normalizes over that same support and computes exact
 centering on it, without a tail approximation. `score_centering_topk` only controls
 the captured head for untruncated sampling. The existing sampling-replay limits and
 eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).

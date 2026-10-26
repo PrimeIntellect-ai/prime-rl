@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias, get_args
 
@@ -45,9 +44,8 @@ class TrainSamplingConfig(BaseConfig):
     rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
-    a default top-k is injected when only top-p truncates so sampling masks stay
-    bounded — see docs/inference.md (Sampling Replay)."""
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay; top-p alone needs no
+    top-k — see docs/inference.md (Sampling Replay)."""
 
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
@@ -458,15 +456,6 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
-# Top-k injected on truncated policy sampling that has none, and the hard upper
-# bound for explicit top-k. vLLM's native sampling-mask capture requires a
-# per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
-# batch's masks to the largest sampling mask, so the bound also caps trainer
-# mask tensors.
-TRAIN_TOP_K_DEFAULT = 128
-TRAIN_TOP_K_BOUND = 512
-
-
 class OrchestratorControlConfig(ControlConfig):
     port: int = Field(8041, ge=1, le=65535)
     """Port the control API listens on, next to the trainer's 8040 on a single node."""
@@ -600,8 +589,7 @@ class OrchestratorConfig(BaseConfig):
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
-        Owned here: every truncating config gets a top-k bound (bounds the sampling
-        masks); opd/opsd is rejected (full-vocab prefill refs would mix
+        Owned here: opd/opsd is rejected (full-vocab prefill refs would mix
         normalizations). Frozen-source envs sample externally and are exempt."""
         policy_samplings = [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
             [self.train.sampling] if not self.train.source else []
@@ -616,24 +604,6 @@ class OrchestratorConfig(BaseConfig):
                 "no truncated distribution to replay, and the inference server rejects such requests "
                 "while sampling-mask capture is on."
             )
-
-        oversized = [sampling.top_k for sampling in truncating if (sampling.top_k or 0) > TRAIN_TOP_K_BOUND]
-        if oversized:
-            raise ValueError(
-                f"Truncated train sampling with top_k = {max(oversized)} exceeds the sampling-replay "
-                f"bound ({TRAIN_TOP_K_BOUND}): the trainer pads each micro batch's masks to the largest "
-                f"sampling mask, so unbounded masks blow up trainer memory. Use top_k <= {TRAIN_TOP_K_BOUND}."
-            )
-
-        unbounded = [sampling for sampling in truncating if sampling.top_k is None]
-        if unbounded:
-            warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_DEFAULT} so every sampling mask is "
-                "bounded and sampling replay stays exact. Set top_k explicitly to override.",
-                stacklevel=2,
-            )
-            for sampling in unbounded:
-                sampling.top_k = TRAIN_TOP_K_DEFAULT
 
         algos = [env.algo for env in self.train.source] or [self.train.algo]
         if any(algo.type in ("opd", "opsd") for algo in algos):
@@ -716,21 +686,6 @@ class OrchestratorConfig(BaseConfig):
                 if getattr(env.sampling, "top_k", None) is None:
                     env.sampling.top_k = -1
                 env.sampling.logprobs = None
-        return self
-
-    @model_validator(mode="after")
-    def validate_policy_top_k_consistency(self):
-        """Require one top-k capture mode across the live policy server."""
-        policy_sources = [env for env in self.train.source if env.algo.sampling.source == "policy"]
-        enabled = [env for env in policy_sources if env.sampling.top_k is not None]
-        disabled = [env for env in policy_sources if env.sampling.top_k is None]
-        if enabled and disabled:
-            names = ", ".join(env.resolved_name for env in disabled)
-            raise ValueError(
-                "Live-policy train sources cannot mix top_k > 0 and top_k = -1 because "
-                "sampling-mask capture is engine-wide. Set top_k > 0 for these sources: "
-                f"{names}."
-            )
         return self
 
     @property
