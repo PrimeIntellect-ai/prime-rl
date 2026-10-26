@@ -480,7 +480,10 @@ class Dispatcher:
         for gid, group in list(self.groups.items()):
             if group.kind != kind or group.episodes_to_schedule <= 0:
                 continue
-            if kind == "train" and not self.env_allowed(group.env_name):
+            # A paused env's groups wait until it resumes; its probe takes a fresh task, since a
+            # leftover group's task may be what keeps failing.
+            breaker = self.breakers.get(group.env_name) if kind == "train" else None
+            if breaker is not None and breaker.state != "closed":
                 continue
             return await self.schedule_group_episode(gid, group)
 
