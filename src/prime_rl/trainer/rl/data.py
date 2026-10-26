@@ -17,7 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplingMask, TopLogprobs
 
 
 class TensorMicroBatch(TypedDict):
@@ -47,11 +47,13 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Sampling-mask token ids per position, padded with -1 to the micro batch's
-    # maximum mask size. A row containing only -1 has no mask.
-    sampling_mask: Int[Tensor, "batch seq mask"] | None
-    top_logprobs_ids: Int[Tensor, "batch seq head"] | None
-    top_logprobs_values: Float[Tensor, "batch seq head"] | None
+    # Sampler support per token as CSR rows: token i owns entries support_offsets[i]:support_offsets[i + 1],
+    # its sampling mask (support_replayed) and/or its top logprobs. support_logprobs is None when some head
+    # carries no sampler logprobs.
+    support_ids: Int[Tensor, "entries"] | None
+    support_logprobs: Float[Tensor, "entries"] | None
+    support_offsets: Int[Tensor, "seq_plus_one"] | None
+    support_replayed: Bool[Tensor, "seq"] | None
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
@@ -142,9 +144,10 @@ class FakeDataLoader:
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
-            "sampling_mask": None,
-            "top_logprobs_ids": None,
-            "top_logprobs_values": None,
+            "support_ids": None,
+            "support_logprobs": None,
+            "support_offsets": None,
+            "support_replayed": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -177,9 +180,10 @@ class FakeDataLoader:
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
-            "sampling_mask": None,
-            "top_logprobs_ids": None,
-            "top_logprobs_values": None,
+            "support_ids": None,
+            "support_logprobs": None,
+            "support_offsets": None,
+            "support_replayed": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -249,36 +253,7 @@ class DataLoader:
                 .reshape(packed_routed_experts.shape)
                 .unsqueeze(0)
             )
-        sampling_mask = None
-        packed_sampling_mask = micro_batch.sampling_mask
-        if packed_sampling_mask is not None:
-            counts = np.frombuffer(packed_sampling_mask.counts, dtype=np.int32)
-            ids = np.frombuffer(packed_sampling_mask.ids, dtype=np.int32)
-            # Boolean assignment fills row-major, matching the flat concat order.
-            max_mask_size = max(int(counts.max()), 1) if counts.size else 1
-            padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
-            padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
-            sampling_mask = torch.from_numpy(padded).unsqueeze(0)
-        top_ids = top_values = None
-        # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
-        heads = [
-            head
-            for head in (micro_batch.top_logprobs, packed_sampling_mask)
-            if head is not None and head.logprobs is not None
-        ]
-        if heads:
-            head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
-            counts = sum(head_counts)
-            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
-            order = np.argsort(rows, kind="stable")
-            width = max(int(counts.max(initial=0)), 1)
-            valid = np.arange(width)[None, :] < counts[:, None]
-            ids = np.full((len(counts), width), -1, dtype=np.int32)
-            values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
-            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
-            top_ids = torch.from_numpy(ids).unsqueeze(0)
-            top_values = torch.from_numpy(values).unsqueeze(0)
+        support = _merge_support(micro_batch.top_logprobs, micro_batch.sampling_mask)
 
         def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
             """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
@@ -306,13 +281,39 @@ class DataLoader:
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=stream("mm_token_type_ids", np.int64),
             routed_experts=routed_experts,
-            sampling_mask=sampling_mask,
-            top_logprobs_ids=top_ids,
-            top_logprobs_values=top_values,
+            **support,
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
         )
+
+
+def _merge_support(top_logprobs: TopLogprobs | None, sampling_mask: SamplingMask | None) -> dict[str, Tensor | None]:
+    """Merge the top-logprobs and sampling-mask heads into token-major CSR support fields."""
+    heads = [head for head in (top_logprobs, sampling_mask) if head is not None]
+    if not heads:
+        return dict(support_ids=None, support_logprobs=None, support_offsets=None, support_replayed=None)
+    head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
+    num_tokens = len(head_counts[0])
+    offsets = np.zeros(num_tokens + 1, dtype=np.int64)
+    np.cumsum(sum(head_counts), out=offsets[1:])
+    rows = np.concatenate([np.repeat(np.arange(num_tokens), counts) for counts in head_counts])
+    order = np.argsort(rows, kind="stable")
+    ids = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+    logprobs = None
+    if all(head.logprobs is not None for head in heads):
+        logprobs = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
+    replayed = (
+        np.frombuffer(sampling_mask.counts, dtype=np.int32) > 0
+        if sampling_mask is not None
+        else np.zeros(num_tokens, dtype=np.bool_)
+    )
+    return dict(
+        support_ids=torch.from_numpy(ids),
+        support_logprobs=torch.from_numpy(logprobs) if logprobs is not None else None,
+        support_offsets=torch.from_numpy(offsets),
+        support_replayed=torch.from_numpy(replayed),
+    )
 
 
 def validate_score_centering_data(
@@ -321,37 +322,38 @@ def validate_score_centering_data(
     """Validate sampler evidence on the CPU before the LM head consumes it. ``replayed_only``: only tokens with
     a sampling mask need it. ``draws``: tokens without a sampling mask carry i.i.d. sampler draws, which may
     repeat."""
-    mask = batch["loss_mask"]
+    mask = batch["loss_mask"][0]
     if batch["rl_weights"] is not None:
-        mask = mask & (batch["rl_weights"] != 0)
+        mask = mask & (batch["rl_weights"][0] != 0)
+    offsets, replayed = batch["support_offsets"], batch["support_replayed"]
     if replayed_only:
-        mask = mask & (batch["sampling_mask"] >= 0).any(-1) if batch["sampling_mask"] is not None else mask & False
+        mask = mask & replayed if replayed is not None else mask & False
     if not mask.any():
         return
-    ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]
+    ids, values = batch["support_ids"], batch["support_logprobs"]
     if ids is None or values is None:
         raise ValueError("Score centering requires top logprobs on every RL token")
-    ids, values = ids[mask], values[mask]
-    valid = ids >= 0
-    if not valid.any(-1).all() or (ids >= vocab_size).any():
+    counts = offsets.diff()
+    rows = torch.repeat_interleave(torch.arange(len(counts)), counts)
+    selected = mask[rows]
+    ids, values, rows = ids[selected].long(), values[selected], rows[selected]
+    if (counts[mask] == 0).any() or (ids < 0).any() or (ids >= vocab_size).any():
         raise ValueError("Missing or out-of-vocabulary sampler top logprobs")
-    if not torch.isfinite(values[valid]).all() or (values[valid] > 1e-6).any():
+    if not torch.isfinite(values).all() or (values > 1e-6).any():
         raise ValueError("Sampler top logprobs must be finite and nonpositive")
-    support = batch["sampling_mask"][mask] if batch["sampling_mask"] is not None else None
-    replay = (support >= 0).any(-1) if support is not None else torch.zeros_like(valid[:, 0])
-    head = replay | (not draws)
-    ordered = ids[head].sort(-1).values
-    if ((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)).any():
+    head = replayed | (not draws)
+    keys = (rows * vocab_size + ids)[head[rows]].sort().values
+    if (keys[1:] == keys[:-1]).any():
         raise ValueError("Duplicate sampler head ids")
-    q = values.exp().masked_fill(~valid, 0.0)
-    if (q[head].sum(-1) > 1.0001).any():
+    q = torch.zeros(len(counts)).index_add_(0, rows, values.exp())
+    if (q[mask & head] > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if support is not None:
-        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
-            raise ValueError("Sampler probabilities must normalize over the recorded support")
-        sampled = batch["input_ids"][mask]
-        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
-            raise ValueError("Sampled token is missing from the recorded support")
+    replay = mask & replayed
+    if not torch.isclose(q[replay], torch.ones_like(q[replay]), atol=1e-4, rtol=0).all():
+        raise ValueError("Sampler probabilities must normalize over the recorded support")
+    hits = torch.zeros(len(counts), dtype=torch.long).index_add_(0, rows, (ids == batch["input_ids"][0][rows]).long())
+    if (hits[replay] == 0).any():
+        raise ValueError("Sampled token is missing from the recorded support")
 
 
 def _torch_dtype(name: str) -> torch.dtype:

@@ -87,6 +87,13 @@ def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup) -> torch.Tensor:
     return all_gather(t, 1, cp_group)
 
 
+def gather_ragged_for_cp(t: torch.Tensor, sizes: list[int], cp_group: dist.ProcessGroup) -> torch.Tensor:
+    """All-gather (with grad) a flat tensor whose length differs per CP rank, ``sizes`` holding every rank's."""
+    padded = torch.nn.functional.pad(t, (0, max(sizes) - t.shape[0]))
+    gathered = all_gather(padded, 0, cp_group).view(len(sizes), -1)
+    return torch.cat([row[:size] for row, size in zip(gathered, sizes, strict=True)])
+
+
 def gather_for_cp_wo_grad(t: torch.Tensor, cp_world_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     empty_like_t = [torch.empty_like(t) for _ in range(cp_world_size)]
     dist.all_gather(empty_like_t, t, group=cp_group)

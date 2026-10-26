@@ -4,7 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
@@ -264,7 +264,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         labels: torch.LongTensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
         temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
+        support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
@@ -286,7 +286,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
             outputs.last_hidden_state[:, slice_indices],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
-            sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:

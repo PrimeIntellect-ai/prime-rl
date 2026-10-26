@@ -36,6 +36,17 @@ def _dense_weight(config, p, q):
     return torch.ones_like(p)
 
 
+def _ragged(trainer: torch.Tensor, sampler: torch.Tensor, valid: torch.Tensor, replayed: torch.Tensor) -> dict:
+    """Padded [n, k] support fields as the flat entries of the valid slots."""
+    rows = torch.arange(valid.shape[0]).unsqueeze(-1).expand_as(valid)
+    return dict(
+        trainer_support_logprobs=trainer[valid],
+        sampler_support_logprobs=sampler[valid],
+        support_rows=rows[valid],
+        support_replayed=replayed,
+    )
+
+
 def _support_case(replay: bool):
     """Every action of one prefix as its own token. Replay: support {0..3}, p renormalized over it and the
     tail empty. No replay: head {0, 1} of the full vocabulary and a sampler tail proportional to p."""
@@ -52,11 +63,11 @@ def _support_case(replay: bool):
         q_tail = 1 - q_head.sum()
         q = torch.cat((q_head, q_tail * p[head:] / p[head:].sum()))
     n = len(q)
-    support = dict(
-        trainer_support_logprobs=logp[:head].expand(n, -1),
-        sampler_support_logprobs=q[:head].log().expand(n, -1),
-        support_valid=torch.ones((n, head), dtype=torch.bool),
-        support_replayed=torch.full((n,), replay),
+    support = _ragged(
+        logp[:head].expand(n, -1),
+        q[:head].log().expand(n, -1),
+        torch.ones((n, head), dtype=torch.bool),
+        torch.full((n,), replay),
     )
     return logits, logp, q, support
 
@@ -115,7 +126,7 @@ def test_kl_matches_dense_kl(replay, kl_staleness):
     assert torch.equal(result.metrics["kl/beta"], beta)
 
 
-def _main_icepop_score_centering(config, inputs):
+def _main_icepop_score_centering(config, inputs, head, sampler, valid):
     """IcePop with score centering as on main after #4012 (90fbb8db2)."""
     mask = inputs.loss_mask
     log_ratio = inputs.trainer_logprobs[mask] - inputs.inference_logprobs[mask]
@@ -123,9 +134,7 @@ def _main_icepop_score_centering(config, inputs):
     low, high = log_ratio.new_tensor(config.ratio_low).log(), log_ratio.new_tensor(config.ratio_high).log()
     keep = (log_ratio.detach() >= low) & (log_ratio.detach() <= high)
     loss = (-config.adv_tau * advantages[keep] * torch.exp(log_ratio[keep])).sum()
-    head = inputs.trainer_support_logprobs[mask]
-    valid = inputs.support_valid[mask]
-    sampler = inputs.sampler_support_logprobs[mask].detach()
+    head, valid, sampler = head[mask], valid[mask], sampler[mask].detach()
     with torch.no_grad():
         p = head.exp().masked_fill(~valid, 0.0)
         q = sampler.exp().masked_fill(~valid, 0.0)
@@ -146,20 +155,18 @@ def test_icepop_topk_tail_matches_main():
     ids = sampler.topk(k, -1).indices
     labels = torch.multinomial(sampler.exp(), 1).squeeze(-1)
     q_head = sampler.gather(-1, ids)
+    head, valid = logp.gather(-1, ids), torch.rand(n, k) > 0.1
     inputs = LossInputs(
         trainer_logprobs=logp.gather(-1, labels[:, None]).squeeze(-1),
         inference_logprobs=sampler.gather(-1, labels[:, None]).squeeze(-1),
         ref_logprobs=None,
         advantages=torch.randn(n),
         loss_mask=torch.rand(n) > 0.2,
-        trainer_support_logprobs=logp.gather(-1, ids),
-        sampler_support_logprobs=q_head,
-        support_valid=torch.rand(n, k) > 0.1,
-        support_replayed=torch.zeros(n, dtype=torch.bool),
+        **_ragged(head, q_head, valid, torch.zeros(n, dtype=torch.bool)),
     )
     config = IcePopLossConfig(score_centering=True, score_centering_estimator="topk")
     actual = setup_rl_loss_fn(config).loss(inputs).loss
-    expected = _main_icepop_score_centering(config, inputs)
+    expected = _main_icepop_score_centering(config, inputs, head, q_head, valid)
     torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(
         torch.autograd.grad(actual, logits, retain_graph=True)[0], torch.autograd.grad(expected, logits)[0]
@@ -187,10 +194,9 @@ def test_sampled_estimator_is_unbiased(config):
             ref_logprobs=None,
             advantages=torch.full((n,), 0.0 if kl_coeff else 1.0),
             loss_mask=torch.ones(n, dtype=torch.bool),
-            trainer_support_logprobs=logp.gather(-1, ids),
-            sampler_support_logprobs=q.log()[ids],
-            support_valid=torch.ones(ids.shape, dtype=torch.bool),
-            support_replayed=torch.full((n,), replayed),
+            **_ragged(
+                logp.gather(-1, ids), q.log()[ids], torch.ones(ids.shape, dtype=torch.bool), torch.full((n,), replayed)
+            ),
         )
         loss = setup_rl_loss_fn(cfg).loss(inputs).loss / n
         return loss, torch.autograd.grad(loss, logits)[0]

@@ -14,7 +14,7 @@ from prime_rl.configs.trainer import (
     LossConfig,
     ReinforceLossConfig,
 )
-from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
 from prime_rl.utils.utils import import_object
 
 
@@ -34,9 +34,9 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
-    trainer_support_logprobs: Float[Tensor, "seq support"] | None = None
-    sampler_support_logprobs: Float[Tensor, "seq support"] | None = None
-    support_valid: Bool[Tensor, "seq support"] | None = None
+    trainer_support_logprobs: Float[Tensor, " entries"] | None = None
+    sampler_support_logprobs: Float[Tensor, " entries"] | None = None
+    support_rows: Int[Tensor, " entries"] | None = None
     support_replayed: Bool[Tensor, " seq"] | None = None
     policy_ages: Int[Tensor, " seq"] | None = None
 
@@ -75,39 +75,27 @@ def selective_log_softmax(
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
 
 
-def selective_topk_log_softmax(
-    logits: Tensor, topk_ids: Tensor, sampling_mask: Tensor | None = None, labels: Tensor | None = None
-) -> Tensor:
-    """Gather head logprobs under the same normalization as the sampled token."""
-    logz = logits.logsumexp(-1, keepdim=True)
-    if sampling_mask is not None:
-        replay = sampling_replay_mask(sampling_mask, labels).unsqueeze(-1)
-        mask_logits = logits.gather(-1, sampling_mask.clamp_min(0).long()).masked_fill(sampling_mask < 0, -torch.inf)
-        mask_logits = torch.where(replay, mask_logits, 0.0)
-        logz = torch.where(replay, mask_logits.logsumexp(-1, keepdim=True), logz)
-    head = logits.gather(-1, topk_ids.clamp_min(0).long()) - logz
-    return head.masked_fill(topk_ids < 0, 0.0)
+def _segment_logsumexp(values: Tensor, rows: Tensor, num_rows: int) -> Tensor:
+    """Differentiable logsumexp per row of flat ``values``; -inf for empty rows (their gradient is zero)."""
+    row_max = values.new_full((num_rows,), float("-inf")).scatter_reduce(0, rows, values.detach(), "amax")
+    total = values.new_zeros(num_rows).index_add(0, rows, torch.exp(values - row_max[rows]))
+    # Non-empty rows sum to at least 1 (their max term), so the clamp only keeps empty rows' gradient finite.
+    return row_max + total.clamp_min(1.0).log()
 
 
-@jaxtyped(typechecker=typechecker)
-def selective_log_softmax_with_sampling_mask(
-    logits: Float[Tensor, "batch seq vocab"],
-    index: Int[Tensor, "batch seq"],
-    sampling_mask: Int[Tensor, "batch seq mask"],
-) -> Float[Tensor, "batch seq"]:
-    """Per-token logprobs with sampling-mask replay: positions with a usable
-    mask (see ``sampling_replay_mask``) get ``logits[index] -
-    logsumexp(logits[mask])``, others full-vocab. Non-replayed rows are zeroed
-    before the logsumexp so the unselected ``where`` branch can't emit NaN grads.
-    """
-    full_logprobs = selective_log_softmax(logits, index)
-    replay = sampling_replay_mask(sampling_mask, index)
-    mask_logits = torch.gather(logits, -1, sampling_mask.clamp_min(0).long())
-    mask_logits = torch.where(sampling_mask >= 0, mask_logits, float("-inf"))
-    mask_logits = torch.where(replay.unsqueeze(-1), mask_logits, 0.0)
-    logz_masked = torch.logsumexp(mask_logits, dim=-1)
-    target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
-    return torch.where(replay, target_logits - logz_masked, full_logprobs)
+def selective_log_softmax_with_support(
+    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"], support: TokenSupport
+) -> tuple[Float[Tensor, "batch seq"], Float[Tensor, " entries"]]:
+    """Per-token logprobs with support replay, and the logprob of every support entry under the same
+    normalization: tokens with a usable sampling mask (see ``support_replay_mask``) get ``logits[index] -
+    logsumexp(logits[mask])``, others full-vocab."""
+    logits, index = logits.squeeze(0), index.squeeze(0)
+    rows = support.row_index().long()
+    support_logits = logits[rows, support.ids.long()]
+    replay = support_replay_mask(support, index, rows)
+    logz = torch.where(replay, _segment_logsumexp(support_logits, rows, support.num_rows), logits.logsumexp(-1))
+    target_logits = logits.gather(-1, index.unsqueeze(-1)).squeeze(-1)
+    return (target_logits - logz).unsqueeze(0), support_logits - logz[rows]
 
 
 @jaxtyped(typechecker=typechecker)
@@ -125,7 +113,7 @@ def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
     Used to create labels from input_ids: labels[i] = input_ids[i+1]. The last
     position is padded with ``pad_value`` (0 is a valid token index but gets
     shifted off by shift_tensor_right and never used). Works for [batch, seq]
-    labels and label-aligned [batch, seq, ...] fields like sampling_mask.
+    labels and label-aligned [batch, seq, ...] fields.
     """
     return torch.cat([t[:, 1:], torch.full_like(t[:, :1], pad_value)], dim=1)
 
@@ -217,7 +205,7 @@ class RLLoss:
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep),
             "is_masked": (~keep).sum() / max(keep.numel(), 1),
         }
-        if inputs.support_valid is not None:
+        if inputs.support_rows is not None:
             support_loss, support_metrics = self.support_loss(inputs, advantages)
             per_token_loss = per_token_loss + support_loss
             metrics.update(support_metrics)
@@ -228,48 +216,53 @@ class RLLoss:
     def support_loss(self, inputs: LossInputs, advantages: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         config = self.config
         mask = inputs.loss_mask
-        valid = inputs.support_valid[mask]
-        log_p = inputs.trainer_support_logprobs[mask].masked_fill(~valid, 0.0)
-        log_q = inputs.sampler_support_logprobs[mask].detach().masked_fill(~valid, 0.0)
-        has_support = valid.any(-1)
-        replayed = has_support & inputs.support_replayed[mask]
-        p, q = log_p.exp().masked_fill(~valid, 0.0), log_q.exp().masked_fill(~valid, 0.0)
+        rows = inputs.support_rows.long()
+
+        def row_sum(values: Tensor) -> Tensor:
+            return values.new_zeros(mask.shape[0]).index_add(0, rows, values)
+
+        log_p = inputs.trainer_support_logprobs
+        log_q = inputs.sampler_support_logprobs.detach()
+        count = row_sum(torch.ones_like(log_q))
+        has_support = count > 0
+        replayed = has_support & inputs.support_replayed
+        p, q = log_p.exp(), log_q.exp()
         if config.score_centering_estimator == "sampled":
-            u = torch.where(replayed.unsqueeze(-1), q, valid / valid.sum(-1, keepdim=True).clamp_min(1))
-            q_tail = torch.zeros_like(p[:, 0])
+            u = torch.where(replayed[rows], q, 1.0 / count[rows])
+            q_tail = torch.zeros_like(count)
         else:
             u = q
-            q_tail = torch.where(replayed, 0.0, (1.0 - q.sum(-1)).clamp_min(0.0))
+            q_tail = torch.where(replayed, 0.0, (1.0 - row_sum(q)).clamp_min(0.0))
 
         with torch.no_grad():
             _, w = self.weight(log_p, log_q)
             # Tail tokens share one ratio: with p_v = p_tail / q_tail * q_v, sum_tail q_v w_v grad log p_v
             # = -c * sum_head p_v grad log p_v, as sum_v p_v grad log p_v = 0 over the normalized support.
-            p_tail = (1.0 - p.detach().sum(-1)).clamp_min(1e-6)
+            p_tail = (1.0 - row_sum(p.detach())).clamp_min(1e-6)
             _, w_tail = self.weight(p_tail.log(), q_tail.log())
             c = q_tail * w_tail / p_tail
-            mass = u * w - c.unsqueeze(-1) * p.detach()
+            mass = u * w - c[rows] * p.detach()
             centered = replayed if config.score_centering == "auto" else has_support
-            mass = mass * (centered & (config.score_centering is not False)).unsqueeze(-1)
-        loss = advantages.detach() * (mass * log_p).sum(-1)
+            mass = mass * (centered & (config.score_centering is not False))[rows]
+        loss = advantages.detach() * row_sum(mass * log_p)[mask]
 
         # E_q[p/q] and the TV E_q|p/q - 1| / 2 over the support; the head adds the tail bucket to the TV.
-        ratio = (log_p.detach() - log_q).exp().masked_fill(~valid, 0.0)
-        head_mass = (u * ratio).sum(-1)
+        ratio = (log_p.detach() - log_q).exp()
+        head_mass = row_sum(u * ratio)
         p_tail_mass = torch.where(q_tail > 0, (1.0 - head_mass).clamp_min(0.0), 0.0)
         metrics = {
-            "score_centering/uncentered": 1.0 - centered.float(),
-            "score_centering/tail_mass": q_tail,
-            "score_centering/head_mass": head_mass,
-            "score_centering/mask_tv": 0.5 * ((u * (ratio - 1.0)).abs().sum(-1) + (q_tail - p_tail_mass).abs()),
+            "score_centering/uncentered": 1.0 - centered[mask].float(),
+            "score_centering/tail_mass": q_tail[mask],
+            "score_centering/head_mass": head_mass[mask],
+            "score_centering/mask_tv": 0.5 * (row_sum((u * (ratio - 1.0)).abs()) + (q_tail - p_tail_mass).abs())[mask],
         }
         if config.kl_coeff == 0:
             return loss, metrics
 
         # KL(q || p) over the head plus the tail bucket; the tail vanishes on replayed rows.
-        p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
-        kl = (u * (log_q - log_p)).sum(-1) + torch.xlogy(q_tail, q_tail) - q_tail * p_tail.log()
-        kl = kl * has_support
+        p_tail = (1.0 - row_sum(p)).clamp_min(1e-6)
+        kl = row_sum(u * (log_q - log_p)) + torch.xlogy(q_tail, q_tail) - q_tail * p_tail.log()
+        kl = (kl * has_support)[mask]
         ages = inputs.policy_ages[mask] if inputs.policy_ages is not None else None
         if config.kl_staleness == "inv_sqrt":
             if ages is None or bool((ages < 0).any()):
@@ -379,10 +372,8 @@ def compute_loss(
     rl_scale: float,
     ce_scale: float,
     ref_kl_scale: float,
-    trainer_support_logprobs: list[Tensor] | None = None,
-    sampler_support_logprobs: list[Tensor] | None = None,
-    support_valid: list[Tensor] | None = None,
-    support_replayed: list[Tensor] | None = None,
+    support: TokenSupport | None = None,
+    trainer_support_logprobs: Float[Tensor, " entries"] | None = None,
     policy_ages: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
@@ -416,6 +407,8 @@ def compute_loss(
         rl_scale: Global sum of rl weights normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        support: Token-aligned sampler support of the whole micro batch, or None
+        trainer_support_logprobs: Trainer logprobs of every ``support`` entry
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -432,10 +425,22 @@ def compute_loss(
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
 
-    trainer_support_logprobs = trainer_support_logprobs if trainer_support_logprobs is not None else [None] * n
-    sampler_support_logprobs = sampler_support_logprobs if sampler_support_logprobs is not None else [None] * n
-    support_valid = support_valid if support_valid is not None else [None] * n
-    support_replayed = support_replayed if support_replayed is not None else [None] * n
+    sample_supports = [{}] * n
+    if trainer_support_logprobs is not None:
+        rows = support.row_index()
+        sample_supports, start = [], 0
+        for logprobs in trainer_logprobs:
+            end = start + logprobs.shape[0]
+            first, last = int(support.offsets[start]), int(support.offsets[end])
+            sample_supports.append(
+                dict(
+                    trainer_support_logprobs=trainer_support_logprobs[first:last],
+                    sampler_support_logprobs=support.logprobs[first:last],
+                    support_rows=rows[first:last] - start,
+                    support_replayed=support.replayed[start:end],
+                )
+            )
+            start = end
     policy_ages = policy_ages if policy_ages is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
@@ -451,7 +456,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, replayed, ages in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, sample_support, ages in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -460,10 +465,7 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
-        trainer_support_logprobs,
-        sampler_support_logprobs,
-        support_valid,
-        support_replayed,
+        sample_supports,
         policy_ages,
         strict=True,
     ):
@@ -476,11 +478,8 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
-                trainer_support_logprobs=t_head,
-                sampler_support_logprobs=q_head,
-                support_valid=valid,
-                support_replayed=replayed,
                 policy_ages=ages,
+                **sample_support,
             )
 
         if rl_w is None:

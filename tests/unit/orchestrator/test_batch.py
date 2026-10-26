@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 import pytest
 
@@ -68,16 +70,24 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
     assert len(packed.top_logprobs.ids) == 3 * 4
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
-    ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
+    offsets, ids, values = tensor["support_offsets"], tensor["support_ids"], tensor["support_logprobs"]
     assert ids.shape == values.shape
-    assert ids.shape[0] == sum(packed.sequence_lengths)
+    assert offsets.shape[0] == sum(packed.sequence_lengths) + 1
     rows = {
-        tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
+        tuple(ids[start:end].tolist()): values[start:end].tolist()
+        for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist())
+        if end > start
     }
     expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
     assert rows.keys() == expected.keys()
     for key, value in expected.items():
         np.testing.assert_allclose(rows[key], value, rtol=1e-6)
+    replayed_rows = {
+        tuple(ids[start:end].tolist())
+        for start, end, row_replayed in zip(offsets[:-1].tolist(), offsets[1:].tolist(), tensor["support_replayed"])
+        if row_replayed
+    }
+    assert replayed_rows == {(5,), (6, 8), (9,)}
     # The source evidence is immutable under truncation and packing.
     np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
     np.testing.assert_array_equal(np.frombuffer(replayed.sampling_mask.counts, np.int32), [0, 0, 1, 2])
@@ -112,37 +122,37 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
 
     from prime_rl.trainer.rl.data import validate_score_centering_data
 
-    batch = {
-        "input_ids": torch.tensor([[0, 3, 6]]),
-        "loss_mask": torch.tensor([[False, True, True]]),
-        "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
-        "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
-        "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
-        "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
-        "sampling_mask": torch.tensor([[[-1, -1], [-1, -1], [6, -1]]]),
-    }
-    validate_score_centering_data(batch, vocab_size=9)
+    def batch(rows, replayed, input_ids=(0, 3, 6), with_logprobs=True):
+        return {
+            "input_ids": torch.tensor([input_ids]),
+            "loss_mask": torch.tensor([[False, True, True]]),
+            "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
+            "support_ids": torch.tensor([i for row in rows for i, _ in row], dtype=torch.int32),
+            "support_logprobs": torch.tensor([q for row in rows for _, q in row]).log() if with_logprobs else None,
+            "support_offsets": torch.tensor([0, *itertools.accumulate(len(row) for row in rows)]),
+            "support_replayed": torch.tensor(replayed),
+        }
+
+    head = [(3, 0.75), (7, 0.25)]
+    validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, False, True]), vocab_size=9)
     if corruption is None:
-        batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-        validate_score_centering_data(batch, vocab_size=9)
+        validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
         return
     match corruption:
         case "missing":
-            batch["top_logprobs_ids"] = None
+            corrupt = batch([[], head, [(6, 1.0)]], [False, False, True], with_logprobs=False)
         case "duplicate":
-            batch["top_logprobs_ids"][0, 1, 1] = 3
+            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, False, False])
         case "vocab":
-            batch["top_logprobs_ids"][0, 1, 1] = 9
+            corrupt = batch([[], [(3, 0.75), (9, 0.25)], []], [False, False, False])
         case "mass":
-            batch["top_logprobs_values"][0, 1] = 0
+            corrupt = batch([[], [(3, 1.0), (7, 1.0)], []], [False, False, False])
         case "support_mass":
-            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-            batch["top_logprobs_values"][0, 1] = torch.tensor([0.5, 0.25]).log()
+            corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
         case "sampled":
-            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-            batch["input_ids"][0, 1] = 4
+            corrupt = batch([[], head, []], [False, True, False], input_ids=(0, 4, 6))
     with pytest.raises(ValueError):
-        validate_score_centering_data(batch, vocab_size=9)
+        validate_score_centering_data(corrupt, vocab_size=9)
 
 
 def _routed_experts(data, dtype=np.uint8):

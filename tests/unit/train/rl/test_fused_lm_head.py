@@ -1,47 +1,74 @@
+import itertools
+
 import pytest
 import torch
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models import cast_float_and_contiguous
-from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import (
+    FusedOutputLinear,
+    TokenSupport,
+    VanillaOutputLinear,
+    inject_prime_lm_head,
+)
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
+from prime_rl.trainer.rl.loss import (
+    compute_entropy,
+    selective_log_softmax_with_support,
+    shift_tensor_left,
+    shift_tensor_right,
+)
 from prime_rl.utils.utils import default_dtype
+
+
+def _token_support(rows: list[list[int]], replayed: list[bool], device: str = "cpu") -> TokenSupport:
+    return TokenSupport(
+        ids=torch.tensor([i for row in rows for i in row], dtype=torch.int32, device=device),
+        offsets=torch.tensor([0, *itertools.accumulate(len(row) for row in rows)]),
+        replayed=torch.tensor(replayed, device=device),
+    )
+
+
+def test_token_support_shift_and_rows():
+    support = _token_support([[4, 5], [], [6], [7, 8, 9]], [True, False, True, False])
+    shifted = support.shift_left()
+    assert shifted.ids.tolist() == [6, 7, 8, 9]
+    assert shifted.offsets.tolist() == [0, 0, 1, 4, 4]
+    assert shifted.replayed.tolist() == [False, True, False, False]
+    assert shifted.row_index().tolist() == [1, 2, 2, 2]
+    shard = shifted.rows(2, 4)
+    assert shard.ids.tolist() == [7, 8, 9]
+    assert shard.offsets.tolist() == [0, 3, 3]
+    assert shard.replayed.tolist() == [False, False]
 
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("head_only", [False, True])
-def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
-    from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask, selective_topk_log_softmax
-
+def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
     torch.manual_seed(7)
     hidden = torch.randn(1, 7, 16, device="cuda", dtype=dtype, requires_grad=True)
     lm = FusedOutputLinear(16, 8203, chunk_size=3).to(device="cuda", dtype=dtype)
     labels = torch.tensor([[3, 8199, 12, 99, 0, 17, 8192]], device="cuda")
-    head_ids = torch.stack([labels, (labels + 1) % 8203, (labels + 2) % 8203, torch.full_like(labels, -1)], dim=-1)
-    head_ids[:, 2] = -1
-    sampling_mask = head_ids if replay else None
+    rows = [[label, (label + 1) % 8203] for label in labels[0].tolist()]
+    rows[2], rows[5] = [], [rows[5][1], 4000, 8202]
+    support = _token_support(rows, [replay] * 7, device="cuda")
     temperature = torch.linspace(0.6, 1.4, 7, device="cuda").unsqueeze(0)
-    coefficient = torch.randn_like(head_ids, dtype=torch.float32)
-    out = lm(hidden, labels, temperature, sampling_mask, head_ids)
-    loss = (out["topk_logprobs"] * coefficient).sum()
+    coefficient = torch.randn(support.ids.shape, device="cuda")
+    out = lm(hidden, labels, temperature, support)
+    loss = (out["support_logprobs"] * coefficient).sum()
     if not head_only:
         loss = loss + out["logprobs"].sum()
     actual = torch.autograd.grad(loss, (hidden, lm.weight))
     logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
-    head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
+    sampled, head = selective_log_softmax_with_support(logits, labels, support)
     reference = (head * coefficient).sum()
     if not head_only:
-        sampled = (
-            selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask)
-            if replay
-            else selective_log_softmax(logits, labels)
-        )
         reference = reference + sampled.sum()
     expected = torch.autograd.grad(reference, (hidden, lm.weight))
-    torch.testing.assert_close(out["topk_logprobs"], head, atol=3e-6, rtol=1e-6)
+    torch.testing.assert_close(out["support_logprobs"], head, atol=3e-6, rtol=1e-6)
+    torch.testing.assert_close(out["logprobs"], sampled, atol=3e-6, rtol=1e-6)
     for grad, ref in zip(actual, expected, strict=True):
         atol, rtol = (1e-2, 3e-2) if dtype == torch.bfloat16 else (5e-6, 1e-4)
         torch.testing.assert_close(grad, ref, atol=atol, rtol=rtol)
