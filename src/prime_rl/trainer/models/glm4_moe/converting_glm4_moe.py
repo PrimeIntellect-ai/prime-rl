@@ -33,17 +33,17 @@ from prime_rl.trainer.models.conversion_ops import (
 )
 
 
-def glm_moe_layer_ops(layer_idx: int) -> list[ConvOp]:
+def glm_moe_layer_ops(layer_idx: int, layers_prefix: str = "model.layers") -> list[ConvOp]:
     """The HF <-> PrimeRL MoE ops for one GLM-style layer.
 
-    Shared by GLM-4 MoE and GLM-MoE-DSA (their HF <-> PrimeRL MoE conversion is
-    identical; DSA's attention/MLA weights pass through untouched)."""
-    p = f"model.layers.{layer_idx}.mlp"
+    Shared by GLM-4 MoE, GLM-MoE-DSA and GLM-5.3 Flash (their HF <-> PrimeRL MoE
+    conversion is identical; attention weights pass through untouched)."""
+    p = f"{layers_prefix}.{layer_idx}.mlp"
     ops: list[ConvOp] = [
         Rename(f"{p}.gate.weight", f"{p}.router.gate.weight"),
         Rename(f"{p}.gate.e_score_correction_bias", f"{p}.router.selection_bias"),
         routed_experts_op(
-            f"model.layers.{layer_idx}",
+            f"{layers_prefix}.{layer_idx}",
             hf_experts="mlp.experts",
             prime_experts="mlp.experts",
             fused=True,

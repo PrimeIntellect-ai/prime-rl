@@ -82,15 +82,21 @@ class PositionLearningEnhancement(nn.Module):
         gated_values = gate * values
         convolution_input = self.norm_conv(gated_values.flatten(-2))
 
-        local_token_count = convolution_input.shape[1]
+        local_shape = convolution_input.shape
+        local_token_count = local_shape[1]
         if self.cp_context.cp_enabled:
             convolution_input = gather_for_cp(convolution_input, self.cp_context.cp_group)
 
         packed_input = convolution_input.flatten(0, 1)
-        positions = torch.arange(packed_input.shape[0], device=packed_input.device)
+        local_start = self.cp_context.cp_rank * local_token_count if self.cp_context.cp_enabled else 0
+        positions = torch.arange(
+            local_start, local_start + local_shape[0] * local_token_count, device=packed_input.device
+        )
         sequence_indices = torch.searchsorted(cu_seqlens[1:], positions, right=True)
         sequence_starts = cu_seqlens[:-1][sequence_indices].long()
-        convolution_output = torch.zeros_like(packed_input, dtype=torch.float32)
+        convolution_output = torch.zeros(
+            (positions.shape[0], packed_input.shape[-1]), device=packed_input.device, dtype=torch.float32
+        )
         weights = self.conv1d.weight[:, 0].float()
         kernel_size = weights.shape[-1]
         for kernel_index in range(kernel_size):
@@ -104,10 +110,7 @@ class PositionLearningEnhancement(nn.Module):
             )
             convolution_output.add_(source.float() * weights[:, kernel_index])
 
-        convolution_output = F.silu(convolution_output.to(packed_input.dtype)).reshape_as(convolution_input)
-        if self.cp_context.cp_enabled:
-            local_start = self.cp_context.cp_rank * local_token_count
-            convolution_output = convolution_output[:, local_start : local_start + local_token_count]
+        convolution_output = F.silu(convolution_output.to(packed_input.dtype)).reshape(local_shape)
         return gated_values.flatten(-2) + convolution_output
 
 
