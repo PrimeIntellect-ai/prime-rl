@@ -10,7 +10,7 @@ from torch import nn
 
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
-from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func
+from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, quadratic_attention_flops
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 
 
@@ -50,6 +50,15 @@ class GptOssAttention(nn.Module):
         self.sinks = nn.Parameter(torch.empty(config.num_attention_heads))
         nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
         self.flash_attn = flash_attn_4_varlen_func
+
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_attention_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.sliding_window or seq_len),
+        )
 
     def compute_attention(
         self,
@@ -106,21 +115,21 @@ class GptOssAttention(nn.Module):
 
 
 def substitute_gpt_oss_ulysses_attention(process_group: torch.distributed.ProcessGroup) -> None:
-    from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS, ulysses_flash_attn_varlen_func
+    from prime_rl.trainer.models.layers.ulysses_attn import ulysses_flash_attn_varlen_func
 
     cp_size = torch.distributed.get_world_size(process_group)
 
-    def ulysses_attention(self, query, key, value, _cu_seqlens, _max_seqlen):
+    def ulysses_attention(self, query, key, value, cu_seqlens, max_seqlen):
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (-1, -1)
         return ulysses_flash_attn_varlen_func(
             self.flash_attn,
             query,
             key,
             value,
-            cu_seqlens_q=ULYSSES_PARAMS["cu_seqlens"],
-            cu_seqlens_k=ULYSSES_PARAMS["cu_seqlens"],
-            max_seqlen_q=ULYSSES_PARAMS["max_seqlen"],
-            max_seqlen_k=ULYSSES_PARAMS["max_seqlen"],
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
             causal=True,
             cp_group=process_group,
             cp_size=cp_size,

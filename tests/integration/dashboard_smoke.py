@@ -30,6 +30,65 @@ def _install_browser() -> None:
     )
 
 
+def _check_model_call_errors(page) -> None:
+    call_index = page.evaluate(
+        """() => {
+            const trace = currentEpisode.traces[currentTraceIdx];
+            window.dashboardSmokeCalls = trace.calls;
+            const index = (trace.calls || []).length;
+            const node = currentPath(trace, traceBranches(trace)).find(i => trace.nodes[i].message?.role === 'assistant');
+            trace.calls = [...(trace.calls || []),
+                {model: 'test-model', error: {type: 'ProviderError', status_code: 429,
+                    message: 'Too many <requests>', traceback: ['provider traceback']}},
+                {model: 'test-model', finish_reason: 'stop'},
+                {error: 'Disconnected <script>window.dashboardSmokeInjected = true</script>'},
+                {node, error: {type: 'ProviderError', status_code: 503, message: 'Service unavailable'}},
+            ];
+            renderMessages(currentEpisode, trace, traceBranches(trace));
+            return index;
+        }"""
+    )
+    try:
+        failed = page.locator(f'details.model-call[data-call-index="{call_index}"]')
+        assert failed.locator(".entry-role").inner_text().lower() == "failed model call"
+        assert "HTTP 429" in failed.locator("summary").first.inner_text()
+        assert "Too many <requests>" in failed.locator(".entry-preview").inner_text()
+        assert failed.get_attribute("open") is None
+        failed.locator("summary").first.click()
+        assert failed.locator(".trace-error-message").is_visible()
+        assert "ProviderError" in failed.locator(".trace-error-message").inner_text()
+        failed.locator(".trace-error-tb summary").click()
+        assert failed.locator(".trace-error-tb pre").inner_text() == "provider traceback"
+        assert '"model": "test-model"' in failed.locator("pre.entry-body").inner_text()
+
+        successful = page.locator(f'details.model-call[data-call-index="{call_index + 1}"]')
+        assert "failed" not in successful.get_attribute("class")
+        assert successful.locator(".entry-role").inner_text().lower() == "model call"
+        assert successful.locator(".chip.call-failed").count() == 0
+        assert failed.locator(".entry-role").evaluate("e => getComputedStyle(e).color") != successful.locator(
+            ".entry-role"
+        ).evaluate("e => getComputedStyle(e).color")
+
+        legacy = page.locator(f'details.model-call[data-call-index="{call_index + 2}"]')
+        legacy.locator("summary").first.click()
+        assert "Disconnected <script>" in legacy.locator(".trace-error-message").inner_text()
+        assert legacy.locator("script, requests").count() == 0
+        assert page.evaluate("window.dashboardSmokeInjected") is None
+
+        linked = page.locator(f'.chip.call-failed[data-call-index="{call_index + 3}"]')
+        assert "HTTP 503" in linked.inner_text()
+        assert page.locator(".model-call-error").filter(has_text="Service unavailable").count() == 1
+    finally:
+        page.evaluate(
+            """() => {
+                const trace = currentEpisode.traces[currentTraceIdx];
+                trace.calls = window.dashboardSmokeCalls;
+                delete window.dashboardSmokeCalls;
+                renderMessages(currentEpisode, trace, traceBranches(trace));
+            }"""
+        )
+
+
 def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
     """Serve ``output_dir`` and assert the dashboard renders the run end to end."""
     from playwright.sync_api import sync_playwright
@@ -37,7 +96,7 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
     _install_browser()
     port = _free_port()
     server = subprocess.Popen(
-        ["uv", "run", "dashboard", output_dir.as_posix(), "--port", str(port)],
+        ["uv", "run", "dashboard", output_dir.as_posix(), "--isolated", "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
@@ -141,6 +200,7 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 page.wait_for_timeout(3000)
                 entries = page.locator("#tm-messages details.entry").count()
                 assert entries > 0, "episode viewer rendered no messages"
+                _check_model_call_errors(page)
                 reward = page.locator(".tm-reward-big").first.inner_text()
                 assert reward not in ("", "n/a"), f"episode reward did not render: {reward!r}"
                 trace_id = page.evaluate("currentEpisode.traces[currentTraceIdx].id")

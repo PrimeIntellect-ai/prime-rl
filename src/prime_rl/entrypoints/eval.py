@@ -10,8 +10,8 @@ import os
 import re
 import signal
 import sys
+import threading
 import tomllib
-import uuid
 from pathlib import Path
 from subprocess import Popen
 from typing import Any
@@ -120,26 +120,20 @@ def main():
     config = cli(EvalConfig)
     sys.argv = [sys.argv[0], *argv]
 
-    from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
+    from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
+    from prime_rl.utils.links import PRIME_EVAL_LINKS, WANDB_LINKS
     from prime_rl.utils.logger import setup_logger
     from prime_rl.utils.pathing import (
         format_config_message,
         format_log_message,
         prepare_attempt_dirs,
-        validate_run_dir,
+        prepare_run,
         write_env_server_config,
         write_launch_artifacts,
     )
 
-    # The run identity is runtime-only: $PRL_RUN_ID / $PRL_RUN_NAME are stamped on
-    # every episode and inherited by the env servers.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume is not None, clean=clean)
-    config.run_dir.mkdir(parents=True, exist_ok=True)
+    # The run identity is stamped on every episode and inherited by the env servers.
+    prepare_run(config)
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
@@ -194,14 +188,22 @@ def main():
         sys.exit(1)
 
     signal.signal(signal.SIGTERM, sigterm_handler)
-    log_dashboard_url(logger, dashboard_url)
 
     # Like the rl/sft launchers, the console stays quiet while the eval runs: results
     # live in the dashboard and the log file, only errors surface here.
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
+    # Each source's Prime evaluation opens once the eval counts its tasks, so the
+    # banner waits for the links next to the running eval.
+    eval_done = threading.Event()
+    monitors = {PRIME_EVAL_LINKS: config.monitors.prime, WANDB_LINKS: config.monitors.wandb}
+    links = run_links(config.run_dir, log_dir, monitors, eval_done.is_set)
+    banner = threading.Thread(target=log_run_links, args=(dashboard_url, links), daemon=True)
+    banner.start()
     try:
         asyncio.run(run_eval(config))
     finally:
+        eval_done.set()
+        banner.join()
         cleanup_processes(processes)
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file).success("Eval finished!")
 

@@ -404,6 +404,29 @@ def flash_attn_3_varlen_op(
     return out
 
 
+def quadratic_attention_flops(
+    *, num_heads: int, qk_head_dim: int, v_head_dim: int, seq_len: int, attended_tokens: int | None = None
+) -> int:
+    """Training FLOPs of softmax attention over one document.
+
+    Each of the `seq_len` queries attends `attended_tokens` keys (default all `seq_len`): two matmuls per
+    head (q @ K^T over `qk_head_dim`, scores @ V over `v_head_dim`), 2 FLOPs per multiply-add, 3x for
+    forward plus backward. Causal sparsity and the flash-attention recompute are not counted.
+    """
+    if attended_tokens is None:
+        attended_tokens = seq_len
+    return 6 * num_heads * (qk_head_dim + v_head_dim) * seq_len * attended_tokens
+
+
+def delta_rule_flops(*, num_heads: int, key_head_dim: int, v_head_dim: int, seq_len: int) -> int:
+    """Training FLOPs of a gated delta-rule recurrence over one document.
+
+    Per token and head, reading, updating and querying the `[key_head_dim, v_head_dim]` state are three
+    `key_head_dim * v_head_dim` products.
+    """
+    return 6 * 3 * num_heads * key_head_dim * v_head_dim * seq_len
+
+
 @dataclass
 class AttentionConfig:
     hidden_size: int
@@ -437,6 +460,7 @@ class FlashAttention(nn.Module):
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
         super().__init__()
         self.head_dim = config.head_dim
+        self.num_heads = config.num_attention_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.is_causal = config.is_causal
@@ -468,6 +492,15 @@ class FlashAttention(nn.Module):
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
 
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, getattr(self, "sliding_window", None) or seq_len),
+        )
+
     def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Query, key and value projections, from one packed GEMM when qkv is fused."""
         if self.qkv_proj is None:
@@ -476,9 +509,11 @@ class FlashAttention(nn.Module):
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
-        kwargs: dict = {"causal": True}
+        kwargs: dict = {"causal": self.is_causal}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
+            if not self.is_causal:
+                raise NotImplementedError("Sliding-window attention supports causal attention only")
             kwargs["window_size"] = (sliding_window - 1, 0)
         if self._flash_attn_version == 4:
             # FA4's flash_attn_varlen_func has qv as the 4th positional arg,

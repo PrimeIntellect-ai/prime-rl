@@ -93,7 +93,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 
 EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput.
 
-`ep` defaults to `"auto"`. At startup it loads the model config to check whether the model is MoE. For MoE models it resolves to `min(world_size // dp_replicate, 8)`: the FSDP island size, capped at 8. For non-MoE models it resolves to 1 (no-op). `"auto"` does not look at `num_experts` or `cp`; the resolved degree must still be a multiple of `cp` and divide `num_experts`, so set it explicitly when it does not. Set `ep` to an explicit integer to override:
+`ep` defaults to `"auto"`. At startup it loads the model config to check whether the model is MoE. For MoE models it resolves to the largest degree up to 8 that divides both the FSDP island size (`world_size // dp_replicate`) and `num_experts` and is a multiple of `cp` (1 if none is). For example, 6 GPUs with 128 experts resolve to `ep=2`. For non-MoE models it resolves to 1 (no-op). Set `ep` to an explicit integer to override:
 
 ```toml
 [trainer.model]
@@ -105,6 +105,21 @@ transport = "bf16"
 ```
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
+
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
+
+The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches. In the worst case each NCCL kernel uses all `NCCL_MAX_CTAS`, so at most `num_reserved_sms // NCCL_MAX_CTAS` NCCL kernels can run concurrently. FSDP overlaps an all-gather and a reduce-scatter, and HSDP (`dp_replicate > 1`) adds an all-reduce, so the trainer sets `NCCL_MAX_CTAS` to `num_reserved_sms // 2` (`// 3` under HSDP) when it is unset, and refuses to start if it is set higher than that. The default 16 reserved SMs (8 CTAs, 5 under HSDP) are enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so raise `num_reserved_sms` only if NCCL needs more. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to the micro batch (`model.seq_len` for RL, `data.micro_batch_size * data.seq_len` for SFT); a smaller value is rejected at startup.
+
+```toml
+[trainer.model.moe.dispatch]
+type = "mega_moe"
+precision = "bf16"     # or "mxfp8" (SM100), "fp8" / "fp8_bwd" (SM90)
+num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS defaults to this // 2 (// 3 under HSDP)
+
+[trainer.env_vars]
+CUDA_HOME = "/usr/local/cuda-13.0"
+PATH = "/usr/local/cuda-13.0/bin:${PATH}"
+```
 
 ### Context Parallelism
 
@@ -181,13 +196,12 @@ The trainer defaults are tuned for memory, not speed: optimizer CPU offload, AC 
 [model]
 offload = "none"            # optimizer states stay on GPU
 ac_offloading = "None"      # activations stay on GPU
-moe_router_dtype = "bfloat16"  # fullgraph needs the router inside the block's FSDP unit; an fp32 router is not
 
 [model.compile]
 fullgraph = true            # compile each block as a single graph
 ```
 
-Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. The SFT default router dtype is already `bfloat16`. RL defaults to an fp32 router, so check that bf16 routing is acceptable for your model before using `fullgraph` in RL.
+Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. Router gates share the block's FSDP unit and use BF16 operands with FP32 logits.
 
 Examples:
 
@@ -312,4 +326,4 @@ uv run sft @ sft.toml --data.type fake --max-steps 4
 uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4
 ```
 
-Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.
+Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup.
