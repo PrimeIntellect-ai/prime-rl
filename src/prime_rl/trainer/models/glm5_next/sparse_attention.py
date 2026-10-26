@@ -164,8 +164,8 @@ class KPoolIndexer(nn.Module):
             self.pool_budget,
         )
 
-        # Selected pools fill the front of each row (fp8_indexer ranks invalid slots last); the
-        # incomplete pool's tokens follow them, and the rest of the row is the sentinel.
+        # The selected pools' tokens fill the first `token_budget` columns in any order, the incomplete
+        # pool's tokens the next ones, and the rest of the row is the sentinel.
         sentinel = total_tokens
         pool_start_tokens = F.pad(layout.pool_start_tokens, (0, 1), value=sentinel)
         offsets = torch.arange(self.pool_size, device=device)
@@ -178,8 +178,7 @@ class KPoolIndexer(nn.Module):
         tail_offsets = offsets[:-1]
         tail_tokens = (layout.query_tokens - tail_length + 1)[:, None] + tail_offsets
         tail_tokens = tail_tokens.masked_fill(tail_offsets >= tail_length[:, None], sentinel)
-        tail_columns = layout.visible_pools.clamp(max=self.pool_budget)[:, None] * self.pool_size + tail_offsets
-        indices.scatter_(1, tail_columns.long(), tail_tokens.to(torch.int32))
+        indices[:, self.token_budget : self.token_budget + self.pool_size - 1] = tail_tokens.to(torch.int32)
         return indices.view(1, local_tokens, 1, self.output_width)
 
 

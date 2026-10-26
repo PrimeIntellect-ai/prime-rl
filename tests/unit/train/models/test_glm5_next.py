@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
-from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig
+from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig, sparse_attention
 from prime_rl.trainer.vlm import get_language_model
 
 
@@ -56,3 +56,30 @@ def test_config_and_checkpoint_roundtrip(config):
     assert converted.keys() == original.keys()
     for name, value in original.items():
         torch.testing.assert_close(converted[name], value, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_kpool_indexer_ignores_selection_order(monkeypatch, reverse):
+    def fake_fp8_indexer(q, k, w, ks, ke, topk):
+        rows = []
+        for start, end in zip(ks.tolist(), ke.tolist()):
+            row = list(range(max(start, end - topk), end)) + [k.shape[0]] * topk
+            rows.append(row[:topk][::-1] if reverse else row[:topk])
+        return torch.tensor(rows, dtype=torch.int32)
+
+    monkeypatch.setattr(sparse_attention, "fp8_indexer", fake_fp8_indexer)
+    torch.manual_seed(0)
+    indexer = sparse_attention.KPoolIndexer(
+        hidden_size=16, q_lora_rank=8, num_heads=2, head_dim=128, token_budget=16, pool_size=4
+    )
+    cu_seqlens = torch.tensor([0, 10, 40])
+    layout = sparse_attention.PoolLayout.build(cu_seqlens, local_tokens=40, cp_rank=0, cp_world_size=1, pool_size=4)
+    indices = indexer(torch.randn(1, 40, 16), torch.randn(1, 40, 8), layout)[0, :, 0]
+
+    expected = []
+    for token in range(40):
+        document_start = 0 if token < 10 else 10
+        complete_end = document_start + (token + 1 - document_start) // 4 * 4
+        selected = list(range(max(document_start, complete_end - 16), token + 1))
+        expected.append(selected + [40] * (indexer.output_width - len(selected)))
+    assert indices.sort(dim=1).values.tolist() == expected
