@@ -184,7 +184,7 @@ def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int
     """
     n_rows, n_cols = logits.shape
     actual_topk = min(topk, n_cols)
-    if actual_topk <= DEEP_SELECT_MAX_TOPK and _deep_select_supported(logits.device):
+    if 0 < actual_topk <= DEEP_SELECT_MAX_TOPK and _deep_select_supported(logits.device):
         _, indices = deep_select.topk(
             logits,
             actual_topk,
