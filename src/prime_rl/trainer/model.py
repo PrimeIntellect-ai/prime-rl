@@ -281,7 +281,7 @@ def get_global_moe_stats(
         else:
             dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
             value /= dist.get_world_size(dp_cp_group)
-        stats[name] = value.to("cpu")
+        stats[name] = value
     return stats, tokens_per_expert
 
 
