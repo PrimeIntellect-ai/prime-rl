@@ -41,7 +41,7 @@ from vllm.logprobs import FlatLogprobs, Logprob
 from vllm.outputs import CompletionOutput, RequestOutput
 
 from prime_rl.inference.patches import PackedSamplingMask
-from prime_rl.inference.vllm.paired_capture import pack_sampler_rows, pack_support_logprobs, serialize_paired_support
+from prime_rl.inference.vllm.paired_capture import NEG_INF_BITS, pack_sampler_rows, serialize_paired_support
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _PackedOutputs,
@@ -121,22 +121,21 @@ def test_generate_response_post_process_preserves_prompt_metadata():
 
 def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, draws: bool = False):
     """The packed int64 mask the patched sampler hands to the server."""
-    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
-
     logits = torch.full((len(sampled_ids), 8), -torch.inf)
     for i, q in logq.items():
         logits[:, i] = q
-    cu, num_sampled = torch.arange(len(sampled_ids) + 1), torch.ones(len(sampled_ids), dtype=torch.int32)
     if replay:
-        ids = torch.tensor([[3, 1, 2], [1, 3, 2]], dtype=torch.int32)
-        tensors = SamplingMaskTensors(ids, torch.zeros(2, 1, dtype=torch.uint8), num_sampled * 3, 8)
-        tensors = pack_support_logprobs(tensors, logits, cu, np.ones(2, dtype=bool))
+        ids = torch.isfinite(logits).nonzero()[:, 1].view(len(sampled_ids), -1)
+        values = logits.gather(1, ids).log_softmax(-1)
+        packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
     else:
-        rows = np.full(len(sampled_ids), 4)
+        cu, num_sampled = torch.arange(len(sampled_ids) + 1), torch.ones(len(sampled_ids), dtype=torch.int32)
         sampled = torch.tensor(sampled_ids).view(-1, 1)
-        tensors = pack_sampler_rows(None, logits, cu, num_sampled, sampled, rows, np.full(len(sampled_ids), draws))
-    mask = tensors.tolists()
-    return PackedSamplingMask(ids=mask.token_ids, counts=np.diff(mask.offsets).astype(np.int32))
+        rows = np.full(len(sampled_ids), 4)
+        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows, np.full(len(sampled_ids), draws))
+    return PackedSamplingMask(
+        ids=packed.flatten().numpy(), counts=np.full(len(sampled_ids), packed.shape[1], dtype=np.int32)
+    )
 
 
 @pytest.mark.asyncio
@@ -162,7 +161,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
         else:
             logprobs.append({i: Logprob(logq[i]) for i in ids})
     support = (
-        PackedSamplingMask(ids=np.array([3, 1, 2, 1, 3, 2], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32))
+        PackedSamplingMask(ids=np.array([1, 2, 3, 1, 2, 3], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32))
         if replay
         else None
     )
@@ -259,3 +258,44 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
     logprobs.append({3: Logprob(float("-inf"), 9, None)})
 
     np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
+
+
+@pytest.mark.gpu
+def test_capture_supports_is_the_masked_set():
+    from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
+
+    from prime_rl.inference.vllm.paired_capture import capture_supports
+
+    torch.manual_seed(0)
+    num_reqs, vocab = 6, 50_000
+    logits = torch.randn(num_reqs, vocab, device="cuda") * torch.tensor([1, 2, 4, 8, 0.1, 3], device="cuda")[:, None]
+    logits[3] = logits[3].round()
+    top_p = torch.tensor([0.95, 0.9, 0.97, 0.5, 0.99, 0.95], device="cuda")
+    masked = apply_top_k_top_p_triton(logits.clone(), None, top_p)
+    cu = torch.arange(num_reqs + 1, device="cuda", dtype=torch.int32)
+    committed = torch.tensor([1, 1, 0, 1, 1, 1], device="cuda", dtype=torch.int32)
+    rows = (
+        torch.tensor([2], device="cuda"),
+        torch.tensor([[7, 8, 9]], device="cuda"),
+        torch.tensor([3], device="cuda"),
+    )
+    captured = capture_supports(masked, cu, committed, 1 << 20, rows).to_cpu_nonblocking()
+    torch.cuda.synchronize()
+    supports = captured.tolists()
+
+    offsets = supports.offsets
+    for req in range(num_reqs):
+        entries = supports.token_ids[offsets[req] : offsets[req + 1]]
+        if req == 2:
+            assert entries.tolist() == [7, 8, 9]
+            continue
+        kept = torch.isfinite(masked[req]).nonzero().squeeze(-1)
+        ids = entries & 0xFFFFFFFF
+        values = ((entries >> 32).astype(np.int32) ^ NEG_INF_BITS).view(np.float32)
+        assert ids.tolist() == kept.tolist()
+        np.testing.assert_allclose(values, masked[req, kept].log_softmax(-1).cpu().numpy(), atol=1e-5)
+
+    overflow = capture_supports(masked, cu, committed, int(offsets[2]), rows).to_cpu_nonblocking()
+    torch.cuda.synchronize()
+    assert overflow.counts_cpu.tolist()[:2] == [offsets[1], offsets[2] - offsets[1]]
+    assert (overflow.counts_cpu[2:] == -1).all()
