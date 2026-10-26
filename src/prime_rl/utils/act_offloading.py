@@ -128,6 +128,7 @@ class OffloadActivations(saved_tensors_hooks):
         self.copy_stream.wait_stream(self.compute_stream)
         with torch.cuda.stream(self.copy_stream):
             tensor.copy_(cpu_tensor, non_blocking=True)
+        tensor.record_stream(self.copy_stream)
         self.prefetched[tensor_id] = (tensor, self.copy_stream.record_event())
 
 
