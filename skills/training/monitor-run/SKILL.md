@@ -1,11 +1,11 @@
 ---
 name: monitor-run
-description: Monitor a local or SLURM prime-rl training run — find the output directory, tail logs, check key metrics, inspect jobs, and restart safely. Model Factory / Prime Hosted Training monitoring uses hosted-training.
+description: Monitor a local or SLURM prime-rl training run — find the output directory, tail logs, check key metrics, inspect jobs, and restart safely. Model Factory monitoring uses model-factory.
 ---
 
 # Monitor a run
 
-For a managed Model Factory / Prime Hosted Training run ID or dashboard link, use the [hosted-training skill](../../hosted-training/SKILL.md) for `prime train` status, logs, metrics, and stop commands.
+For a managed Model Factory run ID or dashboard link, use the [model-factory skill](../../model-factory/SKILL.md) for `prime train` status, logs, metrics, and stop commands.
 
 ## Runbook
 

@@ -1,9 +1,9 @@
 ---
-name: hosted-training
-description: Launch and monitor prime-rl runs on Model Factory or Prime Hosted Training with prime train, and retrieve their traces. Use for requests such as "run this on model factory" or "run this on prime hosted training", including custom code revisions, private datasets, credentials, and team setup. Explicit local or SLURM jobs use start-run.
+name: model-factory
+description: Launch and monitor prime-rl runs on Model Factory with prime train, and retrieve their traces. Use for requests such as "run this on model factory", including custom code revisions, private datasets, credentials, and team setup. Explicit local or SLURM jobs use start-run.
 ---
 
-# Model Factory / Prime Hosted Training
+# Model Factory
 
 Use `prime train run CONFIG.toml` for managed training. `prime train CONFIG.toml`
 is the same command. The platform provisions and launches the components. Pass a
@@ -59,7 +59,7 @@ volumes and run access. See [CLI configuration](https://docs.primeintellect.ai/c
 and [teams](https://docs.primeintellect.ai/cli-reference/teams).
 
 The launching credential and the remote run credential have different roles:
-the platform supplies a run-scoped `PRIME_API_KEY` to the hosted job. Do not
+the platform supplies a run-scoped `PRIME_API_KEY` to the Model Factory job. Do not
 include the launching key in `-e` or `--env-file`. Read
 [data and secrets](references/data-and-secrets.md) before forwarding credentials
 or using private Hugging Face data.
@@ -86,9 +86,9 @@ prime train gpus --plain -o json
 ```
 
 Use the exact model ID and GPU type available for the selected account/team.
-The [Hosted RL docs](https://docs.primeintellect.ai/hosted-training/hosted-rl)
+The [Model Factory RL docs](https://docs.primeintellect.ai/hosted-training/hosted-rl)
 describe uncached HF downloads on on-demand capacity, while reserved clusters
-require cached or volume-hosted weights. Check the actual dispatch path; an
+require cached weights or weights on a volume. Check the actual dispatch path; an
 `HF_TOKEN` grants repository access, not cluster capacity or model-cache access.
 
 Adapt the example to the requested experiment:

@@ -1,4 +1,4 @@
-# Retrieve hosted run traces
+# Retrieve Model Factory run traces
 
 Uploaded traces are stored by Prime Traces and remain available after training
 pods terminate. Use the same personal/team workspace as the run and a local
@@ -8,7 +8,7 @@ team settings select the workspace. See the
 
 ## Inspect and download
 
-Use the hosted training run ID initially. Choose a local `TRACE_DIR` for artifacts:
+Use the Model Factory run ID initially. Choose a local `TRACE_DIR` for artifacts:
 
 ```bash
 mkdir -p "$TRACE_DIR"
@@ -80,7 +80,7 @@ Check workspace, run/evaluation ID, upload completion/errors, and the configured
 [upload controls](https://docs.primeintellect.ai/traces/pricing-and-settings).
 Account-level opt-out can disable SDK/CLI reads while stored traces remain visible
 in the dashboard. A completed training run does not prove all traces uploaded.
-Trainer-only SFT produces no rollout traces; the Hosted SFT docs also currently
+Trainer-only SFT produces no rollout traces; the Model Factory SFT docs also currently
 list online-eval trace uploads as unavailable, so verify runtime support before
 promising those artifacts.
 

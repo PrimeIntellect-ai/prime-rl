@@ -73,7 +73,7 @@ For custom tasksets, harnesses, scorers, and tools, check that their package and
 registration are available in the remote runtime. Include source/assets and
 dependency declarations in the launched revision, or use a supported published
 environment/image delivery path. A local editable install or `prime env install`
-does not install a package in hosted pods. A Hub ID also needs to be accessible
+does not install a package in Model Factory pods. A Hub ID also needs to be accessible
 to the run's owner; use a published version compatible with the chosen runtime.
 
 For a Hub delivery path, publish the package/version with `prime env push` from
@@ -86,7 +86,7 @@ alone is not wheel dependency metadata. See
 [environment publishing](https://docs.primeintellect.ai/tutorials-environments/create).
 
 If code lives in a submodule, push its commit to an accessible remote and commit
-the parent gitlink too. Verify how the hosted source overlay fetches submodules
+the parent gitlink too. Verify how the Model Factory source overlay fetches submodules
 and installs environment packages. Do not assume a dirty local submodule or a
 private Git dependency is readable by the service. Never embed Git credentials
 in dependency URLs.

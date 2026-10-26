@@ -11,8 +11,8 @@ export HF_TOKEN
 prime train run "$CONFIG_PATH" -e HF_TOKEN --yes --plain -o json
 ```
 
-`-e KEY` reads the exported value; exporting alone does not forward it to hosted
-pods. `--env-file "$HOSTED_ENV_FILE"` is an alternative for a file containing
+`-e KEY` reads the exported value; exporting alone does not forward it to Model Factory
+pods. `--env-file "$MODEL_FACTORY_ENV_FILE"` is an alternative for a file containing
 only intended remote secrets. Do not forward a general-purpose `.env` wholesale.
 Avoid inline `KEY=secret` arguments and shell tracing. Keep secret files outside
 version control with restrictive permissions. Configured local Prime/HF login
@@ -23,13 +23,13 @@ state is not automatically copied to the remote job.
 | Local `PRIME_API_KEY` | Authenticates CLI/API requests; keep on the launching side. |
 | Local `PRIME_TEAM_ID` | Selects the run/volume owner; configure before dispatch. |
 | Remote `PRIME_API_KEY` | Generated and injected by the platform for the run; do not override with a personal key. |
-| `HF_TOKEN` | Pass with `-e HF_TOKEN` when hosted model/dataset downloads require HF access. |
+| `HF_TOKEN` | Pass with `-e HF_TOKEN` when remote model/dataset downloads require HF access. |
 | `WANDB_API_KEY` | Pass with `-e WANDB_API_KEY` when W&B monitoring is requested. |
 | Environment-specific keys | Forward only required names when the CLI and backend support them. |
 
 ### Check secret-forwarding support
 
-The [Hosted RL docs](https://docs.primeintellect.ai/hosted-training/hosted-rl#launching-a-run)
+The [Model Factory RL docs](https://docs.primeintellect.ai/hosted-training/hosted-rl#launching-a-run)
 describe arbitrary secrets reaching trainer, inference, orchestrator, and
 env-server processes. However, the CLI 0.14.0 implementation and public CLI source
 checked on 2026-10-23 still restrict dedicated runs to `WANDB_API_KEY` and
@@ -53,7 +53,7 @@ fields the selected taskset supports. A metric source `name` is not a dataset
 selector. Inspect the taskset config and loader if the mapping is unclear.
 
 Verify access with the same token before reserving GPUs, without displaying
-private samples. Pass `-e HF_TOKEN` to the hosted launch and ensure the loader uses
+private samples. Pass `-e HF_TOKEN` to the Model Factory launch and ensure the loader uses
 it. If the taskset downloads in a sandbox rather than the env server, deliver the
 credential there explicitly. Custom loaders/scorers must be installed remotely;
 see [custom code](custom-code.md).
@@ -65,7 +65,7 @@ the mount; a training volume is not automatically mounted in rollout sandboxes.
 ## Private Hugging Face datasets for SFT
 
 Start from [examples/basic/reverse-text/sft.toml](../../../examples/basic/reverse-text/sft.toml)
-in the selected revision. Hosted SFT requires real datasets on a named volume;
+in the selected revision. Model Factory SFT requires real datasets on a named volume;
 `HF_TOKEN` alone does not turn a Hub ID in `[data].name` into a volume dataset.
 Use HF `load_dataset`-readable Parquet/JSON with `messages` or
 `prompt`/`completion` columns, not a `save_to_disk` directory.
@@ -93,7 +93,7 @@ library and options, without logging private rows. Pin and record the download
 revision; a local dataset path does not fetch `[data].revision` from the Hub.
 
 The repository's basic SFT example includes `[eval]` and `[inference]`. The
-[Hosted SFT docs](https://docs.primeintellect.ai/hosted-training/hosted-sft#online-evals)
+[Model Factory SFT docs](https://docs.primeintellect.ai/hosted-training/hosted-sft#online-evals)
 require chart 0.24.0+ for online eval. Check the CLI too: some versions reject those
 blocks. Preserve requested online eval and resolve missing support; for an intended
 trainer-only run, remove both blocks and their nested tables from the copied

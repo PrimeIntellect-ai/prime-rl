@@ -1,11 +1,11 @@
 ---
 name: start-run
-description: Launch local or SLURM prime-rl training runs with the rl, sft, and inference entrypoints, including dry runs. Model Factory / Prime Hosted Training uses hosted-training; standalone evals use eval.
+description: Launch local or SLURM prime-rl training runs with the rl, sft, and inference entrypoints, including dry runs. Model Factory uses model-factory; standalone evals use eval.
 ---
 
 # Start a run
 
-For "run this on model factory" or "run this on prime hosted training", use the [hosted-training skill](../../hosted-training/SKILL.md). Explicit SLURM jobs use this skill even on a Model Factory cluster.
+For "run this on model factory", use the [model-factory skill](../../model-factory/SKILL.md). Explicit SLURM jobs use this skill even on a Model Factory cluster.
 
 The local entrypoints below run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
