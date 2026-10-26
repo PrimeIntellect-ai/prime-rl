@@ -163,10 +163,16 @@ class TrainSink:
         requests = []
         kept = 0
         for group_id, (env_name, task, episodes) in state_dict["open_groups"].items():
+            group_size = self.group_size_for(env_name)
+            if len(episodes) >= group_size:
+                raise ValueError(
+                    f"Checkpoint has an open group for env {env_name!r} with {len(episodes)} finished episodes, "
+                    f"but its group_size is now {group_size}. Lowering group_size across a resume is not supported."
+                )
             if episodes:
                 self.pending_groups[group_id] = [vf.WireEpisode.model_validate(ep) for ep in episodes]
                 kept += len(episodes)
-            rollouts = self.group_size_for(env_name) - len(episodes)
+            rollouts = group_size - len(episodes)
             requests.append(
                 TaskRequest(env_name=env_name, task=task, step=self.progress.step, rollouts=rollouts, group_id=group_id)
             )
