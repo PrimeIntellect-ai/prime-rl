@@ -292,6 +292,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Ref logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when the algorithm scores against a reference
     ref_logprobs = training_example.ref_logprobs
+    staleness = training_example.staleness
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
@@ -314,6 +315,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:cut]
         if ref_logprobs is not None:
             ref_logprobs = ref_logprobs[:cut]
+        if staleness is not None:
+            staleness = staleness[:cut]
         if rl_weights is not None:
             rl_weights = rl_weights[:cut]
         if ce_weights is not None:
@@ -341,6 +344,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
     if ref_logprobs is not None:
         assert len(ref_logprobs) == len(input_ids), f"ref_logprobs: {len(ref_logprobs)}"
+    if staleness is not None:
+        assert len(staleness) == len(input_ids), f"staleness: {len(staleness)}"
     for stream_name, stream in (
         ("rl_weights", rl_weights),
         ("ce_weights", ce_weights),
@@ -384,6 +389,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
+        staleness=staleness,
     )
 
 
@@ -445,6 +451,7 @@ class _MicroBatchBin:
 
 def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     has_ref_logprobs = any(sample.ref_logprobs is not None for sample in bin_content.samples)
+    has_staleness = any(sample.staleness is not None for sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for sample in bin_content.samples)
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
@@ -466,6 +473,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     temperatures: list[np.ndarray] = []
     env_names: list[str] = []
     ref_logprobs: list[np.ndarray] | None = [] if has_ref_logprobs else None
+    staleness: list[np.ndarray] | None = [] if has_staleness else None
     mm_token_type_ids: list[np.ndarray] | None = [] if has_mm_token_type_ids else None
     mm_refs: MMRefs | None = None
     streams: dict[str, list[np.ndarray] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
@@ -492,6 +500,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             ref_logprobs.append(
                 sample.ref_logprobs if sample.ref_logprobs is not None else np.zeros(sample_len, dtype=np.float32)
             )
+        if staleness is not None:
+            staleness.append(sample.staleness if sample.staleness is not None else np.zeros(sample_len, dtype=np.int32))
         for name, fill in STREAM_FILL.items():
             stream = streams[name]
             if stream is not None:
@@ -571,6 +581,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
+        staleness=np.concatenate(staleness) if staleness is not None else None,
     )
 
 
@@ -687,6 +698,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures = np.pad(micro_batch.temperatures, tail, constant_values=1.0)
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs = np.pad(micro_batch.ref_logprobs, tail)
+    if micro_batch.staleness is not None:
+        micro_batch.staleness = np.pad(micro_batch.staleness, tail)
     # Padding is loss-masked, so no component trains it; fill every stream
     # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
     # still reads as rl-empty to consumers that key off nonzero weights
@@ -723,6 +736,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "ce_weights",
         "ref_kl_weights",
         "mm_token_type_ids",
+        "staleness",
     )
     for name in ("input_ids", *per_token_fields):
         values = getattr(micro_batch, name)

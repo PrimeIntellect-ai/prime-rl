@@ -2,14 +2,19 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import (
+    AdaptiveKLCoefConfig,
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
+    ReinforceLossConfig,
+    SamplerKLConfig,
 )
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
     LossOutputs,
+    ReinforceLoss,
+    SamplerKL,
     _mismatch_kl_from_log_ratio,
     compute_entropy,
     compute_loss,
@@ -80,6 +85,149 @@ def test_icepop_score_centering_excludes_non_rl_tokens():
     assert torch.isfinite(loss)
     assert torch.isfinite(gradient).all()
     torch.testing.assert_close(gradient[1], torch.zeros(2))
+
+
+def _enumerated_prefix(logits, q_head, advantage, head_size):
+    """Every action of one prefix as its own token, weighted by its sampler probability.
+    The sampler tail is proportional to the trainer's, so the head+tail model is exact."""
+    logp = logits.log_softmax(-1)
+    p = logp.detach().exp()
+    q = torch.tensor(q_head)
+    if head_size < len(logits):
+        q = torch.cat((q, (1 - q.sum()) * p[head_size:] / p[head_size:].sum()))
+    inputs = LossInputs(
+        logp,
+        q.log(),
+        None,
+        advantage,
+        torch.ones(len(logits), dtype=torch.bool),
+        q,
+        logp[:head_size].expand(len(logits), -1),
+        q[:head_size].log().expand(len(logits), -1),
+        torch.ones((len(logits), head_size), dtype=torch.bool),
+    )
+    return inputs, logp, q
+
+
+@pytest.mark.parametrize("head_size,q_head", [(4, [0.6, 0.1, 0.2, 0.1]), (2, [0.5, 0.3]), (2, [0.1, 0.1])])
+@pytest.mark.parametrize("constant_advantage", [False, True])
+def test_reinforce_score_centering_matches_dense_gradient(head_size, q_head, constant_advantage):
+    logits = torch.tensor([0.3, -0.4, 0.1, -0.9], requires_grad=True)
+    advantage = torch.ones(4) if constant_advantage else torch.tensor([1.3, -0.7, 0.2, -1.0])
+    inputs, logp, q = _enumerated_prefix(logits, q_head, advantage, head_size)
+    config = ReinforceLossConfig(score_centering=True, score_centering_topk=head_size)
+    actual = setup_rl_loss_fn(config).loss(inputs).loss
+    reference = -(q * advantage * (logp - (q * logp).sum())).sum()
+    actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
+    torch.testing.assert_close(actual_gradient, torch.autograd.grad(reference, logits)[0], atol=2e-7, rtol=2e-6)
+    if constant_advantage:
+        torch.testing.assert_close(actual_gradient, torch.zeros_like(logits), atol=2e-7, rtol=0)
+
+
+@pytest.mark.parametrize("estimator", ["exact", "k1"])
+@pytest.mark.parametrize("loss_config_cls", [ReinforceLossConfig, IcePopLossConfig])
+@pytest.mark.parametrize("head_size,q_head", [(4, [0.6, 0.1, 0.2, 0.1]), (2, [0.5, 0.3])])
+def test_sampler_kl_matches_dense_kl(estimator, loss_config_cls, head_size, q_head):
+    """With zero advantages only the KL trains: its expected gradient and reported value match
+    KL(q || p) over the full vocabulary for both estimators."""
+    logits = torch.tensor([0.3, -0.4, 0.1, -0.9], requires_grad=True)
+    inputs, logp, q = _enumerated_prefix(logits, q_head, torch.zeros(4), head_size)
+    sampler_kl = SamplerKLConfig(coef=0.3, estimator=estimator, min_staleness=0)
+    config = loss_config_cls(score_centering=True, score_centering_topk=head_size, sampler_kl=sampler_kl)
+    result = setup_rl_loss_fn(config).loss(inputs)
+    dense_kl = (q * (q.log() - logp)).sum()
+    expected_gradient = torch.autograd.grad(0.3 * dense_kl, logits, retain_graph=True)[0]
+    actual_gradient = torch.autograd.grad(result.loss, logits)[0]
+    torch.testing.assert_close(actual_gradient, expected_gradient, atol=2e-7, rtol=2e-6)
+    torch.testing.assert_close((q * result.metrics["sampler_kl/kl"]).sum(), dense_kl.detach(), atol=1e-6, rtol=1e-5)
+
+
+def test_sampler_kl_is_exact_on_complete_replay_support():
+    from prime_rl.trainer.rl.loss import selective_topk_log_softmax
+
+    logits = torch.tensor([0.2, -0.4, 0.8, 3.0], requires_grad=True)
+    support = torch.tensor([[0, 1, 2, -1]]).expand(3, -1)
+    labels = torch.arange(3)
+    head = selective_topk_log_softmax(logits.expand(3, -1), support, support, labels)
+    q = torch.tensor([0.7, 0.2, 0.1])
+    config = ReinforceLossConfig(sampler_kl=SamplerKLConfig(coef=0.3, min_staleness=0))
+    actual, metrics = compute_loss(
+        trainer_logprobs=[head[torch.arange(3), labels]],
+        inference_logprobs=[q.log()],
+        ref_logprobs=None,
+        advantages=[torch.zeros(3)],
+        loss_mask=[torch.ones(3, dtype=torch.bool)],
+        rl_weights=[q],
+        ce_weights=None,
+        ref_kl_weights=None,
+        rl_loss_fn=setup_rl_loss_fn(config),
+        rl_scale=1,
+        ce_scale=1,
+        ref_kl_scale=1,
+        trainer_topk_logprobs=[head],
+        sampler_topk_logprobs=[torch.cat([q.log(), torch.zeros(1)]).expand(3, -1)],
+        topk_valid=[support >= 0],
+        sampler_support_complete=[torch.ones(3, dtype=torch.bool)],
+    )
+    supported_kl = (q * (q.log() - logits[:3].log_softmax(-1))).sum()
+    expected_gradient = torch.autograd.grad(0.3 * supported_kl, logits, retain_graph=True)[0]
+    actual_gradient = torch.autograd.grad(actual, logits)[0]
+    torch.testing.assert_close(actual_gradient, expected_gradient)
+    assert actual_gradient[3] == 0
+    torch.testing.assert_close(metrics["sampler_kl/kl"], supported_kl.detach().expand(3))
+
+
+def test_sampler_kl_head_tail_can_miss_tail_redistribution():
+    logits = torch.tensor([0.6, 0.25, 0.15], dtype=torch.float64).log().requires_grad_()
+    logp = logits.log_softmax(-1)
+    q = torch.tensor([0.6, 0.35, 0.05], dtype=torch.float64)
+    inputs = LossInputs(
+        logp,
+        q.log(),
+        None,
+        torch.zeros(3),
+        torch.ones(3, dtype=torch.bool),
+        q,
+        logp[:1].expand(3, -1),
+        q[:1].log().expand(3, -1),
+        torch.ones(3, 1, dtype=torch.bool),
+    )
+    loss, metrics = SamplerKL(SamplerKLConfig(min_staleness=0)).loss(inputs, q)
+    full_kl = (q * (q.log() - logp)).sum()
+    assert full_kl > 0.05
+    torch.testing.assert_close(metrics["sampler_kl/kl"], torch.zeros_like(q), atol=1e-12, rtol=0)
+    torch.testing.assert_close(torch.autograd.grad(loss, logits)[0], torch.zeros_like(q), atol=1e-12, rtol=0)
+    torch.testing.assert_close((q * metrics["sampler_kl/k1"]).sum(), full_kl.detach())
+
+
+def test_sampler_kl_trains_only_stale_tokens():
+    trainer_logprobs = torch.tensor([-0.1, -0.2, -0.3], requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs,
+        torch.full((3,), -0.2),
+        None,
+        torch.zeros(3),
+        torch.ones(3, dtype=torch.bool),
+        staleness=torch.tensor([0, 1, 3]),
+    )
+    loss_fn = ReinforceLoss(ReinforceLossConfig(sampler_kl=SamplerKLConfig(coef=0.5, estimator="k1")))
+    result = loss_fn.loss(inputs)
+    torch.testing.assert_close(torch.autograd.grad(result.loss, trainer_logprobs)[0], torch.tensor([0.0, -0.5, -0.5]))
+    torch.testing.assert_close(result.metrics["sampler_kl/kl"], torch.tensor([0.0, 0.1]))
+    inputs.staleness = None
+    with pytest.raises(ValueError, match="ship_token_staleness"):
+        loss_fn.loss(inputs)
+
+
+def test_sampler_kl_coefficient_adapts_toward_target():
+    adaptive = AdaptiveKLCoefConfig(target=0.01, min_coef=0.05, max_coef=0.3)
+    sampler_kl = SamplerKL(SamplerKLConfig(coef=0.1, adaptive=adaptive))
+    for kl, coef in [(0.02, 0.2), (0.01, 0.2), (0.02, 0.3), (0.005, 0.15), (0.001, 0.075), (0.001, 0.05)]:
+        sampler_kl.adapt(kl)
+        assert sampler_kl.coef == pytest.approx(coef)
+    fixed = SamplerKL(SamplerKLConfig(coef=0.1))
+    fixed.adapt(1.0)
+    assert fixed.coef == 0.1
 
 
 def test_grpo_loss():

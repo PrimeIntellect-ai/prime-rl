@@ -1338,6 +1338,28 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
         cli(SFTConfig, args=["@", str(config_file)])
 
 
+@pytest.mark.parametrize(
+    "loss,captures_head,ships_staleness",
+    [
+        ({"type": "reinforce", "score_centering": True, "sampler_kl": {}}, True, True),
+        ({"type": "reinforce", "sampler_kl": {"estimator": "k1", "min_staleness": 0}}, False, False),
+        ({"type": "icepop", "sampler_kl": {"adaptive": {"target": 1e-3}}}, True, True),
+    ],
+)
+def test_sampler_kl_configures_head_capture_and_token_staleness(loss, captures_head, ships_staleness):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": loss},
+            "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.train.source[0].sampling.logprobs == (128 if captures_head else None)
+    assert config.orchestrator.ship_token_staleness is ships_staleness
+    assert not config.orchestrator.prune_zero_advantages
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
 @pytest.mark.parametrize("top_k", [32, 256])
 @pytest.mark.parametrize("top_p", [0.9, 1.0])
 def test_score_centering_captures_complete_bounded_support(top_k, top_p):
