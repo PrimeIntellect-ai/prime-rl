@@ -17,6 +17,7 @@ from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    GCConfig,
     HeartbeatConfig,
     LogConfig,
     PolicyClientConfig,
@@ -522,6 +523,9 @@ class OrchestratorConfig(BaseConfig):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 
+    gc: GCConfig | None = GCConfig()
+    """Garbage collection config. Freezes the startup heap, turns off automatic full collections (each one holds the GIL and stalls the event loop for as long as it takes to walk every held episode) and runs one every N steps instead. Young collections still run. Set to null to use Python's default GC behavior."""
+
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
 
@@ -537,8 +541,8 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum staleness of a trained token: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of off-policy noise."""
+    max_staleness: int = Field(8, ge=0)
+    """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
