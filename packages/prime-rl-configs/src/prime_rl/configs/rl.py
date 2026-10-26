@@ -576,8 +576,6 @@ class RLConfig(BaseConfig):
         if sampler_kl is not None:
             if sampler_kl.min_staleness > 0:
                 self.orchestrator.ship_token_staleness = True
-            if sampler_kl.coef > 0 or sampler_kl.adaptive is not None:
-                self.orchestrator.prune_zero_advantages = False
         return self
 
     @model_validator(mode="after")

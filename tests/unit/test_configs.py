@@ -1346,17 +1346,21 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
         ({"type": "icepop", "sampler_kl": {"adaptive": {"target": 1e-3}}}, True, True),
     ],
 )
-def test_sampler_kl_configures_head_capture_and_token_staleness(loss, captures_head, ships_staleness):
+@pytest.mark.parametrize("prune", [True, False])
+def test_sampler_kl_configures_head_capture_and_token_staleness(loss, captures_head, ships_staleness, prune):
     config = RLConfig.model_validate(
         {
             "trainer": {"loss": loss},
-            "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "orchestrator": {
+                "prune_zero_advantages": prune,
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            },
             "inference": {},
         }
     )
     assert config.orchestrator.train.source[0].sampling.logprobs == (128 if captures_head else None)
     assert config.orchestrator.ship_token_staleness is ships_staleness
-    assert not config.orchestrator.prune_zero_advantages
+    assert config.orchestrator.prune_zero_advantages is prune
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
