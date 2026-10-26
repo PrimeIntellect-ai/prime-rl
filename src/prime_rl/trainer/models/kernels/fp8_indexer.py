@@ -11,6 +11,8 @@ import torch
 import triton
 import triton.language as tl
 
+from prime_rl.utils.logger import get_logger
+
 try:
     import deep_select
 except ImportError:
@@ -28,7 +30,9 @@ DEEP_SELECT_MAX_TOPK = 4096
 @functools.cache
 def _deep_select_supported(device: torch.device) -> bool:
     """DeepSelect is built for sm_90a, sm_100a and sm_103a only."""
-    return deep_select is not None and torch.cuda.get_device_capability(device) in ((9, 0), (10, 0), (10, 3))
+    supported = deep_select is not None and torch.cuda.get_device_capability(device) in ((9, 0), (10, 0), (10, 3))
+    get_logger().info(f"DSA indexer top-k uses {'DeepSelect' if supported else 'torch.topk'}")
+    return supported
 
 
 @triton.jit
