@@ -12,7 +12,7 @@ from vllm.v1.outputs import SamplingMaskLists
 NEG_INF_BITS = -8388608  # IEEE float32 -inf; plain IDs decode to missing evidence.
 LOG_INTERVAL_S = 60.0
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.prime_rl.sampling_support")
 
 
 @triton.jit
