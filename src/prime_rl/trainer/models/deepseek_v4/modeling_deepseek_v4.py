@@ -18,7 +18,7 @@ from transformers.modeling_outputs import MoeModelOutputWithPast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
-from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
+from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import adapter_key_to_hf, conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
@@ -146,6 +146,10 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config):
         return conversion_chain(config)
+
+    @classmethod
+    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        return {adapter_key_to_hf(name): tensor for name, tensor in state_dict.items()}
 
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a HuggingFace state dict to PrimeRL format in-place.
