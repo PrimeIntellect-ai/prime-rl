@@ -253,8 +253,9 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
+            # By keyword: DYNAMIC_TENSOR_ARG_DIMS in trainer/model.py marks its sequence axis dynamic by name.
             mhc_states = decoder_layer(
-                mhc_states,
+                mhc_states=mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
