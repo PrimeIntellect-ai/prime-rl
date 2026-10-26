@@ -205,6 +205,8 @@ def server(config: InferenceConfig):
     lora_target_modules = config.vllm.lora_target_modules
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
+    if config.chat_encoding is not None:
+        os.environ["PRIME_CHAT_ENCODING"] = str(config.chat_encoding)
 
     namespace = config.to_namespace()
 
