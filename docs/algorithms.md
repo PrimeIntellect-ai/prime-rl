@@ -385,6 +385,14 @@ num_turns_weight = 0.0
 
 Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
+A **violation reward** (`violation_reward` on the `grpo`-family algorithms) separates rollouts that broke a rule from rollouts that failed the task. The env marks the first kind by skipping its task scoring (`trace.info["scoring_skipped"]`): a truncation under `scoring.skip_on_truncated` (a turn, token, or budget limit), or a stop declared with `skip_scoring`, such as a format check. Such a rollout keeps no rewards, so by default it scores 0, the same as a well-formed failure. With `violation_reward` set, its shaped reward is that value instead, before the baseline: the length penalty does not apply to it, and the penalty's `pass_rate` still counts it as 0. For rewards in [0, 1], `-0.1` ranks violations just under failures; a train rollout that times out is dropped from the batch before scoring.
+
+```toml
+[orchestrator.train.algo]
+type = "grpo"
+violation_reward = -0.1
+```
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
 **Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). By default every `rl` token in the batch weighs the same, so prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, the loss is MiMo-V2.6's prompt-mean (Eq. 1): the mean over prompt groups $q$ of $\frac{1}{T_q}\sum_{t \in q} \mathcal{L}_{rl,t}$, where $T_q$ is the group's total trainable tokens. MiMo uses it to keep response length from growing too fast. `score_group` gives each trainable token of the group the `rl` weight $1/T_q$, so each group's weights sum to 1 and $N_{rl}$ (the summed weights) is the number of groups in the step. Zero-advantage tokens are still dropped from the `rl` component, so a group with a zero-advantage rollout keeps less than its full weight of 1. All envs with an `rl` loss in a run must use the same `loss_aggregation`.

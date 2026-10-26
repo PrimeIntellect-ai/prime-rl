@@ -51,6 +51,7 @@ class GRPOAlgorithm(Algorithm):
     def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
+        self.violation_reward = config.violation_reward
         self.length_weighted_baseline = config.length_weighted_baseline
         self.loss_aggregation = config.loss_aggregation
 
@@ -79,6 +80,9 @@ class GRPOAlgorithm(Algorithm):
             )
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
+        if self.violation_reward is not None:
+            violations = torch.tensor(["scoring_skipped" in trace.info for trace in traces], dtype=torch.bool)
+            shaped_rewards = shaped_rewards.masked_fill(violations, self.violation_reward)
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
             lengths = torch.tensor(
