@@ -1,0 +1,616 @@
+{
+ "root": "/home/garrett/tmp/ngram-module/ab-validate",
+ "runs": [
+  {
+   "arm": "main",
+   "cell": "cell2",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell2/r0",
+   "num_gpus": 1,
+   "requested_steps": 5,
+   "venv": null,
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 45.8683226108551,
+    "trainer_import_s": 55.0,
+    "setup_s": 13.0,
+    "first_step_s": 87.3655207157135,
+    "wall_s": 216.38261723518372
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 23.34765625,
+     "grad_norm": 0.7035025954246521,
+     "loss": 12.474823951721191,
+     "step_time": 86.79344737200154
+    },
+    "2": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.641977846622467,
+     "loss": 12.467291831970215,
+     "step_time": 2.439547041998594
+    },
+    "3": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.6643275022506714,
+     "loss": 12.472014427185059,
+     "step_time": 2.32476100599888
+    },
+    "4": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.6608577966690063,
+     "loss": 12.468056678771973,
+     "step_time": 2.2618340289991465
+    },
+    "5": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.6568543314933777,
+     "loss": 12.468276023864746,
+     "step_time": 2.264864768003463
+    }
+   },
+   "step_time_all": {
+    "n": 5,
+    "median": 2.32476100599888,
+    "min": 2.2618340289991465,
+    "max": 86.79344737200154
+   },
+   "post_compile_from_step": 2,
+   "step_time_post_compile": {
+    "n": 4,
+    "median": 2.2948128870011715,
+    "min": 2.2618340289991465,
+    "max": 2.439547041998594
+   },
+   "peak_mem_gib": 34.01953125,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell2",
+   "repeat": 1,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell2/r1",
+   "num_gpus": 1,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 26.428593397140503,
+    "trainer_import_s": 18.0,
+    "setup_s": 7.0,
+    "first_step_s": 86.58935737609863,
+    "wall_s": 153.17678570747375
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 23.34765625,
+     "grad_norm": 0.7035025954246521,
+     "loss": 12.474823951721191,
+     "step_time": 86.2000974610055
+    },
+    "2": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.641977846622467,
+     "loss": 12.467291831970215,
+     "step_time": 2.760117220997927
+    },
+    "3": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.6643275022506714,
+     "loss": 12.472014427185059,
+     "step_time": 2.3434443110018037
+    },
+    "4": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.6608577966690063,
+     "loss": 12.468056678771973,
+     "step_time": 2.367101645002549
+    },
+    "5": {
+     "peak_mem": 34.01953125,
+     "grad_norm": 0.6568543314933777,
+     "loss": 12.468276023864746,
+     "step_time": 2.35908577900409
+    }
+   },
+   "step_time_all": {
+    "n": 5,
+    "median": 2.367101645002549,
+    "min": 2.3434443110018037,
+    "max": 86.2000974610055
+   },
+   "post_compile_from_step": 2,
+   "step_time_post_compile": {
+    "n": 4,
+    "median": 2.3630937120033195,
+    "min": 2.3434443110018037,
+    "max": 2.760117220997927
+   },
+   "peak_mem_gib": 34.01953125,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell3-4gpu-graph-breaks",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell3-4gpu-graph-breaks/r0",
+   "num_gpus": 4,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 13.934138774871826,
+    "trainer_import_s": 19.0,
+    "setup_s": 6.0,
+    "first_step_s": 133.33072900772095,
+    "wall_s": 191.47333025932312
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 18.474609375,
+     "grad_norm": 0.7521873712539673,
+     "loss": 12.473786354064941,
+     "step_time": 132.33602051599883
+    },
+    "2": {
+     "peak_mem": 21.150390625,
+     "grad_norm": 0.6894840002059937,
+     "loss": 12.467033386230469,
+     "step_time": 5.178894397999102
+    },
+    "3": {
+     "peak_mem": 21.150390625,
+     "grad_norm": 0.6508044600486755,
+     "loss": 12.471242904663086,
+     "step_time": 4.956267312001728
+    },
+    "4": {
+     "peak_mem": 21.150390625,
+     "grad_norm": 0.6725427508354187,
+     "loss": 12.470989227294922,
+     "step_time": 0.6578514939974411
+    },
+    "5": {
+     "peak_mem": 21.150390625,
+     "grad_norm": 0.6487522125244141,
+     "loss": 12.467202186584473,
+     "step_time": 0.33541081300063524
+    }
+   },
+   "step_time_all": {
+    "n": 5,
+    "median": 4.956267312001728,
+    "min": 0.33541081300063524,
+    "max": 132.33602051599883
+   },
+   "post_compile_from_step": 5,
+   "step_time_post_compile": {
+    "n": 1,
+    "median": 0.33541081300063524,
+    "min": 0.33541081300063524,
+    "max": 0.33541081300063524
+   },
+   "peak_mem_gib": 21.150390625,
+   "recompiles_per_rank": {
+    "0": 22,
+    "1": 22,
+    "2": 22,
+    "3": 22
+   },
+   "recompile_steps": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "last_recompile_step": 4
+  },
+  {
+   "arm": "main",
+   "cell": "cell5-4gpu-graph-breaks",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell5-4gpu-graph-breaks/r0",
+   "num_gpus": 4,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 14.575406312942505,
+    "trainer_import_s": 19.0,
+    "setup_s": 7.0,
+    "first_step_s": 87.8310534954071,
+    "wall_s": 137.9260151386261
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 15.2265625,
+     "grad_norm": 0.751846432685852,
+     "loss": 12.473390579223633,
+     "step_time": 87.81716742100252
+    },
+    "2": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6905226707458496,
+     "loss": 12.467816352844238,
+     "step_time": 0.7750334509983077
+    },
+    "3": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6483586430549622,
+     "loss": 12.470559120178223,
+     "step_time": 0.7203827480043401
+    },
+    "4": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6756824254989624,
+     "loss": 12.469975471496582,
+     "step_time": 0.7156052409991389
+    },
+    "5": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6480415463447571,
+     "loss": 12.464943885803223,
+     "step_time": 0.7192752270057099
+    }
+   },
+   "step_time_all": {
+    "n": 5,
+    "median": 0.7203827480043401,
+    "min": 0.7156052409991389,
+    "max": 87.81716742100252
+   },
+   "post_compile_from_step": 2,
+   "step_time_post_compile": {
+    "n": 4,
+    "median": 0.719828987505025,
+    "min": 0.7156052409991389,
+    "max": 0.7750334509983077
+   },
+   "peak_mem_gib": 17.828125,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell5-4gpu-trace",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell5-4gpu-trace/r0",
+   "num_gpus": 4,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 14.80118727684021,
+    "trainer_import_s": 19.0,
+    "setup_s": 6.0,
+    "first_step_s": 87.3273024559021,
+    "wall_s": 220.98478865623474
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 15.2265625,
+     "grad_norm": 0.751846432685852,
+     "loss": 12.473390579223633,
+     "step_time": 86.6936867090044
+    },
+    "2": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6905226707458496,
+     "loss": 12.467816352844238,
+     "step_time": 1.0131103640014771
+    },
+    "3": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6483586430549622,
+     "loss": 12.470559120178223,
+     "step_time": 0.9523381480030366
+    },
+    "4": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6756824254989624,
+     "loss": 12.469975471496582,
+     "step_time": 0.9727727759964182
+    },
+    "5": {
+     "peak_mem": 17.828125,
+     "grad_norm": 0.6480415463447571,
+     "loss": 12.464943885803223,
+     "step_time": 0.9493382990040118
+    }
+   },
+   "step_time_all": {
+    "n": 5,
+    "median": 0.9727727759964182,
+    "min": 0.9493382990040118,
+    "max": 86.6936867090044
+   },
+   "post_compile_from_step": 2,
+   "step_time_post_compile": {
+    "n": 4,
+    "median": 0.9625554619997274,
+    "min": 0.9493382990040118,
+    "max": 1.0131103640014771
+   },
+   "peak_mem_gib": 17.828125,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell6-4gpu",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell6-4gpu/r0",
+   "num_gpus": 4,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 1,
+   "error": "RuntimeError: Autograd not support dtype: Long",
+   "startup": {
+    "launcher_s": 13.283606052398682,
+    "trainer_import_s": 20.0,
+    "setup_s": 6.0,
+    "first_step_s": null,
+    "wall_s": 127.4279682636261
+   },
+   "steps": {},
+   "step_time_all": null,
+   "post_compile_from_step": 2,
+   "step_time_post_compile": null,
+   "peak_mem_gib": null,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell6-4gpu",
+   "repeat": 1,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell6-4gpu/r1",
+   "num_gpus": 4,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 1,
+   "error": "RuntimeError: Autograd not support dtype: Long",
+   "startup": {
+    "launcher_s": 14.191318988800049,
+    "trainer_import_s": 19.0,
+    "setup_s": 7.0,
+    "first_step_s": null,
+    "wall_s": 128.09545755386353
+   },
+   "steps": {},
+   "step_time_all": null,
+   "post_compile_from_step": 2,
+   "step_time_post_compile": null,
+   "peak_mem_gib": null,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell8-4gpu-graph-breaks",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell8-4gpu-graph-breaks/r0",
+   "num_gpus": 4,
+   "requested_steps": 5,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 14.97529935836792,
+    "trainer_import_s": 20.0,
+    "setup_s": 6.0,
+    "first_step_s": 193.87815356254578,
+    "wall_s": 248.36325812339783
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 10.01171875,
+     "grad_norm": 0.7203748822212219,
+     "loss": 12.47207260131836,
+     "step_time": 192.9327627310049
+    },
+    "2": {
+     "peak_mem": 12.8046875,
+     "grad_norm": 0.6804199814796448,
+     "loss": 12.472436904907227,
+     "step_time": 1.4905556550002075
+    },
+    "3": {
+     "peak_mem": 12.8046875,
+     "grad_norm": 0.6904508471488953,
+     "loss": 12.466190338134766,
+     "step_time": 1.462296958998195
+    },
+    "4": {
+     "peak_mem": 12.8046875,
+     "grad_norm": 0.6365140080451965,
+     "loss": 12.468505859375,
+     "step_time": 1.4446764489985071
+    },
+    "5": {
+     "peak_mem": 12.8046875,
+     "grad_norm": 0.62034672498703,
+     "loss": 12.469532012939453,
+     "step_time": 1.4540531979946536
+    }
+   },
+   "step_time_all": {
+    "n": 5,
+    "median": 1.462296958998195,
+    "min": 1.4446764489985071,
+    "max": 192.9327627310049
+   },
+   "post_compile_from_step": 2,
+   "step_time_post_compile": {
+    "n": 4,
+    "median": 1.4581750784964242,
+    "min": 1.4446764489985071,
+    "max": 1.4905556550002075
+   },
+   "peak_mem_gib": 12.8046875,
+   "recompiles_per_rank": {},
+   "recompile_steps": [],
+   "last_recompile_step": null
+  },
+  {
+   "arm": "main",
+   "cell": "cell8-4gpu-graph-breaks-noac",
+   "repeat": 0,
+   "head": "1810d5b9ab039b45496aabe207be084c4d70537e",
+   "out_dir": "/home/garrett/tmp/ngram-module/ab-validate/main/cell8-4gpu-graph-breaks-noac/r0",
+   "num_gpus": 4,
+   "requested_steps": 8,
+   "venv": "/tmp/garrett/ngram-main-1810d5b",
+   "exit_code": 0,
+   "error": null,
+   "startup": {
+    "launcher_s": 13.542863130569458,
+    "trainer_import_s": 19.0,
+    "setup_s": 7.0,
+    "first_step_s": 218.72138166427612,
+    "wall_s": 271.3461091518402
+   },
+   "steps": {
+    "1": {
+     "peak_mem": 11.65234375,
+     "grad_norm": 0.7205970287322998,
+     "loss": 12.472606658935547,
+     "step_time": 218.16358363699692
+    },
+    "2": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.6749895811080933,
+     "loss": 12.475106239318848,
+     "step_time": 1.0021947899949737
+    },
+    "3": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.6948950290679932,
+     "loss": 12.467496871948242,
+     "step_time": 0.62202243199863
+    },
+    "4": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.637982964515686,
+     "loss": 12.468192100524902,
+     "step_time": 0.6368052689940669
+    },
+    "5": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.6204319000244141,
+     "loss": 12.466856002807617,
+     "step_time": 0.643286568003532
+    },
+    "6": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.6529649496078491,
+     "loss": 12.466835975646973,
+     "step_time": 0.618460623001738
+    },
+    "7": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.6056405305862427,
+     "loss": 12.467986106872559,
+     "step_time": 0.6098485160036944
+    },
+    "8": {
+     "peak_mem": 14.3359375,
+     "grad_norm": 0.6895763874053955,
+     "loss": 12.466085433959961,
+     "step_time": 0.6246947920008097
+    }
+   },
+   "step_time_all": {
+    "n": 8,
+    "median": 0.6307500304974383,
+    "min": 0.6098485160036944,
+    "max": 218.16358363699692
+   },
+   "post_compile_from_step": 3,
+   "step_time_post_compile": {
+    "n": 6,
+    "median": 0.6233586119997199,
+    "min": 0.6098485160036944,
+    "max": 0.643286568003532
+   },
+   "peak_mem_gib": 14.3359375,
+   "recompiles_per_rank": {
+    "0": 8,
+    "1": 8,
+    "2": 8,
+    "3": 8
+   },
+   "recompile_steps": [
+    1,
+    2
+   ],
+   "last_recompile_step": 2
+  }
+ ],
+ "parity": {
+  "cell2": [
+   {
+    "comparison": "main vs main (floor)",
+    "pairs": 1,
+    "steps": 5,
+    "loss_all": 0.0,
+    "loss_first": 0.0,
+    "loss_second": 0.0,
+    "grad_all": 0.0,
+    "grad_first": 0.0,
+    "grad_second": 0.0
+   }
+  ],
+  "cell3-4gpu-graph-breaks": [
+   {
+    "comparison": "main vs main (floor)"
+   }
+  ],
+  "cell5-4gpu-graph-breaks": [
+   {
+    "comparison": "main vs main (floor)"
+   }
+  ],
+  "cell5-4gpu-trace": [
+   {
+    "comparison": "main vs main (floor)"
+   }
+  ],
+  "cell6-4gpu": [
+   {
+    "comparison": "main vs main (floor)"
+   }
+  ],
+  "cell8-4gpu-graph-breaks": [
+   {
+    "comparison": "main vs main (floor)"
+   }
+  ],
+  "cell8-4gpu-graph-breaks-noac": [
+   {
+    "comparison": "main vs main (floor)"
+   }
+  ]
+ }
+}
