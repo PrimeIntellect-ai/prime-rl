@@ -119,6 +119,7 @@ def test_selection_agreement(segments):
 @pytest.mark.parametrize("topk", [512, 2048])
 def test_deep_select_matches_torch_topk(topk, monkeypatch):
     """DeepSelect picks exactly the logits `torch.topk` picks; only which of several tied logits differs.
+    Its unsorted output is the same, order included, on every call.
 
     Integer logits make ties common, at the top-k boundary too. Each row ends at a random `ke` past which
     logits are -inf, like the indexer's causal range.
@@ -129,7 +130,10 @@ def test_deep_select_matches_torch_topk(topk, monkeypatch):
     in_range = torch.arange(cols, device="cuda")[None, :] < ke[:, None]
     logits = logits.masked_fill(~in_range, float("-inf"))
 
-    deep_select_picks = select_topk(logits, ke, topk, cols).long()
+    deep_select_picks = select_topk(logits, ke, topk, cols)
+    for _ in range(3):
+        assert torch.equal(select_topk(logits, ke, topk, cols), deep_select_picks)
+    deep_select_picks = deep_select_picks.long()
     monkeypatch.setattr(fp8_indexer_module, "_deep_select_supported", lambda device: False)
     torch_picks = select_topk(logits, ke, topk, cols).long()
 
