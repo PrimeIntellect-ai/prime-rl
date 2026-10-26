@@ -253,6 +253,11 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
+            # Every input with this rank's row length must be dynamic, or the layer pins the length to a constant.
+            # Inputs that need no grad reach the compiled layer as they are, so marking them works.
+            for tensor in (input_ids, routed_experts_layer):
+                if tensor is not None:
+                    torch._dynamo.maybe_mark_dynamic(tensor, 1)
             # By keyword: DYNAMIC_TENSOR_ARG_DIMS in trainer/model.py marks its sequence axis dynamic by name.
             mhc_states = decoder_layer(
                 mhc_states=mhc_states,
