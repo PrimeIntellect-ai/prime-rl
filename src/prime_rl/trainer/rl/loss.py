@@ -178,7 +178,7 @@ class RLLoss:
     and an optional KL(sampler || trainer), all over one support per token, as sums ``sum_v u_v f(v)`` that
     estimate ``E_q[f]``: the replayed sampling mask (exact, ``u_v = q_v``), K i.i.d. sampler draws
     (``u_v = 1/K``), or a captured top-k head (``u_v = q_v``) plus a tail with trainer probabilities
-    proportional to the sampler's."""
+    proportional to the sampler's. The KL can instead be estimated on the sampled token (``k1``)."""
 
     def __init__(self, config: IPOLossConfig | IcePopLossConfig | ReinforceLossConfig):
         self.config = config
@@ -209,6 +209,8 @@ class RLLoss:
             support_loss, support_metrics = self.support_loss(inputs, advantages)
             per_token_loss = per_token_loss + support_loss
             metrics.update(support_metrics)
+        if config.kl_coeff > 0 and config.kl_estimator == "k1":
+            per_token_loss = per_token_loss + self.kl_penalty(-log_ratio, inputs, metrics)
         if inputs.loss_weights is not None:
             per_token_loss = per_token_loss * inputs.loss_weights[mask]
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
@@ -256,14 +258,19 @@ class RLLoss:
             "score_centering/head_mass": head_mass[mask],
             "score_centering/mask_tv": 0.5 * (row_sum((u * (ratio - 1.0)).abs()) + (q_tail - p_tail_mass).abs())[mask],
         }
-        if config.kl_coeff == 0:
+        if not config.support_kl:
             return loss, metrics
 
         # KL(q || p) over the head plus the tail bucket; the tail vanishes on replayed rows.
         p_tail = (1.0 - row_sum(p)).clamp_min(1e-6)
         kl = row_sum(u * (log_q - log_p)) + torch.xlogy(q_tail, q_tail) - q_tail * p_tail.log()
         kl = (kl * has_support)[mask]
-        ages = inputs.policy_ages[mask] if inputs.policy_ages is not None else None
+        return loss + self.kl_penalty(kl, inputs, metrics), metrics
+
+    def kl_penalty(self, kl: Tensor, inputs: LossInputs, metrics: dict[str, Tensor]) -> Tensor:
+        """``beta * kl`` per loss-masked token, with beta scheduled over token age."""
+        config = self.config
+        ages = inputs.policy_ages[inputs.loss_mask] if inputs.policy_ages is not None else None
         if config.kl_staleness == "inv_sqrt":
             if ages is None or bool((ages < 0).any()):
                 raise ValueError("kl_staleness = 'inv_sqrt' requires the sampler policy version of every RL token")
@@ -273,7 +280,7 @@ class RLLoss:
         metrics |= {"kl": kl.detach(), "kl/beta": beta}
         if ages is not None:
             metrics["kl/age0"] = (ages == 0).float()
-        return loss + beta * kl, metrics
+        return beta * kl
 
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:

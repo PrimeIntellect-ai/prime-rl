@@ -278,6 +278,7 @@ The support is chosen per token:
 | `score_centering_estimator` | `"sampled"` | Untruncated tokens: `sampled` (K draws, weight 1/K) or `topk` (top-K head + tail). |
 | `score_centering_k` | 16 | K: draws or head size per untruncated token. |
 | `kl_coeff` | 0.0 | KL coefficient `beta_0`; 0 disables the KL. |
+| `kl_estimator` | `"exact"` | `exact`: the KL over the token's support as above. `k1`: `log q(a) - log p(a)` on the sampled token, differentiated directly (gradient `-beta_t grad log p(a)`); needs no support. |
 | `kl_staleness` | `"none"` | `none`: `beta_t = beta_0`. `inv_sqrt`: `beta_t = 0` at token age 0, `beta_0 / sqrt(age)` otherwise. |
 
 Standalone inference servers need `enable_return_sampling_mask = true`: the sampler captures its probabilities
@@ -288,6 +289,21 @@ Token age is the trainer step minus the policy step whose weights sampled the to
 engines' per-token weight-version labels. The launcher enables sampler probability capture whenever the
 loss needs it. Metrics: `score_centering/{uncentered,tail_mass,head_mass,mask_tv}` (sampler tail mass, trainer mass on the
 support `E_q[p/q]`, total variation between `p` and `q`, both estimated from the draws under `sampled`), and with the KL `kl`, `kl/beta`, `kl/age0`.
+
+### StableReinforce-Equivalent
+
+Tinker's [`stable_reinforce`](https://tinker-docs.thinkingmachines.ai/tinker/losses/stable-reinforce/) loss
+(REINFORCE without importance sampling, centered under the sampler, plus a `k1` sampler-to-learner KL) maps to:
+
+```toml
+[trainer.loss]
+type = "reinforce"
+score_centering = true
+score_centering_estimator = "sampled"
+score_centering_k = 8
+kl_coeff = 0.01
+kl_estimator = "k1"
+```
 
 ### Custom Loss
 

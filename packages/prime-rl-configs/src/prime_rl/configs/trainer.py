@@ -520,15 +520,23 @@ class RLLossConfig(BaseConfig):
     """K: draws or head size per untruncated token. Truncated sampling captures its full support instead."""
 
     kl_coeff: float = Field(0.0, ge=0, allow_inf_nan=False)
-    """KL(sampler || trainer) coefficient beta_0 over the same support; 0 disables the KL term."""
+    """KL(sampler || trainer) coefficient beta_0; 0 disables the KL term."""
+
+    kl_estimator: Literal["exact", "k1"] = "exact"
+    """KL estimator. ``exact``: the sum over the sampler's support (as score centering). ``k1``: ``log q(a) -
+    log p(a)`` on the sampled token, differentiated directly."""
 
     kl_staleness: Literal["none", "inv_sqrt"] = "none"
     """KL coefficient schedule over token age (trainer step minus the policy step that sampled the token):
     ``none`` uses beta_0 everywhere, ``inv_sqrt`` uses 0 at age 0 and beta_0 / sqrt(age) otherwise."""
 
     @property
+    def support_kl(self) -> bool:
+        return self.kl_coeff > 0 and self.kl_estimator == "exact"
+
+    @property
     def needs_sampler_support(self) -> bool:
-        return self.score_centering is not False or self.kl_coeff > 0
+        return self.score_centering is not False or self.support_kl
 
 
 class IPOLossConfig(RLLossConfig):

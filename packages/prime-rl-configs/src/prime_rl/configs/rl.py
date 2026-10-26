@@ -544,7 +544,7 @@ class RLConfig(BaseConfig):
         samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
-        explicit = loss.score_centering is True or loss.kl_coeff > 0
+        explicit = loss.score_centering is True or loss.support_kl
         requested = False
         for sampling in samplings:
             if not (sampling.truncates_distribution() or explicit):

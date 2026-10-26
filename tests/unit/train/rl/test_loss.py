@@ -106,11 +106,14 @@ def test_score_centering_matches_dense_gradient(config, replay, constant_advanta
 
 @pytest.mark.parametrize("replay", [True, False])
 @pytest.mark.parametrize("kl_staleness", ["none", "inv_sqrt"])
-def test_kl_matches_dense_kl(replay, kl_staleness):
+@pytest.mark.parametrize("estimator", ["exact", "k1"])
+def test_kl_matches_dense_kl(replay, kl_staleness, estimator):
     logits, logp, q, support = _support_case(replay)
     n = len(q)
     ages = torch.arange(n)
-    config = ReinforceLossConfig(kl_coeff=0.5, kl_staleness=kl_staleness, score_centering_estimator="topk")
+    config = ReinforceLossConfig(
+        kl_coeff=0.5, kl_staleness=kl_staleness, kl_estimator=estimator, score_centering_estimator="topk"
+    )
     inputs = _support_inputs(logp, q, support, torch.zeros(n), policy_ages=ages)
     inputs.loss_weights = None
     result = setup_rl_loss_fn(config).loss(inputs)
@@ -118,7 +121,9 @@ def test_kl_matches_dense_kl(replay, kl_staleness):
     beta = (
         torch.full((n,), 0.5) if kl_staleness == "none" else torch.where(ages > 0, 0.5 / ages.clamp_min(1).sqrt(), 0.0)
     )
-    reference = (beta * (q * (q.log() - logp)).sum()).sum()
+    # Every token is one action of the same prefix: exact sums KL over q per token, k1 takes log q(a) - log p(a).
+    kl = (q * (q.log() - logp)).sum() if estimator == "exact" else q.log() - logp
+    reference = (beta * kl).sum()
     torch.testing.assert_close(result.loss, reference)
     torch.testing.assert_close(
         torch.autograd.grad(result.loss, logits, retain_graph=True)[0], torch.autograd.grad(reference, logits)[0]

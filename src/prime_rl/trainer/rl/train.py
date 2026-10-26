@@ -360,7 +360,7 @@ def train(config: TrainerConfig):
                 validate_score_centering_data(
                     micro_batch,
                     vocab_size=vocab_size,
-                    replayed_only=config.loss.score_centering == "auto" and config.loss.kl_coeff == 0,
+                    replayed_only=config.loss.score_centering == "auto" and not config.loss.support_kl,
                     draws=config.loss.score_centering_estimator == "sampled",
                 )
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())

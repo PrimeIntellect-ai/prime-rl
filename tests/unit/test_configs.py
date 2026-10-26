@@ -253,6 +253,8 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     assert config.loss.score_centering == "auto"
     assert config.loss.kl_coeff == 0
     assert TrainerConfig.model_validate({"loss": {"type": "reinforce", "kl_coeff": 0.1}}).loss.needs_sampler_support
+    k1 = {"type": "reinforce", "score_centering": False, "kl_coeff": 0.1, "kl_estimator": "k1"}
+    assert not TrainerConfig.model_validate({"loss": k1}).loss.needs_sampler_support
     for unsupported in (
         {"type": "ipo_tis"},
         {"type": "score_centering"},
@@ -260,6 +262,7 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
         {"type": "icepop", "score_centering_k": None},
         {"type": "icepop", "score_centering_estimator": "exact"},
         {"type": "ipo", "kl_staleness": "linear"},
+        {"type": "reinforce", "kl_estimator": "k3"},
     ):
         with pytest.raises(ValidationError):
             TrainerConfig.model_validate({"loss": unsupported})
