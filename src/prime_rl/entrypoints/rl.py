@@ -37,7 +37,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
-from prime_rl.utils.sandboxes import stable_run_id, sweep_on_exit, sweep_previous_run
+from prime_rl.utils.sandboxes import stable_run_id, sweep_on_exit
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -486,8 +486,6 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     # TODO: fetch the run id from the Prime SDK once runs are registered there.
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    if config.clean and not os.environ.get("NEVER_CLEAN") and config.resume is None:
-        sweep_previous_run(config.run_dir)
     prepare_run(config, ckpt_output_dir)
     # Unlike $PRL_RUN_ID (one per launch), the run scope is shared by every launch of the
     # run dir; verifiers labels the run's sandboxes and tunnels with it, and we sweep by it.

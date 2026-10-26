@@ -57,10 +57,15 @@ def _client():
 
 async def sweep_run(run_id: str, before: datetime) -> None:
     """Delete the run's sandboxes and tunnels created before ``before``. The id is minted
-    for one run dir, so no one else's resources carry it."""
+    for one run dir, so no one else's resources carry it. Best effort: a failed sweep must
+    not fail the run."""
     if not _has_prime_key():
         return
-    report = await sweep([run_id], before=before, unique_labels=True)
+    try:
+        report = await sweep([run_id], before=before, unique_labels=True)
+    except Exception as e:
+        get_logger().warning(f"Could not sweep run {run_id}: {e}")
+        return
     get_logger().info(f"Swept run {run_id}: sandboxes {report.sandboxes}, tunnels {report.tunnels}")
 
 
