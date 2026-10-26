@@ -39,7 +39,6 @@ def patch_request_replay():
                     raise ValueError("Request-scoped sampling replay does not support speculative decoding")
                 if wants_replay(params) and params.temperature <= 0:
                     raise ValueError("Replay requests require temperature > 0")
-                # Supports are captured as CSR rows of any width, so vLLM's top_k bound does not apply.
                 # Validate against a private view; never toggle shared engine
                 # configuration while concurrent requests are being admitted.
                 self = copy(self)

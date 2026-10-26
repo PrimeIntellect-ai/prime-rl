@@ -154,7 +154,6 @@ def capture_supports(logits, cu_num_logits, committed, capacity, sampler_rows=No
     ends = counts.cumsum(0)
     counts = torch.where(ends <= capacity, counts, -1)
     starts = ends - counts.clamp_min(0)
-    # One spare slot absorbs the masked scatter of sampler rows that do not fit.
     flat = torch.empty(capacity + 1, dtype=torch.int64, device=logits.device)
     _support_compact_kernel[(num_reqs,)](
         logits, logits.stride(0), cu_num_logits, committed, starts, counts, lse, flat, vocab_size, BLOCK=8192
