@@ -5,14 +5,31 @@ Scoring formula: I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
 FP8 quantization vendored from vLLM (Apache 2.0).
 """
 
+import functools
+import importlib.util
+
 import torch
 import triton
 import triton.language as tl
 
+from prime_rl.utils.logger import get_logger
+
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
-KEY_ALIGNMENT = 16
+# 256 fp32 logits = the 1 KiB row-stride alignment DeepSelect requires.
+KEY_ALIGNMENT = 256
+LOGITS_CHUNK_BYTES = 1 << 30
+DEEP_SELECT_MAX_TOPK = 4096
+
+
+@functools.cache
+def _deep_select_supported(device: torch.device) -> bool:
+    """DeepSelect is built for sm_90a, sm_100a and sm_103a only."""
+    capability = torch.cuda.get_device_capability(device)
+    supported = importlib.util.find_spec("deep_select") is not None and capability in ((9, 0), (10, 0), (10, 3))
+    get_logger().info(f"DSA indexer top-k uses {'DeepSelect' if supported else 'torch.topk'}")
+    return supported
 
 
 @triton.jit
@@ -158,6 +175,36 @@ def _triton_fp8_indexer_kernel(
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
+def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
+    """Indices of the `topk` largest logits in each row, in no particular order.
+
+    Logits at and past a row's end `ke` must be -inf. Slots that can only hold an -inf logit are either
+    `sentinel` or an index outside the row's range, so the caller masks by range. Uses DeepSelect where it
+    is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several tied logits
+    fills the last slots.
+    """
+    n_rows, n_cols = logits.shape
+    actual_topk = min(topk, n_cols)
+    if 0 < actual_topk <= DEEP_SELECT_MAX_TOPK and _deep_select_supported(logits.device):
+        import deep_select
+
+        _, indices = deep_select.topk(
+            logits,
+            actual_topk,
+            end=ke,
+            indices_type=torch.int32,
+            idx_oob_fill_value=sentinel,
+            return_value=False,
+            abort_when_nan_found=False,
+        )
+    else:
+        _, indices = torch.topk(logits, actual_topk, dim=-1)
+    if actual_topk < topk:
+        padding = torch.full((n_rows, topk - actual_topk), sentinel, dtype=indices.dtype, device=logits.device)
+        indices = torch.cat([indices, padding], dim=-1)
+    return indices
+
+
 @torch.library.custom_op("prime_rl::fp8_indexer", mutates_args=())
 def fp8_indexer(
     q: torch.Tensor,
@@ -202,45 +249,42 @@ def fp8_indexer(
     q_scales = q_scales.view(S_q, H)
     w = w * q_scales
 
-    logits = torch.empty(S_q, S_k_aligned, dtype=torch.float32, device=device)
-
+    indices = torch.empty((S_q, topk), dtype=torch.int32, device=device)
     BLOCK_M, BLOCK_N = 64, 128
-    grid = (triton.cdiv(S_q, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
-    _triton_fp8_indexer_kernel[grid](
-        q_fp8,
-        k_fp8,
-        k_scales,
-        w,
-        logits,
-        ks,
-        ke,
-        S_q,
-        S_k_aligned,
-        q_fp8.stride(0),
-        q_fp8.stride(1),
-        k_fp8.stride(0),
-        w.stride(0),
-        H=H,
-        D=D,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        num_warps=4,
-        num_stages=2,
-    )
+    chunk_rows = max(BLOCK_M, LOGITS_CHUNK_BYTES // (4 * max(S_k_aligned, 1)) // BLOCK_M * BLOCK_M)
+    for start in range(0, S_q, chunk_rows):
+        end = min(start + chunk_rows, S_q)
+        rows = end - start
+        logits = torch.empty(rows, S_k_aligned, dtype=torch.float32, device=device)
+        grid = (triton.cdiv(rows, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
+        _triton_fp8_indexer_kernel[grid](
+            q_fp8[:, start:end],
+            k_fp8,
+            k_scales,
+            w[start:end],
+            logits,
+            ks[start:end],
+            ke[start:end],
+            rows,
+            S_k_aligned,
+            q_fp8.stride(0),
+            q_fp8.stride(1),
+            k_fp8.stride(0),
+            w.stride(0),
+            H=H,
+            D=D,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            num_warps=4,
+            num_stages=2,
+        )
+        chunk_indices = select_topk(logits, ke[start:end], topk, S_k)
+        del logits
+        # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
+        out_of_range = (chunk_indices < ks[start:end, None]) | (chunk_indices >= ke[start:end, None])
+        indices[start:end] = chunk_indices.masked_fill_(out_of_range, S_k)
 
-    actual_topk = min(topk, S_k)
-    _, indices = torch.topk(logits, actual_topk, dim=-1)
-    if actual_topk < topk:
-        padding = torch.full((S_q, topk - actual_topk), S_k, dtype=indices.dtype, device=device)
-        indices = torch.cat([indices, padding], dim=-1)
-
-    # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
-    ks_exp = ks.unsqueeze(1).expand_as(indices)
-    ke_exp = ke.unsqueeze(1).expand_as(indices)
-    out_of_range = (indices < ks_exp) | (indices >= ke_exp)
-    indices = indices.masked_fill(out_of_range, S_k)
-
-    return indices.to(torch.int32)
+    return indices
 
 
 @fp8_indexer.register_fake

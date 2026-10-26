@@ -11,6 +11,7 @@ from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    GCConfig,
     HeartbeatConfig,
     ResumeConfig,
     TrainerLogConfig,
@@ -24,11 +25,6 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
-
-
-class GCConfig(BaseConfig):
-    interval: int = Field(50, ge=1)
-    """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -234,8 +230,11 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
     (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
 
-    num_reserved_sms: int = Field(16, ge=1)
-    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+    num_reserved_sms: int = Field(16, ge=2)
+    """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
+    at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
+    a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
 def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
@@ -531,48 +530,14 @@ class IcePopLossConfig(BaseConfig):
 
     score_centering_topk: int = Field(128, ge=1)
     """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
+    Probabilities retain full-vocabulary normalization. With sampling replay, the
+    complete recorded support is captured instead."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
         return self
-
-
-class PPOLossConfig(BaseConfig):
-    type: Literal["ppo"] = "ppo"
-
-    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
-    """Lower ratio bound for the clipped surrogate."""
-
-    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
-    """Upper ratio bound for the clipped surrogate."""
-
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the unbounded side of the surrogate while preserving its gradient."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    @model_validator(mode="after")
-    def validate_max_importance_ratio(self):
-        if self.max_importance_ratio < self.ratio_high:
-            raise ValueError("max_importance_ratio must be at least ratio_high")
-        return self
-
-
-class CISPOLossConfig(BaseConfig):
-    type: Literal["cispo"] = "cispo"
-
-    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
-    """Lower bound for the detached importance weight; zero disables lower clipping."""
-
-    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
-    """Upper bound for the detached importance weight."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -586,7 +551,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

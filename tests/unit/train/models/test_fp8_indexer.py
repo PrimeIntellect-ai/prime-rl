@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, select_topk
 
 pytestmark = [
     pytest.mark.gpu,
@@ -109,3 +110,63 @@ def test_selection_agreement(segments):
     mean, p1 = agreement.mean().item(), agreement.quantile(0.01).item()
     assert mean > AGREEMENT_MEAN, f"mean set agreement {mean} below {AGREEMENT_MEAN}"
     assert p1 > AGREEMENT_P1, f"p1 set agreement {p1} below {AGREEMENT_P1}"
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not fp8_indexer_module._deep_select_supported(torch.device("cuda")),
+    reason="DeepSelect not installed or not built for this GPU",
+)
+@pytest.mark.parametrize("topk", [512, 2048])
+def test_deep_select_matches_torch_topk(topk, monkeypatch):
+    """DeepSelect picks exactly the logits `torch.topk` picks; only which of several tied logits differs.
+    Its unsorted output is the same, order included, on every call.
+
+    Integer logits make ties common, at the top-k boundary too. Each row ends at a random `ke` past which
+    logits are -inf, like the indexer's causal range.
+    """
+    rows, cols = 1024, 16384
+    logits = torch.randint(-64, 64, (rows, cols), device="cuda").float()
+    ke = torch.randint(1, cols + 1, (rows,), device="cuda", dtype=torch.int32)
+    in_range = torch.arange(cols, device="cuda")[None, :] < ke[:, None]
+    logits = logits.masked_fill(~in_range, float("-inf"))
+
+    deep_select_picks = select_topk(logits, ke, topk, cols)
+    for _ in range(3):
+        assert torch.equal(select_topk(logits, ke, topk, cols), deep_select_picks)
+    deep_select_picks = deep_select_picks.long()
+    monkeypatch.setattr(fp8_indexer_module, "_deep_select_supported", lambda device: False)
+    torch_picks = select_topk(logits, ke, topk, cols).long()
+
+    def picked_values(picks):
+        valid = picks < ke[:, None]
+        values = logits.gather(1, picks.clamp(max=cols - 1)).masked_fill(~valid, float("-inf"))
+        return values.sort(dim=1, descending=True).values
+
+    assert torch.equal(picked_values(deep_select_picks), picked_values(torch_picks))
+
+    def picked_set(picks):
+        return picks.masked_fill(picks >= ke[:, None], cols).sort(dim=1).values
+
+    ranked = logits.sort(dim=1, descending=True).values
+    unique_boundary = (ranked[:, topk - 1] != ranked[:, topk]) | (ke <= topk)
+    assert unique_boundary.any() and not unique_boundary.all()
+    assert torch.equal(picked_set(deep_select_picks)[unique_boundary], picked_set(torch_picks)[unique_boundary])
+
+
+@pytest.mark.parametrize("segments", SEGMENTS, ids=SEGMENT_IDS)
+def test_query_chunks_match_one_pass(segments, monkeypatch):
+    """Scoring the queries in chunks picks exactly what one pass over all of them picks.
+
+    The keys are a few distinct rows repeated, so most scores tie and the picks depend on how
+    `topk` breaks ties. Chunks of 64 queries leave a ragged last chunk.
+    """
+    ks, ke = ranges(segments)
+    q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()
+    k = torch.randn(7, DIM, device="cuda").bfloat16()[torch.randint(0, 7, (NUM_K,), device="cuda")]
+    w = torch.randn(NUM_Q, HEADS, device="cuda").bfloat16()
+
+    one_pass = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
+    monkeypatch.setattr(fp8_indexer_module, "LOGITS_CHUNK_BYTES", 1)
+    chunked = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
+
+    assert torch.equal(chunked, one_pass)

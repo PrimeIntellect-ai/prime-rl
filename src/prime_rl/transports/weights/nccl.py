@@ -1,11 +1,13 @@
 import pickle
+from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
-from torch.distributed.tensor import DTensor
+from torch.distributed.tensor import DTensor, Replicate, Shard
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
@@ -16,7 +18,41 @@ from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.vlm import get_layer_prefix
-from prime_rl.utils.weights import resolve_wire_dtype
+from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
+
+
+def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
+    """Assemble one fragment on trainer rank 0 by reducing over its replica's row owners.
+
+    Each owner contributes its rows in an otherwise zero buffer, so the sum on rank 0 is the fragment.
+    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`.
+    """
+    rank = dist.get_rank()
+    if not isinstance(value, DTensor):
+        return value[start:stop].to(dtype) if rank == 0 else None
+    mesh = value.device_mesh
+    active_dims = [
+        i for i, placement in enumerate(value.placements) if mesh.size(i) > 1 and not isinstance(placement, Replicate)
+    ]
+    if len(active_dims) > 1 or (active_dims and value.placements[active_dims[0]] != Shard(0)):
+        raise ValueError("Embedding transfer requires replicated weights or a single row-sharding dimension")
+    if not active_dims:
+        return value.to_local()[start:stop].to(dtype) if rank == 0 else None
+    mesh_dim = active_dims[0]
+    index = [0] * mesh.ndim
+    index[mesh_dim] = slice(None)
+    owners = mesh.mesh[tuple(index)].tolist()
+    if rank not in owners:
+        return None
+    rows_per_rank = (value.shape[0] + len(owners) - 1) // len(owners)
+    local = value.to_local()
+    offset = min(rows_per_rank * owners.index(rank), value.shape[0])
+    left, right = max(start, offset), min(stop, offset + local.shape[0])
+    chunk = torch.zeros((stop - start, *value.shape[1:]), dtype=dtype, device=value.device)
+    if left < right:
+        chunk[left - start : right - start].copy_(local[left - offset : right - offset])
+    dist.reduce(chunk, dst=0, group=mesh.get_group(mesh_dim))
+    return chunk if rank == 0 else None
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
@@ -113,6 +149,8 @@ def preprocess_layer_checkpoint(
     layer_state_dict: dict[str, Tensor],
     layer_idx: int,
 ) -> dict[str, Tensor]:
+    if not layer_state_dict:
+        return layer_state_dict
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
         return layer_state_dict
@@ -153,7 +191,8 @@ class NCCLBroadcaster:
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
-        num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
+        chunked_ops = get_chunked_conversion_ops(model, state_dict)
+        num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
@@ -161,10 +200,21 @@ class NCCLBroadcaster:
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+            chunked_weights = {key: layer_state_dict.pop(key) for key in chunked_ops if key in layer_state_dict}
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
+            del layer_state_dict
+            for key, value in chunked_weights.items():
+                op = chunked_ops[key]
+                dtype = resolve_wire_dtype(keep_in_fp32, key, self.dtype) if isinstance(value, DTensor) else value.dtype
+                resolve_rows = partial(_gather_row_chunk_to_master, dtype=dtype)
+                for packet in op.iter_prime_to_hf(value, resolve_rows):
+                    if self.world.is_master:
+                        assert packet is not None
+                        broadcast_state_dict(packet, self.communicator)
+                    del packet
 
 
 class NCCLWeightSender(WeightSender):
