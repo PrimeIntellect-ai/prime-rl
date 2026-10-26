@@ -140,6 +140,8 @@ launch() {
     local watchdog_pid=$!
 {%- endif %}
     wait "$pid" || code=$?
+    # Leftovers of the group (e.g. a hung trainer whose launcher exited on the watchdog's SIGTERM)
+    kill -KILL -- -"$pid" 2>/dev/null || true
 {%- if watchdog %}
     kill "$watchdog_pid" 2>/dev/null || true
 {%- endif %}
