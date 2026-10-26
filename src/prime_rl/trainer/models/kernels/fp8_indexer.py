@@ -1,18 +1,36 @@
-"""Triton FP8 indexer kernel for DSA sparse token selection.
+"""FP8 indexer for DSA sparse token selection: DeepGEMM scoring + top-k.
 
 Scoring formula: I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
 
 FP8 quantization vendored from vLLM (Apache 2.0).
 """
 
+import functools
+import importlib.util
+
 import torch
 import triton
 import triton.language as tl
 
+from prime_rl.utils.logger import get_logger
+
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
-KEY_ALIGNMENT = 16
+# 256 fp32 logits = the 1 KiB row-stride alignment DeepSelect requires.
+KEY_ALIGNMENT = 256
+LOGITS_CHUNK_BYTES = 1 << 30
+MIN_CHUNK_ROWS = 512
+DEEP_SELECT_MAX_TOPK = 4096
+
+
+@functools.cache
+def _deep_select_supported(device: torch.device) -> bool:
+    """DeepSelect is built for sm_90a, sm_100a and sm_103a only."""
+    capability = torch.cuda.get_device_capability(device)
+    supported = importlib.util.find_spec("deep_select") is not None and capability in ((9, 0), (10, 0), (10, 3))
+    get_logger().info(f"DSA indexer top-k uses {'DeepSelect' if supported else 'torch.topk'}")
+    return supported
 
 
 @triton.jit
@@ -89,73 +107,34 @@ def per_token_group_quant_fp8(
     return x_q, x_s
 
 
-@triton.jit
-def _triton_fp8_indexer_kernel(
-    Q_fp8,
-    K_fp8,
-    K_scales,
-    W,
-    Out,
-    KS,
-    KE,
-    S_Q,
-    S_K,
-    stride_qh,
-    stride_qs,
-    stride_ks,
-    stride_ws,
-    H: tl.constexpr,
-    D: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
+    """Indices of the `topk` largest logits in each row, in no particular order.
 
-    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    offs_d = tl.arange(0, D)
+    Logits at and past a row's end `ke` must be -inf. Slots that can only hold an -inf logit are either
+    `sentinel` or an index outside the row's range, so the caller masks by range. Uses DeepSelect where it
+    is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several tied logits
+    fills the last slots.
+    """
+    n_rows, n_cols = logits.shape
+    actual_topk = min(topk, n_cols)
+    if 0 < actual_topk <= DEEP_SELECT_MAX_TOPK and _deep_select_supported(logits.device):
+        import deep_select
 
-    mask_m = offs_m < S_Q
-    mask_n = offs_n < S_K
-
-    ks_vals = tl.load(KS + offs_m, mask=mask_m, other=S_K)
-    ke_vals = tl.load(KE + offs_m, mask=mask_m, other=0)
-
-    offs_m_64 = offs_m.to(tl.int64)
-    offs_n_64 = offs_n.to(tl.int64)
-    out_ptrs = Out + offs_m_64[:, None] * S_K + offs_n_64[None, :]
-    out_mask = mask_m[:, None] & mask_n[None, :]
-
-    ks_min = tl.min(ks_vals)
-    ke_max = tl.max(ke_vals)
-    n_lo = pid_n * BLOCK_N
-
-    if n_lo >= ke_max or n_lo + BLOCK_N <= ks_min:
-        tl.store(out_ptrs, tl.full([BLOCK_M, BLOCK_N], float("-inf"), tl.float32), mask=out_mask)
-        return
-
-    # Clamp indices for FP8 loads (can't use mask+other with fp8 dtype)
-    offs_n_safe = tl.minimum(offs_n, S_K - 1)
-    offs_m_safe = tl.minimum(offs_m, S_Q - 1)
-
-    k_block = tl.load(K_fp8 + offs_n_safe[:, None] * stride_ks + offs_d[None, :])
-    k_sc = tl.load(K_scales + offs_n_safe, mask=mask_n, other=0.0).to(tl.float32)
-
-    acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-
-    for h in range(H):
-        q_h = tl.load(Q_fp8 + h * stride_qh + offs_m_safe[:, None] * stride_qs + offs_d[None, :])
-        w_h = tl.load(W + offs_m * stride_ws + h, mask=mask_m, other=0.0).to(tl.float32)
-
-        scores = tl.dot(q_h, tl.trans(k_block)).to(tl.float32)
-        scores = tl.maximum(scores, 0.0) * k_sc[None, :]
-        acc += scores * w_h[:, None]
-
-    valid = (offs_n[None, :] >= ks_vals[:, None]) & (offs_n[None, :] < ke_vals[:, None])
-    acc = tl.where(valid, acc, float("-inf"))
-
-    tl.store(out_ptrs, acc, mask=out_mask)
+        _, indices = deep_select.topk(
+            logits,
+            actual_topk,
+            end=ke,
+            indices_type=torch.int32,
+            idx_oob_fill_value=sentinel,
+            return_value=False,
+            abort_when_nan_found=False,
+        )
+    else:
+        _, indices = torch.topk(logits, actual_topk, dim=-1)
+    if actual_topk < topk:
+        padding = torch.full((n_rows, topk - actual_topk), sentinel, dtype=indices.dtype, device=logits.device)
+        indices = torch.cat([indices, padding], dim=-1)
+    return indices
 
 
 @torch.library.custom_op("prime_rl::fp8_indexer", mutates_args=())
@@ -169,7 +148,7 @@ def fp8_indexer(
     weight_scale: float = 1.0,
     amax_floor: float = FP8_EPS,
 ) -> torch.Tensor:
-    """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
+    """FP8 indexer: UE8M0 quantization + DeepGEMM `fp8_mqa_logits` scoring + topk.
 
     Args:
         q: [S_q, H, D] bf16 query vectors per head
@@ -192,55 +171,33 @@ def fp8_indexer(
 
     q_flat = q.reshape(S_q * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True, eps=amax_floor)
-    S_k_aligned = triton.cdiv(S_k, KEY_ALIGNMENT) * KEY_ALIGNMENT
+    S_k_aligned = triton.cdiv(max(S_k, 1), KEY_ALIGNMENT) * KEY_ALIGNMENT
     k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
     k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
 
-    q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
+    import deep_gemm
+
+    q_fp8 = q_fp8.view(S_q, H, D)
+    k_scales = k_scales.view(S_k_aligned)
 
     # Fold q_scale into weights
     q_scales = q_scales.view(S_q, H)
     w = w * q_scales
 
-    logits = torch.empty(S_q, S_k_aligned, dtype=torch.float32, device=device)
+    indices = torch.empty((S_q, topk), dtype=torch.int32, device=device)
+    chunk_rows = max(MIN_CHUNK_ROWS, LOGITS_CHUNK_BYTES // (4 * S_k_aligned))
+    for start in range(0, S_q, chunk_rows):
+        end = min(start + chunk_rows, S_q)
+        logits = deep_gemm.fp8_mqa_logits(
+            q_fp8[start:end], (k_fp8, k_scales), w[start:end], ks[start:end], ke[start:end], clean_logits=True
+        )
+        chunk_indices = select_topk(logits, ke[start:end], topk, S_k)
+        del logits
+        # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
+        out_of_range = (chunk_indices < ks[start:end, None]) | (chunk_indices >= ke[start:end, None])
+        indices[start:end] = chunk_indices.masked_fill_(out_of_range, S_k)
 
-    BLOCK_M, BLOCK_N = 64, 128
-    grid = (triton.cdiv(S_q, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
-    _triton_fp8_indexer_kernel[grid](
-        q_fp8,
-        k_fp8,
-        k_scales,
-        w,
-        logits,
-        ks,
-        ke,
-        S_q,
-        S_k_aligned,
-        q_fp8.stride(0),
-        q_fp8.stride(1),
-        k_fp8.stride(0),
-        w.stride(0),
-        H=H,
-        D=D,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        num_warps=4,
-        num_stages=2,
-    )
-
-    actual_topk = min(topk, S_k)
-    _, indices = torch.topk(logits, actual_topk, dim=-1)
-    if actual_topk < topk:
-        padding = torch.full((S_q, topk - actual_topk), S_k, dtype=indices.dtype, device=device)
-        indices = torch.cat([indices, padding], dim=-1)
-
-    # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
-    ks_exp = ks.unsqueeze(1).expand_as(indices)
-    ke_exp = ke.unsqueeze(1).expand_as(indices)
-    out_of_range = (indices < ks_exp) | (indices >= ke_exp)
-    indices = indices.masked_fill(out_of_range, S_k)
-
-    return indices.to(torch.int32)
+    return indices
 
 
 @fp8_indexer.register_fake

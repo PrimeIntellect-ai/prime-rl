@@ -62,10 +62,12 @@ class MonitorsConfig(BaseConfig):
 
 
 class TrainMonitorsConfig(MonitorsConfig):
-    prime: PrimeTrainMonitorConfig | None = None
-    """Log metrics and episodes to the Prime Intellect platform. If None, disabled."""
+    prime: PrimeTrainMonitorConfig | None = PrimeTrainMonitorConfig()
+    """Log metrics and episodes to the Prime Intellect platform. On by default and
+    needs a Prime API key; disable with ``--no-monitors.prime``."""
 
 
 class EvalMonitorsConfig(MonitorsConfig):
-    prime: PrimeEvalMonitorConfig | None = None
-    """Upload every eval source's finished epoch as an evaluation on the Prime Intellect platform. If None, disabled."""
+    prime: PrimeEvalMonitorConfig | None = PrimeEvalMonitorConfig()
+    """Upload every eval source's epoch as an evaluation on the Prime Intellect platform. On by
+    default and needs a Prime API key; disable with ``--no-monitors.prime``."""
