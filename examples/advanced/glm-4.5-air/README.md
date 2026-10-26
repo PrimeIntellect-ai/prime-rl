@@ -9,7 +9,7 @@ RL on [`zai-org/GLM-4.5-Air`](https://huggingface.co/zai-org/GLM-4.5-Air) — a 
 | [`swe-budget.toml`](swe-budget.toml) + [`swe-4-node.toml`](swe-4-node.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 1 train + 3 infer nodes |
 | [`swe-budget.toml`](swe-budget.toml) + [`swe-2-node.toml`](swe-2-node.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 1 train + 1 infer node |
 | [`terminal.toml`](terminal.toml) | `tmax` (per-task Docker image, `rlm` ipython harness) | `swebench-verified` + `terminal-bench-2` (avg@4) | 2 train + 4 infer nodes |
-| [`ipo-ablation/`](ipo-ablation) `base.toml` + `ipo.toml` / `icepop.toml` | `scaleswe` (`bash` harness), no router replay, 64 steps off-policy | `swebench-verified` | 2 train + 4 infer nodes |
+| [`ipo-ablation/`](ipo-ablation) `base.toml` + `ipo.toml` / `icepop.toml` | `scaleswe` (`bash` harness), no router replay, max staleness 64 | `swebench-verified` | 2 train + 4 infer nodes |
 
 The `ipo-ablation/` configs reproduce the IPO vs IcePop loss ablation in [docs/ipo.md](../../../docs/ipo.md).
 

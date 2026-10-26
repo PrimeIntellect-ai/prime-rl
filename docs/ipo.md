@@ -39,7 +39,7 @@ GLM-4.5-Air on agentic SWE RL, with every arm on the same recipe and only `[trai
 | Task | `scaleswe` with the `bash` harness, taskset reward; eval on SWE-Bench Verified |
 | Topology | 2 trainer nodes (Muon, CP 4 ulysses), 4 single-node TP=8 inference replicas with expert parallelism |
 | Batch | 256 rollouts (16 groups of 16) at 131k context |
-| Off-policy | up to 64 steps (`max_off_policy_steps = 64`), no router replay |
+| Staleness | up to 64 steps (`max_staleness = 64`), no router replay |
 | Algorithm | GRPO with a linear length penalty (output tokens, input tokens, and turns at 0.1) |
 | Arms | IcePop with $[\alpha, \beta] = [0.2, 5]$; IPO with `eps = 0.2` and `eps = 0.3` |
 
