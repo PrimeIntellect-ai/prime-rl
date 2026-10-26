@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.control.controller import Controller
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -213,6 +214,13 @@ def get_dcp_group() -> dist.ProcessGroup:
     ``dist_timeout_seconds``; on this group they wait up to ``DCP_TIMEOUT`` instead. Every rank must
     make its first call at the same point."""
     return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
+
+
+def broadcast_pause(controller: Controller, step: int) -> bool:
+    """Whether the master's controller pauses at ``step``, applied by every rank."""
+    paused = torch.tensor(controller.update(step), device="cuda")
+    dist.broadcast(paused, src=0)
+    return bool(paused.item())
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):

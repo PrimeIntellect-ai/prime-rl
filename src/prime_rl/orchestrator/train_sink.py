@@ -484,14 +484,13 @@ class TrainSink:
             if policy is None or policy.start >= min_version:
                 kept += sum(int(sample.mask.sum()) for sample in trace_samples)
                 continue
-            trace = episode.traces[0]
             # Shared fork prefixes train only in their first branch; count each stale token once.
-            trainable = {id(branch): mask for branch, mask in iter_trainable_branches(trace)}
+            trainable = {branch.index: (branch, mask) for branch, mask in iter_trainable_branches(episode.traces[0])}
             for sample in trace_samples:
                 kept += int(sample.mask.sum())
-                branch = trace.branches[sample.branch_index]
+                branch, mask = trainable[sample.branch_index]
                 runs = stale_token_runs(branch, policy.start, min_version)
-                masked += sum(int(trainable[id(branch)][start:end].sum()) for start, end in runs)
+                masked += sum(int(mask[start:end].sum()) for start, end in runs)
         self.rollout_window.metrics.rate("staleness/token/masked", {"": float(masked)}, kept + masked)
 
         shipped_ids = set(selected_by_trace)
