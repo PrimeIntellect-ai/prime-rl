@@ -461,7 +461,10 @@ def train(config: TrainerConfig):
                     cp_size=cp_size,
                 )
                 try:
-                    with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                    with (
+                        maybe_record_function("forward"),
+                        maybe_activation_offloading(config.model.ac_offloading, model),
+                    ):
                         out = forward(
                             model,
                             input_ids,
