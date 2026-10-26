@@ -325,7 +325,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
     In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
-    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
+    be finished — most often ``FINISHED_ABORTED`` from a cancelled rollout, a
     client disconnect, or a request timeout — while it still has in-flight KV
     transfers. When such a request's ``finished_recving`` and ``finished_sending``
     both land in the same ``Scheduler.update_from_output`` step, the stock
@@ -337,7 +337,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
 
     The trigger is the abort itself, not weight-update pause/resume: it reproduces
     during normal stepping whenever an aborted request's recv and send complete in
-    the same step (observed with zero off-policy cancellations, driven only by
+    the same step (observed with zero orchestrator cancellations, driven only by
     incidental client-side aborts). Skip already-freed request ids instead of
     asserting — their blocks are freed either way, so dropping the stale
     notification is safe.

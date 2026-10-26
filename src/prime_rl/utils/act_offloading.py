@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import psutil
 import torch
 from torch.autograd.graph import saved_tensors_hooks
+from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import ActivationOffloadingConfig
 
@@ -24,6 +25,10 @@ class OffloadActivations(saved_tensors_hooks):
     runtime vs memory usage.
 
     Args:
+        model (nn.Module): Tensors that share storage with one of its parameters are not offloaded. A compiled
+            block saves the local tensors of unsharded DTensor parameters (e.g. EP experts), and FSDP frees and
+            refills that storage itself.
+
         use_pin_memory (bool): Whether or not the offloaded Tensor will be placed in pinned
             memory on the CPU. Pinned memory allows the Tensor to be moved back onto GPU more quickly
             but is a limited resource. Default: True.
@@ -55,6 +60,7 @@ class OffloadActivations(saved_tensors_hooks):
 
     def __init__(
         self,
+        model: torch.nn.Module,
         use_pin_memory: bool = True,
         max_fwd_stash_size: int = 5,
         min_offload_size: int = 1024,
@@ -64,6 +70,7 @@ class OffloadActivations(saved_tensors_hooks):
         self.use_streams: bool = False
 
         self.min_tensor_size_bytes = min_offload_size  # we don't want to bother with small tensors
+        self.param_slots = [(module, name) for module in model.modules() for name in module._parameters]
         self.tracker = {}  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
         self.tensor_id: int = 0
         self.is_first_forward_call = True
@@ -108,6 +115,16 @@ class OffloadActivations(saved_tensors_hooks):
             self.tensor_id += 1
             return self.tensor_id
 
+        def get_param_storages() -> set[int]:
+            storages = set()
+            with torch.no_grad():
+                for module, name in self.param_slots:
+                    param = module._parameters[name]
+                    if param is not None:
+                        local = param.to_local() if isinstance(param, DTensor) else param
+                        storages.add(local.untyped_storage()._cdata)
+            return storages
+
         def get_num_bytes_tensor(x: torch.Tensor) -> int:
             # get the number of bytes in a tensor, for memory management purposes
             return x.element_size() * x.nelement()  # x.element_size() * x._base_storage().nbytes()
@@ -135,6 +152,7 @@ class OffloadActivations(saved_tensors_hooks):
                     not isinstance(activation, torch.nn.Parameter)
                     and not (hasattr(torch.nn, "Buffer") and isinstance(activation, torch.nn.Buffer))
                 )
+                and activation.untyped_storage()._cdata not in get_param_storages()
             ):
                 if self.use_streams:
                     # First, sync back and dereference previously offloaded tensors
@@ -312,11 +330,14 @@ class OffloadActivations(saved_tensors_hooks):
         super().__init__(pack_tensor, unpack_tensor)
 
 
-def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> OffloadActivations | nullcontext:
+def maybe_activation_offloading(
+    config: ActivationOffloadingConfig | None, model: torch.nn.Module
+) -> OffloadActivations | nullcontext:
     """Returns an OffloadActivations object if activation offloading is enabled, otherwise returns a nullcontext.
 
     Args:
         config: The activation offloading configuration.
+        model: The model whose parameter storage is never offloaded.
 
     Returns:
         An OffloadActivations object if activation offloading is enabled, otherwise a nullcontext object.
@@ -324,4 +345,4 @@ def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> Of
     if config is None:
         return nullcontext()
 
-    return OffloadActivations(max_fwd_stash_size=config.max_inflight_activations)
+    return OffloadActivations(model, max_fwd_stash_size=config.max_inflight_activations)

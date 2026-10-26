@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.kernels import fp8_indexer as fp8_indexer_module
+import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, select_topk
 
 pytestmark = [
@@ -151,3 +151,22 @@ def test_deep_select_matches_torch_topk(topk, monkeypatch):
     unique_boundary = (ranked[:, topk - 1] != ranked[:, topk]) | (ke <= topk)
     assert unique_boundary.any() and not unique_boundary.all()
     assert torch.equal(picked_set(deep_select_picks)[unique_boundary], picked_set(torch_picks)[unique_boundary])
+
+
+@pytest.mark.parametrize("segments", SEGMENTS, ids=SEGMENT_IDS)
+def test_query_chunks_match_one_pass(segments, monkeypatch):
+    """Scoring the queries in chunks picks exactly what one pass over all of them picks.
+
+    The keys are a few distinct rows repeated, so most scores tie and the picks depend on how
+    `topk` breaks ties. Chunks of 64 queries leave a ragged last chunk.
+    """
+    ks, ke = ranges(segments)
+    q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()
+    k = torch.randn(7, DIM, device="cuda").bfloat16()[torch.randint(0, 7, (NUM_K,), device="cuda")]
+    w = torch.randn(NUM_Q, HEADS, device="cuda").bfloat16()
+
+    one_pass = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
+    monkeypatch.setattr(fp8_indexer_module, "LOGITS_CHUNK_BYTES", 1)
+    chunked = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
+
+    assert torch.equal(chunked, one_pass)
