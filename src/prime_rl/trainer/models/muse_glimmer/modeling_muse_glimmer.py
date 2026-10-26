@@ -4,7 +4,7 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
@@ -68,6 +68,11 @@ class MuseGlimmerAttention(FlashAttention):
         self.qk_norm = MuseGlimmerRMSNorm(eps=config.rms_norm_eps)
         self.query_scale = config.query_scale
         self.gate_proj = nn.Linear(config.hidden_size, config.num_attention_heads * config.head_dim, bias=False)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = super().muon_head_partitions(heads_per_block)
+        partitions[self.gate_proj.weight] = head_partitions(self.num_heads, (self.head_dim,), heads_per_block)
+        return partitions
 
     def forward(
         self,
