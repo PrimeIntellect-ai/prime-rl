@@ -482,7 +482,7 @@ def rl_slurm(config: RLConfig):
 
 def rl(config: RLConfig):
     # TODO: fetch the run id from the Prime SDK once runs are registered there.
-    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    ckpt_output_dir = config.trainer.ckpt.output_dir if config.trainer.ckpt else None
     prepare_run(config, ckpt_output_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
