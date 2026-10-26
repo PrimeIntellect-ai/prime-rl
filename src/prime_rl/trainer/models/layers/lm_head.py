@@ -3,6 +3,7 @@ from __future__ import annotations
 import types
 from typing import TypedDict
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -149,14 +150,56 @@ def sampling_replay_mask(sampling_mask: torch.Tensor, labels: torch.Tensor) -> t
     return (sampling_mask >= 0).any(dim=-1) & (sampling_mask == labels.unsqueeze(-1)).any(dim=-1)
 
 
-def _sampling_mask_local_indices(
-    mask_chunk: torch.Tensor, vocab_start: int, vocab_end: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sampling-mask ids mapped into a vocab chunk as clamped local indices
-    plus the in-chunk validity mask (-1 entries are padding)."""
-    in_range = (mask_chunk >= vocab_start) & (mask_chunk < vocab_end)
-    local = (mask_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1)
-    return local, in_range
+def _support_blocks(support_chunk: torch.Tensor, vocab_chunk_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each support id's vocab chunk (-1 for padding) and its index within that chunk, computed once per token
+    chunk so the vocab loop only compares a small block index."""
+    valid = support_chunk >= 0
+    block = torch.where(valid, support_chunk // vocab_chunk_size, -1).to(torch.int16)
+    local = torch.where(valid, support_chunk % vocab_chunk_size, 0)
+    return block, local
+
+
+def _chunk_local(local: torch.Tensor, width: int, vocab_chunk_size: int) -> torch.Tensor:
+    """Ids of other chunks must still index inside a shorter last chunk."""
+    return local if width == vocab_chunk_size else local.clamp(max=width - 1)
+
+
+def _token_chunks(
+    support: torch.Tensor | None, n: int, chunk_size: int, weight_numel: int
+) -> list[tuple[slice | torch.Tensor, int]]:
+    """Token chunks as (rows, support width). Without a support: contiguous slices. With one: rows sorted by support
+    size, grouped at power-of-two width classes so a chunk pads only to its own widest row instead of the micro
+    batch's. Groups come from a small DP over the classes: each element of padded support costs 1, and each extra
+    chunk costs one more pass over the LM head weight (weight_numel / 64, measured on H200). Costs one small
+    device-to-host copy: chunk shapes depend on the widths."""
+    if support is None:
+        return [(slice(start, min(start + chunk_size, n)), 0) for start in range(0, n, chunk_size)]
+    widths = (support >= 0).sum(-1)
+    order = widths.argsort()
+    sorted_widths = widths[order].cpu().numpy()
+    width_class = np.ceil(np.log2(np.maximum(sorted_widths, 32)))
+    bounds = [0, *(np.flatnonzero(np.diff(width_class)) + 1).tolist(), n]
+    chunk_cost = weight_numel // 64
+
+    def pieces(lo: int, hi: int) -> list[tuple[int, int]]:
+        return [(start, min(start + chunk_size, hi)) for start in range(lo, hi, chunk_size)]
+
+    def group_cost(lo: int, hi: int) -> int:
+        return sum((end - start) * int(sorted_widths[end - 1]) + chunk_cost for start, end in pieces(lo, hi))
+
+    # best[j]: cheapest grouping of rows [0, bounds[j]); groups end on class bounds.
+    best, cut = [0] + [None] * (len(bounds) - 1), [0] * len(bounds)
+    for j in range(1, len(bounds)):
+        best[j], cut[j] = min((best[i] + group_cost(bounds[i], bounds[j]), i) for i in range(j))
+    groups, j = [], len(bounds) - 1
+    while j:
+        groups.append((bounds[cut[j]], bounds[j]))
+        j = cut[j]
+    return [
+        (order[start:end], max(int(sorted_widths[end - 1]), 1))
+        for lo, hi in reversed(groups)
+        for start, end in pieces(lo, hi)
+    ]
 
 
 class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
@@ -202,25 +245,27 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
         logz = torch.empty((n,), device=device, dtype=torch.float32)
-        support_logprobs = torch.empty_like(support, dtype=torch.float32) if return_support else None
+        support_logprobs = torch.zeros_like(support, dtype=torch.float32) if return_support else None
 
-        for start in range(0, n, chunk_size):
-            end = min(start + chunk_size, n)
-            hidden_chunk = hidden[start:end]
-            labels_chunk = labels[start:end]
-            inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
-            token_count = end - start
+        chunks = []
+        for rows, width in _token_chunks(support, n, chunk_size, weight.numel()):
+            hidden_chunk = hidden[rows]
+            labels_chunk = labels[rows]
+            inv_t_chunk = inv_temperature[rows].unsqueeze(-1)
+            token_count = hidden_chunk.shape[0]
 
             m = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
             s = torch.zeros((token_count,), device=device, dtype=torch.float32)
             t = torch.zeros((token_count,), device=device, dtype=torch.float32)
             target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
-            support_chunk = support[start:end] if support is not None else None
+            support_chunk = support[rows, :width] if support is not None else None
+            chunks.append((rows, width, support_chunk))
             if support_chunk is not None:
                 # Each support id lives in exactly one vocab chunk; collect its logit
-                # into a [tokens, K] buffer and logsumexp once after the loop.
+                # into a [tokens, width] buffer and logsumexp once after the loop.
                 support_logits = torch.full_like(support_chunk, float("-inf"), dtype=torch.float32)
+                support_block, support_local = _support_blocks(support_chunk, vocab_chunk_size)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -234,7 +279,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
 
                 if support_chunk is not None:
-                    local, in_range = _sampling_mask_local_indices(support_chunk, vocab_start, vocab_end)
+                    in_range = support_block == vocab_start // vocab_chunk_size
+                    local = _chunk_local(support_local, vocab_end - vocab_start, vocab_chunk_size)
                     support_logits = torch.where(in_range, scaled_logits.gather(1, local), support_logits)
 
                 # Branchless target extraction - we don't want to stall the GPU here (because: if torch.any()) calls bool(Tensor) calls Tensor.items() <- sync here we don't want
@@ -245,22 +291,22 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
             logz_full = m + torch.log(s)
             if replay is not None:
-                logz_chunk = torch.where(replay[start:end], torch.logsumexp(support_logits, dim=-1), logz_full)
+                logz_chunk = torch.where(replay[rows], torch.logsumexp(support_logits, dim=-1), logz_full)
             else:
                 logz_chunk = logz_full
-            logz[start:end] = logz_chunk
-            logprobs[start:end] = target_logits - logz_chunk
-            entropy[start:end] = logz_full - (t / s)
+            logz[rows] = logz_chunk
+            logprobs[rows] = target_logits - logz_chunk
+            entropy[rows] = logz_full - (t / s)
             if return_support:
-                support_logprobs[start:end] = (support_logits - logz_chunk.unsqueeze(-1)).masked_fill(
+                support_logprobs[rows, :width] = (support_logits - logz_chunk.unsqueeze(-1)).masked_fill(
                     support_chunk < 0, 0.0
                 )
 
         ctx.set_materialize_grads(
             False
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, support, replay)
-        ctx.chunk_size = chunk_size
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, replay)
+        ctx.chunks = chunks
         ctx.softcap = softcap
 
         return logprobs, entropy, support_logprobs
@@ -273,11 +319,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
         assert grad_logprobs is not None or grad_support is not None, "FusedOutputLinear requires a logprob gradient"
 
-        hidden, weight, labels, inv_temperature, logz, support, replay = ctx.saved_tensors
-        chunk_size: int = ctx.chunk_size
+        hidden, weight, labels, inv_temperature, logz, replay = ctx.saved_tensors
         softcap: float | None = ctx.softcap
 
-        n, _ = hidden.shape
         vocab = weight.shape[0]
         vocab_chunk_size = min(vocab, 8192)
 
@@ -285,24 +329,22 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         grad_hidden = torch.zeros_like(hidden) if needs_hidden else None
         grad_weight = torch.zeros_like(weight) if needs_weight else None
 
-        for start in range(0, n, chunk_size):
-            end = min(start + chunk_size, n)
-            hidden_chunk = hidden[start:end]
-            labels_chunk = labels[start:end]
-            grad_chunk = (
-                grad_logprobs[start:end].float() if grad_logprobs is not None else torch.zeros_like(logz[start:end])
-            )
-            inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
-            logz_chunk = logz[start:end]
-            support_chunk = support[start:end] if support is not None else None
-            replay_chunk = replay[start:end] if replay is not None else None
+        for rows, width, support_chunk in ctx.chunks:
+            hidden_chunk = hidden[rows]
+            labels_chunk = labels[rows]
+            grad_chunk = grad_logprobs[rows].float() if grad_logprobs is not None else torch.zeros_like(logz[rows])
+            inv_t_chunk = inv_temperature[rows].unsqueeze(-1)
+            logz_chunk = logz[rows]
+            replay_chunk = replay[rows] if replay is not None else None
             grad_head = (
-                grad_support[start:end].float().masked_fill(support_chunk < 0, 0.0)
+                grad_support[rows, :width].float().masked_fill(support_chunk < 0, 0.0)
                 if grad_support is not None
                 else None
             )
             grad_scale = -grad_chunk if grad_head is None else -grad_chunk - grad_head.sum(-1)
-
+            if support_chunk is not None:
+                support_block, support_local = _support_blocks(support_chunk, vocab_chunk_size)
+            grad_hidden_chunk = torch.zeros_like(hidden_chunk) if needs_hidden else None
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
@@ -314,7 +356,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 scaled_logits = scaled_logits * inv_t_chunk
 
                 if support_chunk is not None:
-                    local, in_range = _sampling_mask_local_indices(support_chunk, vocab_start, vocab_end)
+                    in_range = support_block == vocab_start // vocab_chunk_size
+                    local = _chunk_local(support_local, vocab_end - vocab_start, vocab_chunk_size)
                 if replay_chunk is not None:
                     # Replayed rows get softmax gradient only on support ids. Set masked-out
                     # logits to -inf before exp: a masked-out logit above the sampling-mask
@@ -337,9 +380,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     grad_logits = grad_logits * (1 - tanh_logits.square())
 
                 if needs_hidden:
-                    grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
+                    grad_hidden_chunk.add_(grad_logits.to(hidden.dtype) @ weight_chunk)
                 if needs_weight:
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
+
+            if needs_hidden:
+                grad_hidden[rows] = grad_hidden_chunk
 
         return grad_hidden, grad_weight, None, None, None, None, None, None, None
 
