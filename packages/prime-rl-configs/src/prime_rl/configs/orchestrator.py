@@ -460,11 +460,10 @@ class ConcurrencyConfig(BaseConfig):
 
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
-# per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
-# batch's masks to the largest sampling mask, so the bound also caps trainer
-# mask tensors.
+# per-request top_k > 0 to bound mask sizes. The bound is vLLM's compact capture
+# width (MAX_COMPACT_SUPPORT); wider masks fall back to a per-row bitmask.
 TRAIN_TOP_K_DEFAULT = 128
-TRAIN_TOP_K_BOUND = 512
+TRAIN_TOP_K_BOUND = 2048
 
 
 class OrchestratorControlConfig(ControlConfig):
