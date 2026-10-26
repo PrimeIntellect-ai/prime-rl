@@ -642,7 +642,7 @@ class Dispatcher:
         if isinstance(exc, Exception):
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-            self.record_outcome(meta, ok=False, reason=f"{type(exc).__name__}: {exc}")
+            await self.record_outcome(meta, ok=False, reason=f"{type(exc).__name__}: {exc}")
             policy_version = self.complete_group_member(meta, group)
             await self.out_q.put(
                 DispatchFailure(
@@ -698,16 +698,18 @@ class Dispatcher:
         errors = [*episode.errors, *(error for trace in episode.traces for error in trace.errors)]
         failure = next((error for error in reversed(errors) if error.type in infra), None)
         if failure is not None:
-            self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
+            await self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
         elif episode.ok:
-            self.record_outcome(meta, ok=True)
+            await self.record_outcome(meta, ok=True)
         elif meta.kind == "train" and meta.env_name in self.breakers:
-            self.breakers[meta.env_name].inconclusive(time.monotonic(), meta.started_at)
+            breaker = self.breakers[meta.env_name]
+            if breaker.inconclusive(time.monotonic(), meta.started_at):
+                await self.fail_paused_groups(meta.env_name)
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
 
-    def record_outcome(self, meta: InflightEpisode, *, ok: bool, reason: str | None = None) -> None:
+    async def record_outcome(self, meta: InflightEpisode, *, ok: bool, reason: str | None = None) -> None:
         breaker = self.breakers.get(meta.env_name) if meta.kind == "train" else None
         if breaker is None:
             return
@@ -719,6 +721,35 @@ class Dispatcher:
             )
         elif state == "closed":
             get_logger().info(f"Resuming train env {meta.env_name}: probe episode succeeded")
+        if state == "open":
+            await self.fail_paused_groups(meta.env_name)
+
+    async def fail_paused_groups(self, env_name: str) -> None:
+        """When the env pauses or its probe fails, fail the episodes its groups have not
+        dispatched yet, so the sink finalizes those groups instead of holding them for the outage."""
+        breaker = self.breakers[env_name]
+        for gid, group in list(self.groups.items()):
+            if group.kind != "train" or group.env_name != env_name or group.episodes_to_schedule <= 0:
+                continue
+            failed, group.episodes_to_schedule = group.episodes_to_schedule, 0
+            group.emitted += failed
+            if group.emitted >= group.target_episodes:
+                self.groups.pop(gid)
+            error = vf.Error(type="EnvPaused", message=f"train env {env_name} is paused (last: {breaker.reason})")
+            for _ in range(failed):
+                await self.out_q.put(
+                    DispatchFailure(
+                        kind="train",
+                        env_name=env_name,
+                        group_id=str(gid),
+                        step=group.step,
+                        policy_version=group.policy_version_at_start,
+                        task_type=type(group.task).__name__,
+                        task_key=group.task.key,
+                        task_hash=group.task.hash,
+                        error=error,
+                    )
+                )
 
     def env_allowed(self, env_name: str) -> bool:
         """Whether the env's circuit breaker lets one more train episode start."""
@@ -774,6 +805,7 @@ class Dispatcher:
                     breaker.server_down = True
                     if breaker.state != "open":
                         breaker.trip(reason, time.monotonic())
+                        await self.fail_paused_groups(env.name)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
         """Advance group accounting and return the attempt's pinned policy version."""
