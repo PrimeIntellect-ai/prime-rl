@@ -90,7 +90,9 @@ def selective_log_softmax_with_support(
     logsumexp(logits[mask])``, others full-vocab."""
     logits, index = logits.squeeze(0), index.squeeze(0)
     rows = support.row_index().long()
-    support_logits = logits[rows, support.ids.long()]
+    # Out-of-vocabulary ids (invalid evidence, raised after the step) get -inf like in the fused head
+    in_vocab = (support.ids >= 0) & (support.ids < logits.shape[-1])
+    support_logits = logits[rows, torch.where(in_vocab, support.ids, 0).long()].masked_fill(~in_vocab, float("-inf"))
     replay = support_replay_mask(support, index, rows)
     logz = torch.where(replay, _segment_logsumexp(support_logits, rows, support.num_rows), logits.logsumexp(-1))
     target_logits = logits.gather(-1, index.unsqueeze(-1)).squeeze(-1)
