@@ -700,7 +700,7 @@ def train(config: TrainerConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, batch_id=dataloader.last_batch_id)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
@@ -821,7 +821,7 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, batch_id=dataloader.last_batch_id)
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
