@@ -1,4 +1,4 @@
-"""Export the swe-marathon SFT checkpoints of Nemotron 3.5 Super into the release's VL Hugging Face layout.
+"""Export the TB4 SFT checkpoints of Nemotron 3.5 Super into the release's VL Hugging Face layout.
 
 On this branch the SFT entrypoint runs this export instead of training, because a hosted run can only
 start the trainer. For each checkpoint, the export:
@@ -151,28 +151,28 @@ class Export:
     repo_name: str
     run_id: str
     step: int
-    epochs: int
+    epochs: float
     val_loss: float
 
 
 EXPORTS = [
     Export(
-        name="ep2-step104",
-        dcp_dir=Path("/volume/runs/hnp5pwsw3fx9p5b7r6bjmnnx/checkpoints/step_104/trainer"),
-        repo_name="Nemotron-3.5-Super-VL-swe-marathon-sft-ep2",
-        run_id="hnp5pwsw3fx9p5b7r6bjmnnx",
-        step=104,
-        epochs=2,
-        val_loss=0.4274,
+        name="tb4-step144",
+        dcp_dir=Path("/volume/runs/eivawxtikvt75p1ietxg4lok/checkpoints/step_144/trainer"),
+        repo_name="Nemotron-3.5-Super-VL-tb4-sft-step144",
+        run_id="eivawxtikvt75p1ietxg4lok",
+        step=144,
+        epochs=3.5,
+        val_loss=0.6056,
     ),
     Export(
-        name="ep3-step156",
-        dcp_dir=Path("/volume/runs/siuskw4we4txi09583x5x807/checkpoints/step_156/trainer"),
-        repo_name="Nemotron-3.5-Super-VL-swe-marathon-sft-ep3",
-        run_id="siuskw4we4txi09583x5x807",
-        step=156,
-        epochs=3,
-        val_loss=0.4256,
+        name="tb4-step288",
+        dcp_dir=Path("/volume/runs/eivawxtikvt75p1ietxg4lok/checkpoints/step_288/trainer"),
+        repo_name="Nemotron-3.5-Super-VL-tb4-sft-step288",
+        run_id="eivawxtikvt75p1ietxg4lok",
+        step=288,
+        epochs=7,
+        val_loss=0.6468,
     ),
 ]
 
@@ -318,13 +318,13 @@ base_model: {BASE_REPO}
 # {export.repo_name}
 
 [{BASE_REPO}](https://huggingface.co/{BASE_REPO}) (revision `{BASE_REVISION[:8]}`) after
-{export.epochs} epochs of supervised fine-tuning of its language model on swe-marathon agent traces
-(OpenCode harness, distilled from GLM-5.3), trained with prime-rl.
+{export.epochs:g} epochs of supervised fine-tuning of its language model on TB4 (Terminal-Bench-style)
+agent traces (mini-swe-agent 2.4.6 harness, distilled from GLM-5.3), trained with prime-rl.
 
 - Checkpoint: hosted run `{export.run_id}`, step {export.step}; validation loss {export.val_loss}
-  on 50 held-out tasks (base model 0.5086).
-- Training: 640K-token packed sequences, AdamW, peak learning rate 1e-5 with cosine decay to 1e-6
-  (epoch 3: re-warmed to 3e-6).
+  on 44 held-out tasks (base model 0.6698).
+- Training: 1M-token (1,048,576) packed sequences, AdamW, learning rate warmed up from 1e-6 to 1e-5 over
+  4 steps, then cosine decay to 1e-6 at step 288 (7 epochs).
 - Fine-tuned: the language model (`language_model.backbone.*`, `language_model.lm_head.weight`).
 - Unchanged from the release: the vision tower and projector (text-only training), and the
   multi-token-prediction head (`language_model.mtp.*`), which was not trained and is copied as is.
