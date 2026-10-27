@@ -21,13 +21,13 @@ def test_runs_go_to_the_least_loaded_replica():
         env._env_clients = [FakeClient(), FakeClient()]
         env._in_flight = [0, 0]
         client = None
-        tasks = [asyncio.create_task(env.run(client, "m", None, {})) for _ in range(4)]
+        tasks = [asyncio.create_task(env.run(client, "m", None, None, {})) for _ in range(4)]
         await asyncio.sleep(0)
         assert [c.runs for c in env._env_clients] == [2, 2]
         env._env_clients[0].release.set()
         await asyncio.sleep(0)
         assert env._in_flight == [0, 2]
-        tasks.append(asyncio.create_task(env.run(client, "m", None, {})))
+        tasks.append(asyncio.create_task(env.run(client, "m", None, None, {})))
         await asyncio.sleep(0)
         assert env._env_clients[0].runs == 3
         env._env_clients[1].release.set()
