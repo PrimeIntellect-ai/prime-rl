@@ -1,0 +1,239 @@
+# Nemotron 3.5 Super - swe-marathon eval: SMOKE TEST on the original checkpoint (3 tasks x 1 rollout).
+# A pure eval, matching the original checkpoint's eval (/data/sft-gen/vendor-eval/nemotron-3-5-super-text/
+# swe-marathon-nemotron-eval-20261018 on the QC box): every task run 1x (smoke), temperature 1.0, the same bash agent,
+# compaction at 200k, reward = fraction of the task's deterministic tests passed (no LLM judge).
+# Hosted eval-only RL run: inference serves the model and the orchestrator's step-0 (v0) eval runs the tasks
+# in Prime sandboxes; the one training step is a no-op (lr 0, debug algo).
+#   prime train configs/advanced/nemotron-3-super/swe-marathon-eval/smoke.toml --volume nemotron-training -y
+# Traces and per-rollout rewards: /volume/runs/<runId>/monitors/file/traces/stream/00000.jsonl and
+# stream.index.jsonl (eval records with run.work.step == 0). Reaching max_steps forces a second eval epoch
+# (same weights): stop the run once the orchestrator logs "Evaluated swe-marathon | Policy v0".
+
+image_tag = "v0.10.1.dev74"
+source_ref = "exp/nemotron-swe-marathon-eval"   # = prime-rl 017c0883 (the SFT runs' commit) + these configs
+gpu_type = "H200_141GB"
+
+max_steps = 1
+# Only bounds the no-op train step (train samples longer than this are truncated, not dropped).
+# Eval context is bounded by inference.vllm.max_model_len, not by seq_len.
+seq_len = 131072
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+VLLM_HTTP_TIMEOUT_KEEP_ALIVE = "120"
+NCCL_DEBUG = "INFO"
+NCCL_DEBUG_SUBSYS = "INIT,NET"
+# Two broadcasts only (v0 at start, v1 after the no-op step): TCP is slow but robust to the IB fault.
+NCCL_IB_DISABLE = "1"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+# 2 train nodes for the 2-rollout no-op step at seq_len 131072 (the smoke run checks it; 2 nodes OOMed only
+# at seq_len 655360). Fallback: 4 train nodes + cp 16 / ep 16 + seq_len 655360 (run jkp21).
+num_train_nodes = 2
+num_infer_nodes = 1      # nodes per inference replica
+num_infer_replicas = 1   # 1 inference node (smoke)
+orchestrator_on_inference = true
+
+[monitors.wandb]
+project = "nemotron-3.5-super-swe-marathon-eval"
+name = "swe-marathon-eval-smoke"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 43200
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+
+[trainer]
+# The trainer idles waiting for its one train batch until the eval queue is fully dispatched
+# (tens of hours): never let a distributed timeout kill it.
+dist_timeout_seconds = 259200
+enable_router_replay = false
+
+[trainer.model]
+attn = "flash_attention_3"
+cp = 8
+ep = 8
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+token_chunk_size = 8192
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+# EVAL-ONLY: lr 0 makes the one optimizer step a no-op (v1 weights == v0 weights).
+lr = 0.0
+weight_decay = 0.0
+max_norm = 1.0
+
+# EVAL-ONLY: no [ckpt] / [trainer.ckpt]: no 1.4 TB final checkpoint.
+
+[orchestrator]
+batch_size = 2
+max_off_policy_steps = 1
+
+[orchestrator.train]
+group_size = 2
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 1.0
+
+[orchestrator.train.algo]
+# EVAL-ONLY: constant advantage so the 2-rollout batch always ships, whatever the rewards.
+type = "debug"
+
+[[orchestrator.train.source]]
+name = "swe-marathon-noop-train"
+group_size = 2
+
+[orchestrator.train.source.env]
+id = "prime/swe-marathon-env@0.1.0"
+
+[orchestrator.train.source.env.taskset]
+id = "harbor"
+dataset = "swe-marathon-vendor@10e808bd17ef"
+registry_path = "/volume/datasets/swe-marathon/registry.json"
+artifact_max_bytes = 1073741824
+
+[orchestrator.train.source.env.agent.harness]
+id = "swe-marathon-bash"
+
+[orchestrator.train.source.env.agent.harness.compaction]
+summarize_at_tokens = 200000
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+region = "us"
+idle_timeout = 14400.0
+creates_per_min = 100
+labels = ["swe-marathon-eval-smoke"]
+
+[orchestrator.train.source.env.agent.timeout]
+rollout = 14400.0
+setup = 3600.0
+finalize = 3600.0
+scoring = 3600.0
+
+[orchestrator.train.source.env.timeout]
+episode = 86400.0
+
+[orchestrator.train.source.env.retries]
+rules = [
+    { type = "ProviderError", max_retries = 3 },
+    { type = "SandboxError", max_retries = 10 },
+    { type = "HarnessError", max_retries = 3 },
+]
+
+[orchestrator.train.source.serve]
+max_concurrent = 2
+
+[orchestrator.train.source.serve.pool]
+type = "elastic"
+max_workers = 1
+multiplex = 2
+
+# EVAL-ONLY: the fastest base-eval task (8/8 rollouts finished in <= 0.93 h on the base eval).
+[orchestrator.train.source.select.include]
+names = ["sifflet-clone"]
+
+[orchestrator.concurrency]
+# Base eval ran 900 in flight on Prime Inference. ~400 per inference node here.
+min_inflight = 256
+initial_inflight = 512
+max_inflight = 800
+
+[orchestrator.renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[orchestrator.eval]
+interval = 1000
+skip_first_step = false
+
+# Match the base eval's request sampling: temperature 1.0 only. top_p is left to the server
+# (vLLM applies the model's generation_config.json default, top_p 0.95).
+[orchestrator.eval.sampling]
+temperature = 1.0
+
+[[orchestrator.eval.source]]
+name = "swe-marathon"
+group_size = 1
+
+[orchestrator.eval.source.env]
+id = "prime/swe-marathon-env@0.1.0"
+
+[orchestrator.eval.source.env.taskset]
+id = "harbor"
+dataset = "swe-marathon-vendor@10e808bd17ef"
+registry_path = "/volume/datasets/swe-marathon/registry.json"
+artifact_max_bytes = 1073741824
+
+[orchestrator.eval.source.env.agent.harness]
+# The original eval's sft-gen-bash agent: stock bash + edit tools with the eval-time bash tool
+# (see prime/swe-marathon-env). No task ships skills, so sft-gen's skills prompt never appeared.
+id = "swe-marathon-bash"
+
+[orchestrator.eval.source.env.agent.harness.compaction]
+summarize_at_tokens = 200000
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+region = "us"
+idle_timeout = 14400.0
+creates_per_min = 100
+labels = ["swe-marathon-eval-smoke"]
+
+[orchestrator.eval.source.env.agent.timeout]
+rollout = 86400.0
+setup = 3600.0
+finalize = 3600.0
+scoring = 3600.0
+
+[orchestrator.eval.source.env.timeout]
+episode = 86400.0
+
+[orchestrator.eval.source.env.retries]
+rules = [
+    { type = "ProviderError", max_retries = 0 },
+    { type = "SandboxError", max_retries = 0 },
+    { type = "HarnessError", max_retries = 0 },
+]
+
+# Smoke: 3 tasks that finished quickly in the original eval.
+[orchestrator.eval.source.select.include]
+names = ["sifflet-clone", "15five-clone-schema-migration", "akute-health-clone-consistency"]
+
+[orchestrator.eval.source.serve]
+max_concurrent = 128
+
+[orchestrator.eval.source.serve.pool]
+type = "elastic"
+max_workers = 7
+multiplex = 128
+
+[inference.vllm]
+# Prime gateway cap the base eval most likely ran under; base peak prompt was ~137k tokens.
+max_model_len = 262144
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "nemotron_v3"
+tensor_parallel_size = 2
+data_parallel_size = 4
+enable_expert_parallel = true
+enable_prefix_caching = true
+gpu_memory_utilization = 0.85
+mamba_cache_dtype = "float32"
+safetensors_load_strategy = "prefetch"
+max_num_seqs = 256
+max_num_batched_tokens = 8192
+all2all_backend = "allgather_reducescatter"
+dtype = "bfloat16"
+seed = 0
