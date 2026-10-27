@@ -1,0 +1,35 @@
+# Full-depth SFT of DeepSeek-V4.1-Flash: EP 8 + FSDP, no context or pipeline parallelism.
+clean = true
+
+[model]
+# A PrimeRL-format copy of PrimeIntellect/DeepSeek-V4.1-Flash-bf16 written by
+# tools/convert_deepseek_v41_to_prime.py.
+name = "/shared/models/DeepSeek-V4.1-Flash-bf16"  # FILL IN
+ep = 8
+# The two engram tables hold ~197B of the model's ~748B parameters. Frozen, they cost only their
+# (row-sharded) weights: no gradient and no optimizer state.
+freeze_engram_tables = true
+
+[model.ac]
+freq = 1
+
+[optim]
+type = "sign_sgd"
+lr = 5e-5
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup_steps = 50
+decay_steps = 0
+
+[renderer]
+name = "deepseek-v4.1"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 12
+
+[slurm]
+job_name = "dsv41-sft"
+partition = "all"  # FILL IN

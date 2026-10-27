@@ -1,7 +1,9 @@
 import pickle
-from typing import TYPE_CHECKING, Generator, cast
+import re
+from typing import TYPE_CHECKING, Generator, Iterable, cast
 
 import torch
+import torch.distributed as dist
 from torch.nn import Module
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
@@ -51,12 +53,76 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
             for key, shape, numel in bucket:
                 tensor = concatenated[offset : offset + numel].view(shape)
                 offset += numel
+                # The layerwise reload holds what it loads until the layer is complete, and a view
+                # would pin the whole bucket: under EP, a rank's experts would keep every bucket of
+                # the layer alive, other ranks' experts included.
+                if len(bucket) > 1:
+                    tensor = tensor.clone()
                 try:
                     yield key, tensor
                 finally:
                     del tensor
 
             del concatenated
+
+
+class RowChunkWriter:
+    """Copies the trainer's chunks of DeepSeek-V4.1's engram tables into vLLM's tables in place.
+
+    The trainer sends each ~98 GB table as row chunks (`<table>.weight`, `.scale`, `.row_start`)
+    after the regular layers. vLLM stores a table as fp8 rows plus ue8m0 scales, usually in pinned
+    host memory shared by the node's DP replicas. The layerwise reload would rebuild a whole table on
+    the GPU, which it does not fit, so this filter takes the chunks out of the stream and copies each
+    into the rows it covers. The reload never sees a table weight and leaves the tables untouched.
+    """
+
+    FIELDS = ("weight", "scale", "row_start")
+
+    def __init__(self, model: Module):
+        from vllm.models.deepseek_v41.common.engram import ParallelEngramEmbedding
+
+        self.tables = {}
+        self.shared_groups = []
+        for name, module in model.named_modules():
+            match = re.search(r"layers\.(\d+)\.engram\.embed_tokens$", name)
+            if match is None or not isinstance(module, ParallelEngramEmbedding):
+                continue
+            shared = getattr(module, "_shared_memory", None)
+            if shared is not None:
+                self.shared_groups.append(shared.group)
+            self.tables[f"layers.{match.group(1)}.engram.embed"] = (
+                module.weight.data.view(torch.uint8),
+                module.weight_scale_inv.data,
+                module.vocab_start_idx,
+                shared is None or shared.group.rank_in_group == 0,
+            )
+        self.pending: dict[str, torch.Tensor] = {}
+
+    def filter(self, state_iter: Iterable[tuple[str, torch.Tensor]]) -> Generator[tuple[str, torch.Tensor], None, None]:
+        """Write table chunks as they arrive and pass every other weight through."""
+        for key, tensor in state_iter:
+            prefix, _, field = key.rpartition(".")
+            if prefix not in self.tables or field not in self.FIELDS:
+                yield key, tensor
+                continue
+            self.pending[field] = tensor
+            if len(self.pending) == len(self.FIELDS):
+                self._write(prefix, **self.pending)
+                self.pending = {}
+        assert not self.pending, f"incomplete table chunk: {sorted(self.pending)}"
+        # A shared table has one writer; the other replicas must not read it before it is done.
+        for group in self.shared_groups:
+            dist.barrier(group=group.cpu_group)
+
+    def _write(self, prefix: str, weight: torch.Tensor, scale: torch.Tensor, row_start: torch.Tensor) -> None:
+        values, scales, vocab_start, is_writer = self.tables[prefix]
+        if not is_writer:
+            return
+        start = cast(int, row_start.item())
+        lo, hi = max(start, vocab_start), min(start + weight.shape[0], vocab_start + values.shape[0])
+        if lo < hi:
+            values[lo - vocab_start : hi - vocab_start].copy_(weight[lo - start : hi - start])
+            scales[lo - vocab_start : hi - vocab_start].copy_(scale[lo - start : hi - start])
 
 
 class NCCLWeightBroadcastReceiver:
@@ -141,6 +207,8 @@ class NCCLWeightUpdateWorker(Worker):
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
+        if self.model_runner.model_config.hf_config.model_type == "deepseek_v41":
+            state_iter = RowChunkWriter(model).filter(state_iter)
         load_weights_checkpoint_layerwise(
             model,
             state_iter,

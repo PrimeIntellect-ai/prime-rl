@@ -12,6 +12,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v41 import DeepseekV41Config, DeepseekV41ForCausalLM, DeepseekV41TextConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
@@ -41,6 +42,8 @@ from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalL
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
 AutoConfig.register("deepseek_v4", DeepseekV4Config, exist_ok=True)
+AutoConfig.register("deepseek_v41", DeepseekV41Config, exist_ok=True)
+AutoConfig.register("deepseek_v41_text", DeepseekV41TextConfig, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 AutoConfig.register("glm5_next", Glm5NextConfig, exist_ok=True)
 AutoConfig.register("glm5_next_text", Glm5NextTextConfig, exist_ok=True)
@@ -69,6 +72,8 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (Qwen3Config, Qwen3ForCausalLM),
     (AfmoeConfig, AfmoeForCausalLM),
     (DeepseekV4Config, DeepseekV4ForCausalLM),
+    (DeepseekV41Config, DeepseekV41ForCausalLM),
+    (DeepseekV41TextConfig, DeepseekV41ForCausalLM),
     (Glm4MoeConfig, Glm4MoeForCausalLM),
     (Glm5NextTextConfig, Glm5NextForCausalLM),
     (Glm5NextConfig, Glm5NextForCausalLM),
