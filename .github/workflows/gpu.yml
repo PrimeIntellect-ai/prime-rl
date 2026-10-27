@@ -12,72 +12,33 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{
+      (github.event.pull_request.head.repo.full_name == github.repository
+        && ((github.event_name == 'pull_request' && github.event.label.name == 'gpu-ci')
+            || (github.event_name == 'pull_request_review'
+                && github.event.review.state == 'approved'
+                && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
+      && format('pr-{0}', github.event.pull_request.number)
+      || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' }}
+
 jobs:
   gate:
     name: Gate
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'push'
-      || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'pull_request' && github.event.label.name == 'gpu-ci')
-      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      || (github.event.pull_request.head.repo.full_name == github.repository
+          && ((github.event_name == 'pull_request' && github.event.label.name == 'gpu-ci')
+              || (github.event_name == 'pull_request_review'
+                  && github.event.review.state == 'approved'
+                  && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
     permissions:
       contents: read
-      actions: write
       pull-requests: write
-    outputs:
-      run: ${{ steps.decide.outputs.run }}
     steps:
-      - name: Decide whether to run GPU jobs
-        id: decide
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          REVIEWER: ${{ github.event.review.user.login }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set_run_and_exit() {
-            echo "run=$1" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]] && set_run_and_exit true
-
-          if [[ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
-            echo "::notice::Fork PRs get no secrets on these events, so GPU CI cannot run here. A maintainer can push the branch to $GITHUB_REPOSITORY and apply the gpu-ci label to that PR."
-            set_run_and_exit false
-          fi
-
-          if [[ "$EVENT_NAME" == "pull_request_review" ]]; then
-            role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REVIEWER/permission" --jq .role_name)
-            echo "Reviewer $REVIEWER has role: $role"
-            case "$role" in
-              admin|maintain|write|triage) ;;
-              *) set_run_and_exit false ;;
-            esac
-          fi
-
-          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/gpu.yml/runs?head_sha=$HEAD_SHA&per_page=100" \
-            --jq ".workflow_runs[] | select(.id != $RUN_ID) | \"\(.id) \(.html_url)\"")
-          while read -r run_id run_url; do
-            [[ -n "$run_id" ]] || continue
-            job_states=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '
-              [.jobs[] | select(.name != "Gate")] as $gpu_jobs
-              | "\(($gpu_jobs | length > 0) and all($gpu_jobs[]; .conclusion == "success" or (.status != "completed" and .conclusion == null))) \(any($gpu_jobs[]; .status != "completed"))"')
-            read -r passing_or_pending in_flight <<< "$job_states"
-            [[ "$passing_or_pending" == "true" ]] || continue
-            if [[ "$EVENT_NAME" == "pull_request_review" ]]; then
-              echo "::notice::Head commit $HEAD_SHA is already covered by GPU run $run_url"
-              set_run_and_exit false
-            elif [[ "$in_flight" == "true" ]]; then
-              echo "::notice::Head commit $HEAD_SHA already has GPU run $run_url in flight"
-              set_run_and_exit false
-            fi
-          done <<< "$runs"
-
-          set_run_and_exit true
       - name: Remove gpu-ci label
         if: github.event_name == 'pull_request'
         continue-on-error: true
@@ -85,20 +46,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/gpu-ci"
-      - name: Cancel this PR's older GPU runs
-        if: steps.decide.outputs.run == 'true' && github.event.pull_request != null
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          older_runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/gpu.yml/runs" -f branch="$HEAD_REF" -F per_page=100 \
-            --jq ".workflow_runs[] | select(.status != \"completed\" and .run_number < $RUN_NUMBER and (.event == \"pull_request\" or .event == \"pull_request_review\")) | .id")
-          for run_id in $older_runs; do
-            echo "Cancelling older GPU run $run_id"
-            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" --silent \
-              || echo "::warning::Could not cancel GPU run $run_id, it may have finished already"
-          done
 
   unit-gpu:
     name: Unit (GPU)
@@ -108,7 +55,6 @@ jobs:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 45
-    if: needs.gate.outputs.run == 'true'
     steps:
       - name: Install Git
         run: |
@@ -150,7 +96,6 @@ jobs:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 60
-    if: needs.gate.outputs.run == 'true'
     strategy:
       fail-fast: false
       # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),

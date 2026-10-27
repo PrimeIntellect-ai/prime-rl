@@ -61,6 +61,6 @@ Write tests as plain functions with pytest fixtures. Don't use class-based tests
 ## GitHub
 
 - **Draft PRs**: always create PRs as drafts (`gh pr create --draft`) to avoid triggering CI unnecessarily.
-- **GPU CI is opt-in**: pushes to a PR don't run GPU tests. The full GPU suite runs on the PR's current commit when someone with Triage or higher applies the `gpu-ci` label or approves the PR (an approval is skipped if that commit already has a passing or in-progress run). Only when the user asks, request a run with `gh pr edit <num> --add-label gpu-ci`. Never approve a PR just to trigger GPU CI. The workflow removes the label, so re-add it after new pushes.
+- **GPU CI is opt-in**: pushes to a PR don't run GPU tests. The full GPU suite runs on the PR's current commit when someone applies the `gpu-ci` label or an org member or repo collaborator approves the PR. Only when the user asks, request a run with `gh pr edit <num> --add-label gpu-ci`. Never approve a PR just to trigger GPU CI. The workflow removes the label, so re-add it after new pushes.
 - **Pull requests**: do not include a "test plan" section in PR descriptions unless you actually ran tests to verify the changes or the user explicitly asked for one.
 - **Keep PR descriptions in sync**: every time you push commits to a PR, also update the PR description (`gh pr edit <num> --body-file ...`) so it reflects the current state of the branch — not just what was true when the PR was opened. Preserve any auto-generated blocks (e.g. `<!-- CURSOR_SUMMARY -->`).
