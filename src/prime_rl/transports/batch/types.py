@@ -94,9 +94,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
     top_logprobs: TopLogprobs | None = None
-    # Per-token staleness (full prompt+completion length), stamped by the
-    # orchestrator when the sample ships. -1 marks tokens without one: context
-    # tokens and tokens of frozen-sourced rollouts.
     staleness: np.ndarray | None = None
 
 
@@ -165,5 +162,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     top_logprobs: TopLogprobs | None = None
     # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
     padding: int = 0
-    # See TrainingSample.staleness. ``None`` when no packed sample carried one.
     staleness: memoryview | None = None

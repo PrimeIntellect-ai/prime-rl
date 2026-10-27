@@ -66,7 +66,7 @@ class TensorMicroBatch(TypedDict):
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
 
-    # Per-token staleness, -1 where unknown (see TrainingSample.staleness)
+    # Per-token staleness, -1 on tokens the policy did not sample
     staleness: Int[Tensor, "batch seq"] | None
 
 
