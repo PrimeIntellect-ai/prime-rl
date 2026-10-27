@@ -364,36 +364,83 @@ class DataLoader:
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
-    """Validate sampler evidence on the CPU before the LM head consumes it."""
-    mask = batch["loss_mask"]
-    if batch["rl_weights"] is not None:
-        mask = mask & (batch["rl_weights"] != 0)
-    if not mask.any():
+SCORE_CENTERING_DATA_ERRORS = (
+    "Missing or out-of-vocabulary sampler top logprobs",
+    "Sampler top logprobs must be finite and nonpositive",
+    "Duplicate sampler head ids",
+    "Sampler head mass exceeds one",
+    "Sampler probabilities must normalize over the recorded support",
+    "Sampled token is missing from the recorded support",
+)
+
+
+def score_centering_data_errors(
+    input_ids: Int[Tensor, "batch seq"],
+    loss_mask: Bool[Tensor, "batch seq"],
+    rl_weights: Float[Tensor, "batch seq"] | None,
+    top_ids: Int[Tensor, "batch seq head"],
+    top_values: Float[Tensor, "batch seq head"],
+    sampling_mask: Int[Tensor, "batch seq mask"] | None,
+    *,
+    vocab_size: int,
+) -> Bool[Tensor, " checks"]:
+    """Flag each check in ``SCORE_CENTERING_DATA_ERRORS`` that the sampler evidence on RL tokens
+    fails. Runs on the tensors' device without a host sync, so the trainer can validate on the GPU
+    and check the flags once per step with ``raise_score_centering_data_errors``."""
+    rl_mask = loss_mask if rl_weights is None else loss_mask & (rl_weights != 0)
+    valid = top_ids >= 0
+    ordered = top_ids.sort(-1).values
+    head_mass = top_values.exp().masked_fill(~valid, 0.0).sum(-1)
+    if sampling_mask is None:
+        unnormalized = unsampled = torch.zeros_like(rl_mask)
+    else:
+        replay = (sampling_mask >= 0).any(-1)
+        unnormalized = replay & ~torch.isclose(head_mass, torch.ones_like(head_mass), atol=1e-4, rtol=0)
+        unsampled = replay & ~(sampling_mask == input_ids.unsqueeze(-1)).any(-1)
+    errors = torch.stack(
+        [
+            ~valid.any(-1) | (top_ids >= vocab_size).any(-1),
+            (valid & (~top_values.isfinite() | (top_values > 1e-6))).any(-1),
+            ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(-1),
+            head_mass > 1.0001,
+            unnormalized,
+            unsampled,
+        ],
+        dim=-1,
+    )
+    return (errors & rl_mask.unsqueeze(-1)).flatten(0, -2).any(0)
+
+
+def raise_score_centering_data_errors(errors: list[Bool[Tensor, " checks"]]) -> None:
+    """Raise the first failed check of the first failing micro batch, given each micro batch's
+    ``score_centering_data_errors`` in order. Syncs once."""
+    if not errors:
         return
+    failed = torch.stack(errors).flatten().cpu().nonzero()
+    if failed.numel():
+        raise ValueError(SCORE_CENTERING_DATA_ERRORS[int(failed[0]) % len(SCORE_CENTERING_DATA_ERRORS)])
+
+
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
+    """Validate sampler evidence before the LM head consumes it."""
     ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]
     if ids is None or values is None:
-        raise ValueError("Score centering requires top logprobs on every RL token")
-    ids, values = ids[mask], values[mask]
-    valid = ids >= 0
-    if not valid.any(-1).all() or (ids >= vocab_size).any():
-        raise ValueError("Missing or out-of-vocabulary sampler top logprobs")
-    if not torch.isfinite(values[valid]).all() or (values[valid] > 1e-6).any():
-        raise ValueError("Sampler top logprobs must be finite and nonpositive")
-    ordered = ids.sort(-1).values
-    if ((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)).any():
-        raise ValueError("Duplicate sampler head ids")
-    q = values.exp().masked_fill(~valid, 0.0)
-    if (q.sum(-1) > 1.0001).any():
-        raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None:
-        support = batch["sampling_mask"][mask]
-        replay = (support >= 0).any(-1)
-        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
-            raise ValueError("Sampler probabilities must normalize over the recorded support")
-        sampled = batch["input_ids"][mask]
-        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
-            raise ValueError("Sampled token is missing from the recorded support")
+        mask = batch["loss_mask"]
+        if batch["rl_weights"] is not None:
+            mask = mask & (batch["rl_weights"] != 0)
+        if mask.any():
+            raise ValueError("Score centering requires top logprobs on every RL token")
+        return
+    errors = score_centering_data_errors(
+        batch["input_ids"],
+        batch["loss_mask"],
+        batch["rl_weights"],
+        ids,
+        values,
+        batch["sampling_mask"],
+        vocab_size=vocab_size,
+    )
+    raise_score_centering_data_errors([errors])
 
 
 def _torch_dtype(name: str) -> torch.dtype:
