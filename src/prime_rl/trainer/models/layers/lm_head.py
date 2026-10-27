@@ -254,10 +254,12 @@ def _sparse_logit_backward(
     nnz = n + rows.numel()
     cols = torch.empty(nnz, device=device, dtype=torch.int32)
     vals = torch.empty(nnz, device=device, dtype=torch.float32)
+    # Out-of-vocabulary ids (invalid evidence, raised after the step) must not index the weight
+    in_vocab = (support_ids >= 0) & (support_ids < weight.shape[0])
     cols[label_pos] = labels.int()
-    cols[entry_pos] = support_ids
+    cols[entry_pos] = torch.where(in_vocab, support_ids, 0)
     vals[label_pos] = label_grad
-    vals[entry_pos] = entry_grad
+    vals[entry_pos] = torch.where(in_vocab, entry_grad, 0.0)
 
     grad_hidden = grad_weight = None
     if needs_grad[0]:
