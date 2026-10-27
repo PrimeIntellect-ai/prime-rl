@@ -21,7 +21,6 @@ from transformers.utils import (
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_layer_prefix
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
@@ -149,27 +148,17 @@ def get_ngram_table_layers(model: nn.Module, state_dict: dict[str, Tensor]) -> d
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
 
-def partition_weights(
-    state_dict: dict[str, Tensor],
-    world_size: int,
-    dtype: torch.dtype,
-    layer_prefix: str,
-    ngram_table_layers: dict[str, int],
-) -> dict[str, int]:
+def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
 
-    All keys of one decoder layer share an owner, including the keys `ngram_table_layers`
-    assigns to it, so per-rank prime->HF conversion (which stacks/unstacks tensors
-    within a layer) always sees complete layers.
+    All keys of one decoder layer share an owner, so per-rank prime->HF conversion
+    (which stacks/unstacks tensors within a layer) always sees complete layers.
     """
     key_to_unit: dict[str, str] = {}
     unit_bytes: dict[str, int] = {}
     for key, value in state_dict.items():
-        if key in ngram_table_layers:
-            unit = f"{layer_prefix}{ngram_table_layers[key]}"
-        else:
-            match = _LAYER_RE.match(key)
-            unit = match.group(1) if match else ""
+        match = _LAYER_RE.match(key)
+        unit = match.group(1) if match else ""
         key_to_unit[key] = unit
         itemsize = dtype.itemsize if isinstance(value, DTensor) else value.element_size()
         unit_bytes[unit] = unit_bytes.get(unit, 0) + value.numel() * itemsize
@@ -232,10 +221,7 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     """
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
-    state_dict = model.state_dict()
-    owners = partition_weights(
-        state_dict, world.world_size, dtype, get_layer_prefix(model.config), get_ngram_table_layers(model, state_dict)
-    )
+    owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
