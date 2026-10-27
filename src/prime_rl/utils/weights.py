@@ -130,8 +130,8 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
     return next(iter(fqns))
 
 
-def get_consuming_layers(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, int]:
-    """Map each n-gram table's state-dict keys to the index of the decoder layer that consumes the table."""
+def get_ngram_table_layers(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, int]:
+    """Map every n-gram table state-dict key to the decoder layer the table feeds."""
     from prime_rl.trainer.models.layers.ngram import NGramEmbeddings
 
     fqn_layers = {
@@ -154,19 +154,19 @@ def partition_weights(
     world_size: int,
     dtype: torch.dtype,
     layer_prefix: str,
-    consuming_layers: dict[str, int],
+    ngram_table_layers: dict[str, int],
 ) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
 
-    All keys of one decoder layer share an owner, including the keys `consuming_layers`
+    All keys of one decoder layer share an owner, including the keys `ngram_table_layers`
     assigns to it, so per-rank prime->HF conversion (which stacks/unstacks tensors
     within a layer) always sees complete layers.
     """
     key_to_unit: dict[str, str] = {}
     unit_bytes: dict[str, int] = {}
     for key, value in state_dict.items():
-        if key in consuming_layers:
-            unit = f"{layer_prefix}{consuming_layers[key]}"
+        if key in ngram_table_layers:
+            unit = f"{layer_prefix}{ngram_table_layers[key]}"
         else:
             match = _LAYER_RE.match(key)
             unit = match.group(1) if match else ""
@@ -234,7 +234,7 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     world = get_world()
     state_dict = model.state_dict()
     owners = partition_weights(
-        state_dict, world.world_size, dtype, get_layer_prefix(model.config), get_consuming_layers(model, state_dict)
+        state_dict, world.world_size, dtype, get_layer_prefix(model.config), get_ngram_table_layers(model, state_dict)
     )
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
