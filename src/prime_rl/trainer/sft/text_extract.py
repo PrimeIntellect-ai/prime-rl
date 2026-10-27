@@ -26,7 +26,7 @@ from prime_rl.utils.logger import get_logger
 
 HF_ORG = "PrimeIntellect"
 EXTRACT_SCRIPT = Path(__file__).with_name("extract_nemotron_backbone.py")
-VL_EXPORTS = Path("/volume/runs/__VL_EXPORT_RUN_ID__/hf-export")
+VL_EXPORTS = Path("/volume/runs/urip6n8rxgsen8fkveitdjtt/hf-export")
 # The text model the SFT runs trained from (the release's language model): the reference layout.
 TRAINING_BASE = Path("/volume/models/nemotron-3.5-super-text")
 BASE_REPO = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"

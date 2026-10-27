@@ -3,7 +3,7 @@
 #
 # On source_ref exp/nemotron-sft-tb4-text-extract the SFT trainer runs src/prime_rl/trainer/sft/text_extract.py and exits:
 # global rank 0 runs extract_nemotron_backbone.py (unchanged copy next to it) on the VL exports in
-# /volume/runs/<VL export run>/hf-export/{tb4-step144,tb4-step288}, writes the text-only checkpoints to
+# /volume/runs/urip6n8rxgsen8fkveitdjtt/hf-export/{tb4-step144,tb4-step288}, writes the text-only checkpoints to
 # /volume/runs/<thisRunId>/text-export/<name>/, checks every tensor's name, dtype and shape against
 # /volume/models/nemotron-3.5-super-text, and pushes them to PrimeIntellect/Nemotron-3.5-Super-tb4-sft-ep3.5/-ep7.
 # CPU work on one node; no model is built. [model]/[data] only need to validate.
