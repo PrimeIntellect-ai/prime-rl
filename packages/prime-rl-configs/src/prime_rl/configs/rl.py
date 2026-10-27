@@ -550,30 +550,23 @@ class RLConfig(BaseConfig):
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
-        # The sampler's probabilities are captured on the GPU next to the sampling mask.
-        if self.inference is not None:
-            self.inference.enable_return_sampling_mask = True
-        else:
-            warnings.warn(
-                "Score centering requires `enable_return_sampling_mask = true` on the external server", stacklevel=2
-            )
         return self
 
     @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
-        masks the trainer replays. Only opted-in requests capture
-        masks; eval requests retain independent sampling settings."""
+        masks the trainer replays, and recorded sampler logprobs are captured next to them.
+        Only opted-in requests capture masks; eval requests retain independent sampling settings."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
-        if not any(sampling.truncates_distribution() for sampling in policy_samplings):
+        if not any(sampling.truncates_distribution() or sampling.logprobs for sampling in policy_samplings):
             return self
         if self.inference is None:
             warnings.warn(
-                "Truncated train sampling with no managed inference server: set "
+                "Truncated train sampling or sampler logprobs with no managed inference server: set "
                 "`enable_return_sampling_mask = true` on the standalone server's config so it "
-                "returns the sampling masks the trainer replays.",
+                "returns the sampling masks and sampler logprobs the trainer needs.",
                 stacklevel=2,
             )
             return self
