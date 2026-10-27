@@ -240,7 +240,7 @@ class FileSystemWeightUpdateWorker(Worker):
         index_map.fp8_layout(model, read_tensor)
         self.index_map = index_map
 
-    def _write_layout(self, broadcast_dir: Path) -> None:
+    def _write_layout(self, broadcast_dir: StoragePath) -> None:
         """Report which checkpoint tensors this worker holds in fp8, so the trainer sends their deltas as fp8. The
         trainer waits for every worker of the world group (every DP, PP and TP rank)."""
         assert self.index_map is not None
