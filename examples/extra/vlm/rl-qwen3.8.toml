@@ -162,23 +162,14 @@ eps = 0.3
 adv_tau = 1.0
 max_importance_ratio = 10000.0
 
-# Replace both IDs with your image-capable taskset and its compatible harness.
-# The reward and compaction fields below belong to the browser harness/taskset;
-# adapt them if your environment exposes different configuration fields.
+# Replace color-codeword with your multimodal environment and compatible harness.
 [[orchestrator.train.source]]
-name = "your-favorite-env"
-env.taskset.id = "your-org/your-favorite-env@0.1.0"
-env.taskset.task.reward_mode = "binary"
-env.agent.runtime.type = "prime"
-env.agent.timeout.setup = 3600
-env.agent.timeout.rollout = 8100
-env.agent.timeout.scoring = 2400
-env.agent.harness.id = "your-org/your-favorite-env@0.1.0"
-env.agent.harness.max_turns = 200
-env.agent.harness.max_request_bytes = 60000000
-env.agent.harness.context_limit_tokens = 237568
-env.agent.harness.compaction_trigger_tokens = 184320
-env.agent.harness.history_trimming_enabled = true
+name = "color-codeword"
+select.include.idx = ["0:1024"]
+env.taskset.id = "primeintellect/color-codeword@0.1.0"
+env.agent.runtime.type = "subprocess"
+env.agent.harness.id = "null"
+env.agent.harness.compaction.summarize_at_tokens = 184320
 
 [orchestrator.eval]
 interval = 10
@@ -191,15 +182,11 @@ temperature = 1.0
 top_p = 1.0
 max_tokens = 16384
 
+# Use a disjoint slice of the deterministic task generator for evaluation.
 [[orchestrator.eval.source]]
-name = "your-held-out-env"
-env.taskset.id = "your-org/your-held-out-env@0.1.0"
-env.agent.runtime.type = "prime"
-env.agent.timeout.setup = 1200
-env.agent.timeout.rollout = 3700
-env.agent.timeout.scoring = 9600
-env.agent.harness.id = "your-org/your-held-out-env@0.1.0"
-env.agent.harness.max_turns = 200
-env.agent.harness.context_limit_tokens = 237568
-env.agent.harness.compaction_trigger_tokens = 184320
-env.agent.harness.history_trimming_enabled = false
+name = "color-codeword-eval"
+select.include.idx = ["1024:1152"]
+env.taskset.id = "primeintellect/color-codeword@0.1.0"
+env.agent.runtime.type = "subprocess"
+env.agent.harness.id = "null"
+env.agent.harness.compaction.summarize_at_tokens = 184320

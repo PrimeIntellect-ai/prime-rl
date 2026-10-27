@@ -11,7 +11,7 @@ RL and SFT examples for the custom [PrimeRL VLM implementations](../../../docs/a
 
 Both target **4 trainer + 4 inference nodes**, each with 8× H200 GPUs.
 
-Replace the environment/harness IDs, run and W&B names, and shared output path. Install your environments and export the credentials they require. Reward and compaction fields are browser-environment options; adapt them to your harness's schema.
+The examples use `primeintellect/color-codeword` with separate training and evaluation task slices. Replace it with your multimodal environment and compatible harness, and update run/W&B names and the shared output path. Install environments with `uv sync --all-extras --all-packages` and export any credentials they require.
 
 After [setup](../../../README.md#setup), validate from a shared checkout:
 
