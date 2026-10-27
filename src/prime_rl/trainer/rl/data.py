@@ -252,13 +252,19 @@ class DataLoader:
         self.receiver.wait()
 
     def get_batch(self) -> list[TensorMicroBatch]:
-        micro_batches = self.receiver.receive()
         start = time.perf_counter()
+        micro_batches = self.receiver.receive()
+        received = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
-        get_logger().debug(
-            f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+        fetched = time.perf_counter()
+        tensors = [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        num_tokens = sum(tensor["input_ids"].shape[1] for tensor in tensors)
+        get_logger().info(
+            f"Loaded {len(tensors)} micro batches ({num_tokens:,} tokens): decoded in "
+            f"{format_time(received - start)}, fetched payloads in {format_time(fetched - received)}, "
+            f"converted in {format_time(time.perf_counter() - fetched)}"
         )
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        return tensors
 
     def release_payloads(self) -> None:
         """Free the last batch's arrays on the env servers. Call once every rank that may
@@ -299,14 +305,28 @@ class DataLoader:
         if heads:
             head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
             counts = sum(head_counts)
-            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
-            order = np.argsort(rows, kind="stable")
             width = max(int(counts.max(initial=0)), 1)
-            valid = np.arange(width)[None, :] < counts[:, None]
+            if len(heads) == 1:
+                flat_ids = np.frombuffer(heads[0].ids, dtype=np.int32)
+                flat_values = np.frombuffer(heads[0].logprobs, dtype=np.float32)
+            else:
+                # Interleave the two heads' rows back into position order
+                rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
+                order = np.argsort(rows, kind="stable")
+                flat_ids = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+                flat_values = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
             ids = np.full((len(counts), width), -1, dtype=np.int32)
             values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
-            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
+            full = counts == width
+            if flat_ids.size == int(full.sum()) * width:
+                # Every sampled row carries the whole head and context rows none: copy rows
+                # instead of scattering element by element
+                ids[full] = flat_ids.reshape(-1, width)
+                values[full] = flat_values.reshape(-1, width)
+            else:
+                valid = np.arange(width)[None, :] < counts[:, None]
+                ids[valid] = flat_ids
+                values[valid] = flat_values
             top_ids = torch.from_numpy(ids).unsqueeze(0)
             top_values = torch.from_numpy(values).unsqueeze(0)
 
