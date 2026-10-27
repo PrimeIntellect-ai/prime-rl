@@ -290,7 +290,7 @@ class RLLoss:
             beta = torch.full_like(kl, config.kl_coeff)
         metrics |= {"kl": kl.detach(), "kl/beta": beta}
         if ages is not None:
-            metrics["kl/age0"] = (ages == 0).float()
+            metrics["kl/age0"] = kl.detach()[ages == 0]
         return beta * kl
 
 

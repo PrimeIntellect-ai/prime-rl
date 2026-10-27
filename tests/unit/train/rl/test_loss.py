@@ -128,6 +128,7 @@ def test_kl_matches_dense_kl(replay, kl_staleness, estimator):
         torch.autograd.grad(result.loss, logits, retain_graph=True)[0], torch.autograd.grad(reference, logits)[0]
     )
     assert torch.equal(result.metrics["kl/beta"], beta)
+    assert torch.equal(result.metrics["kl/age0"], result.metrics["kl"][ages == 0])
 
 
 def _main_icepop_score_centering(config, inputs, head, sampler, valid):
