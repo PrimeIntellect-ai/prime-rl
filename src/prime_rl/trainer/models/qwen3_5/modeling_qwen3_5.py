@@ -136,7 +136,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
 class Qwen3_5Model(Qwen3_5PreTrainedModel):
     def __init__(self, config: Qwen3_5TextConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             Qwen3_5DecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
