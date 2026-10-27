@@ -161,7 +161,6 @@ max_importance_ratio = 10000.0
 name = "color-codeword"
 select.include.idx = ["0:1024"]
 env.taskset.id = "primeintellect/color-codeword@0.1.0"
-env.agent.runtime.type = "subprocess"
 env.agent.harness.id = "null"
 env.agent.harness.compaction.summarize_at_tokens = 184320
 
@@ -176,11 +175,9 @@ temperature = 1.0
 top_p = 1.0
 max_tokens = 16384
 
-# Use a disjoint slice of the deterministic task generator for evaluation.
 [[orchestrator.eval.source]]
 name = "color-codeword-eval"
 select.include.idx = ["1024:1152"]
 env.taskset.id = "primeintellect/color-codeword@0.1.0"
-env.agent.runtime.type = "subprocess"
 env.agent.harness.id = "null"
 env.agent.harness.compaction.summarize_at_tokens = 184320
