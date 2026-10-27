@@ -7754,7 +7754,6 @@ ta = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "anthropic", specifier = ">=1.0.0" },
-    { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.35.0,<3" },
     { name = "gepa", specifier = ">=0.0.6" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.24.0" },
@@ -7763,7 +7762,6 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", specifier = "==2.0.0" },
-    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5.4" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nltk", marker = "extra == 'ta'", specifier = ">=3.9.2" },
     { name = "numpy", specifier = ">=2.1.0" },
@@ -7771,11 +7769,11 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.4" },
-    { name = "prime-sandboxes", specifier = ">=0.4.2" },
+    { name = "prime-sandboxes", specifier = ">=0.5.0" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.12" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.13.dev16" },
     { name = "rich", specifier = ">=11.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
@@ -7783,7 +7781,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.2" },
     { name = "uvicorn", specifier = ">=0.52.0" },
 ]
-provides-extras = ["e2b", "harbor", "modal", "openenv", "ta"]
+provides-extras = ["harbor", "openenv", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
