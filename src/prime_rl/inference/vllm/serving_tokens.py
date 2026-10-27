@@ -161,12 +161,13 @@ class PrimeRlServingTokens(ServingTokens):
                     "Compact logprobs require a non-streaming request with logprobs enabled"
                 )
             # Captured on the GPU: the replayed support, or the sampled token plus K draws or the top ids.
+            # logprobs = 0 (sampled token only) keeps vLLM's flat logprobs.
             if extra_args.get("prl_replay", False):
                 sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
-            else:
-                rows = extra_args.get("prl_sampler_draws") or sampling_params.logprobs
+                sampling_params.logprobs = None
+            elif rows := extra_args.get("prl_sampler_draws") or sampling_params.logprobs:
                 sampling_params.extra_args = {**extra_args, "prl_sampler_rows": rows}
-            sampling_params.logprobs = None
+                sampling_params.logprobs = None
         if not request.stream:
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
