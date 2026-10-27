@@ -160,14 +160,17 @@ class FileSystemWeightUpdateWorker(Worker):
         step_dir = Path(weight_path)
         step = int(step_dir.name.removeprefix("step_"))
         has_delta = (step_dir / DELTA_DIR / MANIFEST).exists()
+        base_step = read_manifest(step_dir)["base_step"] if has_delta else None
         if has_delta or anchor_complete(step_dir):
             self._build_index_map(step_dir)
+            if base_step is None:
+                # A full broadcast: the trainer takes the layout at its first one, also after a restart
+                self._write_layout(step_dir.parent)
         # Unknown until this update succeeds: after a failure, the next update reloads and replays
         held_step, self.weight_step = self.weight_step, -1
         if not has_delta:
             self._load_checkpoint(step_dir)
         else:
-            base_step = read_manifest(step_dir)["base_step"]
             if base_step is None:
                 # The run's first broadcast: the weights the engine booted with
                 if held_step is not None:
@@ -208,8 +211,7 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def _build_index_map(self, step_dir: Path) -> None:
         """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint tensors to
-        the params, and report which ones this worker holds in fp8 (and their scale format), so the trainer sends
-        their deltas as fp8."""
+        the params, and find which ones this worker holds in fp8 (and their scale format)."""
         if self.index_map is not None:
             return
         if (step_dir / DELTA_DIR / MANIFEST).exists():
@@ -229,11 +231,16 @@ class FileSystemWeightUpdateWorker(Worker):
             read_checkpoint_range(boot[name], 0, prod(shape), data)
             return torch.from_numpy(data).view(dtype).view(shape)
 
-        # The trainer waits for every worker's layout. The world group spans every DP, PP and TP rank
-        group = get_world_group()
-        layout = {"world_size": group.world_size, "fp8": index_map.fp8_layout(model, read_tensor)}
+        index_map.fp8_layout(model, read_tensor)
         self.index_map = index_map
-        path = step_dir.parent / ENGINE_LAYOUT / f"rank_{group.rank_in_group}.json"
+
+    def _write_layout(self, broadcast_dir: Path) -> None:
+        """Report which checkpoint tensors this worker holds in fp8, so the trainer sends their deltas as fp8. The
+        trainer waits for every worker of the world group (every DP, PP and TP rank)."""
+        assert self.index_map is not None
+        group = get_world_group()
+        layout = {"world_size": group.world_size, "fp8": self.index_map.fp8}
+        path = broadcast_dir / ENGINE_LAYOUT / f"rank_{group.rank_in_group}.json"
         path.parent.mkdir(exist_ok=True)
         write_file(path, json.dumps(layout).encode())
         logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")

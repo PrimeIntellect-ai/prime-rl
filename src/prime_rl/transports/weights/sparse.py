@@ -1,5 +1,6 @@
 import json
 import queue
+import shutil
 import threading
 import time
 from bisect import bisect_left, bisect_right
@@ -26,6 +27,7 @@ from prime_rl.transports.weights.sparse_kernels import Pieces, build_pieces, cou
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
+    ENGINE_LAYOUT,
     FP8_BLOCK,
     MANIFEST,
     AnchorWriter,
@@ -1139,6 +1141,9 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
     def _broadcast_full(self, model: nn.Module, step: int, step_dir: Path) -> None:
         """Publish v{step} as a full checkpoint of the live weights; the run's first broadcast at step 0 is the
         checkpoint the engines booted from. The next delta is against it."""
+        if self.last_step is None and self.world.is_master:
+            # Engines report their layout again as they load it; the last run's may differ
+            shutil.rmtree(step_dir.parent / ENGINE_LAYOUT, ignore_errors=True)
         if self.last_step is None and step == 0:
             self.anchor_step = step
             if self.world.is_master:
