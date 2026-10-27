@@ -47,7 +47,7 @@ from prime_rl.utils.weights import get_ngram_table_layers
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 
 
-def find_tensor_layer(tensor_name: str, ngram_table_layers: dict[str, int]) -> int | None:
+def transfer_layer_index(tensor_name: str, ngram_table_layers: dict[str, int]) -> int | None:
     if tensor_name in ngram_table_layers:
         return ngram_table_layers[tensor_name]
     match = LAYER_RE.search(tensor_name)
@@ -117,7 +117,7 @@ class NIXLWeightSender(WeightSender):
             {
                 layer
                 for name, value in state_dict.items()
-                if value.is_floating_point() and (layer := find_tensor_layer(name, ngram_table_layers)) is not None
+                if value.is_floating_point() and (layer := transfer_layer_index(name, ngram_table_layers)) is not None
             }
         )
         return TransferGroupIndex(
@@ -128,7 +128,7 @@ class NIXLWeightSender(WeightSender):
 
     @staticmethod
     def find_transfer_group_index(tensor_name: str, transfer_groups: TransferGroupIndex) -> int:
-        layer = find_tensor_layer(tensor_name, transfer_groups.ngram_table_layers)
+        layer = transfer_layer_index(tensor_name, transfer_groups.ngram_table_layers)
         return 0 if layer is None else transfer_groups.layer_to_group[layer]
 
     def collect_local_tensor_shards(
