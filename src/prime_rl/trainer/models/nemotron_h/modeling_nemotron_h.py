@@ -153,6 +153,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 
         for name in list(state_dict):
             hf_name = re.sub(r"(\.layers\.\d+)\.(?:self_attn|mlp|mamba)\.", r"\1.mixer.", name)
+            hf_name = hf_name.replace(".mixer.shared_expert.", ".mixer.shared_experts.")
             if hf_name != name:
                 state_dict[hf_name] = state_dict.pop(name)
         return state_dict
