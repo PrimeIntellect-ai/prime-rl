@@ -23,7 +23,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
+from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -499,19 +499,17 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
-    ngram_tables = [module for module in model.modules() if isinstance(module, NGramTable)]
-    if ngram_tables:
-        if parallel_dims.get_mesh("head").size() > 1:
-            ngram_table_mesh = (
+    for table in [module for module in model.modules() if isinstance(module, NGramTable)]:
+        if isinstance(table.weight, DTensor):
+            table_mesh = (
                 parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
                 if parallel_dims.dp_replicate_enabled
                 else parallel_dims.get_mesh("dp_shard_mod_head")
             )
         else:
-            ngram_table_mesh = hsdp_mesh
-        for table in ngram_tables:
-            fully_shard(table, mesh=ngram_table_mesh, **fsdp_config)
-            table.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+            table_mesh = hsdp_mesh
+        fully_shard(table, mesh=table_mesh, **fsdp_config)
+        table.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
