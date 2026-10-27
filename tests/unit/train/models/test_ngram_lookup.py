@@ -8,7 +8,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 
-from prime_rl.trainer.distributed.ngram_lookup import RowShardedLookup
+from prime_rl.trainer.distributed.ngram_lookup import RowShardedLookup, owner_counts
 from prime_rl.trainer.distributed.ngram_parallel import NGramRowParallel
 from prime_rl.trainer.models.layers.ngram import NGramTable
 
@@ -114,3 +114,22 @@ def test_row_parallel_shards_meta_weight_and_keeps_requires_grad(process_group):
     assert table.weight.to_local().shape == ([3, 3, 3, 1][head_mesh.get_local_rank()], HEAD_DIM)
     assert not table.weight.requires_grad
     assert not isinstance(table.ngram_heads_vocab_sizes, DTensor)
+
+
+@pytest.mark.parametrize(
+    "num_rows, num_ranks, ids",
+    [
+        pytest.param(9, 4, [0, 2, 2, 3, 5, 6, 8, 8], id="last-rank-owns-no-rows"),
+        pytest.param(10, 4, [0, 2, 3, 5, 6, 8, 9, 9], id="last-rank-owns-one-row"),
+        pytest.param(10, 4, [9, 9, 9], id="one-owner"),
+        pytest.param(5, 8, [0, 1, 4, 4], id="more-ranks-than-rows"),
+        pytest.param(9, 4, [], id="no-ids"),
+    ],
+)
+def test_owner_counts_match_bincount(num_rows, num_ranks, ids):
+    rows_per_rank = (num_rows + num_ranks - 1) // num_ranks
+    sorted_ids = torch.tensor(sorted(ids), dtype=torch.long)
+
+    counts = owner_counts(sorted_ids, rows_per_rank, num_ranks)
+
+    assert torch.equal(counts, torch.bincount(sorted_ids // rows_per_rank, minlength=num_ranks))
