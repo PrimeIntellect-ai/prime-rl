@@ -3,11 +3,8 @@ name: GPU Tests
 on:
   pull_request:
     types: [labeled]
-  pull_request_review:
-    types: [submitted]
   push:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,26 +12,21 @@ permissions:
 concurrency:
   group: >-
     ${{ github.workflow }}-${{
-      (github.event.pull_request.head.repo.full_name == github.repository
-        && ((github.event_name == 'pull_request' && github.event.label.name == 'gpu-ci')
-            || (github.event_name == 'pull_request_review'
-                && github.event.review.state == 'approved'
-                && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && github.event.label.name == 'gpu-ci')
       && format('pr-{0}', github.event.pull_request.number)
       || format('{0}-{1}', github.event_name, github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   gate:
     name: Gate
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      github.event_name == 'push'
       || (github.event.pull_request.head.repo.full_name == github.repository
-          && ((github.event_name == 'pull_request' && github.event.label.name == 'gpu-ci')
-              || (github.event_name == 'pull_request_review'
-                  && github.event.review.state == 'approved'
-                  && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
+          && github.event.label.name == 'gpu-ci')
     permissions:
       contents: read
       pull-requests: write
