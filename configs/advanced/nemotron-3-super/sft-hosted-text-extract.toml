@@ -1,0 +1,82 @@
+# Extract the text-only checkpoints of the swe-marathon SFT runs and push them to Hugging Face (no training).
+# prime train configs/advanced/nemotron-3-super/sft-hosted-text-extract.toml --volume nemotron-training -e ~/.config/prime-export/hf.env -y
+#
+# On source_ref exp/nemotron-sft-text-extract the SFT trainer runs src/prime_rl/trainer/sft/text_extract.py and exits:
+# global rank 0 runs extract_nemotron_backbone.py (unchanged copy next to it) on the VL exports in
+# /volume/runs/dwuofmy0jmh6s1nsraunuhyp/hf-export/{ep2-step104,ep3-step156}, writes the text-only checkpoints to
+# /volume/runs/<thisRunId>/text-export/<name>/, checks every tensor's name, dtype and shape against
+# /volume/models/nemotron-3.5-super-text, and pushes them to PrimeIntellect/Nemotron-3.5-Super-swe-marathon-sft-ep2/-ep3.
+# CPU work on one node; no model is built. [model]/[data] only need to validate.
+
+image_tag = "v0.10.1.dev74"
+source_ref = "exp/nemotron-sft-text-extract"
+gpu_type = "H200_141GB"
+
+max_steps = 1   # never reached: the export returns before the training loop
+dist_timeout_seconds = 7200
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 1
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "nemotron-3.5-super-distill-sft-swe-marathon-opencode-text-extract"
+
+[ckpt]
+# The platform points output_dir at /volume/runs/<runId>; the job writes under it. No checkpoint is saved.
+interval = 26
+keep_last = 1
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+cp = 1
+ep = 1
+fused_lm_head_token_chunk_size = 1024
+
+[model.fusions]
+enabled = []
+
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-v2"
+seq_len = 655360
+batch_size = 10
+micro_batch_size = 1
+num_workers = 2
+stopping_strategy = "all_exhausted"
+shuffle = true
+seed = 42
+subsets = [
+    "swe-marathon",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
