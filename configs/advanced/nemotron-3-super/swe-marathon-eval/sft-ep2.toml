@@ -1,7 +1,7 @@
 # Nemotron 3.5 Super - swe-marathon eval: SFT after 2 epochs (run hnp5pwsw3fx9p5b7r6bjmnnx step 104; HF PrimeIntellect/Nemotron-3.5-Super-swe-marathon-sft-ep2).
-# A pure eval, matching the original checkpoint's eval (/data/sft-gen/vendor-eval/nemotron-3-5-super-text/
-# swe-marathon-nemotron-eval-20261018 on the QC box): every task run 8x, temperature 1.0, the same bash agent,
-# compaction at 200k, reward = fraction of the task's deterministic tests passed (no LLM judge).
+# A pure eval under the training setup (OpenCode 2.0.26, 640K context, compaction at 512K, 131,072-token output
+# limit, no turn cap, temperature 1.0, renderer nemotron-3.5 with past reasoning kept).
+# Every task runs 8x; reward = fraction of the task's deterministic tests passed (no LLM judge).
 # Hosted eval-only RL run: inference serves the model and the orchestrator's step-0 (v0) eval runs the tasks
 # in Prime sandboxes; the one training step is a no-op (lr 0, debug algo).
 #   prime train configs/advanced/nemotron-3-super/swe-marathon-eval/sft-ep2.toml --volume nemotron-training -y
@@ -96,7 +96,7 @@ name = "swe-marathon-noop-train"
 group_size = 2
 
 [orchestrator.train.source.env]
-id = "prime/swe-marathon-env@0.1.0"
+id = "prime/swe-marathon-env@0.2.0"
 
 [orchestrator.train.source.env.taskset]
 id = "harbor"
@@ -105,10 +105,12 @@ registry_path = "/volume/datasets/swe-marathon/registry.json"
 artifact_max_bytes = 1073741824
 
 [orchestrator.train.source.env.agent.harness]
-id = "swe-marathon-bash"
+id = "swe-marathon-opencode"
 
 [orchestrator.train.source.env.agent.harness.compaction]
-summarize_at_tokens = 200000
+context_window = 655360
+summarize_at_tokens = 524288
+max_output_tokens = 131072
 
 [orchestrator.train.source.env.agent.runtime]
 type = "prime"
@@ -159,7 +161,7 @@ truncate_history_thinking = false
 interval = 1000
 skip_first_step = false
 
-# Match the base eval's request sampling: temperature 1.0 only. top_p is left to the server
+# Temperature 1.0, as the training data was generated. top_p is left to the server
 # (vLLM applies the model's generation_config.json default, top_p 0.95).
 [orchestrator.eval.sampling]
 temperature = 1.0
@@ -169,7 +171,7 @@ name = "swe-marathon"
 group_size = 8
 
 [orchestrator.eval.source.env]
-id = "prime/swe-marathon-env@0.1.0"
+id = "prime/swe-marathon-env@0.2.0"
 
 [orchestrator.eval.source.env.taskset]
 id = "harbor"
@@ -178,12 +180,14 @@ registry_path = "/volume/datasets/swe-marathon/registry.json"
 artifact_max_bytes = 1073741824
 
 [orchestrator.eval.source.env.agent.harness]
-# The original eval's sft-gen-bash agent: stock bash + edit tools with the eval-time bash tool
-# (see prime/swe-marathon-env). No task ships skills, so sft-gen's skills prompt never appeared.
-id = "swe-marathon-bash"
+# OpenCode 2.0.26 with the training data's settings (prime/swe-marathon-env ports verifiers add87f8d2's
+# compaction): the training spec's 640K window, compaction at 512K, 131,072-token output limit, no turn cap.
+id = "swe-marathon-opencode"
 
 [orchestrator.eval.source.env.agent.harness.compaction]
-summarize_at_tokens = 200000
+context_window = 655360
+summarize_at_tokens = 524288
+max_output_tokens = 131072
 
 [orchestrator.eval.source.env.agent.runtime]
 type = "prime"
@@ -217,8 +221,8 @@ max_workers = 7
 multiplex = 128
 
 [inference.vllm]
-# Prime gateway cap the base eval most likely ran under; base peak prompt was ~137k tokens.
-max_model_len = 262144
+# The training spec's 640K context (the SFT runs trained at seq_len 655360).
+max_model_len = 655360
 tool_call_parser = "qwen3_coder"
 reasoning_parser = "nemotron_v3"
 tensor_parallel_size = 2
