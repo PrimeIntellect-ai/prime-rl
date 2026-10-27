@@ -1,5 +1,6 @@
 import json
 import queue
+import shutil
 import threading
 import time
 from bisect import bisect_left, bisect_right
@@ -1162,6 +1163,9 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
     def _broadcast_full(self, model: nn.Module, step: int, step_dir: StoragePath) -> None:
         """Publish v{step} as a full checkpoint of the live weights; the run's first broadcast at step 0 is the
         checkpoint the engines booted from. The next delta is against it."""
+        if self.last_step is None and self.world.is_master:
+            # Engines report their layout again as they load it; the last run's may differ
+            shutil.rmtree(step_dir.parent / ENGINE_LAYOUT, ignore_errors=True)
         if self.last_step is None and step == 0:
             self.anchor_step = step
             if self.world.is_master:
