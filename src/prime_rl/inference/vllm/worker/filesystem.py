@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 from torch.nn import Module
-from vllm.distributed.parallel_state import get_ep_group, get_tp_group, get_world_group
+from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
@@ -229,11 +229,8 @@ class FileSystemWeightUpdateWorker(Worker):
             read_checkpoint_range(boot[name], 0, prod(shape), data)
             return torch.from_numpy(data).view(dtype).view(shape)
 
-        # The trainer waits for every worker's layout
-        if self.vllm_config.parallel_config.enable_expert_parallel:
-            group = get_ep_group()
-        else:
-            group = get_world_group()
+        # The trainer waits for every worker's layout. The world group spans every DP, PP and TP rank
+        group = get_world_group()
         layout = {"world_size": group.world_size, "fp8": index_map.fp8_layout(model, read_tensor)}
         self.index_map = index_map
         path = step_dir.parent / ENGINE_LAYOUT / f"rank_{group.rank_in_group}.json"
