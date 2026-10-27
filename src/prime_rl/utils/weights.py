@@ -135,10 +135,10 @@ def get_ngram_table_layers(model: nn.Module, state_dict: dict[str, Tensor]) -> d
     from prime_rl.trainer.models.layers.ngram import NGramEmbeddings
 
     fqn_layers = {
-        resolve_fqn(model, f"{name}.tables.{decoder_index}.{tensor_name}"): int(decoder_index)
+        resolve_fqn(model, f"{name}.tables.{layer_index}.{tensor_name}"): int(layer_index)
         for name, module in model.named_modules()
         if isinstance(module, NGramEmbeddings)
-        for decoder_index, table in module.tables.items()
+        for layer_index, table in module.tables.items()
         for tensor_name, _ in itertools.chain(table.named_parameters(), table.named_buffers())
     }
     if not fqn_layers:

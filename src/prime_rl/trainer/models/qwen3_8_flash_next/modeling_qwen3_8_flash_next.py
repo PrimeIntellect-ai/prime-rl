@@ -143,9 +143,9 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         self.ngram = NGramEmbeddings(
             Qwen3_8FlashNextNGramHasher(config),
             table_indices={
-                decoder_index: table_index
-                for table_index, decoder_index in enumerate(ple_layers)
-                if decoder_index < config.num_hidden_layers
+                layer_index: table_index
+                for table_index, layer_index in enumerate(ple_layers)
+                if layer_index < config.num_hidden_layers
             },
             head_dim=config.ple_embed_dim // ((config.ngram_size - 1) * config.heads_per_ngram),
         )

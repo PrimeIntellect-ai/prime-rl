@@ -120,7 +120,7 @@ class NGramHasher(nn.Module, ABC):
 
 
 class NGramEmbeddings(nn.Module):
-    """The model's n-gram tables, keyed by consuming decoder index and hashed together once per forward."""
+    """The model's n-gram tables, keyed by consuming layer index and hashed together once per forward."""
 
     def __init__(
         self,
@@ -131,35 +131,35 @@ class NGramEmbeddings(nn.Module):
         super().__init__()
         self.hasher = hasher
         self.table_indices = dict(sorted(table_indices.items()))
-        self.hash_positions = {decoder_index: position for position, decoder_index in enumerate(self.table_indices)}
+        self.hash_positions = {layer_index: position for position, layer_index in enumerate(self.table_indices)}
         self.tables = nn.ModuleDict(
             {
-                str(decoder_index): NGramTable(
+                str(layer_index): NGramTable(
                     hasher.num_table_rows(table_index), head_dim, hasher.max_ngram_size, hasher.num_heads
                 )
-                for decoder_index, table_index in self.table_indices.items()
+                for layer_index, table_index in self.table_indices.items()
             }
         )
         self.reset_layouts()
 
     def reset_layouts(self) -> None:
-        for decoder_index, table_index in self.table_indices.items():
-            self.tables[str(decoder_index)].set_layout(*self.hasher.build_layout(table_index))
+        for layer_index, table_index in self.table_indices.items():
+            self.tables[str(layer_index)].set_layout(*self.hasher.build_layout(table_index))
 
     def hash(self, input_ids: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor | None:
         if not self.tables:
             return None
-        tables = [self.tables[str(decoder_index)] for decoder_index in self.hash_positions]
+        tables = [self.tables[str(layer_index)] for layer_index in self.hash_positions]
         multipliers, sizes, offsets = (
             torch.stack([getattr(table, name) for table in tables]) for name in LAYOUT_BUFFERS
         )
         return self.hasher(input_ids, cu_seqlens, multipliers, sizes, offsets)
 
-    def embed(self, ngram_ids: torch.Tensor | None, decoder_index: int) -> torch.Tensor | None:
-        if decoder_index not in self.hash_positions:
+    def embed(self, ngram_ids: torch.Tensor | None, layer_index: int) -> torch.Tensor | None:
+        if layer_index not in self.hash_positions:
             return None
-        table = self.tables[str(decoder_index)]
-        return table(ngram_ids[:, self.hash_positions[decoder_index]]).flatten(-2).unsqueeze(0)
+        table = self.tables[str(layer_index)]
+        return table(ngram_ids[:, self.hash_positions[layer_index]]).flatten(-2).unsqueeze(0)
 
 
 __all__ = [
