@@ -12,15 +12,12 @@ class MMRefs(msgspec.Struct, array_like=True, gc=False):
     images: list[MMImageRef]
 
 
-# Per-token arrays travel as raw buffers. The orchestrator fills them with bytes; the trainer
-# decodes them as memoryviews into the received frame, so the gigabytes of routing and top
-# logprobs in a step are never copied by the decoder.
-
-
 # Routed experts are large per-token arrays. tolist() is too expensive, so we
 # send raw bytes through msgpack and carry the shape/dtype needed to rebuild.
 class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    data: memoryview
+    # bytes, not a memoryview: the trainer keeps routing as a tensor for the whole step, and a view
+    # would keep the entire received frame alive with it
+    data: bytes
     shape: list[int]  # [seq_len, layers, topk]
     dtype: str
 
