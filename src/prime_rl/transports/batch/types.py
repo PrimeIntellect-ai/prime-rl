@@ -37,6 +37,30 @@ class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True)
     counts: bytes
 
 
+# Where an env server that keeps a trace's arrays leaves the references to them:
+# ``trace.info[PAYLOAD_INFO_KEY] = {"url": ..., "branches": {index: {"id", "fields", ...}}}``.
+PAYLOAD_INFO_KEY = "prime_rl_payload"
+
+
+# A sample's training arrays kept by the env-server worker at ``url`` (see
+# ``prime_rl.transports.payload``): the trainer fetches them by ``id`` and keeps the first
+# ``num_tokens``.
+class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
+    url: str
+    id: str
+    num_tokens: int
+    fields: list[str]  # which of routed_experts / sampling_mask / top_logprobs it holds
+    routed_shape: list[int] | None = None  # [layers, top_k] of its routing rows
+    routed_dtype: str | None = None
+
+
+# One branch's training arrays as an env-server worker serves them.
+class BranchArrays(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    routed_experts: RoutedExperts | None = None
+    sampling_mask: SamplingMask | None = None
+    top_logprobs: TopLogprobs | None = None
+
+
 # Produced by the orchestrator's train sink; consumed in-process by
 # ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -60,8 +84,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
     mm_refs: MMRefs | None = None
 
-    routed_experts: RoutedExperts | None = None
-
     # mm_token_type_ids: token type ids per token [batch seq] (0=text, 1=image, 2=video)
     mm_token_type_ids: np.ndarray | None = None
 
@@ -84,16 +106,14 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: np.ndarray | None = None
 
-    # Appended fields only: array_like structs encode positionally, so appending
-    # keeps the wire layout of earlier fields stable across versions.
-    sampling_mask: SamplingMask | None = None
-
     # Identity of the branch this sample was built from, so the trainer can key
     # its per-token annotations back to the rollout trace. ``None`` on synthetic
     # samples (e.g. fake data).
     trace_id: str | None = None
     branch_index: int | None = None
-    top_logprobs: TopLogprobs | None = None
+    # The branch's training arrays (routing rows, sampling mask, top-k head), kept by an
+    # env server; None when the branch has none.
+    payload: PayloadSlice | None = None
 
 
 # Per-token streams of a MicroBatch and the dtype each travels as. The orchestrator holds them as
@@ -149,7 +169,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ce_weights: memoryview | None = None
     ref_kl_weights: memoryview | None = None
 
-    # See TrainingSample.sampling_mask; appended for wire-layout stability.
+    # Sampling masks for top-p/top-k replay; appended for wire-layout stability.
     sampling_mask: SamplingMask | None = None
 
     # Per-sequence branch identity, parallel to ``sequence_lengths`` (see
@@ -160,3 +180,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     top_logprobs: TopLogprobs | None = None
     # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
     padding: int = 0
+    # Per sequence, parallel to ``sequence_lengths``: the arrays an env server kept for it
+    # (None if it has none). The trainer fetches them into ``routed_experts``,
+    # ``sampling_mask`` and ``top_logprobs``; None if no sequence has arrays.
+    payloads: list[PayloadSlice | None] | None = None
