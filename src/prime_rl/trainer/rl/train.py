@@ -25,6 +25,8 @@ from prime_rl.trainer.rl.data import (
     FakeDataLoader,
     TensorMicroBatch,
     prepare_micro_batch,
+    raise_score_centering_data_errors,
+    score_centering_data_errors,
     validate_score_centering_data,
 )
 from prime_rl.utils.cp import (
@@ -379,17 +381,12 @@ def train(config: TrainerConfig):
         step_tokens_per_expert = 0
         step_local_num_tokens = 0
         step_local_flops = 0
+        score_centering = config.loss.type != "custom" and config.loss.needs_sampler_support
+        replayed_only = config.loss.score_centering == "auto" and not config.loss.support_kl
+        draws = config.loss.score_centering_estimator == "sampled"
+        score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            score_centering = config.loss.type != "custom" and config.loss.needs_sampler_support
-            if score_centering:
-                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                validate_score_centering_data(
-                    micro_batch,
-                    vocab_size=vocab_size,
-                    replayed_only=config.loss.score_centering == "auto" and not config.loss.support_kl,
-                    draws=config.loss.score_centering_estimator == "sampled",
-                )
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -435,6 +432,31 @@ def train(config: TrainerConfig):
                 support = replace(support, sparse_backward=sparse_head_backward(micro_batch, support, rl_loss_fn))
                 support = support.to("cuda")
                 label_support = support.shift_left()
+            if score_centering:
+                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+                if support is None or support.logprobs is None:
+                    # Raises unless the micro batch has no RL tokens
+                    validate_score_centering_data(
+                        micro_batch, vocab_size=vocab_size, replayed_only=replayed_only, draws=draws
+                    )
+                else:
+                    rl_mask = loss_mask[0] if rl_weights is None else loss_mask[0] & (rl_weights[0] != 0)
+                    if replayed_only:
+                        rl_mask = rl_mask & support.replayed
+                    # Validated on the GPU and checked once after the last micro batch, so the
+                    # host never waits on it
+                    score_centering_errors.append(
+                        score_centering_data_errors(
+                            input_ids[0],
+                            rl_mask,
+                            support.ids,
+                            support.logprobs,
+                            support.row_index(),
+                            support.replayed,
+                            vocab_size=vocab_size,
+                            draws=draws,
+                        )
+                    )
 
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
@@ -611,6 +633,8 @@ def train(config: TrainerConfig):
         annotation_writer.flush()
         # Free this batch before the next one is received and converted
         del micro_batches, micro_batch
+        # Invalid sampler evidence fails the step before the optimizer applies its gradients
+        raise_score_centering_data_errors(score_centering_errors)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.

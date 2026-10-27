@@ -271,7 +271,7 @@ without biasing the weighted gradient; it applies even when the sampled token is
 The support is chosen per token:
 
 - **Sampling replay** (truncated sampling, `top_k` and/or `top_p`): the replayed sampling mask with its
-  sampler probabilities. `p` and `q` are both normalized over it, so centering and the KL are exact.
+  sampler probabilities, captured at any width (top-p alone needs no `top_k`). `p` and `q` are both normalized over it, so centering and the KL are exact.
 - **Untruncated sampling**, by `score_centering_estimator`:
   - `sampled` (default): K = `score_centering_k` i.i.d. draws `v_k ~ q`, captured on the GPU next to the
     sampled token. `q_v` in the sums becomes `1/K` per draw, an unbiased Monte Carlo estimate:
@@ -636,7 +636,7 @@ tok.apply_chat_template(messages, tokenize=False)
 # (the <think>R1</think> from turn 2 is gone)
 ```
 
-Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm-5`, `glm-4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
+Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `qwen3.8`, `glm-5`, `glm-4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
 
 ```toml
 [orchestrator.renderer]

@@ -120,7 +120,11 @@ def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
-    from prime_rl.trainer.rl.data import validate_score_centering_data
+    from prime_rl.trainer.rl.data import (
+        raise_score_centering_data_errors,
+        score_centering_data_errors,
+        validate_score_centering_data,
+    )
 
     def batch(rows, replayed, input_ids=(0, 3, 6), with_logprobs=True):
         return {
@@ -134,7 +138,8 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         }
 
     head = [(3, 0.75), (7, 0.25)]
-    validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, False, True]), vocab_size=9)
+    clean = batch([[], head, [(6, 1.0)]], [False, False, True])
+    validate_score_centering_data(clean, vocab_size=9)
     if corruption is None:
         validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
         return
@@ -151,8 +156,25 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
             corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
         case "sampled":
             corrupt = batch([[], head, []], [False, True, False], input_ids=(0, 4, 6))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
         validate_score_centering_data(corrupt, vocab_size=9)
+    if corruption == "missing":
+        return
+
+    # The trainer flags each micro batch on its device and raises the first failure once per step
+    def errors(batch, device):
+        counts = batch["support_offsets"].diff()
+        rows = torch.repeat_interleave(torch.arange(len(counts)), counts)
+        rl_mask = batch["loss_mask"][0] & (batch["rl_weights"][0] != 0)
+        tensors = (batch["input_ids"][0], rl_mask, batch["support_ids"], batch["support_logprobs"], rows)
+        return score_centering_data_errors(
+            *(x.to(device) for x in tensors), batch["support_replayed"].to(device), vocab_size=9, draws=False
+        )
+
+    for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+        raise_score_centering_data_errors([errors(clean, device)])
+        with pytest.raises(ValueError, match=f"^{error.value}$"):
+            raise_score_centering_data_errors([errors(clean, device), errors(corrupt, device)])
 
 
 def _routed_experts(data, dtype=np.uint8):

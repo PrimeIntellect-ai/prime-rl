@@ -176,6 +176,26 @@ def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> tor
     return output[:-1]
 
 
+@torch.library.custom_op("prime_rl::stable_argsort", mutates_args=())
+def stable_argsort(x: torch.Tensor) -> torch.Tensor:
+    """Stable argsort that keeps torch.compile from recompiling when the token count changes.
+
+    Left inline, torch.compile recompiles the whole decoder layer whenever a rank's routed-token count crosses 32767,
+    the int16 bound inductor's sort lowering guards on:
+    https://github.com/pytorch/pytorch/blob/v2.13.0/torch/_inductor/lowering.py#L7719-L7726
+    Wrapping the sort in a custom op prevents that. Performance should not suffer: above a routed-token count of
+    512, torch.compile already runs this same ATen sort:
+    https://github.com/pytorch/pytorch/blob/v2.13.0/torch/_inductor/ir.py#L3085-L3095
+    It needs no backward: it returns integer indices, which carry no gradient.
+    """
+    return torch.argsort(x, stable=True)
+
+
+@stable_argsort.register_fake
+def _(x: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(x, dtype=torch.int64)
+
+
 def _local_reorder(
     x: torch.Tensor,
     top_scores: torch.Tensor,
@@ -191,7 +211,7 @@ def _local_reorder(
         min=0,
         max=num_experts,
     ).to(torch.int64)
-    route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
+    route_indices_experts_sorted = stable_argsort(flattened_experts)
     top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
     # A route slot is token_index * top_k + expert_slot (position among selected experts).
     # // top_k recovers its token; keep the full slot index to restore outputs in combine.

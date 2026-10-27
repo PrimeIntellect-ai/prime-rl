@@ -624,28 +624,27 @@ def test_group_defaults_match_source_defaults(group):
 
 
 def test_policy_sources_accept_different_top_p_values():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        config = OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "train": {
-                    "source": [
-                        {
-                            "name": "top-p-95",
-                            "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.95},
-                        },
-                        {
-                            "name": "top-p-97",
-                            "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.97},
-                        },
-                    ]
-                },
-            }
-        )
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {
+                        "name": "top-p-95",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.95},
+                    },
+                    {
+                        "name": "top-p-97",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.97},
+                    },
+                ]
+            },
+        }
+    )
 
-    assert [source.sampling.top_k for source in config.train.source] == [128, 128]
+    assert [source.sampling.top_k for source in config.train.source] == [None, None]
     assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
     data = config.model_dump(mode="json")
     data["eval"] = {
@@ -692,29 +691,6 @@ def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, 
     else:
         config = TrainSourceConfig.model_validate(source)
         assert TrainSourceConfig.model_validate_json(config.model_dump_json()) == config
-
-
-def test_policy_sources_reject_mixed_top_k_capture():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
-            OrchestratorConfig.model_validate(
-                {
-                    "renderer": {"name": "qwen3"},
-                    "train": {
-                        "source": [
-                            {
-                                "name": "truncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                                "sampling": {"top_p": 0.95},
-                            },
-                            {
-                                "name": "untruncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                            },
-                        ]
-                    },
-                }
-            )
 
 
 def test_single_node_auto_inference_ports_follow_server_port():
@@ -1382,3 +1358,19 @@ def test_sampler_capture_follows_score_centering_and_kl(loss, top_k, logprobs, d
     sampling = config.orchestrator.train.source[0].sampling
     assert sampling.logprobs == logprobs
     assert sampling.extra_body["extra_args"].get("prl_sampler_draws") == draws
+
+
+def test_score_centering_replays_top_p_alone():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}}]}
+            },
+            "inference": {},
+        }
+    )
+    sampling = config.orchestrator.train.source[0].sampling
+    assert sampling.top_k is None and sampling.logprobs == 1
+    assert sampling.extra_body["extra_args"]["prl_replay"]
+    assert config.inference.enable_return_sampling_mask
