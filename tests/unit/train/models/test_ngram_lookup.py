@@ -8,7 +8,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 
-from prime_rl.trainer.distributed.ngram_lookup import RowShardedLookup, owner_counts
+from prime_rl.trainer.distributed.ngram_lookup import RowShardedLookup, count_ids_per_rank
 from prime_rl.trainer.distributed.ngram_parallel import NGramRowParallel
 from prime_rl.trainer.models.layers.ngram import NGramTable
 
@@ -126,10 +126,10 @@ def test_row_parallel_shards_meta_weight_and_keeps_requires_grad(process_group):
         pytest.param(9, 4, [], id="no-ids"),
     ],
 )
-def test_owner_counts_match_bincount(num_rows, num_ranks, ids):
+def test_count_ids_per_rank_matches_bincount(num_rows, num_ranks, ids):
     rows_per_rank = (num_rows + num_ranks - 1) // num_ranks
     sorted_ids = torch.tensor(sorted(ids), dtype=torch.long)
 
-    counts = owner_counts(sorted_ids, rows_per_rank, num_ranks)
+    counts = count_ids_per_rank(sorted_ids, rows_per_rank, num_ranks)
 
     assert torch.equal(counts, torch.bincount(sorted_ids // rows_per_rank, minlength=num_ranks))
