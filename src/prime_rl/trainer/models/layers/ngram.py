@@ -63,7 +63,7 @@ class NGramHasher(nn.Module, ABC):
         offsets = list(itertools.accumulate(sizes[:-1], initial=0))
         return self.table_multipliers(table_index), sizes, offsets
 
-    def table_rows(self, table_index: int) -> int:
+    def num_table_rows(self, table_index: int) -> int:
         total_rows = sum(self.head_sizes(table_index))
         return (total_rows + self.rows_multiple_of - 1) // self.rows_multiple_of * self.rows_multiple_of
 
@@ -142,7 +142,7 @@ class NGramEmbeddings(nn.Module):
         self.tables = nn.ModuleDict(
             {
                 str(decoder_index): NGramTable(
-                    hasher.table_rows(table_index), head_dim, hasher.max_ngram_size, hasher.num_heads
+                    hasher.num_table_rows(table_index), head_dim, hasher.max_ngram_size, hasher.num_heads
                 )
                 for decoder_index, table_index in self.table_indices.items()
             }
