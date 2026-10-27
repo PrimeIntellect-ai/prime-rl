@@ -225,12 +225,12 @@ def test_ipo_icepop_match_original_on_finite_ratios(config):
     for population, selected in (("all", loss_mask), ("accepted", keep)):
         metric = result.metrics[f"importance_ratio/{population}"]
         assert not metric.requires_grad
-        torch.testing.assert_close(metric, log_ratio[selected].detach().double().exp())
+        torch.testing.assert_close(metric, log_ratio[selected].detach().float().exp())
         for threshold in (5, 10, 100, 10000):
             torch.testing.assert_close(
                 result.metrics[f"importance_ratio/{population}/above_{threshold}"],
-                log_ratio[selected].detach().double()
-                > torch.tensor(threshold, device="cuda", dtype=torch.float64).log(),
+                log_ratio[selected].detach().float()
+                > torch.tensor(threshold, device="cuda", dtype=torch.float32).log(),
             )
 
     torch.testing.assert_close(result.loss, expected, rtol=1e-5, atol=1e-5)
@@ -253,10 +253,10 @@ def test_ipo_excludes_masked_tokens_and_caps_accepted_extreme_ratio():
 
     torch.testing.assert_close(result.loss, torch.tensor(-1e4, device="cuda"))
     torch.testing.assert_close(
-        result.metrics["log_importance_ratio/all"], torch.tensor([90.0, 100.0], device="cuda", dtype=torch.float64)
+        result.metrics["log_importance_ratio/all"], torch.tensor([90.0, 100.0], device="cuda", dtype=torch.float32)
     )
     torch.testing.assert_close(
-        result.metrics["importance_ratio/accepted"], torch.tensor([1e30], device="cuda", dtype=torch.float64)
+        result.metrics["importance_ratio/accepted"], torch.tensor([1e30], device="cuda", dtype=torch.float32)
     )
     assert result.metrics["importance_ratio/accepted/saturated"].all()
     assert all(torch.isfinite(value).all() for value in result.metrics.values())

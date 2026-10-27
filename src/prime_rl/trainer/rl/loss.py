@@ -173,8 +173,8 @@ def _importance_ratio_metrics(log_ratio: Tensor, keep_mask: Tensor) -> dict[str,
     """
     metrics = {}
     for population, values in (("all", log_ratio.detach()), ("accepted", log_ratio.detach()[keep_mask])):
-        # Compute diagnostics in FP64 independently of the loss's numerical cap.
-        values = values.double()
+        # TensorStats promotes to FP64 when accumulating moments.
+        values = values.float()
         limit = values.new_tensor(1e30).log()
         metrics[f"importance_ratio/{population}"] = values.clamp(max=limit).exp()
         metrics[f"log_importance_ratio/{population}"] = values
