@@ -313,7 +313,7 @@ class DataLoader:
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
-            staleness=stream("staleness", np.int64),
+            staleness=stream("staleness", np.int8),
         )
 
 

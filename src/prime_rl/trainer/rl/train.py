@@ -212,7 +212,7 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
-    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, device="cuda")
+    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int8, device="cuda")
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint

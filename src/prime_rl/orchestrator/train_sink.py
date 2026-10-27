@@ -82,13 +82,16 @@ def stale_token_runs(branch: vf.Branch, fallback: int, min_version: int) -> Iter
 
 def token_staleness(branch: vf.Branch, fallback: int, trained_version: int) -> np.ndarray:
     """Per-token staleness of the branch when it trains on ``trained_version``
-    (see ``node_policy_versions``); -1 on context tokens."""
-    staleness = np.full(sum(len(node.token_ids) for node in branch.nodes), -1, dtype=np.int32)
+    (see ``node_policy_versions``), capped at 127 to ship as int8; -1 on
+    tokens the policy did not sample."""
+    lengths = [len(node.token_ids) for node in branch.nodes]
+    staleness = np.full(sum(lengths), -1, dtype=np.int8)
     offset = 0
-    for node in branch.nodes:
-        for start, end, version in node_policy_versions(node, fallback):
-            staleness[offset + start : offset + end] = max(0, trained_version - version)
-        offset += len(node.token_ids)
+    for node, length in zip(branch.nodes, lengths):
+        if node.sampled:
+            for start, end, version in node_policy_versions(node, fallback):
+                staleness[offset + start : offset + end] = min(127, max(0, trained_version - version))
+        offset += length
     return staleness
 
 
@@ -428,17 +431,24 @@ class TrainSink:
             selected_by_trace = await asyncio.to_thread(prune_selected)
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
+        trained_version = self.progress.step - 1
+
+        def stamp_staleness() -> None:
+            for trace_id, trace_samples in selected_by_trace.items():
+                episode = self.episode_by_trace[trace_id]
+                if (policy := train_work(episode).policy) is None:
+                    continue
+                branches = episode.traces[0].branches
+                for sample in trace_samples:
+                    sample.staleness = token_staleness(branches[sample.branch_index], policy.start, trained_version)
+
+        await asyncio.to_thread(stamp_staleness)
+
         min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
         kept = masked = 0
         for trace_id, trace_samples in selected_by_trace.items():
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
-            if policy is not None:
-                branches = episode.traces[0].branches
-                for sample in trace_samples:
-                    sample.staleness = token_staleness(
-                        branches[sample.branch_index], policy.start, self.progress.step - 1
-                    )
             if policy is None or policy.start >= min_version:
                 kept += sum(int(sample.mask.sum()) for sample in trace_samples)
                 continue

@@ -112,7 +112,7 @@ MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
-    "staleness": np.int32,
+    "staleness": np.int8,
 }
 
 
