@@ -1,10 +1,12 @@
 # Nemotron 3.5 Super - swe-marathon eval: SFT after 2 epochs (run hnp5pwsw3fx9p5b7r6bjmnnx step 104; HF PrimeIntellect/Nemotron-3.5-Super-swe-marathon-sft-ep2).
 # A pure eval under the training setup (OpenCode 2.0.26, 640K context, compaction at 512K, 131,072-token output
-# limit, no turn cap, temperature 1.0, renderer nemotron-3.5 with past reasoning kept).
+# limit, no turn cap, temperature 1.0, past reasoning kept: truncate_history_thinking = false).
 # Every task runs 8x; reward = fraction of the task's deterministic tests passed (no LLM judge).
 # Hosted eval-only RL run: inference serves the model and the orchestrator's step-0 (v0) eval runs the tasks
-# in Prime sandboxes; the one training step is a no-op (lr 0, debug algo).
+# in Prime sandboxes, graded like the training data (open network while the task's tests install their
+# requirements); the one training step is a no-op (lr 0, debug algo).
 #   prime train configs/advanced/nemotron-3-super/swe-marathon-eval/sft-ep2.toml --volume nemotron-training -y
+# (one RL run per volume: the volume takes a single writer)
 # Traces and per-rollout rewards: /volume/runs/<runId>/monitors/file/traces/stream/00000.jsonl and
 # stream.index.jsonl (eval records with run.work.step == 0). Reaching max_steps forces a second eval epoch
 # (same weights): stop the run once the orchestrator logs "Evaluated swe-marathon | Policy v0".
@@ -29,8 +31,9 @@ NCCL_IB_DISABLE = "1"
 [deployment]
 type = "multi_node"
 gpus_per_node = 8
-# 2 train nodes for the 2-rollout no-op step at seq_len 131072 (the smoke run checks it; 2 nodes OOMed only
-# at seq_len 655360). Fallback: 4 train nodes + cp 16 / ep 16 + seq_len 655360 (run jkp21).
+# 2 train nodes (cp 8 / ep 8, started up in run c5mvu) holding the model in bf16 (optimization_dtype): per node the
+# same GPU and host-RAM footprint as the proven 4-node fp32 runs (jkp21, xbm6). The checkpoints are bf16, so the
+# weights broadcast to inference are exactly the checkpoint's.
 num_train_nodes = 2
 num_infer_nodes = 1      # nodes per inference replica
 num_infer_replicas = 2   # 2 inference nodes in total (TP2 x DP4 each)
@@ -55,6 +58,7 @@ enable_router_replay = false
 
 [trainer.model]
 attn = "flash_attention_3"
+optimization_dtype = "bfloat16"
 cp = 8
 ep = 8
 fused_lm_head_token_chunk_size = 1024
@@ -112,6 +116,11 @@ context_window = 655360
 summarize_at_tokens = 524288
 max_output_tokens = 131072
 
+[orchestrator.train.source.env.agent.scoring.network]
+# Grade with an open network, as the training data was (verifiers add87f8d2 shared_grading = "open"): each
+# task's tests/test.sh runs `pip install -r requirements.txt` first. The agent itself stays offline.
+allow = ["*"]
+
 [orchestrator.train.source.env.agent.runtime]
 type = "prime"
 region = "us"
@@ -148,10 +157,11 @@ multiplex = 2
 names = ["sifflet-clone"]
 
 [orchestrator.concurrency]
-# Base eval ran 900 in flight on Prime Inference. ~400 per inference node here.
-min_inflight = 256
-initial_inflight = 512
-max_inflight = 800
+# ~150 sessions per inference node, as in the running eval-only run xbm6 (800 over 6 nodes): long OpenCode
+# sessions need KV room.
+min_inflight = 192
+initial_inflight = 256
+max_inflight = 300
 
 [orchestrator.renderer]
 name = "nemotron-3.5"
@@ -165,6 +175,8 @@ skip_first_step = false
 # (vLLM applies the model's generation_config.json default, top_p 0.95).
 [orchestrator.eval.sampling]
 temperature = 1.0
+# Eval requests go to vLLM's chat template (not the renderer); keep past reasoning as in training.
+chat_template_kwargs = { truncate_history_thinking = false }
 
 [[orchestrator.eval.source]]
 name = "swe-marathon"
@@ -188,6 +200,11 @@ id = "swe-marathon-opencode"
 context_window = 655360
 summarize_at_tokens = 524288
 max_output_tokens = 131072
+
+[orchestrator.eval.source.env.agent.scoring.network]
+# Grade with an open network, as the training data was (verifiers add87f8d2 shared_grading = "open"): each
+# task's tests/test.sh runs `pip install -r requirements.txt` first. The agent itself stays offline.
+allow = ["*"]
 
 [orchestrator.eval.source.env.agent.runtime]
 type = "prime"
