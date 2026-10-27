@@ -27,7 +27,8 @@ from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.serve import EnvClient
+from verifiers.v1.configs.agent import agent_config_fields
+from verifiers.v1.serve import EnvClient, EpisodeAssembly, RestoreRequest
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
@@ -122,17 +123,27 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        assembly: EpisodeAssembly | None = None,
+        restore: RestoreRequest | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
-        change of one of the episode's traces — as it lands."""
+        change of one of the episode's traces — as it lands; ``assembly`` collects them
+        into the in-flight traces and their newest restore points. ``restore``
+        continues a trace from one of those restore points."""
         return await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
+            assembly=assembly,
+            restore=restore,
         )
+
+    async def discard_checkpoints(self, checkpoints: list[str]) -> list[str]:
+        """Delete box snapshots this run owns and no longer needs; returns the deleted."""
+        return await self.env_client.discard(checkpoints)
 
 
 class TrainEnv(Env):
@@ -163,6 +174,12 @@ class TrainEnv(Env):
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
         self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+        # A server that keeps its box snapshots past the run (`after = "keep"`) leaves
+        # their deletion to this run: a checkpoint may still resume from them.
+        self.owns_snapshots = any(
+            agent.checkpoint is not None and agent.checkpoint.after == "keep"
+            for agent in agent_config_fields(config.env).values()
+        )
 
     async def setup(self) -> None:
         async def connect_source() -> None:

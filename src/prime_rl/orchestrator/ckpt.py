@@ -1,5 +1,5 @@
-"""Checkpoint manager for orchestrator progress and train-source state. Layout:
-``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
+"""Checkpoint manager for orchestrator progress, train-source state and the open train
+work. Layout: ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
-        self.save_state(build_state(progress, train_source), step)
+    def save(self, progress: Progress, train_source: TrainSource, step: int, open_work: dict | None = None) -> None:
+        self.save_state(build_state(progress, train_source, open_work), step)
 
     def save_state(self, state: dict, step: int) -> None:
         """Save a ``build_state`` snapshot as the checkpoint of ``step``."""
@@ -51,9 +51,10 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
-        """``path`` overrides where the checkpoint is read from (an external run's
-        ``step_<N>/orchestrator``)."""
+    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> dict | None:
+        """Load progress and the train source, and return the checkpoint's open work
+        (``build_state``), if it has any. ``path`` overrides where the checkpoint is
+        read from (an external run's ``step_<N>/orchestrator``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
@@ -71,11 +72,18 @@ class CheckpointManager:
             if name in train_source.curricula:
                 get_logger().info(f"Resumed curriculum state for env {name}")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
+        return state.get("open_work")
 
 
-def build_state(progress: Progress, train_source: TrainSource) -> dict:
-    """A snapshot of the orchestrator's checkpointed state, independent of later changes."""
-    return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict()})
+def build_state(progress: Progress, train_source: TrainSource, open_work: dict | None = None) -> dict:
+    """A snapshot of the orchestrator's checkpointed state, independent of later changes.
+    ``open_work`` is the train work a resumed run picks up where this one left it: the
+    open groups with their in-flight rollouts' restore points, the sink's buffers and
+    the results not yet consumed."""
+    state = {"progress": progress, "train_source": train_source.state_dict()}
+    if open_work is not None:
+        state["open_work"] = open_work
+    return copy.deepcopy(state)
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:

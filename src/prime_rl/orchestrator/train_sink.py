@@ -128,6 +128,35 @@ class TrainSink:
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
+    def state_dict(self) -> dict:
+        """What the sink holds between steps, for the orchestrator checkpoint: groups
+        still collecting members and the unshipped batch with its episodes."""
+        return {
+            "pending_groups": dict(self.pending_groups),
+            "pending_group_failures": dict(self.pending_group_failures),
+            "pending_group_cancellations": dict(self.pending_group_cancellations),
+            "pending_batch": dict(self.pending_batch),
+            "episode_by_trace": dict(self.episode_by_trace),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Take a checkpoint's sink back; entries of envs no longer trained on go."""
+        names = set(self.train_envs.names)
+        for group_id, group in state["pending_groups"].items():
+            if group and episode_env_name(group[0]) in names:
+                self.pending_groups[group_id] = group
+        for group_id, failures in state["pending_group_failures"].items():
+            if failures and failures[0].env_name in names:
+                self.pending_group_failures[group_id] = failures
+        for group_id, cancellation in state["pending_group_cancellations"].items():
+            if cancellation.env_name in names:
+                self.pending_group_cancellations[group_id] = cancellation
+        for trace_id, samples in state["pending_batch"].items():
+            episode = state["episode_by_trace"][trace_id]
+            if episode_env_name(episode) in names:
+                self.pending_batch[trace_id] = samples
+                self.episode_by_trace[trace_id] = episode
+
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 

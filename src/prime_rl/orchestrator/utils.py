@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 import numpy as np
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.types import DispatchFailure, DispatchResult, GroupCancellation, WorkKind
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 
 
@@ -38,6 +39,19 @@ def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
     if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.EvalWorkInfo):
         raise ValueError("Eval episode is missing evaluation-work provenance")
     return run.work
+
+
+def result_kind(result: DispatchResult) -> WorkKind:
+    """Whether a dispatcher result is train or eval work."""
+    if isinstance(result, DispatchFailure | GroupCancellation):
+        return result.kind
+    return "train" if isinstance(result.run, vf.TrainRunInfo) else "eval"
+
+
+def result_env_name(result: DispatchResult) -> str:
+    if isinstance(result, DispatchFailure | GroupCancellation):
+        return result.env_name
+    return episode_env_name(result)
 
 
 def min_fresh_version(step: int, max_staleness: int) -> int:

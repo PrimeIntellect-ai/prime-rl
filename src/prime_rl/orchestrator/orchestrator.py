@@ -68,6 +68,8 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     max_rollout_staleness,
     release_and_trim,
+    result_env_name,
+    result_kind,
     rollout_staleness,
     set_default_executor,
     trim_process_memory,
@@ -131,6 +133,7 @@ class Orchestrator:
     eval_source: EvalSource | None
     receiver: WeightReceiver
     resume_step: int | None
+    resumed_work: dict | None
     lag_task: asyncio.Task | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
@@ -178,6 +181,7 @@ class Orchestrator:
         self.eval_sink = None
         self.eval_source = None
         self.resume_step = None
+        self.resumed_work = None
         self.lag_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -284,7 +288,9 @@ class Orchestrator:
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            self.resumed_work = self.ckpt_manager.load(
+                self.progress, self.train_source, step=self.resume_step, path=resume_path
+            )
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -368,6 +374,10 @@ class Orchestrator:
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
         )
+
+        if self.resumed_work is not None:
+            self.resume_open_work(self.resumed_work)
+            self.resumed_work = None
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -700,7 +710,7 @@ class Orchestrator:
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
-            self.shipped_state = (step, build_state(self.progress, self.train_source))
+            self.shipped_state = (step, build_state(self.progress, self.train_source, self.open_work()))
             self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
@@ -981,8 +991,32 @@ class Orchestrator:
         t = time.perf_counter()
         # Synchronous on purpose: the payload is tiny, and snapshotting on the
         # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        work = self.open_work()
+        self.ckpt_manager.save(self.progress, self.train_source, step, work)
+        self.dispatcher.hold_snapshots(work["groups"])
         return time.perf_counter() - t
+
+    def open_work(self) -> dict:
+        """The train work a resumed run picks up where this one left it: the open groups
+        (their in-flight rollouts continue from their newest restore points), the sink's
+        buffers, and the train results waiting in ``out_q``."""
+        return {
+            "groups": self.dispatcher.open_work(),
+            "sink": self.train_sink.state_dict(),
+            "results": [result for result in self.dispatcher.queued_results() if result_kind(result) == "train"],
+            "snapshots": dict(self.dispatcher.snapshots),
+        }
+
+    def resume_open_work(self, work: dict) -> None:
+        """Take a checkpoint's open work back before the dispatcher starts. Work of envs
+        this run no longer trains on is dropped; envs new to the run start sampling as
+        the resumed work drains."""
+        self.train_sink.load_state_dict(work["sink"])
+        self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
+        names = set(self.train_envs.names)
+        for result in work["results"]:
+            if result_env_name(result) in names:
+                self.dispatcher.out_q.put_nowait(result)
 
     def apply_control(self) -> None:
         """Save the state as of shipping the last step if a pause is due at it. A trainer paused
