@@ -1,10 +1,10 @@
-"""Extract the text-only checkpoints of the swe-marathon SFT runs and push them to Hugging Face.
+"""Extract the text-only checkpoints of the TB4 SFT run and push them to Hugging Face.
 
 On this branch the SFT entrypoint runs this job instead of training (a hosted run can only start the
 trainer). Global rank 0 alone does the work; there is no model, no GPU work and no collective.
 
 For each checkpoint it runs extract_nemotron_backbone.py (next to this file, unchanged) on the VL export
-that run dwuofmy0jmh6s1nsraunuhyp wrote to the volume, writes the result under the run's directory
+that the TB4 VL export run (VL_EXPORTS) wrote to the volume, writes the result under the run's directory
 ([ckpt] output_dir/text-export/<name>), checks every tensor's name, dtype and shape against the text model
 the SFT runs trained from, adds a model card, and pushes the folder to a private repo. Failures are logged
 and the files stay on the volume.
@@ -26,7 +26,7 @@ from prime_rl.utils.logger import get_logger
 
 HF_ORG = "PrimeIntellect"
 EXTRACT_SCRIPT = Path(__file__).with_name("extract_nemotron_backbone.py")
-VL_EXPORTS = Path("/volume/runs/dwuofmy0jmh6s1nsraunuhyp/hf-export")
+VL_EXPORTS = Path("/volume/runs/__VL_EXPORT_RUN_ID__/hf-export")
 # The text model the SFT runs trained from (the release's language model): the reference layout.
 TRAINING_BASE = Path("/volume/models/nemotron-3.5-super-text")
 BASE_REPO = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
@@ -39,13 +39,13 @@ class Checkpoint:
     repo_name: str
     run_id: str
     step: int
-    epochs: int
+    epochs: float
     val_loss: float
 
 
 CHECKPOINTS = [
-    Checkpoint("ep2-step104", "Nemotron-3.5-Super-swe-marathon-sft-ep2", "hnp5pwsw3fx9p5b7r6bjmnnx", 104, 2, 0.4274),
-    Checkpoint("ep3-step156", "Nemotron-3.5-Super-swe-marathon-sft-ep3", "siuskw4we4txi09583x5x807", 156, 3, 0.4256),
+    Checkpoint("tb4-step144", "Nemotron-3.5-Super-tb4-sft-ep3.5", "eivawxtikvt75p1ietxg4lok", 144, 3.5, 0.6056),
+    Checkpoint("tb4-step288", "Nemotron-3.5-Super-tb4-sft-ep7", "eivawxtikvt75p1ietxg4lok", 288, 7, 0.6468),
 ]
 
 
@@ -97,14 +97,14 @@ base_model: {BASE_REPO}
 # {ckpt.repo_name}
 
 The language model of [{BASE_REPO}](https://huggingface.co/{BASE_REPO}) (revision `{BASE_REVISION[:8]}`)
-after {ckpt.epochs} epochs of supervised fine-tuning on swe-marathon agent traces (OpenCode harness,
-distilled from GLM-5.3), trained with prime-rl. Text-only `NemotronHForCausalLM`: this is the checkpoint
+after {ckpt.epochs:g} epochs of supervised fine-tuning on TB4 (Terminal-Bench-style) agent traces
+(mini-swe-agent 2.4.6 harness, distilled from GLM-5.3), trained with prime-rl. Text-only `NemotronHForCausalLM`: this is the checkpoint
 that was trained and the one to evaluate.
 
-- Checkpoint: hosted run `{ckpt.run_id}`, step {ckpt.step}; validation loss {ckpt.val_loss} on 50 held-out
-  tasks (base model 0.5086).
-- Training: 640K-token packed sequences, AdamW, peak learning rate 1e-5 with cosine decay to 1e-6
-  (epoch 3: re-warmed to 3e-6).
+- Checkpoint: hosted run `{ckpt.run_id}`, step {ckpt.step}; validation loss {ckpt.val_loss} on 44 held-out
+  tasks (base model 0.6698).
+- Training: 1M-token (1,048,576) packed sequences, AdamW, learning rate warmed up from 1e-6 to 1e-5 over
+  4 steps, then cosine decay to 1e-6 at step 288 (7 epochs).
 - {num_tensors} tensors, the same names, dtypes and shapes as the release's language model. The
   multi-token-prediction head (`mtp.*`) was not trained and is the release's.
 - Produced by `extract_nemotron_backbone.py` from the VL export of the same checkpoint.

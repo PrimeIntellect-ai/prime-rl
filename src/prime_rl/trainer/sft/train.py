@@ -78,7 +78,7 @@ def train(config: SFTConfig):
     )
     logger.info(f"Starting SFT trainer in {world} (output_dir={config.run_dir})")
 
-    # On this branch the trainer extracts the swe-marathon SFT checkpoints' text-only models instead of training.
+    # On this branch the trainer extracts the TB4 SFT checkpoints' text-only models instead of training.
     from prime_rl.trainer.sft import text_extract
 
     text_extract.run(config)
