@@ -18,6 +18,7 @@ from torch.distributed.tensor import DTensor
 import prime_rl._compat  # noqa: F401
 import prime_rl.trainer.model as trainer_model
 import prime_rl.transports.weights.nccl as nccl_module
+import prime_rl.utils.weights as weights_module
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.trainer.model import forward, setup_model, setup_tokenizer
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
@@ -31,6 +32,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 from prime_rl.utils.config import cli
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp, validate_cp_seq_lens
 from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -46,7 +48,11 @@ WRAPPER_PREFIXES = ("_checkpoint_wrapped_module.", "_orig_mod.")
 def nixl_transfer_groups(model: torch.nn.Module, state_dict: dict[str, torch.Tensor]) -> dict:
     from prime_rl.transports.weights.nixl.nixl import NIXLWeightSender
 
-    groups = NIXLWeightSender.build_transfer_group_index(state_dict)
+    if hasattr(weights_module, "get_consuming_layers"):
+        consuming_layers = weights_module.get_consuming_layers(model, state_dict)
+        groups = NIXLWeightSender.build_transfer_group_index(state_dict, consuming_layers)
+    else:
+        groups = NIXLWeightSender.build_transfer_group_index(state_dict)
     return {
         "group_names": list(groups.group_names),
         "key_to_group": {
@@ -59,6 +65,11 @@ def nixl_transfer_groups(model: torch.nn.Module, state_dict: dict[str, torch.Ten
 
 
 def partition_owners(model: torch.nn.Module, state_dict: dict[str, torch.Tensor], world_size: int) -> dict[str, int]:
+    if hasattr(weights_module, "get_consuming_layers"):
+        consuming_layers = weights_module.get_consuming_layers(model, state_dict)
+        return partition_weights(
+            state_dict, world_size, torch.bfloat16, get_layer_prefix(model.config), consuming_layers
+        )
     return partition_weights(state_dict, world_size, torch.bfloat16)
 
 
