@@ -240,7 +240,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -255,7 +255,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -270,7 +270,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -438,7 +438,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -628,7 +628,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -731,7 +731,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -858,7 +858,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -920,7 +920,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -1306,14 +1306,14 @@ wheels = [
 
 [[package]]
 name = "deep-swe"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/deep_swe" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "deepdive"
@@ -1367,7 +1367,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.20" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -1487,7 +1487,7 @@ wheels = [
 
 [[package]]
 name = "drug-discovery-bench"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/science/drug_discovery_bench" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -1497,7 +1497,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -1533,7 +1533,7 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
@@ -1545,7 +1545,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2011,7 +2011,7 @@ requires-dist = [
 
 [[package]]
 name = "forth-lang"
-version = "0.2.1"
+version = "0.3.2"
 source = { editable = "deps/prime-envs/environments/code/forth_lang" }
 dependencies = [
     { name = "datasets" },
@@ -2021,7 +2021,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2036,7 +2036,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2211,7 +2211,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2226,7 +2226,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2365,7 +2365,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2384,7 +2384,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2522,7 +2522,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2664,7 +2664,7 @@ requires-dist = [
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3080,14 +3080,14 @@ requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "lab"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/lab" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "langdetect"
@@ -3122,14 +3122,14 @@ wheels = [
 
 [[package]]
 name = "lean-common"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "deps/prime-envs/packages/lean_common" }
 dependencies = [
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "litellm"
@@ -3169,7 +3169,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3230,7 +3230,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "pytrec-eval-terrier" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3274,7 +3274,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3394,7 +3394,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3450,7 +3450,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.4.1"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
@@ -3462,7 +3462,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3604,7 +3604,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3621,7 +3621,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3638,7 +3638,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3743,7 +3743,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "filelock" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3851,7 +3851,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "multi-swe-bench", url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -3959,14 +3959,14 @@ wheels = [
 
 [[package]]
 name = "nl2repobench"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/code/nl2repobench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "nltk"
@@ -4338,7 +4338,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4371,7 +4371,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4386,7 +4386,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4403,7 +4403,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "python-dateutil" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4484,7 +4484,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -4768,14 +4768,14 @@ wheels = [
 
 [[package]]
 name = "pi-deepswe"
-version = "0.2.9"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/swe/pi_deepswe" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pi-officeqa-pro-v2"
@@ -4786,40 +4786,40 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pi-programbench"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/pi_programbench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "pi-swe-sweep"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/pi_swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pi-terminalbench2-1"
-version = "0.2.2"
+version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/terminal/pi_terminalbench2_1" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pillow"
@@ -4846,7 +4846,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6042,7 +6042,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -6376,7 +6376,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6546,7 +6546,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6561,7 +6561,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6747,36 +6747,36 @@ wheels = [
 
 [[package]]
 name = "swe-atlas-qna"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_qna" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "swe-atlas-rf"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_rf" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "swe-atlas-tw"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_tw" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "swe-rex"
@@ -6799,14 +6799,14 @@ wheels = [
 
 [[package]]
 name = "swe-sweep"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "swebench"
@@ -6835,25 +6835,25 @@ wheels = [
 
 [[package]]
 name = "swebench-multilingual"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/swe/swebench_multilingual" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "swebench-pro"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/swe/swebench_pro" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "swebench-verified"
@@ -6917,7 +6917,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "swebench", specifier = ">=4.1.0,<5" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -7014,7 +7014,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -7499,7 +7499,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
