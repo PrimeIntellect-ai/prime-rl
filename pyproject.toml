@@ -12,6 +12,7 @@ dependencies = [
     "jaxtyping>=0.3.2",
     "loguru>=0.7.3",
     "numpy>=2.2.6",
+    "sympy>=1.13.3",
     "transformers==5.19.0",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",

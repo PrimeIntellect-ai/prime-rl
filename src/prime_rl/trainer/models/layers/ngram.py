@@ -2,6 +2,7 @@ import itertools
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
+import sympy
 import torch
 from torch import nn
 
@@ -9,48 +10,6 @@ from prime_rl.trainer.distributed.ngram_lookup import LocalLookup, NGramLookup
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 
 LAYOUT_BUFFERS = ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
-
-
-def is_prime(value: int) -> bool:
-    if value < 2:
-        return False
-    for prime in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
-        if value % prime == 0:
-            return value == prime
-
-    exponent = value - 1
-    shifts = 0
-    while exponent % 2 == 0:
-        exponent //= 2
-        shifts += 1
-    for base in (2, 325, 9375, 28178, 450775, 9780504, 1795265022):
-        if base % value == 0:
-            continue
-        witness = pow(base, exponent, value)
-        if witness in (1, value - 1):
-            continue
-        for _ in range(shifts - 1):
-            witness = pow(witness, 2, value)
-            if witness == value - 1:
-                break
-        else:
-            return False
-    return True
-
-
-def nth_prime_after(start: int, count: int) -> int:
-    prime = start
-    for _ in range(count):
-        candidate = prime + 1
-        if candidate <= 2:
-            prime = 2
-            continue
-        if candidate % 2 == 0:
-            candidate += 1
-        while not is_prime(candidate):
-            candidate += 2
-        prime = candidate
-    return prime
 
 
 class NGramTable(nn.Module):
@@ -108,7 +67,7 @@ class NGramHasher(nn.Module, ABC):
 
     def _head_sizes(self, table_index: int) -> list[int]:
         return [
-            nth_prime_after(self.min_rows_per_head - 1, table_index * self.num_heads + head + 1)
+            sympy.nextprime(self.min_rows_per_head - 1, table_index * self.num_heads + head + 1)
             for head in range(self.num_heads)
         ]
 
