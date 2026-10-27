@@ -19,7 +19,14 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch, validate_score_centering_data
+from prime_rl.trainer.rl.data import (
+    DataLoader,
+    FakeDataLoader,
+    prepare_micro_batch,
+    raise_score_centering_data_errors,
+    score_centering_data_errors,
+    validate_score_centering_data,
+)
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -50,6 +57,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     setup_model,
     setup_processor,
+    take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -351,15 +359,13 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
-        step_tokens_per_expert = 0
+        routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
+        score_centering = config.loss.type == "icepop" and config.loss.score_centering
+        score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            score_centering = config.loss.type == "icepop" and config.loss.score_centering
-            if score_centering:
-                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                validate_score_centering_data(micro_batch, vocab_size=vocab_size)
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -399,11 +405,29 @@ def train(config: TrainerConfig):
             sampler_support_complete = (
                 (sampling_mask >= 0).any(-1) if score_centering and sampling_mask is not None else None
             )
-            topk_ids = micro_batch["top_logprobs_ids"] if score_centering else None
-            sampler_topk = micro_batch["top_logprobs_values"].to("cuda") if topk_ids is not None else None
-            topk_valid = (topk_ids >= 0).to("cuda") if topk_ids is not None else None
-            if topk_ids is not None:
-                topk_ids = topk_ids.to("cuda")
+            topk_ids = sampler_topk = topk_valid = None
+            if score_centering:
+                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+                if micro_batch["top_logprobs_ids"] is None or micro_batch["top_logprobs_values"] is None:
+                    # Raises unless the micro batch has no RL tokens
+                    validate_score_centering_data(micro_batch, vocab_size=vocab_size)
+                else:
+                    topk_ids = micro_batch["top_logprobs_ids"].to("cuda")
+                    sampler_topk = micro_batch["top_logprobs_values"].to("cuda")
+                    topk_valid = topk_ids >= 0
+                    # Validated on the GPU and checked once after the last micro batch, so the
+                    # host never waits on it
+                    score_centering_errors.append(
+                        score_centering_data_errors(
+                            input_ids,
+                            loss_mask,
+                            rl_weights,
+                            topk_ids,
+                            sampler_topk,
+                            sampling_mask,
+                            vocab_size=vocab_size,
+                        )
+                    )
 
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
@@ -569,10 +593,7 @@ def train(config: TrainerConfig):
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in moe_stats.items():
-                    tensor_stats.add(name, value)
-                step_tokens_per_expert += tokens_per_expert
+                routing_stats.append(take_moe_routing_stats(model))
 
             for key, loss_tensor in loss_tensors.items():
                 tensor_stats.add(key, loss_tensor)
@@ -589,6 +610,8 @@ def train(config: TrainerConfig):
         annotation_writer.flush()
         # Free this batch before the next one is received and converted
         del micro_batches, micro_batch
+        # Invalid sampler evidence fails the step before the optimizer applies its gradients
+        raise_score_centering_data_errors(score_centering_errors)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -647,6 +670,11 @@ def train(config: TrainerConfig):
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
+
+        if is_moe_model:
+            moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
+            for name, values in moe_stats.items():
+                tensor_stats.add(name, values)
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
