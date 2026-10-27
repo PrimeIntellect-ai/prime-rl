@@ -8,8 +8,9 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 
+from prime_rl.trainer.distributed.ngram_lookup import RowShardedLookup
 from prime_rl.trainer.distributed.ngram_parallel import NGramRowParallel
-from prime_rl.trainer.models.layers.ngram import NGramTable, RowShardedLookup
+from prime_rl.trainer.models.layers.ngram import NGramTable
 
 HEAD_DIM = 4
 MAX_NGRAM_SIZE = 3
@@ -64,7 +65,7 @@ def _integer_upstream_grad(rank: int, shape: torch.Size) -> torch.Tensor:
 def test_row_sharded_lookup_matches_full_table(process_group, num_rows, mesh_shape):
     rank = dist.get_rank()
     head_mesh = _head_mesh(mesh_shape)
-    rows_per_rank = max(1, (num_rows + head_mesh.size() - 1) // head_mesh.size())
+    rows_per_rank = (num_rows + head_mesh.size() - 1) // head_mesh.size()
     first_local_row = head_mesh.get_local_rank() * rows_per_rank
     local_row_count = max(0, min(rows_per_rank, num_rows - first_local_row))
 
@@ -73,21 +74,22 @@ def test_row_sharded_lookup_matches_full_table(process_group, num_rows, mesh_sha
     with torch.no_grad():
         table.weight.copy_(full_weight)
     parallelize_module(table, device_mesh=head_mesh, parallelize_plan=NGramRowParallel())
-    table.set_lookup(RowShardedLookup(head_mesh, rows_per_rank))
+    table.set_lookup(RowShardedLookup(head_mesh))
     assert table.weight.to_local().shape == (local_row_count, HEAD_DIM)
 
     ids_by_rank = [torch.tensor(ids, device="cuda") for ids in IDS_BY_RANK[num_rows, mesh_shape]]
     upstream_grads = [
-        _integer_upstream_grad(r, torch.Size((ids.shape[0], NUM_HEADS * HEAD_DIM))) for r, ids in enumerate(ids_by_rank)
+        _integer_upstream_grad(r, torch.Size((*ids.shape, HEAD_DIM))) for r, ids in enumerate(ids_by_rank)
     ]
 
     output = table(ids_by_rank[rank])
-    assert torch.equal(output, F.embedding(ids_by_rank[rank], full_weight).flatten(-2))
+    assert output._base is None
+    assert torch.equal(output, F.embedding(ids_by_rank[rank], full_weight))
     output.backward(upstream_grads[rank])
 
     reference_weight = full_weight.clone().requires_grad_()
     for head_group_rank in head_mesh.mesh.tolist():
-        reference = F.embedding(ids_by_rank[head_group_rank], reference_weight).flatten(-2)
+        reference = F.embedding(ids_by_rank[head_group_rank], reference_weight)
         reference.backward(upstream_grads[head_group_rank])
 
     grad = table.weight.grad

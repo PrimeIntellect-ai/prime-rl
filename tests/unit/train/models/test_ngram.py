@@ -10,7 +10,8 @@ import torch
 import prime_rl.trainer.models.layers.ngram as ngram_module
 import prime_rl.trainer.optim as optim
 from prime_rl.configs.trainer import MuonConfig
-from prime_rl.trainer.models.layers.ngram import NGramEmbeddings, owner_counts
+from prime_rl.trainer.distributed.ngram_lookup import owner_counts
+from prime_rl.trainer.models.layers.ngram import NGramEmbeddings
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,

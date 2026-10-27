@@ -3,12 +3,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
 import torch
-import torch.distributed._functional_collectives as funcol
-import torch.nn.functional as F
 from torch import nn
-from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.tensor import DTensor
 
+from prime_rl.trainer.distributed.ngram_lookup import LocalLookup, NGramLookup
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 
 
@@ -54,39 +51,6 @@ def nth_prime_after(start: int, count: int) -> int:
     return prime
 
 
-def owner_counts(sorted_ids: torch.Tensor, rows_per_rank: int, num_ranks: int) -> torch.Tensor:
-    first_rows = torch.arange(num_ranks + 1, device=sorted_ids.device) * rows_per_rank
-    return torch.searchsorted(sorted_ids, first_rows).diff()
-
-
-class LocalLookup:
-    def __call__(self, weight: torch.Tensor, ids: torch.Tensor) -> torch.Tensor:
-        return F.embedding(ids, weight)
-
-
-class RowShardedLookup:
-    """Look up a table sharded `Shard(0)` over a 1-D mesh by sending each id to the rank that owns its row."""
-
-    def __init__(self, mesh: DeviceMesh, rows_per_rank: int) -> None:
-        self.mesh = mesh
-        self.rows_per_rank = rows_per_rank
-        self.first_local_row = mesh.get_local_rank() * rows_per_rank
-
-    def __call__(self, weight: DTensor, ids: torch.Tensor) -> torch.Tensor:
-        local_weight = weight.to_local(grad_placements=weight.placements)
-        sorted_ids, order = ids.flatten().sort(stable=True)
-        send_counts = owner_counts(sorted_ids, self.rows_per_rank, self.mesh.size())
-        recv_counts = funcol.all_to_all_single(send_counts, None, None, self.mesh)
-        send_splits, recv_splits = torch.stack((send_counts, recv_counts)).cpu().tolist()
-        recv_ids = funcol.all_to_all_single(sorted_ids, recv_splits, send_splits, self.mesh)
-        rows = F.embedding(recv_ids - self.first_local_row, local_weight)
-        sorted_rows = funcol.all_to_all_single_autograd(rows, send_splits, recv_splits, self.mesh)
-
-        output = torch.empty_like(sorted_rows)
-        output[order] = sorted_rows
-        return output.view(*ids.shape, local_weight.shape[-1])
-
-
 class NGramTable(nn.Module):
     """One hashed n-gram embedding table and its hash layout, looked up through a swappable strategy."""
 
@@ -96,16 +60,16 @@ class NGramTable(nn.Module):
         self.register_buffer("layer_multipliers", torch.zeros(max_ngram_size, dtype=torch.long))
         self.register_buffer("ngram_heads_vocab_sizes", torch.zeros(num_heads, dtype=torch.long))
         self.register_buffer("ngram_heads_offsets", torch.zeros(num_heads, dtype=torch.long))
-        self.lookup: LocalLookup | RowShardedLookup = LocalLookup()
+        self.lookup: NGramLookup = LocalLookup()
 
-    def set_lookup(self, lookup: LocalLookup | RowShardedLookup) -> None:
+    def set_lookup(self, lookup: NGramLookup) -> None:
         self.lookup = lookup
 
     def reset_parameters(self, init_std: float) -> None:
         nn.init.normal_(self.weight, mean=0.0, std=init_std)
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
-        return self.lookup(self.weight, ids).flatten(-2)
+        return self.lookup(self.weight, ids)
 
 
 class NGramHasher(nn.Module, ABC):
@@ -244,16 +208,13 @@ class NGramEmbeddings(nn.Module):
         if decoder_index not in self.hash_positions:
             return None
         table = self.tables[str(decoder_index)]
-        return table(ngram_ids[:, self.hash_positions[decoder_index]]).unsqueeze(0)
+        return table(ngram_ids[:, self.hash_positions[decoder_index]]).flatten(-2).unsqueeze(0)
 
 
 __all__ = [
-    "LocalLookup",
     "NGramEmbeddings",
     "NGramHasher",
     "NGramTable",
-    "RowShardedLookup",
     "is_prime",
     "nth_prime_after",
-    "owner_counts",
 ]
