@@ -1,0 +1,27 @@
+max_steps = 20
+dashboard = false
+
+[run]
+name = "ab"
+
+[model]
+name = "/home/garrett/tmp/ngram-module/ckpt/qwen38-synth"
+offload = "none"
+ac_offloading = "None"
+
+[model.compile]
+fullgraph = false
+
+[data]
+type = "fake"
+input_ids = "random"
+length = "variable"
+pad_to_seq_len = true
+seq_len = 4096
+batch_size = 8
+
+[optim]
+lr = 1e-3
+
+[monitors]
+prime = "None"
