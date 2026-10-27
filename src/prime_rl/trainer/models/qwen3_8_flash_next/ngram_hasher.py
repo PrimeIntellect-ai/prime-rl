@@ -3,7 +3,8 @@ import torch
 from prime_rl.trainer.models.layers.ngram import NGramHasher, consecutive_primes_from
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 
-MASK64 = (1 << 64) - 1
+INT64_MAX = torch.iinfo(torch.int64).max
+MASK64 = 2**64 - 1
 SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
 SPLITMIX_MULTIPLIER_1 = 0xBF58476D1CE4E5B9
 SPLITMIX_MULTIPLIER_2 = 0x94D049BB133111EB
@@ -33,7 +34,7 @@ class Qwen3_8FlashNextNGramHasher(NGramHasher):
         return consecutive_primes_from(self.ngram_vocab_size_base, table_index * self.num_heads, self.num_heads)
 
     def table_multipliers(self, table_index: int) -> list[int]:
-        max_multiplier = ((1 << 63) - 1) // self.token_vocab_size
+        max_multiplier = INT64_MAX // self.token_vocab_size
         multiplier_bound = max(1, max_multiplier // 2)
         table_seed = NGRAM_HASH_SEED + NGRAM_LAYER_PRIME * table_index
         return [
