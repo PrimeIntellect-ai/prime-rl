@@ -12,6 +12,10 @@ from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 LAYOUT_BUFFERS = ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
 
 
+def consecutive_primes_from(minimum: int, skip: int, count: int) -> list[int]:
+    return [sympy.nextprime(minimum - 1, ith=skip + index + 1) for index in range(count)]
+
+
 class NGramTable(nn.Module):
     """One hashed n-gram embedding table and its hash layout, looked up through a swappable strategy."""
 
@@ -45,31 +49,23 @@ class NGramHasher(nn.Module, ABC):
         *,
         max_ngram_size: int,
         heads_per_ngram: int,
-        min_rows_per_head: int,
         rows_multiple_of: int,
     ) -> None:
         super().__init__()
         self.max_ngram_size = max_ngram_size
         self.heads_per_ngram = heads_per_ngram
         self.num_heads = (max_ngram_size - 1) * heads_per_ngram
-        self.min_rows_per_head = min_rows_per_head
         self.rows_multiple_of = rows_multiple_of
         self.cp_context = CPContext()
 
     def build_layout(self, table_index: int) -> tuple[list[int], list[int], list[int]]:
-        sizes = self._head_sizes(table_index)
+        sizes = self.head_sizes(table_index)
         offsets = list(itertools.accumulate(sizes[:-1], initial=0))
         return self.table_multipliers(table_index), sizes, offsets
 
     def table_rows(self, table_index: int) -> int:
-        total_rows = sum(self._head_sizes(table_index))
+        total_rows = sum(self.head_sizes(table_index))
         return (total_rows + self.rows_multiple_of - 1) // self.rows_multiple_of * self.rows_multiple_of
-
-    def _head_sizes(self, table_index: int) -> list[int]:
-        return [
-            sympy.nextprime(self.min_rows_per_head - 1, table_index * self.num_heads + head + 1)
-            for head in range(self.num_heads)
-        ]
 
     def map_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         return tokens
@@ -77,6 +73,9 @@ class NGramHasher(nn.Module, ABC):
     def segment_starts(self, positions: torch.Tensor, cu_seqlens: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
         document_indices = torch.searchsorted(cu_seqlens[1:], positions, right=True)
         return cu_seqlens[:-1][document_indices].long()
+
+    @abstractmethod
+    def head_sizes(self, table_index: int) -> list[int]: ...
 
     @abstractmethod
     def pad_token(self) -> int: ...
@@ -173,6 +172,7 @@ class NGramEmbeddings(nn.Module):
 __all__ = [
     "LAYOUT_BUFFERS",
     "NGramEmbeddings",
+    "consecutive_primes_from",
     "NGramHasher",
     "NGramTable",
 ]

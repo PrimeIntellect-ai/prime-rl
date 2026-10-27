@@ -1,6 +1,6 @@
 import torch
 
-from prime_rl.trainer.models.layers.ngram import NGramHasher
+from prime_rl.trainer.models.layers.ngram import NGramHasher, consecutive_primes_from
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 
 MASK64 = (1 << 64) - 1
@@ -23,11 +23,14 @@ class Qwen3_8FlashNextNGramHasher(NGramHasher):
         super().__init__(
             max_ngram_size=config.ngram_size,
             heads_per_ngram=config.heads_per_ngram,
-            min_rows_per_head=config.ngram_vocab_size_base,
             rows_multiple_of=config.make_ngram_vocab_size_divisible_by,
         )
+        self.ngram_vocab_size_base = config.ngram_vocab_size_base
         self.token_vocab_size = config.vocab_size
         self.eos_token_id = config.eos_token_id
+
+    def head_sizes(self, table_index: int) -> list[int]:
+        return consecutive_primes_from(self.ngram_vocab_size_base, table_index * self.num_heads, self.num_heads)
 
     def table_multipliers(self, table_index: int) -> list[int]:
         max_multiplier = ((1 << 63) - 1) // self.token_vocab_size
