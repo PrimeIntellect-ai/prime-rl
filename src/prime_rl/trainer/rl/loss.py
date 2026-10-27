@@ -5,6 +5,7 @@ import torch
 from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
+from torch.autograd.function import once_differentiable
 
 from prime_rl.configs.trainer import (
     CustomLossConfig,
@@ -70,16 +71,18 @@ def _selective_log_softmax_fwd(logits: Tensor, index: Tensor) -> tuple[Tensor, T
     # A mask rather than a scatter, so the compiled logsumexp reads the logits without materializing a copy
     is_target = torch.arange(logits.shape[-1], device=logits.device) == index.unsqueeze(-1)
     non_target_logits = torch.where(is_target, -torch.inf, logits_fp32)
-    logprobs = -torch.nn.functional.softplus(non_target_logits.logsumexp(dim=-1) - target_logits)
-    return logprobs, target_logits
+    non_target_logz = non_target_logits.logsumexp(dim=-1)
+    logprobs = -torch.nn.functional.softplus(non_target_logz - target_logits)
+    # Backward needs the full logsumexp; rebuilt as target_logits - logprobs it is NaN for a -inf target
+    logz = torch.logaddexp(non_target_logz, target_logits)
+    return logprobs, logz
 
 
 @torch.compile(dynamic=True)
 def _selective_log_softmax_bwd(
-    logits: Tensor, index: Tensor, target_logits: Tensor, logprobs: Tensor, grad_output: Tensor
+    logits: Tensor, index: Tensor, logz: Tensor, logprobs: Tensor, grad_output: Tensor
 ) -> Tensor:
     grad_output = grad_output.float()
-    logz = target_logits - logprobs
     # -p_j for the non-targets, and 1 - p_target = -expm1(logprob) at the target, which stays accurate as p -> 1
     grad_logits = -grad_output.unsqueeze(-1) * torch.exp(logits.float() - logz.unsqueeze(-1))
     target_grad = grad_output * -torch.expm1(logprobs)
@@ -93,14 +96,15 @@ class _SelectiveLogSoftmax(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, logits: Tensor, index: Tensor) -> Tensor:
-        logprobs, target_logits = _selective_log_softmax_fwd(logits, index)
-        ctx.save_for_backward(logits, index, target_logits, logprobs)
+        logprobs, logz = _selective_log_softmax_fwd(logits, index)
+        ctx.save_for_backward(logits, index, logz, logprobs)
         return logprobs.to(logits.dtype)
 
     @staticmethod
+    @once_differentiable
     def backward(ctx, grad_output: Tensor) -> tuple[Tensor, None]:
-        logits, index, target_logits, logprobs = ctx.saved_tensors
-        return _selective_log_softmax_bwd(logits, index, target_logits, logprobs, grad_output), None
+        logits, index, logz, logprobs = ctx.saved_tensors
+        return _selective_log_softmax_bwd(logits, index, logz, logprobs, grad_output), None
 
 
 @jaxtyped(typechecker=typechecker)

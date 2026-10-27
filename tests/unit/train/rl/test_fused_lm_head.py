@@ -235,6 +235,22 @@ def test_selective_log_softmax_confident_label_logprob_and_gradient(dtype):
     torch.testing.assert_close(logits.grad.squeeze(0).double(), expected_grad, rtol=10 * rtol, atol=0)
 
 
+def test_selective_log_softmax_unlikely_label_gradient():
+    # A -inf label and one far below the others: the gradient is still onehot - softmax, and zero when masked out
+    logits = torch.tensor([[[-torch.inf, 0.0, 1.0], [-1e8, 0.0, 1.0]]], requires_grad=True)
+    labels = torch.tensor([[0, 0]])
+    logprobs = selective_log_softmax(logits, labels)
+    logprobs.sum().backward()
+
+    expected_grad = torch.nn.functional.one_hot(labels, 3).double() - torch.softmax(logits.detach().double(), -1)
+    assert logprobs[0, 0] == -torch.inf
+    torch.testing.assert_close(logits.grad.double(), expected_grad, rtol=1e-5, atol=0)
+
+    logits.grad = None
+    torch.where(torch.zeros_like(labels, dtype=torch.bool), selective_log_softmax(logits, labels), 0.0).sum().backward()
+    assert torch.all(logits.grad == 0)
+
+
 def test_selective_log_softmax_with_sampling_mask_confident_label():
     from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask
 
