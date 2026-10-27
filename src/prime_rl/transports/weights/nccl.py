@@ -18,7 +18,7 @@ from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.vlm import get_layer_prefix
-from prime_rl.utils.weights import get_chunked_conversion_ops, get_ngram_table_layers, resolve_wire_dtype
+from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
 
 
 def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
@@ -109,30 +109,19 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
 
 
 def filter_state_dict_by_layers(
-    state_dict: dict[str, torch.Tensor], num_layers: int, layer_prefix: str, ngram_table_layers: dict[str, int]
+    state_dict: dict[str, torch.Tensor], num_layers: int, layer_prefix: str
 ) -> Generator[tuple[int, dict[str, torch.Tensor]], None, None]:
-    """Yield non-layer weights first, then each layer's weights, including the keys `ngram_table_layers` assigns to it.
+    """Yield non-layer weights first, then each layer's weights.
 
     Yields (layer_idx, layer_state_dict) where layer_idx is -1 for the non-layer
     dict and the actual layer index (0, 1, ...) for layer dicts.
     """
-    yield (
-        -1,
-        {
-            key: value
-            for key, value in state_dict.items()
-            if not key.startswith(layer_prefix) and key not in ngram_table_layers
-        },
-    )
+    yield -1, {key: value for key, value in state_dict.items() if not key.startswith(layer_prefix)}
 
     for i in range(num_layers):
         yield (
             i,
-            {
-                key: value
-                for key, value in state_dict.items()
-                if key.startswith(f"{layer_prefix}{i}.") or ngram_table_layers.get(key) == i
-            },
+            {key: value for key, value in state_dict.items() if key.startswith(f"{layer_prefix}{i}.")},
         )
 
 
@@ -203,7 +192,6 @@ class NCCLBroadcaster:
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         chunked_ops = get_chunked_conversion_ops(model, state_dict)
-        ngram_table_layers = get_ngram_table_layers(model, state_dict)
         num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())
 
         if self.world.is_master:
@@ -211,9 +199,7 @@ class NCCLBroadcaster:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
-        for layer_id, layer_state_dict in filter_state_dict_by_layers(
-            state_dict, num_layers, layer_prefix, ngram_table_layers
-        ):
+        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             chunked_weights = {key: layer_state_dict.pop(key) for key in chunked_ops if key in layer_state_dict}
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)

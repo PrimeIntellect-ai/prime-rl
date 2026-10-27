@@ -1,4 +1,3 @@
-import itertools
 import json
 import re
 import warnings
@@ -127,22 +126,6 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
     fqns = get_fqns(model, key)
     assert len(fqns) == 1
     return next(iter(fqns))
-
-
-def get_ngram_table_layers(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, int]:
-    """Map every n-gram table state-dict key to the decoder layer the table feeds."""
-    from prime_rl.trainer.models.layers.ngram import NGramEmbeddings
-
-    fqn_layers = {
-        resolve_fqn(model, f"{name}.tables.{layer_index}.{tensor_name}"): int(layer_index)
-        for name, module in model.named_modules()
-        if isinstance(module, NGramEmbeddings)
-        for layer_index, table in module.tables.items()
-        for tensor_name, _ in itertools.chain(table.named_parameters(), table.named_buffers())
-    }
-    if not fqn_layers:
-        return {}
-    return {key: fqn_layers[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in fqn_layers}
 
 
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")

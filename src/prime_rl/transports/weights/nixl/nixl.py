@@ -42,16 +42,8 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerTensor,
     TrainerTensorTable,
 )
-from prime_rl.utils.weights import get_ngram_table_layers
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
-
-
-def transfer_layer_index(tensor_name: str, ngram_table_layers: dict[str, int]) -> int | None:
-    if tensor_name in ngram_table_layers:
-        return ngram_table_layers[tensor_name]
-    match = LAYER_RE.search(tensor_name)
-    return None if match is None else int(match.group(1))
 
 
 @dataclass
@@ -76,7 +68,6 @@ class StagedTensorShard:
 class TransferGroupIndex:
     group_names: list[str]
     layer_to_group: dict[int, int]
-    ngram_table_layers: dict[str, int]
 
 
 class NIXLWeightSender(WeightSender):
@@ -110,26 +101,23 @@ class NIXLWeightSender(WeightSender):
         return True
 
     @staticmethod
-    def build_transfer_group_index(
-        state_dict: dict[str, torch.Tensor], ngram_table_layers: dict[str, int]
-    ) -> TransferGroupIndex:
+    def build_transfer_group_index(state_dict: dict[str, torch.Tensor]) -> TransferGroupIndex:
         layer_numbers = sorted(
             {
-                layer
+                int(match.group(1))
                 for name, value in state_dict.items()
-                if value.is_floating_point() and (layer := transfer_layer_index(name, ngram_table_layers)) is not None
+                if value.is_floating_point() and (match := LAYER_RE.search(name)) is not None
             }
         )
         return TransferGroupIndex(
             group_names=["non_layer", *(f"layer.{layer}" for layer in layer_numbers)],
             layer_to_group={layer: group for group, layer in enumerate(layer_numbers, start=1)},
-            ngram_table_layers=ngram_table_layers,
         )
 
     @staticmethod
     def find_transfer_group_index(tensor_name: str, transfer_groups: TransferGroupIndex) -> int:
-        layer = transfer_layer_index(tensor_name, transfer_groups.ngram_table_layers)
-        return 0 if layer is None else transfer_groups.layer_to_group[layer]
+        match = LAYER_RE.search(tensor_name)
+        return 0 if match is None else transfer_groups.layer_to_group[int(match.group(1))]
 
     def collect_local_tensor_shards(
         self,
@@ -341,7 +329,7 @@ class NIXLWeightSender(WeightSender):
             return
         model = cast(PreTrainedModelPrimeRL, model)
         state_dict = model.state_dict()
-        transfer_groups = self.build_transfer_group_index(state_dict, get_ngram_table_layers(model, state_dict))
+        transfer_groups = self.build_transfer_group_index(state_dict)
         self.transfer_group_names = transfer_groups.group_names
         if self.is_serving_rank:
             self.staged_shards = self.collect_local_tensor_shards(
