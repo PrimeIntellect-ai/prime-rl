@@ -71,6 +71,25 @@ RELEASE_FILES = [
 ]
 LM_PREFIX = "language_model."
 MTP_PREFIX = "language_model.mtp."
+
+# The text-only layout instead: the release's language model as its own NemotronHForCausalLM checkpoint (keys
+# without "language_model.", config = the release's llm_config), which is what prime-rl's trainer and inference
+# load. Its base is the volume's text extract of the release (verified against BASE_REVISION by
+# data-prep/verify_checkpoint.py: config, every tensor header, sampled tensor bytes).
+TEXT_LAYOUT = True
+if TEXT_LAYOUT:
+    BASE_DIR = Path("/volume/models/nemotron-3.5-super-text")
+    RELEASE_FILES = [
+        "chat_template.jinja",
+        "config.json",
+        "generation_config.json",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ]
+    LM_PREFIX = ""
+    MTP_PREFIX = "mtp."
+LAYOUT_NAME = "Text" if TEXT_LAYOUT else "VL"
 # A fine-tuned tensor this far (relative L2) from the release means a wrong key mapping, not training.
 MAX_RELATIVE_CHANGE = 0.2
 GLOO_TIMEOUT = timedelta(hours=12)
@@ -159,7 +178,7 @@ EXPORTS = [
     Export(
         name="ep2-step104",
         dcp_dir=Path("/volume/runs/hnp5pwsw3fx9p5b7r6bjmnnx/checkpoints/step_104/trainer"),
-        repo_name="Nemotron-3.5-Super-VL-swe-marathon-sft-ep2",
+        repo_name=f"Nemotron-3.5-Super-{LAYOUT_NAME}-swe-marathon-sft-ep2",
         run_id="hnp5pwsw3fx9p5b7r6bjmnnx",
         step=104,
         epochs=2,
@@ -168,7 +187,7 @@ EXPORTS = [
     Export(
         name="ep3-step156",
         dcp_dir=Path("/volume/runs/siuskw4we4txi09583x5x807/checkpoints/step_156/trainer"),
-        repo_name="Nemotron-3.5-Super-VL-swe-marathon-sft-ep3",
+        repo_name=f"Nemotron-3.5-Super-{LAYOUT_NAME}-swe-marathon-sft-ep3",
         run_id="siuskw4we4txi09583x5x807",
         step=156,
         epochs=3,
@@ -305,13 +324,27 @@ def summarize_changes(changes: dict[str, float]) -> dict:
     }
 
 
+def _layout_lines() -> str:
+    if TEXT_LAYOUT:
+        return """- Layout: the release's language model alone, as `NemotronHForCausalLM` (config = the release's
+  `llm_config`); no vision tower. Same tokenizer and chat template as the release.
+- Fine-tuned: `backbone.*` and `lm_head.weight`.
+- Unchanged from the release: the multi-token-prediction head (`mtp.*`), which was not trained and is
+  copied as is. MTP speculative decoding therefore drafts with the base model's head."""
+    return """- Fine-tuned: the language model (`language_model.backbone.*`, `language_model.lm_head.weight`).
+- Unchanged from the release: the vision tower and projector (text-only training), and the
+  multi-token-prediction head (`language_model.mtp.*`), which was not trained and is copied as is.
+  MTP speculative decoding therefore drafts with the base model's head.
+- Same files, shard layout, dtypes, config, code and tokenizer as the release; load it the same way."""
+
+
 def model_card(export: Export) -> str:
     return f"""---
 license: other
 license_name: openmdw-1.1
 license_link: https://openmdw.ai/license/1-1/
 library_name: transformers
-pipeline_tag: image-text-to-text
+pipeline_tag: {"text-generation" if TEXT_LAYOUT else "image-text-to-text"}
 base_model: {BASE_REPO}
 ---
 
@@ -325,11 +358,7 @@ base_model: {BASE_REPO}
   on 50 held-out tasks (base model 0.5086).
 - Training: 640K-token packed sequences, AdamW, peak learning rate 1e-5 with cosine decay to 1e-6
   (epoch 3: re-warmed to 3e-6).
-- Fine-tuned: the language model (`language_model.backbone.*`, `language_model.lm_head.weight`).
-- Unchanged from the release: the vision tower and projector (text-only training), and the
-  multi-token-prediction head (`language_model.mtp.*`), which was not trained and is copied as is.
-  MTP speculative decoding therefore drafts with the base model's head.
-- Same files, shard layout, dtypes, config, code and tokenizer as the release; load it the same way.
+{_layout_lines()}
 
 Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
 `chat_template_kwargs={{"truncate_history_thinking": false}}`.
@@ -341,6 +370,10 @@ Training rendered past assistant turns with their reasoning kept. To match it at
 def fetch_release_files(dest: Path) -> str:
     """Release files at BASE_REVISION; falls back to BASE_DIR's copies (revision 1f8953f7) without network."""
     logger = get_logger()
+    if TEXT_LAYOUT:
+        for name in RELEASE_FILES:
+            shutil.copyfile(BASE_DIR / name, dest / name)
+        return f"text extract of {BASE_REVISION[:8]} ({BASE_DIR})"
     try:
         from huggingface_hub import hf_hub_download
 
@@ -457,11 +490,11 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
 
     weight_map: dict[str, str] = json.loads((BASE_DIR / "model.safetensors.index.json").read_text())["weight_map"]
     files = sorted(set(weight_map.values()))
-    if set(files) != set(RELEASE_SHA256):
+    if not TEXT_LAYOUT and set(files) != set(RELEASE_SHA256):
         raise ValueError(f"{BASE_DIR} index lists other files than the release")
     assignment = assign_files({name: (BASE_DIR / name).stat().st_size for name in files}, world.world_size)
     my_files = assignment[world.rank]
-    for name in my_files:
+    for name in my_files if not TEXT_LAYOUT else []:
         if sha256_file(BASE_DIR / name) != RELEASE_SHA256[name]:
             raise ValueError(f"{BASE_DIR / name} differs from {BASE_REPO}@{BASE_REVISION[:8]}")
     wanted = {key[len(LM_PREFIX) :] for key, name in weight_map.items() if name in my_files and is_fine_tuned(key)}

@@ -10,6 +10,7 @@
 # - Writes the result to /volume/runs/<thisRunId>/hf-export/<name>/.
 # - Checks it against the release.
 # - Pushes it to private repos in hf_export.HF_ORG (PrimeIntellect), using the forwarded HF_TOKEN.
+# hf_export.TEXT_LAYOUT selects the layout: True = text-only NemotronHForCausalLM (what prime-rl loads), False = VL.
 #
 # The model is built exactly as in training (same [model] topology, which loaded these checkpoints), except
 # fusions are disabled so every parameter has its canonical name and shape. [data] and [renderer] are
