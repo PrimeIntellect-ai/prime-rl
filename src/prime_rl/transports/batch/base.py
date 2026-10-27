@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 
 import msgspec
 
+from prime_rl.transports.batch.journal import BatchJournal
 from prime_rl.transports.batch.types import MicroBatch, encode_array
 from prime_rl.utils.logger import get_logger
 
@@ -21,6 +25,38 @@ class BatchSender(ABC):
         self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
         self.output_dir = output_dir
         self.data_world_size = data_world_size
+        self.journal: BatchJournal | None = None
+        self.journal_session = uuid4().hex
+        self.journal_write_time = 0.0
+
+    def encode_batch(self, micro_batch_grid: list[list[MicroBatch]], step: int) -> list[bytes]:
+        if self.journal is None:
+            return [self.encode(micro_batches) for micro_batches in micro_batch_grid]
+        start = perf_counter()
+        batch_id = f"{self.journal_session}:{step}"
+        grid = []
+        for micro_batches in micro_batch_grid:
+            for micro_batch in micro_batches:
+                if micro_batch.mm_refs is not None:
+                    raise ValueError("Batch journaling does not yet retain external multimodal inputs")
+            batches = [msgspec.structs.replace(mb, journal_batch_id=batch_id) for mb in micro_batches]
+            grid.append(batches)
+        batches = [mb for rank in grid for mb in rank]
+        urls = []
+        if any(mb.payloads is not None for mb in batches):
+            from prime_rl.transports.payload import delete_payloads, resolve_payloads
+
+            with ThreadPoolExecutor(32, thread_name_prefix="journal-payload") as pool:
+                failed, urls = resolve_payloads(batches, pool)
+            if failed:
+                raise RuntimeError("Cannot journal a batch with missing training payloads")
+        payloads = [self.encode(rank) for rank in grid]
+        self.journal.write(batch_id, payloads)
+        if urls:
+            # The committed bytes retain the arrays independently of the env servers.
+            delete_payloads(urls)
+        self.journal_write_time = perf_counter() - start
+        return payloads
 
     @abstractmethod
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:

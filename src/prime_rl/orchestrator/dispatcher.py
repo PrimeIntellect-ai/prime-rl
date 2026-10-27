@@ -865,5 +865,6 @@ class Dispatcher:
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
+            "dispatcher/queued/results": float(self.out_q.qsize()),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
         }
