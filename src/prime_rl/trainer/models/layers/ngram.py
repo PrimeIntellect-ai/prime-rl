@@ -1,6 +1,6 @@
 import itertools
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping
 
 import sympy
 import torch
@@ -125,19 +125,12 @@ class NGramEmbeddings(nn.Module):
     def __init__(
         self,
         hasher: NGramHasher,
-        table_decoder_indices: Sequence[int],
-        num_layers: int,
+        table_indices: Mapping[int, int],
         head_dim: int,
     ) -> None:
         super().__init__()
-        if list(table_decoder_indices) != sorted(set(table_decoder_indices)):
-            raise ValueError(f"table_decoder_indices must be sorted and distinct, got {list(table_decoder_indices)}")
         self.hasher = hasher
-        self.table_indices = {
-            decoder_index: table_index
-            for table_index, decoder_index in enumerate(table_decoder_indices)
-            if decoder_index < num_layers
-        }
+        self.table_indices = dict(sorted(table_indices.items()))
         self.hash_positions = {decoder_index: position for position, decoder_index in enumerate(self.table_indices)}
         self.tables = nn.ModuleDict(
             {

@@ -139,10 +139,14 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         super().__init__(config)
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        ple_layers = [layer_id - 1 for layer_id in sorted(set(config.ple_layer_ids))]
         self.ngram = NGramEmbeddings(
             Qwen3_8FlashNextNGramHasher(config),
-            table_decoder_indices=[layer_id - 1 for layer_id in sorted(set(config.ple_layer_ids))],
-            num_layers=config.num_hidden_layers,
+            table_indices={
+                decoder_index: table_index
+                for table_index, decoder_index in enumerate(ple_layers)
+                if decoder_index < config.num_hidden_layers
+            },
             head_dim=config.ple_embed_dim // ((config.ngram_size - 1) * config.heads_per_ngram),
         )
         self.layers = nn.ModuleList(
