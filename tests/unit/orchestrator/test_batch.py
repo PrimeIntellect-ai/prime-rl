@@ -110,17 +110,24 @@ def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
-    from prime_rl.trainer.rl.data import validate_score_centering_data
+    from prime_rl.trainer.rl.data import (
+        raise_score_centering_data_errors,
+        score_centering_data_errors,
+        validate_score_centering_data,
+    )
 
-    batch = {
-        "input_ids": torch.tensor([[0, 3, 6]]),
-        "loss_mask": torch.tensor([[False, True, True]]),
-        "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
-        "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
-        "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
-        "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
-        "sampling_mask": torch.tensor([[[-1, -1], [-1, -1], [6, -1]]]),
-    }
+    def make_batch():
+        return {
+            "input_ids": torch.tensor([[0, 3, 6]]),
+            "loss_mask": torch.tensor([[False, True, True]]),
+            "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
+            "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
+            "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
+            "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
+            "sampling_mask": torch.tensor([[[-1, -1], [-1, -1], [6, -1]]]),
+        }
+
+    batch = make_batch()
     validate_score_centering_data(batch, vocab_size=9)
     if corruption is None:
         batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
@@ -141,8 +148,20 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         case "sampled":
             batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
             batch["input_ids"][0, 1] = 4
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
         validate_score_centering_data(batch, vocab_size=9)
+    if corruption == "missing":
+        return
+
+    # The trainer flags each micro batch on its device and raises the first failure once per step
+    def errors(batch, device):
+        names = ("input_ids", "loss_mask", "rl_weights", "top_logprobs_ids", "top_logprobs_values", "sampling_mask")
+        return score_centering_data_errors(*(batch[name].to(device) for name in names), vocab_size=9)
+
+    for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+        raise_score_centering_data_errors([errors(make_batch(), device)])
+        with pytest.raises(ValueError, match=f"^{error.value}$"):
+            raise_score_centering_data_errors([errors(make_batch(), device), errors(batch, device)])
 
 
 def _routed_experts(data, dtype=np.uint8):
