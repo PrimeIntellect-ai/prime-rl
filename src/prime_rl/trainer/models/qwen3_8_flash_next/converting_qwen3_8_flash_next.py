@@ -5,6 +5,7 @@ import torch
 from torch import Tensor
 
 from prime_rl.trainer.models.conversion_ops import ChunkedConvOp, ConvOp, Drop, Rename, SplitConcat
+from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 
 
 @dataclass
@@ -84,8 +85,7 @@ def conversion_chain(config) -> list[ConvOp]:
             )
         )
         operations.extend(
-            Rename(f"{checkpoint_prefix}.{buffer}", f"{runtime_prefix}.{buffer}")
-            for buffer in ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
+            Rename(f"{checkpoint_prefix}.{buffer}", f"{runtime_prefix}.{buffer}") for buffer in LAYOUT_BUFFERS
         )
     return operations
 

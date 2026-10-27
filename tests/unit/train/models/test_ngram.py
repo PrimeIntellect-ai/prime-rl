@@ -18,7 +18,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextTextConfig,
 )
 from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import NGramEmbeddingWeights
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import NGRAM_HASH_SEED, Qwen38NGramHasher
+from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import NGRAM_HASH_SEED, Qwen3_8FlashNextNGramHasher
 from prime_rl.transports.weights.nccl import filter_state_dict_by_layers, get_max_layer_num, preprocess_layer_checkpoint
 from prime_rl.transports.weights.nixl.nixl import LAYER_RE, NIXLWeightSender
 from prime_rl.utils.cp import CPContext
@@ -67,7 +67,9 @@ def _text_config(golden: dict, config_name: str) -> Qwen3_8FlashNextTextConfig:
 def _embeddings(config: Qwen3_8FlashNextTextConfig) -> NGramEmbeddings:
     table_decoder_indices = [layer_id - 1 for layer_id in sorted(set(config.ple_layer_ids))]
     head_dim = config.ple_embed_dim // ((config.ngram_size - 1) * config.heads_per_ngram)
-    return NGramEmbeddings(Qwen38NGramHasher(config), table_decoder_indices, config.num_hidden_layers, head_dim)
+    return NGramEmbeddings(
+        Qwen3_8FlashNextNGramHasher(config), table_decoder_indices, config.num_hidden_layers, head_dim
+    )
 
 
 def _hash_case(golden: dict, config_name: str, case_name: str) -> dict:
@@ -97,7 +99,7 @@ def _zero_block(block_input: torch.Tensor, *args, **kwargs) -> torch.Tensor:
 
 @pytest.mark.parametrize("config_name", CONFIG_NAMES)
 def test_hasher_layouts_match_main(golden, config_name):
-    hasher = Qwen38NGramHasher(_text_config(golden, config_name))
+    hasher = Qwen3_8FlashNextNGramHasher(_text_config(golden, config_name))
 
     for expected in golden["layouts"][config_name]:
         layout = hasher.build_layout(expected["table_index"])
@@ -136,7 +138,7 @@ def test_real_parameter_hash_matches_main(golden):
     real_hash = golden["real_hash"]
     assert real_hash["params"]["seed"] == NGRAM_HASH_SEED
     config = Qwen3_8FlashNextTextConfig(**{field: real_hash["params"][field] for field in REAL_CONFIG_FIELDS})
-    hasher = Qwen38NGramHasher(config)
+    hasher = Qwen3_8FlashNextNGramHasher(config)
 
     layouts = {}
     for expected in real_hash["layouts"]:

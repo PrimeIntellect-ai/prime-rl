@@ -8,6 +8,8 @@ from torch import nn
 from prime_rl.trainer.distributed.ngram_lookup import LocalLookup, NGramLookup
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 
+LAYOUT_BUFFERS = ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
+
 
 def is_prime(value: int) -> bool:
     if value < 2:
@@ -57,15 +59,19 @@ class NGramTable(nn.Module):
     def __init__(self, num_rows: int, head_dim: int, max_ngram_size: int, num_heads: int) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.empty(num_rows, head_dim))
-        self.register_buffer("layer_multipliers", torch.zeros(max_ngram_size, dtype=torch.long))
-        self.register_buffer("ngram_heads_vocab_sizes", torch.zeros(num_heads, dtype=torch.long))
-        self.register_buffer("ngram_heads_offsets", torch.zeros(num_heads, dtype=torch.long))
+        for name, length in zip(LAYOUT_BUFFERS, (max_ngram_size, num_heads, num_heads), strict=True):
+            self.register_buffer(name, torch.zeros(length, dtype=torch.long))
         self.lookup: NGramLookup = LocalLookup()
 
     def set_lookup(self, lookup: NGramLookup) -> None:
         self.lookup = lookup
 
-    def reset_parameters(self, init_std: float) -> None:
+    def set_layout(self, multipliers: list[int], sizes: list[int], offsets: list[int]) -> None:
+        for name, values in zip(LAYOUT_BUFFERS, (multipliers, sizes, offsets), strict=True):
+            buffer = getattr(self, name)
+            buffer.copy_(buffer.new_tensor(values))
+
+    def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.weight, mean=0.0, std=init_std)
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
@@ -187,22 +193,16 @@ class NGramEmbeddings(nn.Module):
 
     def reset_layouts(self) -> None:
         for decoder_index, table_index in self.table_indices.items():
-            table = self.tables[str(decoder_index)]
-            layout_buffers = (table.layer_multipliers, table.ngram_heads_vocab_sizes, table.ngram_heads_offsets)
-            for buffer, values in zip(layout_buffers, self.hasher.build_layout(table_index), strict=True):
-                buffer.copy_(buffer.new_tensor(values))
+            self.tables[str(decoder_index)].set_layout(*self.hasher.build_layout(table_index))
 
     def hash(self, input_ids: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor | None:
         if not self.tables:
             return None
         tables = [self.tables[str(decoder_index)] for decoder_index in self.hash_positions]
-        return self.hasher(
-            input_ids,
-            cu_seqlens,
-            torch.stack([table.layer_multipliers for table in tables]),
-            torch.stack([table.ngram_heads_vocab_sizes for table in tables]),
-            torch.stack([table.ngram_heads_offsets for table in tables]),
+        multipliers, sizes, offsets = (
+            torch.stack([getattr(table, name) for table in tables]) for name in LAYOUT_BUFFERS
         )
+        return self.hasher(input_ids, cu_seqlens, multipliers, sizes, offsets)
 
     def embed(self, ngram_ids: torch.Tensor | None, decoder_index: int) -> torch.Tensor | None:
         if decoder_index not in self.hash_positions:
@@ -212,9 +212,8 @@ class NGramEmbeddings(nn.Module):
 
 
 __all__ = [
+    "LAYOUT_BUFFERS",
     "NGramEmbeddings",
     "NGramHasher",
     "NGramTable",
-    "is_prime",
-    "nth_prime_after",
 ]

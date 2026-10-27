@@ -18,7 +18,7 @@ def splitmix64(value: int) -> int:
     return (value ^ (value >> 31)) & MASK64
 
 
-class Qwen38NGramHasher(NGramHasher):
+class Qwen3_8FlashNextNGramHasher(NGramHasher):
     def __init__(self, config: Qwen3_8FlashNextTextConfig) -> None:
         super().__init__(
             max_ngram_size=config.ngram_size,
@@ -49,4 +49,4 @@ class Qwen38NGramHasher(NGramHasher):
         return torch.maximum(document_starts, previous_eos + 1)
 
 
-__all__ = ["Qwen38NGramHasher"]
+__all__ = ["Qwen3_8FlashNextNGramHasher"]
