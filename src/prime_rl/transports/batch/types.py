@@ -112,8 +112,7 @@ MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
-    # Exact up to 127; staler tokens ship as 127, which still bins them correctly (top bin is 64+).
-    "staleness": np.int8,
+    "staleness": np.int16,
 }
 
 

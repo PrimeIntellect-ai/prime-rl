@@ -82,15 +82,14 @@ def stale_token_runs(branch: vf.Branch, fallback: int, min_version: int) -> Iter
 
 def token_staleness(branch: vf.Branch, fallback: int, trained_version: int) -> np.ndarray:
     """Per-token staleness of the branch when it trains on ``trained_version``
-    (see ``node_policy_versions``), capped at 127 to ship as int8; -1 on
-    tokens the policy did not sample."""
+    (see ``node_policy_versions``); -1 on tokens the policy did not sample."""
     lengths = [len(node.token_ids) for node in branch.nodes]
-    staleness = np.full(sum(lengths), -1, dtype=np.int8)
+    staleness = np.full(sum(lengths), -1, dtype=np.int16)
     offset = 0
     for node, length in zip(branch.nodes, lengths):
         if node.sampled:
             for start, end, version in node_policy_versions(node, fallback):
-                staleness[offset + start : offset + end] = min(127, max(0, trained_version - version))
+                staleness[offset + start : offset + end] = max(0, trained_version - version)
         offset += length
     return staleness
 

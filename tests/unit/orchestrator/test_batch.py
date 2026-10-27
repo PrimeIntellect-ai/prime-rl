@@ -20,7 +20,7 @@ SAMPLE_DTYPES = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
-    "staleness": np.int8,
+    "staleness": np.int16,
 }
 
 

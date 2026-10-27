@@ -555,7 +555,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
         if staleness is not None:
             staleness.append(
-                sample.staleness if sample.staleness is not None else np.full(sample_len, -1, dtype=np.int8)
+                sample.staleness if sample.staleness is not None else np.full(sample_len, -1, dtype=np.int16)
             )
         offset += sample_len
 
