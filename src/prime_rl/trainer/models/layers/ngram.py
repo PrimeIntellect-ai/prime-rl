@@ -4,7 +4,8 @@ from collections.abc import Mapping
 
 import sympy
 import torch
-from torch import nn
+from jaxtyping import Int
+from torch import Tensor, nn
 
 from prime_rl.trainer.distributed.ngram_lookup import LocalLookup, NGramLookup
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
@@ -86,37 +87,55 @@ class NGramHasher(nn.Module, ABC):
     @torch.no_grad()
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Int[Tensor, "batch seq"],
         cu_seqlens: torch.Tensor,
-        multipliers: torch.Tensor,
-        sizes: torch.Tensor,
-        offsets: torch.Tensor,
-    ) -> torch.Tensor:
+        multipliers: Int[Tensor, "tables max_ngram_size"],
+        sizes: Int[Tensor, "tables heads"],
+        offsets: Int[Tensor, "tables heads"],
+    ) -> Int[Tensor, "tokens tables heads"]:
+        sequence_tokens, local_positions = self.gather_sequence(input_ids)
+        ngram_tokens = self.ngram_tokens(sequence_tokens, local_positions, cu_seqlens)
+        ngram_hashes = self.hash_ngrams(ngram_tokens, multipliers)
+        return self.table_rows(ngram_hashes, sizes, offsets)
+
+    def gather_sequence(
+        self, input_ids: Int[Tensor, "batch seq"]
+    ) -> tuple[Int[Tensor, "sequence"], Int[Tensor, "tokens"]]:
         local_token_count = input_ids.numel()
         if self.cp_context.cp_enabled:
             input_ids = gather_for_cp_wo_grad(input_ids, self.cp_context.cp_world_size, self.cp_context.cp_group)
-
-        tokens = input_ids.reshape(-1).long()
-        positions = torch.arange(tokens.shape[0], device=tokens.device)
         local_start = self.cp_context.cp_rank * local_token_count
-        local_slice = slice(local_start, local_start + local_token_count)
-        local_positions = positions[local_slice]
-        local_segment_starts = self.segment_starts(positions, cu_seqlens, tokens)[local_slice]
-        mapped_tokens = self.map_tokens(tokens)
-        pad_token = self.pad_token()
-        shifted_tokens = []
-        for shift in range(self.max_ngram_size):
-            source_positions = local_positions - shift
-            source_tokens = mapped_tokens[source_positions.clamp_min(0)]
-            shifted_tokens.append(torch.where(source_positions >= local_segment_starts, source_tokens, pad_token))
+        local_positions = torch.arange(local_start, local_start + local_token_count, device=input_ids.device)
+        return input_ids.reshape(-1).long(), local_positions
 
-        mixed = shifted_tokens[0][:, None] * multipliers[:, 0]
-        id_blocks = []
-        for ngram in range(2, self.max_ngram_size + 1):
-            mixed = torch.bitwise_xor(mixed, shifted_tokens[ngram - 1][:, None] * multipliers[:, ngram - 1])
-            order_heads = slice((ngram - 2) * self.heads_per_ngram, (ngram - 1) * self.heads_per_ngram)
-            id_blocks.append(torch.remainder(mixed[..., None], sizes[:, order_heads]) + offsets[:, order_heads])
-        return torch.cat(id_blocks, dim=-1)
+    def ngram_tokens(
+        self, sequence_tokens: Int[Tensor, "sequence"], local_positions: Int[Tensor, "tokens"], cu_seqlens: torch.Tensor
+    ) -> Int[Tensor, "tokens max_ngram_size"]:
+        sequence_positions = torch.arange(sequence_tokens.shape[0], device=sequence_tokens.device)
+        segment_starts = self.segment_starts(sequence_positions, cu_seqlens, sequence_tokens)[local_positions]
+        source_positions = local_positions[:, None] - torch.arange(self.max_ngram_size, device=sequence_tokens.device)
+        source_tokens = self.map_tokens(sequence_tokens)[source_positions.clamp_min(0)]
+        return torch.where(source_positions >= segment_starts[:, None], source_tokens, self.pad_token())
+
+    def hash_ngrams(
+        self, ngram_tokens: Int[Tensor, "tokens max_ngram_size"], multipliers: Int[Tensor, "tables max_ngram_size"]
+    ) -> Int[Tensor, "tokens tables ngram_sizes"]:
+        products = ngram_tokens[:, None, :] * multipliers
+        rolling_hash = products[..., 0]
+        hashes = []
+        for token_index in range(1, self.max_ngram_size):
+            rolling_hash = rolling_hash ^ products[..., token_index]
+            hashes.append(rolling_hash)
+        return torch.stack(hashes, dim=-1)
+
+    def table_rows(
+        self,
+        ngram_hashes: Int[Tensor, "tokens tables ngram_sizes"],
+        sizes: Int[Tensor, "tables heads"],
+        offsets: Int[Tensor, "tables heads"],
+    ) -> Int[Tensor, "tokens tables heads"]:
+        head_hashes = ngram_hashes.repeat_interleave(self.heads_per_ngram, dim=-1)
+        return torch.remainder(head_hashes, sizes) + offsets
 
 
 class NGramEmbeddings(nn.Module):
