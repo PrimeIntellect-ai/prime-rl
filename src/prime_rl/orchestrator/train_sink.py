@@ -80,6 +80,18 @@ def stale_token_runs(branch: vf.Branch, fallback: int, min_version: int) -> Iter
         offset += len(node.token_ids)
 
 
+def token_staleness(branch: vf.Branch, fallback: int, trained_version: int) -> np.ndarray:
+    """Per-token staleness of the branch when it trains on ``trained_version``
+    (see ``node_policy_versions``); -1 on context tokens."""
+    staleness = np.full(sum(len(node.token_ids) for node in branch.nodes), -1, dtype=np.int32)
+    offset = 0
+    for node in branch.nodes:
+        for start, end, version in node_policy_versions(node, fallback):
+            staleness[offset + start : offset + end] = max(0, trained_version - version)
+        offset += len(node.token_ids)
+    return staleness
+
+
 def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, min_version: int) -> int:
     """Remove the sample's stale tokens from every loss component and return
     how many trainable tokens this newly masked; fresher tokens keep training
@@ -421,6 +433,12 @@ class TrainSink:
         for trace_id, trace_samples in selected_by_trace.items():
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
+            if policy is not None:
+                branches = episode.traces[0].branches
+                for sample in trace_samples:
+                    sample.staleness = token_staleness(
+                        branches[sample.branch_index], policy.start, self.progress.step - 1
+                    )
             if policy is None or policy.start >= min_version:
                 kept += sum(int(sample.mask.sum()) for sample in trace_samples)
                 continue

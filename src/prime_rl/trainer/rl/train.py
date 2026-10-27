@@ -65,6 +65,8 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    STALENESS_BIN_EDGES,
+    STALENESS_BINS,
     TensorStats,
     begin_backward,
     broadcast_pause,
@@ -210,6 +212,7 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
+    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, device="cuda")
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
@@ -589,6 +592,16 @@ def train(config: TrainerConfig):
             with torch.no_grad():
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
             tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
+            if micro_batch["staleness"] is not None:
+                staleness = micro_batch["staleness"].to("cuda")
+                tensor_stats.add(
+                    "mismatch_kl_by_staleness",
+                    mismatch_kl,
+                    mismatch_mask & (staleness >= 0),
+                    torch.bucketize(staleness, staleness_bin_edges, right=True),
+                    STALENESS_BINS,
+                    fold_all=False,
+                )
 
             annotation_writer.export(micro_batch, out)
 

@@ -20,6 +20,7 @@ SAMPLE_DTYPES = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
+    "staleness": np.int32,
 }
 
 
@@ -502,6 +503,25 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
     else:
         assert batch.rl_weights == pytest.approx([1.0] * 6 + [0.0] * 4)
         assert batch.ce_weights == pytest.approx([0.0] * 6 + [0.0, 0.0, 1.0, 1.0])
+
+
+def test_prepare_batch_backfills_and_pads_staleness(make_training_example):
+    """Samples without a staleness stream (frozen-sourced) and padding read as unknown (-1)."""
+    longer = _sample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, True, True, True, True],
+        logprobs=[0.0, 0.0, -0.1, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        advantages=[0.0] * 2 + [1.0] * 4,
+        env_name="test-env",
+        staleness=[-1, -1, 0, 1, 3, 3],
+    )
+    shorter = make_training_example()
+
+    [batch] = _flatten_batches(
+        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_train_workers=1, bin_cost=sum)
+    )
+    assert batch.staleness.tolist() == [-1, -1, 0, 1, 3, 3] + [-1] * 4 + [-1] * 2
 
 
 @pytest.mark.parametrize("refs_on_longer", [True, False])
