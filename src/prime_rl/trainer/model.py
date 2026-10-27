@@ -763,15 +763,31 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 DYNAMIC_INT_ARGS = (
     # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
     "max_seqlen",
+    # DeepSeek V4: largest compressed-entry count of any document in the row. Sizes the HCA picks.
+    "max_entries_per_doc",
+)
+
+# Tensor args, as (name, dim), whose dim changes between calls. Marking the tensor itself does not reach a compiled
+# layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
+# the arg instead, so callers must pass these args by keyword.
+DYNAMIC_TENSOR_ARG_DIMS = (
+    # DeepSeek V4: the decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    ("mhc_states", 1),
 )
 
 
-def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+def mark_dynamic_args() -> None:
+    """Add DYNAMIC_INT_ARGS and DYNAMIC_TENSOR_ARG_DIMS to torch.compiler.config.dynamic_sources, keeping its entries."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    patterns = []
     for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
-        pattern = rf".*\['{arg}'\]"
+        # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
+        # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
+    for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
+        patterns.append(rf".*\['{arg}'\]:{dim}")
+    for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)
@@ -779,7 +795,7 @@ def mark_dynamic_int_args() -> None:
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    mark_dynamic_int_args()
+    mark_dynamic_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
