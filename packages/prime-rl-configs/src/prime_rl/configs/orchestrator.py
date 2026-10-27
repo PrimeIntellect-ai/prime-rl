@@ -526,6 +526,9 @@ class OrchestratorConfig(BaseConfig):
     ``rl`` launcher: multi-node runs start one replica per inference node, so env-server
     memory spreads over all of them."""
 
+    batch_journal: bool = False
+    """Persist exact text training batches before delivery; release them after a trainer checkpoint commits. Requires a shared output directory. There is no disk-size cap; without checkpoints, batches remain retained."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 

@@ -135,6 +135,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
             str(tmp_path / "outputs"),
             "--run.name",
             "roundtrip",
+            "--orchestrator.batch-journal",
             "--trainer.loss.type",
             "icepop",
             "--trainer.loss.score-centering",
@@ -145,6 +146,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     write_config(config, tmp_path, exclude={"slurm", "dry_run", "clean"})
     reloaded = cli(RLConfig, args=["@", str(tmp_path / "rl.json")])
     assert reloaded.run_dir == config.run_dir
+    assert reloaded.orchestrator.batch_journal is True
     assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.vllm.max_logprobs >= 6

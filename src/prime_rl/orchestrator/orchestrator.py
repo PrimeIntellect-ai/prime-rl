@@ -267,7 +267,11 @@ class Orchestrator:
         self.packer = BatchPacker(config)
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
-            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+            config.output_dir,
+            config.num_train_workers,
+            self.progress.step,
+            config.rollout_transport,
+            journal=config.batch_journal,
         )
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
@@ -701,7 +705,7 @@ class Orchestrator:
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
         send_batch_time = await self.sender.send(micro_batch_grid)
-        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time - self.sender.journal_write_time
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
@@ -725,6 +729,8 @@ class Orchestrator:
                 "time/send_batch": send_batch_time,
                 "step": step,
             }
+            if config.batch_journal:
+                metrics["time/write_batch_journal"] = self.sender.journal_write_time
             # Token and rollout staleness of the shipped cohort. Queue drops and
             # masked tokens are reported with rollout windows.
             staleness = [s for episode in effective if (s := rollout_staleness(episode, step)) is not None]

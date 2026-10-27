@@ -19,6 +19,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Important Metrics](#important-metrics-1)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
+  - [Batch Journal](#batch-journal)
   - [Resuming a Run](#resuming-a-run)
   - [Pausing a Live Run](#pausing-a-live-run)
   - [Serving Checkpoints](#serving-checkpoints)
@@ -328,6 +329,26 @@ uv run rl @ rl.toml --ckpt.interval 25                  # every 25 steps
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
+
+### Batch Journal
+
+RL can retain the exact per-data-rank training payloads until a trainer checkpoint covers them:
+
+```bash
+uv run rl @ rl.toml --orchestrator.batch-journal --ckpt.interval 25
+```
+
+Journaling is off by default. It requires a shared run directory accessible to the orchestrator and trainer, including when using ZMQ. Each batch has a producer-session UUID and step, with payloads and SHA-256 hashes under `<run_dir>/batch_journal/<session>/step_<n>/`. The writer syncs the files and atomically publishes the directory before delivering the batch. External multimodal inputs (`mm_refs`) are not supported.
+
+Payload fetching, encoding and persistence run in a worker thread. With journaling enabled, training arrays retained by env servers are fetched into the batch before it is journaled; their remote copies are released only after the journal commits. This adds array transfer and memory use on the orchestrator, but makes the recorded batch independent of the env servers. Missing payloads fail the journal write and delivery instead of recording an incomplete batch.
+
+The orchestrator awaits delivery before assembling another batch; the worker retains its input buffers until completion. Other event-loop tasks continue, and the dispatcher's existing result queue provides backpressure when `orchestrator.concurrency.max_inflight` is finite. Setting that ceiling to `None` leaves the result queue unbounded. The current encoder also retains serialized bytes alongside the input batch until handoff.
+
+After all trainer ranks complete their checkpoint writes, the trainer records the included batch ID and hashes in `trainer/batch.json`, then deletes journal entries through that step in the same producer session. Failed checkpoint writes do not release journal entries. This boundary is checkpoint completion on the shared filesystem, not completion of an external backup. A new orchestrator session leaves earlier sessions' entries untouched.
+
+There is no journal disk-size cap. Without trainer checkpoints, entries accumulate; checkpoint frequency determines normal retention. Monitor `time/write_batch_journal` for payload fetching, encoding and persistence time and `dispatcher/queued/results` for result-queue occupancy. That time is excluded from `time/wait_for_policy`.
+
+The journal records delivered batches and their checkpoint boundary; it does not automatically replay them or restart the trainer.
 
 ### Resuming a Run
 

@@ -6,6 +6,7 @@ from prime_rl.transports.batch.filesystem import (
     FileSystemBatchReceiver,
     FileSystemBatchSender,
 )
+from prime_rl.transports.batch.journal import BatchJournal
 from prime_rl.transports.batch.types import (
     MicroBatch,
     MMImageRef,
@@ -21,14 +22,17 @@ from prime_rl.transports.batch.zmq import (
 
 
 def setup_batch_sender(
-    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfig
+    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfig, journal: bool = False
 ) -> BatchSender:
     if transport.type == "filesystem":
-        return FileSystemBatchSender(output_dir, data_world_size, current_step)
+        sender = FileSystemBatchSender(output_dir, data_world_size, current_step)
     elif transport.type == "zmq":
-        return ZMQBatchSender(output_dir, data_world_size, current_step, transport)
+        sender = ZMQBatchSender(output_dir, data_world_size, current_step, transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
+    if journal:
+        sender.journal = BatchJournal(output_dir)
+    return sender
 
 
 def setup_batch_receiver(

@@ -19,6 +19,8 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transports import payload
 from prime_rl.transports.batch import types as wire
+from prime_rl.transports.batch.filesystem import FileSystemBatchSender
+from prime_rl.transports.batch.journal import BatchJournal
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, MicroBatch, PayloadSlice, TrainingSample, encode_array
 from prime_rl.transports.payload import (
     PayloadHook,
@@ -361,3 +363,55 @@ def test_discard_frees_what_keep_kept():
     assert hook.server.blobs
     hook.discard(episode)
     assert not hook.server.blobs
+
+
+@pytest.mark.parametrize("mode", ["plain", "journal", "disk_failure", "missing_payload"])
+def test_journal_retains_env_arrays_before_releasing_them(tmp_path, mode):
+    rng = np.random.default_rng(7)
+    episodes = [_episode(rng, 4, 12), _episode(rng, 6, 10, masked=True)]
+    hook = PayloadHook()
+    sender = FileSystemBatchSender(tmp_path, data_world_size=2)
+    decoder = msgspec.msgpack.Decoder(list[MicroBatch])
+    try:
+        for episode in episodes:
+            hook.keep(episode, vf.SamplingConfig())
+        grid = prepare_batch(_samples(episodes), seq_len=32, num_train_workers=2, bin_cost=sum, pad_to_multiple_of=8)
+        original = [sender.encode(rank) for rank in grid]
+        expected = [decoder.decode(rank) for rank in original]
+        with ThreadPoolExecutor(2) as pool:
+            failed, _ = resolve_payloads([mb for rank in expected for mb in rank], pool)
+        assert not failed
+        if mode != "plain":
+            sender.journal = BatchJournal(tmp_path)
+            for rank in expected:
+                for mb in rank:
+                    mb.journal_batch_id = f"{sender.journal_session}:0"
+        if mode == "disk_failure":
+            sender.journal.path.write_text("blocks directory creation")
+        elif mode == "missing_payload":
+            hook.server.delete(next(iter(hook.server.blobs)))
+        retained = dict(hook.server.blobs)
+
+        if mode in ("disk_failure", "missing_payload"):
+            error = OSError if mode == "disk_failure" else RuntimeError
+            with pytest.raises(error):
+                sender.encode_batch(grid, 0)
+            wait_for_deletes()
+            assert hook.server.blobs == retained
+            assert not sender.journal.batch_path(f"{sender.journal_session}:0").exists()
+        else:
+            delivered = sender.encode_batch(grid, 0)
+            wait_for_deletes()
+            if mode == "plain":
+                assert delivered == original
+                assert hook.server.blobs == retained
+            else:
+                assert not hook.server.blobs
+                recorded = sender.journal.read(f"{sender.journal_session}:0")
+                assert recorded == delivered == [sender.encode(rank) for rank in expected]
+                assert all(mb.payloads is None for rank in recorded for mb in decoder.decode(rank))
+        assert [sender.encode(rank) for rank in grid] == original
+    finally:
+        hook.server.http.shutdown()
+        hook.server.http.server_close()
+        sender.close()

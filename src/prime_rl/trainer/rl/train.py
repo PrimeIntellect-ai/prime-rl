@@ -699,7 +699,7 @@ def train(config: TrainerConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, batch_id=dataloader.last_batch_id)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
@@ -821,7 +821,7 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, batch_id=dataloader.last_batch_id)
         if paused:
             controller.mark_saved(progress.step)
         else:

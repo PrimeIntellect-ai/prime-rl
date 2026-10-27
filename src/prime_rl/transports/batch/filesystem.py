@@ -46,6 +46,11 @@ class FileSystemBatchSender(BatchSender):
         return send_end - send_start
 
     def _encode_and_write(self, micro_batch_grid: list[list[MicroBatch]], step_path: Path) -> None:
+        if self.journal is not None:
+            buffers = self.encode_batch(micro_batch_grid, self.current_step)
+            for data_rank, payload in enumerate(buffers):
+                (step_path / f"rank_{data_rank}.bin.tmp").write_bytes(payload)
+            return
         for data_rank in range(self.data_world_size):
             (step_path / f"rank_{data_rank}.bin.tmp").write_bytes(self.encode(micro_batch_grid[data_rank]))
 
