@@ -142,3 +142,17 @@ def test_frozen_weight_keys_include_fused_weights():
     assert model.frozen_weight_keys() == {
         key for key in model.state_dict() if key.startswith(("model.embed_tokens.", "model.layers.0."))
     }
+
+
+def test_partial_load_leaves_packed_parameters_without_entries_unchanged():
+    model = nn.ModuleDict({"experts": build_experts(), "attention": build_attention(attention_bias=False)})
+    apply_model_fusions(model, ["gate_up", "qkv"])
+    qkv_before = model.attention.qkv_proj.weight.clone()
+    state_dict = {
+        fqn: torch.zeros_like(tensor) for fqn, tensor in model.state_dict().items() if fqn.startswith("experts.")
+    }
+
+    model.load_state_dict(state_dict, strict=False)
+
+    assert torch.equal(model.experts.gate_up_proj, torch.zeros_like(model.experts.gate_up_proj))
+    assert torch.equal(model.attention.qkv_proj.weight, qkv_before)

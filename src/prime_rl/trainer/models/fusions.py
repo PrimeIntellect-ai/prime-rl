@@ -58,6 +58,9 @@ def register_packed_parameter_state_dict_hooks(module: nn.Module, spec: PackedPa
             state_dict[f"{prefix}{logical_name}"] = view
 
     def join_logical_entries_into_packed_entry(module, state_dict, prefix, *load_state_dict_args) -> None:
+        # A partial state dict, e.g. a checkpoint without frozen weights, may leave this parameter out.
+        if f"{prefix}{spec.logical_names[0]}" not in state_dict:
+            return
         state_dict[f"{prefix}{spec.name}"] = spec.pack_logical_tensors(
             [state_dict.pop(f"{prefix}{logical_name}") for logical_name in spec.logical_names]
         )
