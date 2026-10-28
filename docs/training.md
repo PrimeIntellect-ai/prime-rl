@@ -356,6 +356,8 @@ A resumed run picks up the train work where the checkpoint left it, so the first
 
 The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the open work of an env no longer configured is dropped.
 
+The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its open work needs to `checkpoints/step_{n}/orchestrator/arrays/`: those of the finished but unshipped rollouts, and those of each in-flight rollout up to its restore point. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
+
 #### Rollout checkpoints
 
 An env takes rollout checkpoints when its agent sets `[env.agent.checkpoint]`: it records a restore point as each model turn goes upstream, streams it to the orchestrator, and the orchestrator checkpoint saves the newest one of every in-flight rollout. A harness that keeps nothing in its box (e.g. `null`) restores from the trace alone. A sandboxed harness restores a box snapshot: set `keep = "all"` and `after = "keep"` so the env server leaves the snapshots to the orchestrator, which keeps each in-flight rollout's newest and the ones its latest checkpoint resumes from, and deletes the rest.

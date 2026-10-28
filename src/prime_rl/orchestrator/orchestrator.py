@@ -716,7 +716,7 @@ class Orchestrator:
         self.update_dispatch_gate()
         if self.controller is not None:
             self.shipped_state = (step, build_state(self.progress, self.train_source, self.open_work()))
-            self.apply_control()
+            await self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
@@ -994,10 +994,11 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
+        # Snapshot on the event loop, so the dispatcher cannot mutate the state mid-copy;
+        # write off it: the env servers persisting the open work's arrays take a while.
         work = self.open_work()
-        self.ckpt_manager.save(self.progress, self.train_source, step, work)
+        state = build_state(self.progress, self.train_source, work)
+        await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
         self.dispatcher.hold_snapshots(work["groups"])
         return time.perf_counter() - t
 
@@ -1026,14 +1027,14 @@ class Orchestrator:
             if result_env_name(result) in names:
                 self.dispatcher.out_q.put_nowait(result)
 
-    def apply_control(self) -> None:
+    async def apply_control(self) -> None:
         """Save the state as of shipping the last step if a pause is due at it. A trainer paused
         there never requests the next step, so this stays the last shipped step."""
         if self.shipped_state is None:
             return
         step, state = self.shipped_state
         if self.controller.update(step):
-            self.ckpt_manager.save_state(state, step)
+            await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
             self.controller.mark_saved(step)
             get_logger().info(f"Paused at step {step}, saved its state")
 
@@ -1042,7 +1043,7 @@ class Orchestrator:
         while True:
             await self.control_requested.wait()
             self.control_requested.clear()
-            self.apply_control()
+            await self.apply_control()
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs
