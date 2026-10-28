@@ -12,13 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 from prime_rl import monitors
-from prime_rl.configs.monitors import (
-    EvalMonitorsConfig,
-    FileMonitorConfig,
-    PrimeMonitorConfig,
-    TrainMonitorsConfig,
-    WandbMonitorConfig,
-)
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.prime import PrimeMonitor
 
@@ -110,24 +103,6 @@ def test_sft_registers_wandb_project(prime_init, tmp_path):
     assert prime_init[0]["training"].wandb_project == "sft-tests"
 
 
-def test_online_eval_monitors_keep_the_trainers_prime_monitor():
-    """The online-eval process logs to the trainer's Prime run, under the same config."""
-    from prime_rl.entrypoints.sft import build_online_eval_monitors
-
-    monitors = build_online_eval_monitors(
-        TrainMonitorsConfig(
-            wandb=WandbMonitorConfig(project="sft-tests"),
-            file=FileMonitorConfig(),
-            prime=PrimeMonitorConfig(name="my-run"),
-        )
-    )
-
-    assert isinstance(monitors, EvalMonitorsConfig)
-    assert monitors.prime == PrimeMonitorConfig(name="my-run")
-    assert monitors.wandb.project == "sft-tests"
-    assert build_online_eval_monitors(TrainMonitorsConfig(prime=None)).prime is None
-
-
 def test_sft_setup_registers_prime_monitor(prime_init, tmp_path, clear_monitors):
     config = _sft_config({"monitors": {"prime": {}}})
 
@@ -146,34 +121,6 @@ def test_sft_setup_registers_prime_monitor(prime_init, tmp_path, clear_monitors)
     asyncio.run(monitors.log({"loss/mean": 1.0, "step": 1}, step=1))
     asyncio.run(monitors.log({"val/loss": 0.5, "step": 1}, step=1))
     asyncio.run(monitors.finalize())
-
-
-def test_online_eval_config_keeps_prime_monitor():
-    """SFTOnlineEvalConfig.monitors must be EvalMonitorsConfig so the
-    trainer's prime monitor survives the eval.json dump/re-parse boundary
-    (base MonitorsConfig drops/forbids prime)."""
-    from prime_rl.configs.eval import SFTOnlineEvalConfig
-    from prime_rl.configs.monitors import EvalMonitorsConfig
-    from prime_rl.entrypoints.sft import build_online_eval_monitors
-
-    field = SFTOnlineEvalConfig.model_fields["monitors"]
-    assert field.annotation is EvalMonitorsConfig
-
-    train_monitors = TrainMonitorsConfig.model_validate({"prime": {"name": "r1"}})
-    eval_monitors = build_online_eval_monitors(train_monitors)
-    assert isinstance(eval_monitors.prime, PrimeMonitorConfig)
-    assert eval_monitors.prime.name == "r1"
-
-    # The online-eval process passes the prime monitor to monitors.setup
-    # (src/prime_rl/eval/online.py) — same wiring as the standalone eval
-    # entrypoint. Read the source text (importing the module pulls torch,
-    # which this torch-free test env deliberately lacks).
-    from pathlib import Path
-
-    import prime_rl
-
-    online_src = Path(prime_rl.__path__[0], "eval", "online.py").read_text()
-    assert "prime=config.monitors.prime" in online_src
 
 
 @pytest.fixture

@@ -14,7 +14,7 @@ from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
 )
 from prime_rl.configs.diff import LIVE_INSIDE
-from prime_rl.configs.monitors import TrainMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ControlConfig,
@@ -500,7 +500,7 @@ class OrchestratorConfig(BaseConfig):
     env_vars: EnvVars = Field({}, frozen=True)
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    monitors: TrainMonitorsConfig = Field(TrainMonitorsConfig(), frozen=True)
+    monitors: MonitorsConfig = Field(MonitorsConfig(), frozen=True)
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = Field(True, frozen=True)

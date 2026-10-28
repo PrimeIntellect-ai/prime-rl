@@ -65,6 +65,10 @@ mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
 
 export PRL_RUN_ID={{ prl_run_id }}
+{% if prime_run_id %}
+# The Prime run the launcher registered: every process attaches to it.
+export RUN_ID={{ prime_run_id }}
+{% endif %}
 export PRL_RUN_NAME={{ run_name }}
 {% if wandb_shared %}
 # Trainer and online-eval log to one shared W&B run. The trainer creates the run,

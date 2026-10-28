@@ -55,15 +55,7 @@ class MonitorsConfig(BaseConfig):
     file: FileMonitorConfig | None = FileMonitorConfig()
     """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""
 
-
-class TrainMonitorsConfig(MonitorsConfig):
     prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
-    """Log metrics and episodes to the Prime Intellect platform. On by default and
-    needs a Prime API key; disable with ``--no-monitors.prime``."""
-
-
-class EvalMonitorsConfig(MonitorsConfig):
-    prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
-    """Upload every eval source's epoch as an evaluation on the Prime Intellect platform (an
-    SFT online-eval process logs to the trainer's run instead). On by default and needs a
-    Prime API key; disable with ``--no-monitors.prime``."""
+    """Log metrics and episodes to the Prime Intellect platform: a training run's processes
+    log to one platform run, and a standalone eval uploads each source's epoch as an
+    evaluation. On by default and needs a Prime API key; disable with ``--no-monitors.prime``."""
