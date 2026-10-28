@@ -1,4 +1,4 @@
-"""Trainer identity, restored positions and journal validation; no replay execution."""
+"""Trainer identity, restored positions and journal validation."""
 
 import hashlib
 from typing import Literal
@@ -45,7 +45,7 @@ class RecoveryRequired(RuntimeError):
         self.plan = plan
         super().__init__(
             f"Trainer recovery requires replay of {len(plan.batches)} journaled batches "
-            f"after {plan.restored.batch.batch_id}; replay execution is not enabled"
+            f"after {plan.restored.batch.batch_id}; replacement is not authorized"
         )
 
 

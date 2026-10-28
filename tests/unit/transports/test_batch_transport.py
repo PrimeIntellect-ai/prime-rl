@@ -14,7 +14,7 @@ from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.filesystem import FileSystemBatchReceiver, FileSystemBatchSender
 from prime_rl.transports.batch.journal import BatchCheckpoint, BatchJournal
-from prime_rl.transports.batch.recovery import RecoveryRequired, TrainerGroup
+from prime_rl.transports.batch.recovery import RecoveryRequired, TrainerGroup, TrainerHello
 from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 
@@ -160,7 +160,8 @@ def test_journal_disk_io_does_not_block_event_loop(tmp_path, setup_transport, mo
             transport.close()
 
 
-def test_replacement_gets_replay_plan_without_receiving_live_batch(tmp_path):
+@pytest.mark.parametrize("authorized", [False, True], ids=["plan-only", "replay"])
+def test_replacement_replays_only_when_authorized(tmp_path, authorized):
     sender, receivers = _zmq(tmp_path)
     sender.journal = BatchJournal(tmp_path)
     replacements = []
@@ -174,6 +175,8 @@ def test_replacement_gets_replay_plan_without_receiving_live_batch(tmp_path):
         await _send_while_ranks_request(sender, receivers)
         active = sender.handshake.active
         group = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        if authorized:
+            sender.authorize_recovery(active.attempt_id, group.attempt_id)
         port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
         for rank, data_rank in enumerate(RANK_TO_DATA_RANK):
             receiver = ZMQBatchReceiver(
@@ -186,16 +189,33 @@ def test_replacement_gets_replay_plan_without_receiving_live_batch(tmp_path):
             results = await asyncio.gather(
                 *(asyncio.to_thread(receiver.wait) for receiver in replacements), return_exceptions=True
             )
-            assert all(isinstance(result, RecoveryRequired) for result in results)
             expected = [f"{sender.journal_session}:{step}" for step in (1, 2)]
-            assert all([record.batch_id for record in result.plan.batches] == expected for result in results)
-            assert sender.handshake.active == active and not sending.done()
-            # The candidate has not taken over; the accepted group can still request its batch.
-            await asyncio.wait_for(
-                asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in receivers)), 5
-            )
-            for receiver in receivers:
-                assert receiver.receive()[0].journal_batch_id == expected[-1]
+            if authorized:
+                assert results == [None] * len(replacements)
+                assert sender.handshake.active == group and not sending.done()
+                for receiver in replacements:
+                    assert [record.batch_id for record in receiver.replay_plan.batches] == expected
+                    batch = receiver.receive()
+                    assert sender.encode(batch) == sender.journal.read(expected[0])[receiver.data_rank]
+                await asyncio.wait_for(
+                    asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in replacements)), 5
+                )
+                for receiver in replacements:
+                    batch = receiver.receive()
+                    assert sender.encode(batch) == sender.journal.read(expected[1])[receiver.data_rank]
+                assert sender.replay_batches_sent == 2 and sender.current_step == 3
+                await _send_while_ranks_request(sender, replacements)
+                assert sender.current_step == 4 and sender.replay_batches_sent == 2
+            else:
+                assert all(isinstance(result, RecoveryRequired) for result in results)
+                assert all([record.batch_id for record in result.plan.batches] == expected for result in results)
+                assert sender.handshake.active == active and not sending.done()
+                # A probe does not displace the accepted trainer.
+                await asyncio.wait_for(
+                    asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in receivers)), 5
+                )
+                for receiver in receivers:
+                    assert receiver.receive()[0].journal_batch_id == expected[-1]
         finally:
             if not sending.done():
                 sending.cancel()
@@ -205,4 +225,29 @@ def test_replacement_gets_replay_plan_without_receiving_live_batch(tmp_path):
         asyncio.run(run())
     finally:
         for transport in [sender, *receivers, *replacements]:
+            transport.close()
+
+
+def test_recovery_authorization_checks_identity_and_fences_old_requests(tmp_path):
+    sender, receivers = _zmq(tmp_path)
+    group = receivers[0].trainer_group
+    try:
+        for rank, data_rank in enumerate(RANK_TO_DATA_RANK):
+            sender.handshake.add(str(rank).encode(), TrainerHello(group, rank, data_rank))
+        sender.handshake.accept()
+        with pytest.raises(ValueError, match="journaling"):
+            sender.authorize_recovery(group.attempt_id, uuid4().hex)
+        sender.journal = BatchJournal(tmp_path)
+        with pytest.raises(ValueError, match="active trainer"):
+            sender.authorize_recovery(uuid4().hex, uuid4().hex)
+        with pytest.raises(ValueError, match="new trainer"):
+            sender.authorize_recovery(group.attempt_id, group.attempt_id)
+        replacement = uuid4().hex
+        sender.authorize_recovery(group.attempt_id, replacement)
+        assert sender.failed_attempt == group.attempt_id
+        assert sender.recovery_authorization == (group.attempt_id, replacement)
+        with pytest.raises(ValueError, match="already authorized"):
+            sender.authorize_recovery(group.attempt_id, uuid4().hex)
+    finally:
+        for transport in [sender, *receivers]:
             transport.close()
