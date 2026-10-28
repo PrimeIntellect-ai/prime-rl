@@ -13,7 +13,7 @@
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "feat/cyberstrike-next-run"
+source_ref = "4079a9a5a80eaedd0af258cd7d02446e300b49d6"
 gpu_type = "H200_141GB"
 
 max_steps = 200
