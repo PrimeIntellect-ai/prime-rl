@@ -1,6 +1,7 @@
+import dion
 import torch
 import torch.distributed as dist
-from dion import Muon
+from dion.opt_utils import create_param_batches
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import Optimizer
@@ -27,6 +28,18 @@ class AdamW(ChunkedUpdates, torch.optim.AdamW):
 
 class SignSGD(ChunkedUpdates, _SignSGD):
     pass
+
+
+class Muon(ChunkedUpdates, dion.Muon):
+    def update_units(self, group: dict):
+        if group["algorithm"] != "muon":
+            yield from super().update_units(group)
+            return
+        # Muon's batches of matrices it orthogonalizes together, the same on every rank: they run collectives
+        world_size = self._get_group_mesh_info(group)[1]
+        params = [param for param in group["params"] if param.grad is not None]
+        for batch in create_param_batches(params, world_size, self._matrix_partitions):
+            yield batch, sum(param.numel() for param in batch) // world_size
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:

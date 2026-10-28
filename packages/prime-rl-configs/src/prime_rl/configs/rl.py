@@ -442,12 +442,6 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if (
-            self.weight_broadcast.type == "filesystem"
-            and self.weight_broadcast.sparse
-            and self.trainer.optim.type == "muon"
-        ):
-            raise ValueError("Sparse weight broadcast does not support Muon yet")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
@@ -638,7 +632,7 @@ class RLConfig(BaseConfig):
                 dp = self.inference.vllm.data_parallel_size
                 if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
                     self.inference.vllm.api_server_count = dp
-                if self.weight_broadcast.type != "filesystem":
+                if self.weight_broadcast.type in ("nccl", "nixl"):
                     # Every inference GPU joins the in-memory transfer group, so size it after the DP fill.
                     world_size = dp * self.inference.vllm.tensor_parallel_size
                     self.trainer.weight_broadcast.inference_world_size = world_size
@@ -648,6 +642,8 @@ class RLConfig(BaseConfig):
             self.orchestrator.num_train_workers = (
                 self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             )
+            if self.deployment.total_infer_nodes > 0:
+                self.orchestrator.env_server_replicas = self.deployment.total_infer_nodes
 
             if self.deployment.nodes_per_fsdp_group is not None:
                 if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:

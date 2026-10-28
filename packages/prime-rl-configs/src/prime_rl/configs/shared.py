@@ -48,13 +48,16 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
-    sparse: bool = False
-    """Between anchors, publish only the weight elements that changed since the previous broadcast.
-    Engines patch their weights in place and verify every update. Not supported with LoRA or Muon."""
+
+class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    """Filesystem broadcast that, between anchors, publishes only the weight elements that changed since the
+    previous broadcast. Engines patch their weights in place and verify every update. Not supported with LoRA."""
+
+    type: Literal["sparse_filesystem"] = "sparse_filesystem"
 
     anchor_interval: int = Field(50, ge=1)
-    """With ``sparse``, publish a full checkpoint every this many steps. Engines that join or fall
-    off the delta chain load the last one and replay the deltas since."""
+    """Publish a full checkpoint every this many steps. Engines that join or fall off the delta chain load
+    the last one and replay the deltas since."""
 
     storage: str | None = None
     """With ``sparse``, where the trainer publishes deltas and anchors and engines read them: the
@@ -101,7 +104,10 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | SparseFileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
