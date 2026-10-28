@@ -22,6 +22,10 @@
 #   * repo i is PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step<step i>;
 #   * 'last' is the newest complete checkpoint, and is always requested ('best+last' when best is last);
 #   * HF_TOKEN is set (from hf.env), and every repo exists or can be created, and is private.
+#   * every repo is empty or holds an export of the same run and step (its export_report.json); a repo with another
+#     run's export, or files but no report, is refused. To replace those on purpose, add
+#     GB_EXPORT_ALLOW_OVERWRITE = "1" to [env_vars] of the rendered copy and launch it by hand (the watcher
+#     rewrites every GB_EXPORT_* key, so it never sets this one).
 # Then, for each step, in order:
 #   1. Load the model weights only from /volume/runs/$GB_EXPORT_RUN_ID/checkpoints/step_N/trainer.
 #      The SFT run mounts the volume read-only.

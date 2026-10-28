@@ -63,7 +63,6 @@ EXPECTED_UNTRAINED = 1040
 # A trained tensor this far (relative L2) from the base means a wrong key mapping, not training.
 MAX_RELATIVE_CHANGE = 0.2
 GLOO_TIMEOUT = timedelta(hours=12)
-ALLOWED_EXTRA_REPO_FILES = {".gitattributes"}
 
 
 def raise_if_failed(error: str | None, what: str, group) -> None:
@@ -137,17 +136,12 @@ def dcp_is_complete(dcp_dir: Path) -> bool:
     return not problems
 
 
-def preflight_repos(specs: list[plan.ExportSpec]) -> None:
-    """Master only: the token works, and every repo exists (created if missing) and is private."""
+def preflight_repos(specs: list[plan.ExportSpec], allow_overwrite: bool) -> None:
+    """Master only: the token works, and every repo exists (created if missing), is private, and does not hold
+    another run's export (see plan.preflight_repos)."""
     from huggingface_hub import HfApi
 
-    api = HfApi()
-    user = hub("whoami", api.whoami).get("name")
-    get_logger().info(f"Hugging Face token of {user}")
-    for spec in specs:
-        hub(f"create_repo {spec.repo_id}", api.create_repo, spec.repo_id, private=True, exist_ok=True)
-        if not hub(f"repo_info {spec.repo_id}", api.repo_info, spec.repo_id).private:
-            raise ValueError(f"{spec.repo_id} exists and is PUBLIC; refusing to upload")
+    plan.preflight_repos(HfApi(), specs, allow_overwrite=allow_overwrite, call=hub, log=get_logger().info)
 
 
 def upload(spec: plan.ExportSpec, out_dir: Path, files_by_host: dict[str, list[str]], group) -> str:
@@ -206,7 +200,7 @@ def upload(spec: plan.ExportSpec, out_dir: Path, files_by_host: dict[str, list[s
         info = hub(f"repo_info {spec.repo_id}", api.repo_info, spec.repo_id, files_metadata=False)
         remote_files = {s.rfilename for s in info.siblings or []}
         missing_files = sorted((set(expected) | local_small) - remote_files)
-        extra_files = sorted(remote_files - set(expected) - local_small - ALLOWED_EXTRA_REPO_FILES)
+        extra_files = sorted(remote_files - set(expected) - local_small - plan.ALLOWED_EXTRA_REPO_FILES)
         if missing_files or extra_files:
             raise ValueError(f"{spec.repo_id}: files missing {missing_files[:5]}, unexpected {extra_files[:5]}")
         remote = {
@@ -233,13 +227,13 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
     group = dist.new_group(backend="gloo", timeout=GLOO_TIMEOUT)
 
     # Fail before building anything: the request, the checkpoints, the token, the repos and the base model.
-    def read_request() -> list[plan.ExportSpec]:
+    def read_request() -> tuple[list[plan.ExportSpec], bool]:
         values, sources = plan.resolve_export_env(os.environ, getattr(config, "env_vars", None))
         if world.is_master:
             logger.info(f"GB_EXPORT_* request: {values} (from {sources})")
-        return plan.parse_export_env(values)
+        return plan.parse_export_env(values), plan.parse_allow_overwrite(values)
 
-    specs = run_guarded("GB_EXPORT_* check", group, read_request)
+    specs, allow_overwrite = run_guarded("GB_EXPORT_* check", group, read_request)
     if config.ckpt is None or config.ckpt.output_dir is None:
         raise ValueError("The export writes under [ckpt] output_dir (the run's directory), which is unset")
 
@@ -273,7 +267,9 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
         return weight_map
 
     weight_map = run_guarded("base model check", group, check_base)
-    run_guarded("Hugging Face preflight", group, lambda: preflight_repos(specs) if world.is_master else None)
+    run_guarded(
+        "Hugging Face preflight", group, lambda: preflight_repos(specs, allow_overwrite) if world.is_master else None
+    )
 
     out_root = config.ckpt.output_dir / "hf-export"
     report_path = config.ckpt.output_dir / "export_report.json"

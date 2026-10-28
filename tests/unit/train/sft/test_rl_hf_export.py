@@ -369,3 +369,100 @@ def test_assign_files_balanced_and_complete():
     assert sorted(f for a in assignment for f in a) == sorted(sizes)
     assert sorted(len(a) for a in assignment) == [1] + [2] * 31
     assert assign_files(sizes, 32) == assignment  # deterministic across ranks
+
+
+class FakeHub:
+    """Stands in for huggingface_hub.HfApi: repos hold {filename: text}; records the calls that change a repo."""
+
+    def __init__(self, repos=None, private=True):
+        self.repos = {repo: dict(files) for repo, files in (repos or {}).items()}
+        self.private = private
+        self.created, self.downloads = [], []
+
+    def whoami(self):
+        return {"name": "tester"}
+
+    def create_repo(self, repo_id, private=None, exist_ok=False):
+        assert private is True and exist_ok is True
+        if repo_id not in self.repos:
+            self.created.append(repo_id)
+            self.repos[repo_id] = {".gitattributes": ""}
+
+    def repo_info(self, repo_id):
+        siblings = [type("Sibling", (), {"rfilename": name})() for name in self.repos[repo_id]]
+        return type("Info", (), {"private": self.private, "sha": "headsha", "siblings": siblings})()
+
+    def hf_hub_download(self, repo_id, filename, revision=None, local_dir=None):
+        assert revision == "headsha"
+        self.downloads.append((repo_id, filename))
+        path = Path(local_dir) / filename
+        path.write_text(self.repos[repo_id][filename])
+        return str(path)
+
+
+def exported_repo(run_id=RUN, step=120):
+    report = {"step": step, "source": {"run_id": run_id, "dcp_dir": "x"}, "sha256": {}}
+    return {".gitattributes": "", "README.md": "card", "export_report.json": json.dumps(report), "x.safetensors": ""}
+
+
+def test_parse_allow_overwrite():
+    assert plan.parse_allow_overwrite({}) is False
+    for raw, expected in (("", False), ("0", False), ("false", False), (" 1 ", True), ("TRUE", True)):
+        assert plan.parse_allow_overwrite({"GB_EXPORT_ALLOW_OVERWRITE": raw}) is expected
+    with pytest.raises(plan.ExportSpecError, match="GB_EXPORT_ALLOW_OVERWRITE"):
+        plan.parse_allow_overwrite({"GB_EXPORT_ALLOW_OVERWRITE": "yes"})
+    # Read from the config's env_vars like the other keys.
+    values, _ = plan.resolve_export_env({}, dict(env(), GB_EXPORT_ALLOW_OVERWRITE="1"))
+    assert plan.parse_allow_overwrite(values) is True
+
+
+def test_preflight_creates_missing_and_accepts_empty_or_same_run():
+    specs = plan.parse_export_env(env())
+    step200 = plan.expected_repo_id(200)
+    # step120: an earlier attempt of this export; step200: missing (created, holds only .gitattributes).
+    hub = FakeHub({specs[0].repo_id: exported_repo(step=120)})
+    logs = []
+    plan.preflight_repos(hub, specs, log=logs.append)
+    assert hub.created == [step200]
+    assert hub.downloads == [(specs[0].repo_id, "export_report.json")]
+    assert any("earlier export attempt" in line for line in logs)
+
+
+@pytest.mark.parametrize(
+    "files, message",
+    [
+        (exported_repo(run_id="otherrun12345678"), "holds the export of run 'otherrun12345678'"),
+        (exported_repo(step=80), "step 80"),
+        ({".gitattributes": "", "README.md": "someone else's model"}, "no export_report.json"),
+        ({"export_report.json": "not json"}, "cannot read the run"),
+        ({"export_report.json": json.dumps({"step": 120})}, "cannot read the run"),
+    ],
+)
+def test_preflight_refuses_other_exports(files, message):
+    specs = plan.parse_export_env(env())
+    hub = FakeHub({specs[0].repo_id: files})
+    with pytest.raises(ValueError, match=message) as info:
+        plan.preflight_repos(hub, specs)
+    assert "GB_EXPORT_ALLOW_OVERWRITE=1" in str(info.value)
+    # With the override it is only logged.
+    logs = []
+    plan.preflight_repos(FakeHub({specs[0].repo_id: files}), specs, allow_overwrite=True, log=logs.append)
+    assert any("GB_EXPORT_ALLOW_OVERWRITE is set" in line for line in logs)
+
+
+def test_preflight_refuses_public_repo_even_with_override():
+    specs = plan.parse_export_env(env())
+    with pytest.raises(ValueError, match="PUBLIC"):
+        plan.preflight_repos(FakeHub(private=False), specs, allow_overwrite=True)
+
+
+def test_preflight_runs_hub_calls_through_call():
+    specs = plan.parse_export_env(env())
+    seen = []
+
+    def call(what, fn, *args, **kwargs):
+        seen.append(what.split()[0])
+        return fn(*args, **kwargs)
+
+    plan.preflight_repos(FakeHub({specs[0].repo_id: exported_repo()}), specs, call=call)
+    assert seen == ["whoami", "create_repo", "repo_info", "download", "create_repo", "repo_info"]

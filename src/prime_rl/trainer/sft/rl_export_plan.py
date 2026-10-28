@@ -19,12 +19,17 @@ so the watcher writes the four values into the top-level [env_vars] table of a p
 and launches it with `prime train <rendered.toml> --volume nemotron-genebench-base -e ~/.config/prime-export/hf.env -y`.
 The export reads each variable from the process environment and, when it is not there, from the trainer
 config's env_vars (see resolve_export_env), so it does not depend on the hosted launcher exporting [env_vars].
+
+A step's repo name depends only on the step, so before uploading, the export checks that every repo is empty or
+holds an export of the same run (preflight_repos). A repo that holds another run's export, or files but no
+export_report.json, is refused, unless GB_EXPORT_ALLOW_OVERWRITE=1 is set the same way (the watcher never sets it).
 """
 
 import json
 import math
 import os
 import re
+import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -38,6 +43,11 @@ ENV_STEPS = "GB_EXPORT_STEPS"
 ENV_REPOS = "GB_EXPORT_REPOS"
 ENV_ROLES = "GB_EXPORT_ROLES"
 ENV_KEYS = (ENV_RUN_ID, ENV_STEPS, ENV_REPOS, ENV_ROLES)
+ENV_ALLOW_OVERWRITE = "GB_EXPORT_ALLOW_OVERWRITE"
+OPTIONAL_ENV_KEYS = (ENV_ALLOW_OVERWRITE,)
+REPORT_FILE = "export_report.json"
+# Files a repo may hold besides the export's own: create_repo adds .gitattributes.
+ALLOWED_EXTRA_REPO_FILES = frozenset({".gitattributes"})
 ROLES = ("best", "last", "best+last")
 DONE_MARKER = "GB_EXPORT_DONE"
 ALL_DONE_MARKER = "GB_EXPORT_ALL_DONE"
@@ -89,7 +99,7 @@ def resolve_export_env(
     config_env_vars = config_env_vars or {}
     values: dict[str, str] = {}
     sources: dict[str, str] = {}
-    for key in ENV_KEYS:
+    for key in ENV_KEYS + OPTIONAL_ENV_KEYS:
         from_env, from_config = environ.get(key), config_env_vars.get(key)
         if from_env is not None and from_config is not None and from_env.strip() != str(from_config).strip():
             raise ExportSpecError(
@@ -157,6 +167,82 @@ def parse_export_env(env: Mapping[str, str] | None = None) -> list[ExportSpec]:
     if best and best[0] > last[0]:
         raise ExportSpecError(f"best step {best[0]} is after the last step {last[0]}")
     return [ExportSpec(run_id, step, repo, role) for step, repo, role in zip(steps, repos, roles)]
+
+
+def parse_allow_overwrite(env: Mapping[str, str]) -> bool:
+    """GB_EXPORT_ALLOW_OVERWRITE: unset, empty, 0 or false = refuse other runs' repos; 1 or true = replace them."""
+    raw = (env.get(ENV_ALLOW_OVERWRITE) or "").strip().lower()
+    if raw in ("", "0", "false"):
+        return False
+    if raw in ("1", "true"):
+        return True
+    raise ExportSpecError(f"{ENV_ALLOW_OVERWRITE}={raw!r} is not one of 1, true, 0, false")
+
+
+def repo_reuse_problem(spec: ExportSpec, files: Iterable[str], read_report: Callable[[], str]) -> str | None:
+    """Why uploading ``spec`` to its repo, which holds ``files``, would replace another export (None: it would
+    not). An empty repo is fine, and so is one whose export_report.json is of the same run and step (an earlier
+    attempt of this export). ``read_report`` returns that report's text."""
+    files = set(files) - ALLOWED_EXTRA_REPO_FILES
+    if not files:
+        return None
+    if REPORT_FILE not in files:
+        return f"{spec.repo_id} holds {len(files)} files ({sorted(files)[:3]}) but no {REPORT_FILE}"
+    try:
+        report = json.loads(read_report())
+        source_run, step = report["source"]["run_id"], report["step"]
+    except Exception as error:
+        return f"{spec.repo_id}: cannot read the run of its {REPORT_FILE}: {type(error).__name__}: {error}"
+    if source_run != spec.run_id or step != spec.step:
+        return f"{spec.repo_id} holds the export of run {source_run!r} step {step!r}, not run {spec.run_id!r} step {spec.step}"
+    return None
+
+
+def preflight_repos(
+    api,
+    specs: Iterable[ExportSpec],
+    *,
+    allow_overwrite: bool = False,
+    call: Callable | None = None,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """The token works, and every repo exists (created if missing), is private, and is empty or holds an export
+    of the same run and step (see repo_reuse_problem; with ``allow_overwrite`` that is only logged).
+    ``api`` is a huggingface_hub.HfApi; ``call(what, fn, *args, **kwargs)`` runs each Hub call (with retries)."""
+    call = call or (lambda what, fn, *args, **kwargs: fn(*args, **kwargs))
+    log = log or (lambda message: None)
+    log(f"Hugging Face token of {call('whoami', api.whoami).get('name')}")
+    problems = []
+    for spec in specs:
+        call(f"create_repo {spec.repo_id}", api.create_repo, spec.repo_id, private=True, exist_ok=True)
+        info = call(f"repo_info {spec.repo_id}", api.repo_info, spec.repo_id)
+        if not info.private:
+            raise ValueError(f"{spec.repo_id} exists and is PUBLIC; refusing to upload")
+
+        def read_report(spec=spec, info=info) -> str:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = call(
+                    f"download {spec.repo_id}/{REPORT_FILE}",
+                    api.hf_hub_download,
+                    spec.repo_id,
+                    REPORT_FILE,
+                    revision=info.sha,
+                    local_dir=tmp,
+                )
+                return Path(path).read_text()
+
+        problem = repo_reuse_problem(spec, (s.rfilename for s in info.siblings or []), read_report)
+        if problem and allow_overwrite:
+            log(f"{problem}; replacing it, since {ENV_ALLOW_OVERWRITE} is set")
+        elif problem:
+            problems.append(problem)
+        elif any(s.rfilename == REPORT_FILE for s in info.siblings or []):
+            log(f"{spec.repo_id} holds an earlier export attempt of this run and step; it will be replaced")
+    if problems:
+        raise ValueError(
+            f"refusing to replace other exports: {problems}. Export to empty repos, or set "
+            f"{ENV_ALLOW_OVERWRITE}=1 in the export config's [env_vars] to replace them"
+        )
 
 
 def storage_problems(dcp_dir: Path, file_ends: Mapping[str, int]) -> list[str]:
