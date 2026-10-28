@@ -82,7 +82,14 @@ def trained_weights(base: dict[str, torch.Tensor], drop: str | None = None) -> d
 
 
 def _worker(
-    rank: int, world_size: int, port: int, tmp: str, drop: str | None, fail_mkdir_rank: int | None, queue
+    rank: int,
+    world_size: int,
+    port: int,
+    tmp: str,
+    drop: str | None,
+    fail_mkdir_rank: int | None,
+    full_per_node: bool,
+    queue,
 ) -> None:
     os.environ.update(
         RANK=str(rank),
@@ -116,7 +123,7 @@ def _worker(
             ),
         )
         # Each rank's "node" has its own copy of the run directory.
-        ctx = hf_export.prepare(config, tmp / f"node{rank}" / "hf-export")
+        ctx = hf_export.prepare(config, tmp / f"node{rank}" / "hf-export", full_per_node=full_per_node)
         if rank == fail_mkdir_rank:
             real_mkdir = Path.mkdir
 
@@ -138,12 +145,14 @@ def _worker(
         dist.destroy_process_group()
 
 
-def run_export(tmp_path: Path, drop: str | None = None, fail_mkdir_rank: int | None = None) -> list:
+def run_export(
+    tmp_path: Path, drop: str | None = None, fail_mkdir_rank: int | None = None, full_per_node: bool = False
+) -> list:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     queue = mp.get_context("spawn").Queue()
-    mp.spawn(_worker, args=(2, port, str(tmp_path), drop, fail_mkdir_rank, queue), nprocs=2, join=True)
+    mp.spawn(_worker, args=(2, port, str(tmp_path), drop, fail_mkdir_rank, full_per_node, queue), nprocs=2, join=True)
     return sorted(queue.get() for _ in range(2))
 
 
@@ -196,6 +205,59 @@ def test_export_two_nodes(tmp_path):
     assert "the lowest validation loss of the run" in (best / "README.md").read_text()
     assert sorted(p.name for p in best.iterdir()) == sorted(p.name for p in master.iterdir())
     assert not (Path(results[1][3]) / "export_report.json").exists()  # the master's node only
+
+
+def test_full_copy_per_node(tmp_path):
+    """[inrun_eval]: every node writes every file from the same gather; the copies are identical and the other nodes
+    get the config and tokenizer too (enough to serve their copy), but not the report."""
+    make_base(tmp_path / "base")
+    results = run_export(tmp_path, full_per_node=True)
+    assert all(out is not None and best is not None for _, out, _, best in results)
+    nodes = [Path(out) for _, out, _, _ in results]
+    for rank, out, files, best in results:
+        assert sorted(files) == sorted(BASE)  # each node's only rank writes all files
+        assert sorted(p.name for p in Path(out).glob("*.safetensors")) == sorted(BASE)
+        assert sorted(p.name for p in Path(best).glob("*.safetensors")) == sorted(BASE)
+    for name in BASE:
+        assert (nodes[0] / name).read_bytes() == (nodes[1] / name).read_bytes()
+    report = json.loads((nodes[0] / "export_report.json").read_text())
+    assert report["problems"] == [] and report["full_copy_per_node"] is True
+    assert sorted(p.name for p in nodes[1].iterdir() if not p.name.endswith(".safetensors")) == [
+        "config.json",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+    ]
+
+
+def test_node_copy_check_and_cleanup_targets(tmp_path):
+    files = ["a", "b"]
+    assert hf_export.check_node_copies([{"a": "1", "b": "2"}, {"a": "1", "b": "2"}], 1, files) == []
+    assert hf_export.check_node_copies([{"a": "1", "b": "2"}, {"a": "1", "b": "3"}], 1, files) == [
+        "b: the node copies differ (['2', '3'])"
+    ]
+    assert hf_export.check_node_copies([{"a": "1", "b": "2"}, {"a": "1"}], 1, files) == ["b: written on nodes [0] of 2"]
+    # Two ranks on one node: one copy, spread over the node's ranks.
+    assert hf_export.check_node_copies([{"a": "1"}, {"b": "2"}], 2, files) == []
+
+    cleanup = SimpleNamespace(best_snapshot=True, final_checkpoint=True, pushed_exports=True)
+    R = hf_export.ExportResult
+    results = {
+        "last": R(name="last", ok=True, dir="/run/hf-export/last", verified=True),
+        "best": R(name="best", ok=True, dir="/run/hf-export/best", verified=False),
+    }
+    run = Path("/run")
+    targets = hf_export.staging_deletions(cleanup, results, run / "best-weights", run, 288, exports=True)
+    assert targets == [run / "best-weights", run / "checkpoints" / "step_288", Path("/run/hf-export/last")]
+    # The exports stay for the in-run eval; nothing goes unless proven safe.
+    assert hf_export.staging_deletions(cleanup, results, None, run, 288, exports=False) == [
+        run / "checkpoints" / "step_288"
+    ]
+    results["last"].verified = False
+    results["best"].ok = False
+    assert hf_export.staging_deletions(cleanup, results, run / "best-weights", run, 288, exports=True) == []
+    off = SimpleNamespace(best_snapshot=False, final_checkpoint=False, pushed_exports=False)
+    results = {"last": R(name="last", ok=True, dir="/d", verified=True), "best": R(name="best", ok=True, dir="/e")}
+    assert hf_export.staging_deletions(off, results, run / "best-weights", run, 288, exports=True) == []
 
 
 def test_broken_mapping_fails_without_raising(tmp_path):

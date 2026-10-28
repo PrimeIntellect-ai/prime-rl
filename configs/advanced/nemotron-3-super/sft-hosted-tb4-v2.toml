@@ -1,9 +1,11 @@
 # Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 tb4 (Terminal-Bench) trajectories, v2 data.
 # The restart of sft-hosted-tb4-1m.toml (run eivawxtikvt75p1ietxg4lok): same recipe (1M context, 7 epochs, lr 1e-5,
-# warmup 4, cosine to 1e-6) on the updated export, plus best/last checkpoint retention and an HF export at the end.
-# prime train configs/advanced/nemotron-3-super/sft-hosted-tb4-v2.toml --volume nemotron-sft-tb4 \
-#     -e ~/.config/prime-export/hf.env -y          # forwards HF_TOKEN for the end-of-run push; without it the
-#                                                  # exports stay on the volume
+# warmup 4, cosine to 1e-6) on the updated export, plus best/last checkpoint retention, an HF export at the end and
+# the in-run pass@8 eval of both exports ([inrun_eval], PREREQS.md).
+# prime train configs/advanced/nemotron-3-super/sft-hosted-tb4-v2.toml --volume nemotron-sft-tb4-v2 \
+#     -e ~/.config/prime-export/hf.env -e ~/.config/prime-export/tb4-eval.env -y
+# hf.env: HF_TOKEN for the end-of-run push (without it the exports stay on the volume and the eval has no download
+# fallback). tb4-eval.env: the eval's Prime API key (TB4_EVAL_PRIME_API_KEY) and PRIME_TEAM_ID (PREREQS.md).
 #
 # Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
 # trained as its text-only language model (/volume/models/nemotron-3.5-super-text). Check before every
@@ -17,10 +19,13 @@
 # Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
 # only) ~0.48 TB, each HF export ~0.25 TB. Peak ~3.9 TB of run data (rolling checkpoint + one in flight + best +
 # a best in flight) on top of models/ + datasets/. The volume must not hold old run directories.
+# What reaches the volume after the run ([hf_export.cleanup], [inrun_eval]): the final checkpoint (1.45 TB), the
+# two exports (2 x 0.25 TB, each file from one node) and runs/<id>/eval/ (results + compressed stores). The best
+# snapshot and the per-node duplicate export copies are deleted from the node staging before the sync.
 
 image_tag = "v0.10.1.dev74"
 # exp/nemotron-sft-tb4-v2 = 017c0883549e (the code that trained swe-marathon and the first TB4 run) + [val]
-# after_optimizer_step / keep_best + [hf_export]. Don't push other changes to it.
+# after_optimizer_step / keep_best + [hf_export] + [inrun_eval]. Don't push other changes to it.
 source_ref = "exp/nemotron-sft-tb4-v2"
 gpu_type = "H200_141GB"
 
@@ -151,3 +156,23 @@ model_card = """
 - Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
   `chat_template_kwargs={"truncate_history_thinking": false}`.
 """
+
+# Delete from the node staging (never synced to the volume) what the exports made redundant. Each deletion waits
+# for its proof: the best snapshot once the 'best' export passed its checks; the final checkpoint only once the
+# 'last' export is verified on Hugging Face.
+[hf_export.cleanup]
+best_snapshot = true
+# DECISION: true drops the 1.45 TB final checkpoint (parameters + optimizer state): the run could not be resumed or
+# trained further. The 'last' export (bf16 weights) is on HF either way.
+final_checkpoint = false
+pushed_exports = false
+
+# After the export, the 4 nodes serve vLLM (TP2 x DP4 with EP per node, 16 engines) and node 0 replays the TB4
+# collection harness (sft-gen flow run, verifiers 24107a4ea, mini-swe-agent 2.4.6, the three collection runs'
+# attempt_2 configs): 500 tasks x 8 rollouts per checkpoint, best then last ('best' at the final step is evaluated
+# once). Results: runs/<id>/eval/<best|last>/summary.json (pass@k overall / val / train / per source), per_task.jsonl,
+# the flow configs and logs, stores/*.tar.zst. Needs the eval bundle at /volume/datasets/tb4-eval (PREREQS.md).
+[inrun_eval]
+checkpoints = ["best", "last"]
+schedule = "sequential"
+budget_hours = 48    # hard cap from the hand-off; each checkpoint gets half, then the harness is stopped and scored

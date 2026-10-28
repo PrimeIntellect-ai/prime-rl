@@ -1,0 +1,52 @@
+# SMOKE TEST of the in-run TB4 eval ([inrun_eval], PREREQS.md) on hardware, before the real run depends on it.
+# No training: the trainer goes straight to the hand-off (eval_only), serves the GA text backbone with vLLM and runs
+# the collection harness on the 3 tasks of /volume/datasets/tb4-eval/smoke-tasks.txt, 1 rollout each.
+# prime train configs/advanced/nemotron-3-super/tb4-inrun-eval-smoke.toml --volume nemotron-sft-tb4-v2 \
+#     -e ~/.config/prime-export/tb4-eval.env -y
+# Then read runs/<id>/eval/base/summary.json and status.json (after the run's sync), and the run's log for the
+# hand-off ("hands over to its eval process"), the vLLM start-up time, "harness ready", the probe and the flow runs.
+#
+# What it answers (PREREQS.md "unknowns"): the pod outlives "SFT trainer finished"-less trainer exits; Prime
+# credentials, frps/GitHub/PyPI egress and the sandboxes work from the pod; GPUs are free after the hand-off; vLLM
+# fits 1M context at TP2 with the float32 Mamba cache and its start-up time; the harness venv builds with the pins;
+# results under runs/<id>/eval/ reach the volume; the deleted work dir does not.
+# With num_train_nodes = 2 it also tests the cross-node part (coordination store, node 1's engines behind node 0's
+# router).
+
+image_tag = "v0.10.1.dev74"
+source_ref = "exp/nemotron-sft-tb4-v2"
+gpu_type = "H200_141GB"
+
+max_steps = 1   # unused (eval_only: no training step runs)
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 1
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+
+[renderer]   # never used (eval_only); SFTConfig requires the typed renderer
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-tb4-1m-v2"   # never loaded (eval_only)
+seq_len = 1048576
+batch_size = 1
+micro_batch_size = 1
+
+[inrun_eval]
+eval_only = true
+model_dir = "/volume/models/nemotron-3.5-super-text"
+model_name = "base"
+budget_hours = 8      # 3 rollouts; the collection timeouts allow a rollout up to 24 h, pick fast smoke tasks
+reserve_minutes = 30
+keep_work_dir = false
+
+[inrun_eval.harness]
+tasks_file = "/volume/datasets/tb4-eval/smoke-tasks.txt"
+k = 1
+expected_tasks = 3

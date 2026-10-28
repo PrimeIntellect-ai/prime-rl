@@ -4,6 +4,7 @@ import math
 import time
 import asyncio
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -70,8 +71,17 @@ from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
 
 
+@dataclass
+class TrainResult:
+    """What the in-run eval needs from the training run (the same on every rank)."""
+
+    paused: bool
+    final_step: int
+    exports: dict[str, dict]
+
+
 @clean_exit
-def train(config: SFTConfig):
+def train(config: SFTConfig) -> TrainResult:
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -719,8 +729,20 @@ def train(config: SFTConfig):
         weight_sender.broadcast(model, step=progress.step)
 
     # [hf_export]: after the final checkpoint and the final broadcast, since exporting 'best' loads its weights.
+    # [inrun_eval] serves the exports on every node: each node then writes a complete copy, and the exports stay in
+    # place until the eval is done with them.
+    export_results: dict[str, hf_export.ExportResult] = {}
     if config.hf_export is not None and not paused:
-        hf_export.run(config, model, best_ckpt, progress.step, ckpt_manager.ckpt_dir.parent)
+        evaluates_exports = config.inrun_eval is not None and config.inrun_eval.model_dir is None
+        export_results = hf_export.run(
+            config,
+            model,
+            best_ckpt,
+            progress.step,
+            ckpt_manager.ckpt_dir.parent,
+            full_per_node=evaluates_exports,
+            defer_export_cleanup=evaluates_exports,
+        )
 
     if gradient_manager is not None:
         gradient_manager.close()
@@ -732,11 +754,30 @@ def train(config: SFTConfig):
         # The run's owner reads the committed pause from the control API, then stops the run.
         logger.info("Paused, serving the control API until the run is stopped")
         control_server.wait()
+    return TrainResult(
+        paused=paused,
+        final_step=progress.step,
+        exports={name: result.to_dict() for name, result in export_results.items()},
+    )
 
 
 def main():
     set_proc_title("SFTTrainer")
-    train(cli(SFTConfig))
+    config = cli(SFTConfig)
+    if config.inrun_eval is not None and config.inrun_eval.eval_only:
+        # The smoke test of the eval: no training, no model, straight to the hand-off.
+        from prime_rl.trainer.sft.inrun_eval import handoff
+
+        setup_logger(config.log.level, json_logging=config.log.json_logging)
+        handoff.start(config, TrainResult(paused=False, final_step=0, exports={}))
+        return
+    result = train(config)
+    # After train() returned: its model, optimizer and data loaders are out of scope and @clean_exit has destroyed
+    # the process group.
+    if config.inrun_eval is not None and result is not None and not result.paused:
+        from prime_rl.trainer.sft.inrun_eval import handoff
+
+        handoff.start(config, result)
 
 
 if __name__ == "__main__":

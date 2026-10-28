@@ -22,6 +22,17 @@ Every rank writes only its own files and every node uploads only what its ranks 
 files another node wrote during the run (hosted runs stage the volume per node and sync it after the run).
 Failures are logged and never raised: the run must still end cleanly so that its checkpoints are kept.
 
+With ``full_per_node`` (the in-run eval serves the export with vLLM on every node) the files are spread over the
+ranks of each node instead of over all ranks, so every node writes a complete copy from the same gather (no extra
+traffic). The copies are byte-identical (no reduction in the gather, a fixed cast and writer), which the master checks
+from every node's sha256; uploads still take each file from one node only.
+
+Every rank hands a file to its writer thread as soon as all of the file's tensors are gathered: the writes overlap
+the gather, and host memory holds the files not written yet instead of all of the rank's files.
+
+``run`` returns what it exported (``ExportResult`` per checkpoint) and, per ``[hf_export.cleanup]``, deletes from the
+node staging what the exports made redundant (the best snapshot, the final checkpoint, verified exports).
+
 Adapted from the one-off export jobs of exp/nemotron-sft-hf-export (19cabb8ae, TEXT_LAYOUT) and
 exp/nemotron-sft-text-extract (039ecaaaf, check_against_training_base).
 """
@@ -33,10 +44,11 @@ import shutil
 import socket
 import struct
 import time
-from dataclasses import dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import asdict, dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
@@ -302,9 +314,12 @@ def from_master(obj: Any, group) -> Any:
 
 
 @torch.no_grad()
-def collect_hf_tensors(model: torch.nn.Module, wanted: set[str]) -> tuple[dict[str, Tensor], set[str]]:
+def collect_hf_tensors(
+    model: torch.nn.Module, wanted: set[str], on_tensor: Callable[[str, Tensor], None] | None = None
+) -> tuple[dict[str, Tensor], set[str]]:
     """Gather every weight (a collective, so all ranks walk all keys) and keep the HF tensors in ``wanted`` on CPU.
 
+    With ``on_tensor``, each wanted tensor is handed to it instead of being kept (the returned dict is then empty).
     Also returns every HF key the model produced, to check the mapping against the base."""
     from prime_rl.utils.weights import resolve_fqn, resolve_wire_dtype
 
@@ -317,7 +332,11 @@ def collect_hf_tensors(model: torch.nn.Module, wanted: set[str]) -> tuple[dict[s
         for hf_key, tensor in model.convert_to_hf({resolve_fqn(model, key): value}).items():
             produced.add(hf_key)
             if hf_key in wanted:
-                kept[hf_key] = tensor.to("cpu", copy=True).contiguous()
+                tensor = tensor.to("cpu", copy=True).contiguous()
+                if on_tensor is None:
+                    kept[hf_key] = tensor
+                else:
+                    on_tensor(hf_key, tensor)
         del value
     return kept, produced
 
@@ -339,9 +358,12 @@ class ExportContext:
     base_config: dict
     do_upload: bool
     group: Any
+    full_per_node: bool = False
+    num_nodes: int = 1
 
 
-def prepare(config, out_root: Path) -> ExportContext:
+def prepare(config, out_root: Path, full_per_node: bool = False) -> ExportContext:
+    """Collective. ``full_per_node``: every node writes all files (spread over its own ranks), see the module docs."""
     logger = get_logger()
     world = get_world()
     cfg = config.hf_export
@@ -352,8 +374,12 @@ def prepare(config, out_root: Path) -> ExportContext:
         raise FileNotFoundError(f"{base_dir} is not a local HF checkpoint (missing {missing})")
     weight_map: dict[str, str] = json.loads((base_dir / "model.safetensors.index.json").read_text())["weight_map"]
     files = sorted(set(weight_map.values()))
-    assignment = assign_files({name: (base_dir / name).stat().st_size for name in files}, world.world_size)
-    my_files = assignment[world.rank]
+    sizes = {name: (base_dir / name).stat().st_size for name in files}
+    # Uploads always take each file from the one node whose ranks hold it in the world-wide split.
+    assignment = assign_files(sizes, world.world_size)
+    my_files = (
+        assign_files(sizes, world.local_world_size)[world.local_rank] if full_per_node else assignment[world.rank]
+    )
     prefixes = tuple(cfg.keep_base_prefixes)
     wanted = {key for key, name in weight_map.items() if name in my_files and is_fine_tuned(key, prefixes)}
     # Every rank must take the same upload branch (it issues collectives), so the master decides.
@@ -361,7 +387,10 @@ def prepare(config, out_root: Path) -> ExportContext:
     do_upload = bool(from_master(has_token, group))
     if not do_upload:
         logger.warning("HF export: no HF_TOKEN in the environment, the exports stay on the volume only")
-    logger.info(f"HF export: base {base_dir}, {len(files)} files, rank {world.rank} writes {my_files}")
+    logger.info(
+        f"HF export: base {base_dir}, {len(files)} files{' (a full copy per node)' if full_per_node else ''}, "
+        f"rank {world.rank} writes {my_files}"
+    )
     return ExportContext(
         base_dir=base_dir,
         out_root=out_root,
@@ -378,6 +407,8 @@ def prepare(config, out_root: Path) -> ExportContext:
         base_config=json.loads((base_dir / "config.json").read_text()),
         do_upload=do_upload,
         group=group,
+        full_per_node=full_per_node,
+        num_nodes=world.num_nodes,
     )
 
 
@@ -391,34 +422,90 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
     world = get_world()
     out_dir = ctx.out_root / info.name
     start = time.perf_counter()
-    logger.info(f"[{info.name}] gathering the weights after step {info.step} and converting them to HF names")
-    fine_tuned, produced = collect_hf_tensors(model, ctx.wanted)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     changes: dict[str, float] = {}
     digests: dict[str, str] = {}
     headers: dict[str, dict] = {}
-    error = make_dir(out_dir, ctx.group)
+    error: str | None = None
+    mkdir_error = make_dir(out_dir, ctx.group)
+    if mkdir_error is not None:
+        error = f"rank {world.rank}: {OSError(f'could not create {out_dir}: {mkdir_error}')!r}"
+
+    # Each of this rank's files is written as soon as all its fine-tuned tensors are gathered, by one writer thread,
+    # so the writes overlap the gather (a write on the main thread would hold every rank's next collective) and host
+    # memory holds the files not written yet rather than all of them.
+    fine_tuned: dict[str, Tensor] = {}
+    file_keys = {name: set() for name in ctx.my_files}
+    for key in ctx.wanted:
+        file_keys[ctx.weight_map[key]].add(key)
+    pending = {name: set(keys) for name, keys in file_keys.items()}
+    writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hf-export-writer")
+    writes: dict[str, Future] = {}
+
+    def write(name: str, tensors: dict[str, Tensor]) -> tuple[dict[str, float], dict, str]:
+        file_changes = write_file(ctx.base_dir / name, out_dir / name, tensors, ctx.keep_base_prefixes)
+        check_layout(ctx.base_dir / name, out_dir / name)
+        return file_changes, read_header(out_dir / name), sha256_file(out_dir / name)
+
+    def submit(names: list[str]) -> None:
+        for name in names:
+            del pending[name]
+            tensors = {key: fine_tuned.pop(key) for key in file_keys[name] if key in fine_tuned}
+            if error is None:
+                writes[name] = writer.submit(write, name, tensors)
+
+    def on_tensor(hf_key: str, tensor: Tensor) -> None:
+        # Never raises: every rank must keep walking the collective gather.
+        nonlocal error
+        if error is not None:
+            return  # drop the tensor
+        try:
+            name = ctx.weight_map[hf_key]
+            keys = pending.get(name)
+            if keys is None or hf_key not in keys:
+                raise ValueError(f"{hf_key}: produced again after it was written")
+            fine_tuned[hf_key] = tensor
+            keys.discard(hf_key)
+            if not keys:
+                submit([name])
+        except Exception as exc:
+            error = f"rank {world.rank}: {exc!r}"
+            fine_tuned.clear()
+
+    # Files of only base-kept tensors (e.g. an MTP-only shard) need nothing from the model.
+    submit([name for name, keys in pending.items() if not keys])
+    logger.info(f"[{info.name}] gathering the weights after step {info.step} and converting them to HF names")
+    try:
+        _, produced = collect_hf_tensors(model, ctx.wanted, on_tensor)
+    finally:
+        writer.shutdown(wait=True)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     try:
         if error is not None:
-            raise OSError(f"could not create {out_dir}: {error}")
+            raise _RankFailed(error)
         expected = {key for key in ctx.weight_map if is_fine_tuned(key, ctx.keep_base_prefixes)}
         if world.is_master and not produced <= set(ctx.weight_map):
             raise ValueError(f"the model produced keys the base lacks: {sorted(produced - set(ctx.weight_map))[:5]}")
         if not expected <= produced:
             raise ValueError(f"the model produced none of: {sorted(expected - produced)[:5]}")
-        for name in ctx.my_files:
-            changes.update(write_file(ctx.base_dir / name, out_dir / name, fine_tuned, ctx.keep_base_prefixes))
-            check_layout(ctx.base_dir / name, out_dir / name)
-            headers[name] = read_header(out_dir / name)
-            digests[name] = sha256_file(out_dir / name)
+        for name in sorted(writes):
+            file_changes, headers[name], digests[name] = writes[name].result()
+            changes.update(file_changes)
+        # Files whose tensors never all arrived: write_file names the missing one.
+        for name in sorted(pending):
+            tensors = {key: fine_tuned.pop(key) for key in file_keys[name] if key in fine_tuned}
+            file_changes, headers[name], digests[name] = write(name, tensors)
+            changes.update(file_changes)
         if fine_tuned:
             raise ValueError(f"converted keys not in this rank's files: {sorted(fine_tuned)[:5]}")
+    except _RankFailed:
+        logger.error(f"[{info.name}] {error}")
     except Exception as exc:
         error = f"rank {world.rank}: {exc!r}"
         logger.error(f"[{info.name}] {error}")
-    del fine_tuned
+    fine_tuned.clear()
 
     gathered = gather((changes, digests, headers, error), ctx.group)
     ok = True
@@ -438,6 +525,10 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
             problems += find_problems(
                 summary, ctx.num_fine_tuned, len(ctx.files), len(all_digests), ctx.max_relative_change
             )
+            if ctx.full_per_node:
+                problems += check_node_copies(
+                    [rank_digests for _, rank_digests, *_ in gathered], world.local_world_size, ctx.files
+                )
         report = {
             "export": info.name,
             "source": {
@@ -452,6 +543,7 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
             "fine_tuned_tensors": len(all_changes),
             "expected_fine_tuned_tensors": ctx.num_fine_tuned,
             "kept_from_base_prefixes": list(ctx.keep_base_prefixes),
+            "full_copy_per_node": ctx.full_per_node,
             "problems": problems,
             "relative_change": summary,
             "relative_change_per_tensor": dict(sorted(all_changes.items())),
@@ -472,7 +564,44 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
                 f"in {time.perf_counter() - start:.0f}s"
             )
     ok = bool(from_master(ok, ctx.group))
+    if ok:
+        copy_base_files_on_node(out_dir, ctx)
     return out_dir if ok else None
+
+
+class _RankFailed(Exception):
+    """This rank's error is already recorded."""
+
+
+def check_node_copies(rank_digests: list[dict[str, str]], local_world_size: int, files: list[str]) -> list[str]:
+    """With a full copy per node: every node wrote every file, and all copies of a file are identical."""
+    num_nodes = len(rank_digests) // local_world_size
+    copies: dict[str, dict[int, str]] = {}
+    for rank, digests in enumerate(rank_digests):
+        for name, digest in digests.items():
+            copies.setdefault(name, {})[rank // local_world_size] = digest
+    problems = []
+    for name in files:
+        got = copies.get(name, {})
+        if len(got) != num_nodes:
+            problems.append(f"{name}: written on nodes {sorted(got)} of {num_nodes}")
+        elif len(set(got.values())) != 1:
+            problems.append(f"{name}: the node copies differ ({sorted(set(got.values()))[:2]})")
+    return problems
+
+
+def copy_base_files_on_node(out_dir: Path, ctx: ExportContext) -> None:
+    """With a full copy per node, the other nodes' ``local_rank 0`` also put the base's config and tokenizer next to
+    their copy (the master wrote its own with the report): enough to serve it. Best effort, logged."""
+    world = get_world()
+    if not ctx.full_per_node or world.is_master or world.local_rank != 0:
+        return
+    try:
+        for name in BASE_FILES:
+            if (ctx.base_dir / name).is_file():
+                shutil.copyfile(ctx.base_dir / name, out_dir / name)
+    except Exception as exc:
+        get_logger().error(f"copying the base config/tokenizer next to {out_dir} failed: {exc!r}")
 
 
 def write_small_files(info: ExportInfo, out_dir: Path, ctx: ExportContext, report: dict) -> None:
@@ -543,11 +672,15 @@ def copy_export(src_info: ExportInfo, src_dir: Path, info: ExportInfo, ctx: Expo
                 f"{out_dir}"
             )
     ok = bool(from_master(ok, ctx.group))
+    if ok:
+        copy_base_files_on_node(out_dir, ctx)
     return out_dir if ok else None
 
 
-def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
-    """Push an export: small files first (rank 0), then each node's shards (preupload in parallel, commits in turn)."""
+def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> bool:
+    """Push an export: small files first (rank 0), then each node's shards (preupload in parallel, commits in turn).
+
+    Returns (on every rank) whether every shard on the repo was verified against the local sha256."""
     from huggingface_hub import CommitOperationAdd, HfApi
 
     logger = get_logger()
@@ -577,7 +710,7 @@ def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
             logger.error(f"[{info.name}] repo setup on {repo_id} failed: {error!r}")
             ok = False
     if not from_master(ok, group):
-        return
+        return False
 
     operations: list = []
     error_text = None
@@ -601,6 +734,7 @@ def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
                 logger.error(f"[{info.name}] commit from node {node} ({host}) failed: {error_text}")
         dist.barrier(group=group)
 
+    verified = False
     if world.is_master:
         try:
             expected = json.loads((out_dir / "export_report.json").read_text())["sha256"]
@@ -613,14 +747,48 @@ def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
             if missing:
                 logger.error(f"[{info.name}] {len(missing)} shards missing or different on {repo_id}: {missing[:5]}")
             else:
+                verified = True
                 logger.success(f"[{info.name}] all {len(expected)} shards on {repo_id} match the local sha256")
         except Exception as error:
             logger.error(f"[{info.name}] could not verify {repo_id}: {error!r}")
-    dist.barrier(group=group)
+    return bool(from_master(verified, group))
 
 
-def run(config, model: torch.nn.Module, best, final_step: int, ckpt_root: Path, extra: dict | None = None) -> None:
-    """Export ``config.hf_export.checkpoints`` (last first, from memory; then best). Never raises."""
+@dataclass
+class ExportResult:
+    """What ``run`` made of one checkpoint (the same on every rank)."""
+
+    name: str
+    ok: bool = False
+    dir: str | None = None
+    step: int | None = None
+    val_loss: float | None = None
+    repo_id: str | None = None
+    pushed: bool = False
+    """The upload was attempted (a repo and HF_TOKEN were set)."""
+    verified: bool = False
+    """Every shard on the repo matches the local sha256."""
+    same_as: str | None = None
+    """'last' when 'best' is the final step (its files are a copy of the 'last' export)."""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def run(
+    config,
+    model: torch.nn.Module,
+    best,
+    final_step: int,
+    ckpt_root: Path,
+    extra: dict | None = None,
+    full_per_node: bool = False,
+    defer_export_cleanup: bool = False,
+) -> dict[str, ExportResult]:
+    """Export ``config.hf_export.checkpoints`` (last first, from memory; then best). Never raises.
+
+    ``full_per_node``: every node writes a complete copy (for the in-run eval). ``defer_export_cleanup``: leave the
+    exports in place (the in-run eval deletes them after it is done, per ``[hf_export.cleanup] pushed_exports``)."""
     from prime_rl.trainer.model import reshard_module
 
     logger = get_logger()
@@ -628,16 +796,18 @@ def run(config, model: torch.nn.Module, best, final_step: int, ckpt_root: Path, 
     out_root = ckpt_root / EXPORT_DIR_NAME
     run_id = ckpt_root.name
     start = time.perf_counter()
+    results: dict[str, ExportResult] = {name: ExportResult(name=name) for name in cfg.checkpoints}
     try:
-        ctx = prepare(config, out_root)
+        ctx = prepare(config, out_root, full_per_node=full_per_node)
     except Exception as exc:
         logger.error(f"HF export: setup failed, nothing exported: {exc!r}")
-        return
+        return results
     history = best.history if best is not None else {}
     done: list[str] = []
     # The passed export of the final weights (in memory), if any: 'best' at the final step is copied from it.
     final_export: tuple[ExportInfo, Path] | None = None
     for name in [n for n in ("last", "best") if n in cfg.checkpoints]:
+        result = results[name]
         try:
             if name == "last":
                 step, val_loss = final_step, history.get(final_step)
@@ -659,8 +829,10 @@ def run(config, model: torch.nn.Module, best, final_step: int, ckpt_root: Path, 
                 run_id=run_id,
                 extra=dict(extra or {}),
             )
+            result.step, result.val_loss, result.repo_id = step, val_loss, info.repo_id
             if final_export is not None and step == final_step:
                 out_dir = copy_export(*final_export, info, ctx)
+                result.same_as = final_export[0].name
             else:
                 reshard_module(model)
                 out_dir = export_weights(model, info, ctx)
@@ -668,11 +840,52 @@ def run(config, model: torch.nn.Module, best, final_step: int, ckpt_root: Path, 
                     final_export = (info, out_dir)
             if out_dir is None:
                 continue
+            result.ok, result.dir = True, str(out_dir)
             done.append(name)
             if info.repo_id is None:
                 logger.info(f"[{name}] no repo configured, kept on the volume at {out_dir}")
             elif ctx.do_upload:
-                upload(info, out_dir, ctx)
+                result.pushed = True
+                result.verified = upload(info, out_dir, ctx)
         except Exception as exc:
             logger.error(f"HF export of '{name}' failed: {exc!r}")
     logger.success(f"HF export finished in {time.perf_counter() - start:.0f}s: {done} under {out_root}")
+    try:
+        cleanup_staging(cfg.cleanup, results, best, ckpt_root, final_step, ctx.group, defer_export_cleanup)
+    except Exception as exc:
+        logger.error(f"HF export: staging cleanup failed: {exc!r}")
+    return results
+
+
+def staging_deletions(
+    cleanup, results: dict[str, ExportResult], best_root: Path | None, ckpt_root: Path, final_step: int, exports: bool
+) -> list[Path]:
+    """What ``[hf_export.cleanup]`` allows deleting now, given the export results (pure; unit-tested)."""
+    out: list[Path] = []
+    best, last = results.get("best"), results.get("last")
+    if cleanup.best_snapshot and best_root is not None and best is not None and best.ok:
+        out.append(best_root)
+    if cleanup.final_checkpoint and last is not None and last.ok and last.verified:
+        # prime_rl.utils.pathing: get_step_path(get_ckpt_dir(run dir), step)
+        out.append(ckpt_root / "checkpoints" / f"step_{final_step}")
+    if exports and cleanup.pushed_exports:
+        out += [Path(r.dir) for r in results.values() if r.ok and r.verified and r.dir is not None]
+    return out
+
+
+def cleanup_staging(
+    cleanup, results: dict[str, ExportResult], best, ckpt_root: Path, final_step: int, group, defer_exports: bool
+) -> None:
+    """Collective: after every rank is done reading, each node's ``local_rank 0`` deletes in its own staging."""
+    logger = get_logger()
+    world = get_world()
+    targets = staging_deletions(
+        cleanup, results, best.root if best is not None else None, ckpt_root, final_step, exports=not defer_exports
+    )
+    dist.barrier(group=group)
+    if world.local_rank == 0:
+        for path in targets:
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+                logger.info(f"Deleted {path} from this node's staging ([hf_export.cleanup])")
+    dist.barrier(group=group)

@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
@@ -178,6 +178,29 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
+class SFTExportCleanupConfig(BaseConfig):
+    """Keep run data that is safe elsewhere off the volume.
+
+    Hosted runs stage the volume on each node and sync it after the run, so a file deleted from the staging before
+    the run ends is never uploaded: deleting it here is the cheap way to keep the volume small (deleting folders on the
+    volume afterwards needs a read-write session that stages the whole volume first). Every node's ``local_rank 0``
+    deletes in its own staging, and only what the conditions below prove is safe."""
+
+    best_snapshot: bool = False
+    """Delete the ``[val] keep_best`` snapshot (``best-weights/``, fp32 parameters, ~0.48 TB for Nemotron 3.5 Super)
+    once the 'best' export passed its checks. The snapshot then no longer reloads into the run (a restart of a finished
+    run could not export 'best' again)."""
+
+    final_checkpoint: bool = False
+    """Delete the final full checkpoint (``checkpoints/step_<max_steps>``, parameters + optimizer state, ~1.45 TB)
+    once the 'last' export is on Hugging Face and its sha256s were verified there. Gives up resuming the run (e.g. to
+    train further from it)."""
+
+    pushed_exports: bool = False
+    """Delete the exports (``hf-export/<name>``) whose Hugging Face upload was verified, after the in-run eval (if
+    any) is done with them."""
+
+
 class SFTHFExportConfig(BaseConfig):
     """Export checkpoints as Hugging Face models before the trainer exits.
 
@@ -215,6 +238,9 @@ class SFTHFExportConfig(BaseConfig):
     model_card: str = ""
     """Free text added to the generated README.md (what was trained on, how to run it)."""
 
+    cleanup: SFTExportCleanupConfig = SFTExportCleanupConfig()
+    """What to delete from the node staging once the exports made it safe (default: nothing)."""
+
     @model_validator(mode="after")
     def validate_checkpoints(self):
         if not self.checkpoints or len(set(self.checkpoints)) != len(self.checkpoints):
@@ -222,6 +248,238 @@ class SFTHFExportConfig(BaseConfig):
         for repo in (self.best_repo, self.last_repo):
             if repo is not None and repo.count("/") != 1:
                 raise ValueError(f"hf_export repo {repo!r} must be 'org/name'")
+        return self
+
+
+TB4_SOURCE_LABELS = ("tb-eng", "tb-eng-extra9", "tb-sci")
+
+
+class SFTInRunEvalServingConfig(BaseConfig):
+    """vLLM on every node of the run, serving the checkpoint under evaluation. The defaults are the TB4 eval spec
+    (EVAL-HARNESS-REPLICA-SPEC.md): vLLM 0.32.0 from the image, the GA chat template, thinking on with the history's
+    reasoning kept, temperature 1.0 / top_p 0.95 as server defaults, no max_tokens, no speculative decoding."""
+
+    tensor_parallel_size: int = Field(2, ge=1)
+    """GPUs per vLLM engine."""
+
+    data_parallel_size: int = Field(4, ge=1)
+    """Engines per node (one vLLM data-parallel group per node, each engine its own API server). ``tensor_parallel_size
+    * data_parallel_size`` must be the node's GPU count."""
+
+    enable_expert_parallel: bool = True
+    """Shard the experts over the node's engines (EP = TP x DP)."""
+
+    max_model_len: int = Field(1048576, ge=1)
+    """Context window (the model's 1M, as trained)."""
+
+    served_model_name: str = "nemotron-3.5-super-tb4-sft"
+    """The model name the harness sends and the agent can see (mini's args, its trajectory file): the same for every
+    evaluated checkpoint, so what the agent sees does not depend on which one it is."""
+
+    chat_template: str = "chat_template.jinja"
+    """Chat template file, relative to the served model directory (or absolute)."""
+
+    chat_template_sha256: str | None = "1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816"
+    """Refuse to serve unless the template has this sha256 (the GA template). None skips the check."""
+
+    default_chat_template_kwargs: dict[str, Any] = {"enable_thinking": True, "truncate_history_thinking": False}
+    """Server-side template defaults (the training rendering keeps past turns' reasoning)."""
+
+    override_generation_config: dict[str, Any] = {"temperature": 1.0, "top_p": 0.95}
+    """Sampling defaults for requests that do not set them (the harness sends temperature 1.0 and no top_p)."""
+
+    reasoning_parser: str = "nemotron_v3"
+    tool_call_parser: str = "qwen3_coder"
+
+    mamba_cache_dtype: str = "float32"
+    enable_prefix_caching: bool = True
+    dtype: str = "bfloat16"
+    seed: int = 0
+    gpu_memory_utilization: float = Field(0.85, gt=0, le=1)
+    max_num_seqs: int = Field(256, ge=1)
+    max_num_batched_tokens: int = Field(8192, ge=1)
+
+    vllm_extra: dict[str, Any] = {
+        "all2all_backend": "allgather_reducescatter",
+        "safetensors_load_strategy": "prefetch",
+    }
+    """Further vLLM engine arguments (vLLM's names), passed through as they are."""
+
+    env_vars: dict[str, str] = {}
+    """Extra environment for the engines (on top of prime-rl's inference defaults)."""
+
+    engine_port: int = Field(8100, ge=1, le=65535)
+    """Engine ``d`` of a node listens on ``engine_port + d``."""
+
+    router_port: int = Field(8000, ge=1, le=65535)
+    """The router of the i-th checkpoint served at the same time listens on node 0 at ``router_port + i``."""
+
+    router_policy: str = "sticky_least_loaded"
+    """vllm-router policy: keeps a rollout (its ``X-Session-ID``) on one engine for its prefix cache."""
+
+    router_request_timeout_secs: int = Field(14400, ge=1)
+
+    rpc_port: int = Field(13345, ge=1, le=65535)
+    """vLLM data-parallel RPC port (node-local)."""
+
+    startup_timeout_seconds: float = Field(7200, gt=0)
+    """How long the engines of a node may take to load and compile before the node reports failure."""
+
+    @model_validator(mode="after")
+    def validate_spec(self):
+        if "speculative_config" in self.vllm_extra:
+            raise ValueError("inrun_eval.serving: no speculative decoding (the exports' MTP head is untrained)")
+        for key in ("max_tokens", "max_new_tokens"):
+            if key in self.override_generation_config:
+                raise ValueError(f"inrun_eval.serving: no {key} (the harness runs without an output cap)")
+        clash = {"model", "served_model_name", "tensor_parallel_size", "data_parallel_size"} & set(self.vllm_extra)
+        if clash:
+            raise ValueError(f"inrun_eval.serving.vllm_extra must not set {sorted(clash)} (set by the eval)")
+        return self
+
+
+class SFTInRunEvalHarnessConfig(BaseConfig):
+    """The collection harness (sft-gen ``flow run`` of the task-QC pipeline, measure preset: k rollouts per task, no QC
+    seats) at its collection pins, run on node 0 in its own virtualenv. Everything private (the sft-gen tree, the flow
+    configs of the collection runs, the Harbor task caches, wheels) comes from ``bundle_dir`` on the volume; see
+    PREREQS.md."""
+
+    bundle_dir: Path = Path("/volume/datasets/tb4-eval")
+    """The staged eval bundle (``manifest.json`` lists every file with its sha256)."""
+
+    sources: list[Literal["tb-eng", "tb-eng-extra9", "tb-sci"]] = list(TB4_SOURCE_LABELS)
+    """The collection runs to replay, one ``flow run`` each, all three at the same time."""
+
+    source_config_sha256: dict[str, str] = {
+        "tb-eng": "d0e5b6c7bd031fcffaf6438210dbab60f78dcdd26ac26f887a32df719858ae5a",
+        "tb-eng-extra9": "86a3fba822506c754a192edb4cb14926767ed33fff47a277cb51b8c2227e6512",
+        "tb-sci": "06d60eb7f1eb1dbc8def8124e9d9d0097c8d6a4d82c0b3a492aa4d99b2084a92",
+    }
+    """sha256 of each run's ``configs/attempt_2/flow.toml`` (the collection config, verifiers 24107a4ea)."""
+
+    tb_sci_dataset: str | None = "tb-science-vendor@71124a84e6f3"
+    """Dataset of the tb-sci run instead of its collection pin (85df9700aaf4): 71124a84e6f3 is the same 290 tasks at
+    the same commits plus convolution_filters_english, the 500th task. None keeps the collection pin."""
+
+    k: int | None = Field(None, ge=1)
+    """Rollouts per task. None keeps the collection configs' k (8)."""
+
+    tasks_file: Path | None = None
+    """Restrict the eval to the task names in this file (one per line; e.g. the smoke's three). None: every task of
+    every source."""
+
+    expected_tasks: int | None = 500
+    """Refuse to start when the selected tasks are not this many (None: no check)."""
+
+    rollouts_per_engine: int = Field(24, ge=1)
+    """Rollouts in flight per vLLM engine serving the checkpoint (the rollout gate is engines x this)."""
+
+    max_concurrent_rollouts: int | None = Field(None, ge=1)
+    """Rollouts in flight per checkpoint, over all sources, instead of engines x ``rollouts_per_engine``."""
+
+    api_key_var: str = "TB4_EVAL_VLLM_KEY"
+    """Environment variable the harness client reads the (unchecked) vLLM key from; set to a random value."""
+
+    prime_api_key_vars: list[str] = ["PRIME_API_KEY", "TB4_EVAL_PRIME_API_KEY"]
+    """Where to find the Prime API key for sandboxes and tunnels (the first one set); it reaches the harness as
+    ``PRIME_API_KEY``."""
+
+    python: str = "3.13"
+    """Python of the harness virtualenv (sft-gen runs on 3.13; the image only has 3.12)."""
+
+    verifiers_version: str = "0.4.1.dev340"
+    """Installed verifiers version (24107a4ea)."""
+
+    prime_flow_version: str | None = "0.1.1.dev354"
+    """Installed prime-flow version (ed23e23). None skips the check."""
+
+    pinned_files_sha256: dict[str, str] = {
+        "verifiers/v1/harnesses/mini_swe_agent/harness.py": "f7ac569d865c4049752b0b09cd920d90689f38c2297ec49e76409b533edc316d",
+        "verifiers/v1/harnesses/mini_swe_agent/program.py": "1467b440577f1a2fee1f628abdb3bd60b8375a2116b2e193ab97c752c14d0297",
+        "verifiers/v1/runtimes/runtime.py": "4842d302967a4149d73f1f2d5756f9c3274f5568c4d36cbe1dc117dbab5c689d",
+        "verifiers/v1/runtimes/base.py": "6af2b4776bdc718c2b24c83ce094e2e3bfe0314b69bac1bedf4ac16a4d799fca",
+    }
+    """sha256 of the installed agent-facing verifiers files (relative to site-packages), as at 24107a4ea."""
+
+    flow_command: list[str] = ["{venv}/bin/flow", "run", "@", "{config}"]
+    """How one source's flow run is started (``{venv}`` and ``{config}`` are filled in)."""
+
+    landlock_bundle: str = "/data/sft-gen/kernels/landlock-6.12.113-deb13.tgz"
+    """Where the collection configs expect the landlock kernel bundle (2 tb-eng tasks); copied there from the bundle."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        if not self.sources or len(set(self.sources)) != len(self.sources):
+            raise ValueError("inrun_eval.harness.sources must be a non-empty list without duplicates")
+        missing = [label for label in self.sources if label not in self.source_config_sha256]
+        if missing:
+            raise ValueError(f"inrun_eval.harness.source_config_sha256 lacks {missing}")
+        return self
+
+
+class SFTInRunEvalConfig(BaseConfig):
+    """After the HF export, turn the run's nodes from trainer into inference and evaluate the exported checkpoints with
+    the collection harness: every node serves vLLM, node 0 runs the harness, scores pass@k and writes the results to
+    ``<run dir>/eval/<checkpoint>/`` (node 0's files only). An eval failure never fails the run: the exports are
+    written (and pushed) before it starts."""
+
+    checkpoints: list[Literal["best", "last"]] = ["best", "last"]
+    """Which exports to evaluate, in this order. When 'best' is the final step it is 'last': evaluated once."""
+
+    model_dir: Path | None = None
+    """Evaluate this HF checkpoint (same path on every node) instead of the run's exports, as ``model_name``."""
+
+    model_name: str = "base"
+    """Name of ``model_dir``'s results."""
+
+    eval_only: bool = False
+    """Skip training altogether (no model, no data loaded) and only evaluate ``model_dir``: the smoke test."""
+
+    schedule: Literal["sequential", "parallel"] = "sequential"
+    """``sequential``: every node serves one checkpoint after the other (a vLLM restart in between). ``parallel``: the
+    nodes are split in two and both checkpoints are evaluated at the same time (one load, the same sandbox
+    conditions); needs at least 2 nodes."""
+
+    budget_hours: float = Field(48.0, gt=0)
+    """Hard wall-clock budget of the eval phase, from the hand-off to the exit. Each round of checkpoints gets an equal
+    share of what is left; at its end the harness is stopped and what landed is scored."""
+
+    reserve_minutes: float = Field(60.0, ge=0)
+    """Kept from the budget for scoring, archiving and the shutdown."""
+
+    hf_fallback: bool = True
+    """When a node's local copy of an export is incomplete, download it from its Hugging Face repo (needs HF_TOKEN)."""
+
+    work_dir: Path | None = None
+    """Node-local scratch (harness virtualenv, flow stores, vLLM configs). Defaults to ``<run dir>/.inrun-eval-work``
+    (the node's staging disk), deleted before the exit unless ``keep_work_dir``."""
+
+    keep_work_dir: bool = False
+
+    archive_stores: bool = True
+    """Copy each flow store (full traces) to the results as a compressed tar."""
+
+    pass_threshold: float = 1.0
+    """A rollout passes when its reward is at least this."""
+
+    coord_port: int = Field(29650, ge=1, le=65535)
+    """Port of the eval's coordination store on node 0 (``MASTER_ADDR``)."""
+
+    handoff: Literal["exec", "subprocess"] = "exec"
+    """How each node's local rank 0 becomes the node's eval process: ``exec`` replaces the trainer process (its GPU
+    and host memory are released), ``subprocess`` keeps it waiting for a child."""
+
+    serving: SFTInRunEvalServingConfig = SFTInRunEvalServingConfig()
+    harness: SFTInRunEvalHarnessConfig = SFTInRunEvalHarnessConfig()
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if not self.checkpoints or len(set(self.checkpoints)) != len(self.checkpoints):
+            raise ValueError("inrun_eval.checkpoints must be a non-empty list without duplicates")
+        if self.eval_only and self.model_dir is None:
+            raise ValueError("inrun_eval.eval_only needs inrun_eval.model_dir (there are no exports to evaluate)")
+        if self.reserve_minutes >= self.budget_hours * 60:
+            raise ValueError("inrun_eval.reserve_minutes must be less than the budget")
         return self
 
 
@@ -283,6 +541,10 @@ class SFTConfig(BaseTrainerConfig):
 
     hf_export: SFTHFExportConfig | None = None
     """Export the best and/or last checkpoint as Hugging Face models at the end of the run. If None, no export."""
+
+    inrun_eval: SFTInRunEvalConfig | None = None
+    """After the export, evaluate the exported checkpoints on the run's own nodes with the TB4 collection harness. If
+    None (the default), the run ends after the export."""
 
     eval: SFTOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
@@ -574,6 +836,27 @@ class SFTConfig(BaseTrainerConfig):
             raise ValueError("hf_export writes full weights and does not support LoRA")
         if self.model.vlm is not None:
             raise ValueError("hf_export does not support VLM training")
+        return self
+
+    @model_validator(mode="after")
+    def validate_inrun_eval(self):
+        cfg = self.inrun_eval
+        if cfg is None:
+            return self
+        serving = cfg.serving
+        gpus = self.deployment.gpus_per_node
+        if serving.tensor_parallel_size * serving.data_parallel_size != gpus:
+            raise ValueError(
+                f"inrun_eval.serving: tensor_parallel_size x data_parallel_size must be gpus_per_node ({gpus})"
+            )
+        if cfg.model_dir is None:
+            if self.hf_export is None:
+                raise ValueError("inrun_eval evaluates the [hf_export] exports: configure [hf_export] or model_dir")
+            missing = [name for name in cfg.checkpoints if name not in self.hf_export.checkpoints]
+            if missing:
+                raise ValueError(f"inrun_eval.checkpoints {missing} are not in hf_export.checkpoints")
+        if self.eval is not None:
+            raise ValueError("inrun_eval and the online [eval] both need the GPUs: use one of them")
         return self
 
     @model_validator(mode="after")
