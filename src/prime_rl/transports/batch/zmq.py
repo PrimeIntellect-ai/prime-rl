@@ -1,6 +1,7 @@
 import asyncio
 import time
 from pathlib import Path
+from uuid import UUID
 
 import msgspec
 import zmq
@@ -12,6 +13,7 @@ from prime_rl.transports.batch.recovery import (
     BatchRequest,
     HandshakeReply,
     RecoveryRequired,
+    ReplayPlan,
     TrainerGroup,
     TrainerHandshake,
     TrainerHello,
@@ -34,6 +36,11 @@ class ZMQBatchSender(BatchSender):
         self.request_decoder = msgspec.msgpack.Decoder(type=TrainerHello | BatchRequest)
         self.handshake = TrainerHandshake(data_world_size)
         self.current_step = current_step
+        self.delivery_step = current_step
+        self.replay_plan: ReplayPlan | None = None
+        self.recovery_authorization: tuple[str, str] | None = None
+        self.failed_attempt: str | None = None
+        self.replay_batches_sent = 0
         self.logger.debug(f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port})")
 
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
@@ -44,19 +51,83 @@ class ZMQBatchSender(BatchSender):
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
 
         buffers = await asyncio.to_thread(self.encode_batch, micro_batch_grid, self.current_step)
-        identity_to_request = await self._wait_for_requests()
-        send_start = time.perf_counter()
-        for identity, request in identity_to_request.items():
-            data_rank = self.handshake.validate_request(identity, request, self.current_step)
-            await self.socket.send_multipart(
-                [identity, b"batch", request.attempt_id.encode(), str(self.current_step).encode(), buffers[data_rank]],
-                copy=False,
-            )
-        send_end = time.perf_counter()
+        send_time = 0.0
+        while True:
+            identity_to_request = await self._wait_for_requests()
+            replaying = self.replay_plan is not None
+            delivery = await asyncio.to_thread(self._read_replay_batch) if replaying else buffers
+            send_start = time.perf_counter()
+            for identity, request in identity_to_request.items():
+                if request.attempt_id == self.failed_attempt:
+                    break
+                data_rank = self.handshake.validate_request(identity, request, self.delivery_step)
+                delivered = await self._reply(
+                    identity,
+                    [b"batch", request.attempt_id.encode(), str(self.delivery_step).encode(), delivery[data_rank]],
+                )
+                if not delivered:
+                    if self.journal is None:
+                        raise ConnectionError("Trainer disconnected during batch delivery without a recovery journal")
+                    self.failed_attempt = request.attempt_id
+                    self.logger.warning(
+                        f"Trainer attempt {request.attempt_id} disconnected during delivery of step {self.delivery_step}; "
+                        "retaining the batch and waiting for an authorized replacement"
+                    )
+                    break
+            else:
+                send_time += time.perf_counter() - send_start
+                if replaying:
+                    self.replay_batches_sent += 1
+                    self.logger.info(f"Replayed batch {self.journal_session}:{self.delivery_step}")
+                if self.delivery_step == self.current_step:
+                    self.current_step += 1
+                    self.delivery_step = self.current_step
+                    self.replay_plan = None
+                    return send_time
+                del delivery
+                self.delivery_step += 1
+                continue
+            send_time += time.perf_counter() - send_start
+            del delivery
 
-        self.logger.debug(f"Sent micro batch grid for step {self.current_step} to {len(identity_to_request)} ranks")
-        self.current_step += 1
-        return send_end - send_start
+    def authorize_recovery(self, previous_attempt: str, replacement_attempt: str) -> None:
+        """Authorize one replacement on the sender's event loop after the old group is stopped.
+
+        This fences the batch channel only. The caller must also stop old checkpoint
+        writers and reconcile the weight channel before allowing production training.
+        """
+        if self.journal is None:
+            raise ValueError("Trainer recovery requires batch journaling")
+        active = self.handshake.active
+        if active is None or active.attempt_id != previous_attempt:
+            raise ValueError("Recovery authorization does not match the active trainer attempt")
+        if UUID(replacement_attempt).hex != replacement_attempt or replacement_attempt == previous_attempt:
+            raise ValueError("Recovery requires a new trainer attempt ID")
+        if replacement_attempt in self.handshake.retired:
+            raise ValueError("Cannot authorize a retired trainer attempt")
+        if self.recovery_authorization is not None:
+            raise ValueError("A trainer replacement is already authorized")
+        # Freeze old requests immediately, including requests already collected.
+        self.failed_attempt = previous_attempt
+        self.recovery_authorization = (previous_attempt, replacement_attempt)
+        if self.handshake.candidate is not None and self.handshake.candidate.attempt_id != replacement_attempt:
+            self.handshake.reject()
+
+    def _read_replay_batch(self) -> list[bytes]:
+        plan = self.replay_plan
+        record = plan.batches[self.delivery_step - plan.restored.step - 1]
+        if self.journal.record(record.batch_id) != record:
+            raise ValueError(f"Replay manifest changed after validation: {record.batch_id}")
+        return self.journal.read(record.batch_id)
+
+    async def _reply(self, identity: bytes, frames: list[bytes]) -> bool:
+        try:
+            await self.socket.send_multipart([identity, *frames], copy=False)
+        except zmq.ZMQError as error:
+            if error.errno != zmq.EHOSTUNREACH:
+                raise
+            return False
+        return True
 
     def close(self) -> None:
         try:
@@ -75,7 +146,7 @@ class ZMQBatchSender(BatchSender):
                 recipients.update(connection for connection, _ in self.handshake.pending.values())
                 self.handshake.reject()
             for connection in recipients:
-                await self.socket.send_multipart([connection, b"hello", msgspec.msgpack.encode(reply)])
+                await self._reply(connection, [b"hello", msgspec.msgpack.encode(reply)])
             return
         if not complete:
             return
@@ -95,32 +166,60 @@ class ZMQBatchSender(BatchSender):
                 plan = await asyncio.to_thread(
                     plan_replay, self.journal, group, self.journal_session, self.current_step, self.data_world_size
                 )
-                reply = HandshakeReply(group.attempt_id, "recovery_required", plan=plan)
-                self.logger.warning(
-                    f"Trainer attempt {group.attempt_id} restored {plan.restored.batch.batch_id}; "
-                    f"{len(plan.batches)} batches await replay through step {self.current_step}. "
-                    "Replay execution is not enabled; the attempt was not accepted."
-                )
+                active = self.handshake.active
+                if active is not None and self.recovery_authorization == (active.attempt_id, group.attempt_id):
+                    self.handshake.accept()
+                    self.delivery_step = group.start_step
+                    self.replay_plan = plan
+                    self.recovery_authorization = None
+                    self.failed_attempt = None
+                    reply = HandshakeReply(group.attempt_id, "accepted", plan=plan)
+                    self.logger.info(
+                        f"Accepted replacement {group.attempt_id} after {active.attempt_id}; "
+                        f"replaying {len(plan.batches)} batches after {plan.restored.batch.batch_id} "
+                        f"through pending step {self.current_step}"
+                    )
+                else:
+                    reply = HandshakeReply(group.attempt_id, "recovery_required", plan=plan)
+                    self.logger.warning(
+                        f"Trainer attempt {group.attempt_id} restored {plan.restored.batch.batch_id}; "
+                        f"{len(plan.batches)} batches await replay through step {self.current_step}. "
+                        "Replacement requires explicit authorization."
+                    )
             except (ValueError, OSError) as error:
                 reply = HandshakeReply(group.attempt_id, "rejected", error=str(error))
                 self.logger.warning(f"Rejected trainer recovery attempt {group.attempt_id}: {error}")
-            self.handshake.reject()
+            if self.handshake.candidate is not None:
+                if self.recovery_authorization is not None and self.recovery_authorization[1] == group.attempt_id:
+                    self.recovery_authorization = None
+                self.handshake.reject()
         for connection in recipients:
-            await self.socket.send_multipart([connection, b"hello", msgspec.msgpack.encode(reply)])
+            await self._reply(connection, [b"hello", msgspec.msgpack.encode(reply)])
 
     async def _wait_for_requests(self) -> dict[bytes, BatchRequest]:
         """Only distinct ranks of the accepted group can request the pending live batch."""
         identity_to_request = {}
-        while self.handshake.active is None or len(identity_to_request) < self.handshake.active.world_size:
+        while (
+            self.handshake.active is None
+            or self.failed_attempt == self.handshake.active.attempt_id
+            or len(identity_to_request) < self.handshake.active.world_size
+        ):
             identity, payload = await self.socket.recv_multipart()
             message = self.request_decoder.decode(payload)
             if isinstance(message, TrainerHello):
+                previous = self.handshake.active
                 await self._hello(identity, message)
+                if previous != self.handshake.active or (
+                    self.handshake.active is not None and self.failed_attempt == self.handshake.active.attempt_id
+                ):
+                    identity_to_request.clear()
                 continue
             try:
-                self.handshake.validate_request(identity, message, self.current_step)
+                if message.attempt_id == self.failed_attempt:
+                    raise ValueError("Trainer attempt is fenced pending recovery")
+                self.handshake.validate_request(identity, message, self.delivery_step)
             except ValueError as error:
-                await self.socket.send_multipart([identity, b"error", str(error).encode()])
+                await self._reply(identity, [b"error", str(error).encode()])
                 continue
             identity_to_request[identity] = message
         return identity_to_request
@@ -149,6 +248,7 @@ class ZMQBatchReceiver(BatchReceiver):
             raise ValueError("Trainer group does not match receiver world size or start step")
         self.trainer_group = trainer_group
         self.accepted = False
+        self.replay_plan: ReplayPlan | None = None
         self.logger.debug(f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
     def wait(self) -> None:
@@ -167,6 +267,7 @@ class ZMQBatchReceiver(BatchReceiver):
                 raise RecoveryRequired(reply.plan)
             if reply.status != "accepted":
                 raise RuntimeError(f"Trainer handshake rejected: {reply.error}")
+            self.replay_plan = reply.plan
             self.accepted = True
         request = BatchRequest(
             attempt_id=self.trainer_group.attempt_id,
