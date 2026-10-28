@@ -9,7 +9,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import prune_broadcasts_beyond, prune_broadcasts_from, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -196,6 +196,10 @@ def train(config: TrainerConfig):
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
+        if world.is_master:
+            # Drop a crashed attempt's leftover offer of the startup version (v{checkpoint_step},
+            # or v0 from scratch) before the consumer can see it; see prune_broadcasts_from.
+            prune_broadcasts_from(config.output_dir, checkpoint_step if checkpoint_step is not None else 0)
         weight_sender = setup_weight_sender(
             config.output_dir,
             config.weight_broadcast,

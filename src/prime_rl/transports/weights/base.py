@@ -36,6 +36,20 @@ def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
             shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
 
 
+def prune_broadcasts_from(output_dir: Path, step: int) -> None:
+    """Remove broadcast dirs at or beyond ``step``, the trainer's startup version.
+    A crashed attempt leaves ``step_<step>`` with its offer/ack markers (``_clean``
+    keeps the last two steps), and a restarted consumer would otherwise ack that
+    stale ``.sender_ready`` and enter the transfer before the trainer re-offers
+    it, deadlocking the startup broadcast. Run by the trainer master before the
+    weight sender is set up: for NCCL the consumer cannot reach ``wait_published``
+    until the trainer master has joined its rendezvous, so this cannot race it."""
+    broadcast_dir = get_broadcast_dir(output_dir)
+    for old_step in get_all_ckpt_steps(broadcast_dir):
+        if old_step >= step:
+            shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
+
+
 class WeightSender(ABC):
     """Trainer-side weight publisher. ``broadcast`` wraps the transport's
     ``_broadcast`` with the shared sentinel handshake: every version is
