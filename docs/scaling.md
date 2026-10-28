@@ -108,16 +108,15 @@ For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_
 
 Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
 
-The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches, so the trainer refuses to start unless it is set to at most `num_reserved_sms`. 16 is enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so match the two rather than over-reserving. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to the micro batch (`model.seq_len` for RL, `data.micro_batch_size * data.seq_len` for SFT); a smaller value is rejected at startup.
+The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches. In the worst case each NCCL kernel uses all `NCCL_MAX_CTAS`, so at most `num_reserved_sms // NCCL_MAX_CTAS` NCCL kernels can run concurrently. FSDP overlaps an all-gather and a reduce-scatter, and HSDP (`dp_replicate > 1`) adds an all-reduce, so the trainer sets `NCCL_MAX_CTAS` to `num_reserved_sms // 2` (`// 3` under HSDP) when it is unset, and refuses to start if it is set higher than that. The default 16 reserved SMs (8 CTAs, 5 under HSDP) are enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so raise `num_reserved_sms` only if NCCL needs more. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to the micro batch (`model.seq_len` for RL, `data.micro_batch_size * data.seq_len` for SFT); a smaller value is rejected at startup.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "mega_moe"
 precision = "bf16"     # or "mxfp8" (SM100), "fp8" / "fp8_bwd" (SM90)
-num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS must be <= this
+num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS defaults to this // 2 (// 3 under HSDP)
 
 [trainer.env_vars]
-NCCL_MAX_CTAS = "16"
 CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 ```
@@ -248,7 +247,6 @@ type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1              # optional when inference.deployment defines the node topology
 gpus_per_node = 8                # default
-nodes_per_fsdp_group = 1         # optional — controls FSDP island size
 ```
 
 SFT multi-node:
