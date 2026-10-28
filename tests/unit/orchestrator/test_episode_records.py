@@ -3,13 +3,13 @@ views into the received bytes). Every record written to disk or uploaded must st
 plain JSON lists."""
 
 import asyncio
-import json
 
 import numpy as np
 import orjson
 import verifiers.v1 as vf
+from prime_runs._http import encode_json
 from prime_runs.projection import build_samples, episodes_to_parquet_bytes
-from prime_runs.sinks.base import to_mapping
+from prime_traces.traces import _encode_record
 from verifiers.v1.serve.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
 
 from prime_rl.configs.monitors import FileMonitorConfig
@@ -83,11 +83,12 @@ def test_received_episode_writes_plain_records(tmp_path):
 def test_received_episode_uploads_plain_json():
     received, _ = _over_the_wire(episode([trace()]))
 
-    # Prime Traces: the episode record, encoded with the SDK's strict JSON encoder
-    record = json.loads(json.dumps(to_mapping(received), allow_nan=False))
+    # Prime Traces: the episode's record line, as the SDK writes it
+    record = orjson.loads(_encode_record(received, 1))
     for node in record["traces"][0]["nodes"]:
         _assert_plain_streams(node)
+    assert record["traces"][0]["nodes"][2]["token_ids"] == [3, 4]
 
     # The samples table and the training viewer's parquet rows
-    assert json.dumps(build_samples([received]), allow_nan=False)
+    assert encode_json(build_samples([received]))
     assert episodes_to_parquet_bytes([received], "run", 1)
