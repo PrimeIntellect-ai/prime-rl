@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from prime_rl.trainer.models.kernels.qwen3_8_hyper_connection import fused_hc_mix
+
 
 class ExpandedRMSNorm(nn.Module):
     """RMS-normalize each residual stream with an independent affine weight."""
@@ -48,25 +50,39 @@ class HyperConnection(nn.Module):
             nn.Linear(expanded_size, stream_count, bias=False) if with_residual_injection else None
         )
 
-    def mix(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def mix(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None]]:
+        if expanded_states.is_cuda:
+            block_input, injection_weights = fused_hc_mix(
+                expanded_states,
+                self.hc_norm.weight,
+                self.input_mix_weight_down.weight,
+                self.input_mix_weight_up.weight,
+                None if self.block_inject_weight is None else self.block_inject_weight.weight,
+                self.stream_count,
+                self.hc_norm.eps,
+            )
+            return block_input, (expanded_states, injection_weights)
+
         normalized_states = self.hc_norm(expanded_states)
         mixing_weights = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
         mixing_weights = torch.sigmoid(self.input_mix_weight_up(mixing_weights))
         mixing_weights = mixing_weights.unflatten(-1, (self.stream_count, self.hidden_size))
         normalized_streams = normalized_states.unflatten(-1, (self.stream_count, self.hidden_size))
         block_input = (mixing_weights * normalized_streams).mean(dim=-2)
-        return block_input.to(expanded_states.dtype), (expanded_states, normalized_states)
+        injection_weights = None
+        if self.block_inject_weight is not None:
+            injection_weights = 2.0 * torch.sigmoid(self.block_inject_weight(normalized_states) / self.stream_count)
+        return block_input.to(expanded_states.dtype), (expanded_states, injection_weights)
 
-    def forward(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None]]:
         return self.mix(expanded_states)
 
     def combine(
         self,
         block_output: torch.Tensor,
-        residual_state: tuple[torch.Tensor, torch.Tensor],
+        residual_state: tuple[torch.Tensor, torch.Tensor | None],
     ) -> torch.Tensor:
-        expanded_states, normalized_states = residual_state
-        injection_weights = 2.0 * torch.sigmoid(self.block_inject_weight(normalized_states) / self.stream_count)
+        expanded_states, injection_weights = residual_state
         residual_streams = expanded_states.unflatten(-1, (self.stream_count, self.hidden_size))
         return (residual_streams + block_output.unsqueeze(-2) * injection_weights.unsqueeze(-1)).flatten(-2)
 

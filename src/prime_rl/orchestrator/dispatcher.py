@@ -543,6 +543,8 @@ class Dispatcher:
         else:
             cache_salt = None
 
+        # A group samples with the settings of the step it was opened at, also across a live update.
+        sampling = env.sampling_at(group.step)
         group.episodes_to_schedule -= 1
         # A resumed group continues its in-flight members before it starts fresh ones.
         restore = group.restores.pop() if group.restores else None
@@ -582,6 +584,7 @@ class Dispatcher:
                 episode = await env.run(
                     client=client,
                     model_name=model_name,
+                    sampling=sampling,
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,

@@ -230,7 +230,7 @@ def test_open_work_survives_the_checkpoint_file(tmp_path):
     asyncio.run(s.add(wire(member("a", "ga"))))
     work = {"groups": d.open_work(), "sink": s.state_dict(), "results": [wire(member("a", "gb"))], "snapshots": {}}
     manager = CheckpointManager(tmp_path, CheckpointConfig())
-    manager.save_state(build_state(Progress(step=6), TrainSource([train_env("a")]), work), step=6)
+    manager.save_state(build_state(Progress(step=6), TrainSource([train_env("a")]), {}, work), step=6)
 
     loaded = manager.load(Progress(), TrainSource([train_env("a")]), step=6)
     (resumed,) = loaded["groups"]

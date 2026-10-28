@@ -1,13 +1,17 @@
+import copy
+
 import pytest
 import torch
 
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.kernels import qwen3_8_hyper_connection
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
     Qwen3_8FlashNextVisionConfig,
 )
+from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import HyperConnection
 from prime_rl.trainer.perf import FlopCounter
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder
 
@@ -86,7 +90,42 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     apply_prime_to_hf(converted, operations)
     assert model.is_hf_state_dict(converted)
     assert any(name.startswith("model.visual.") for name in converted) == model.is_vlm
+    model_prefix = "model.language_model" if hasattr(restored, "text_config") else "model"
+    hf_ple_prefix = f"{model_prefix}.layers.0.ple.ple_embedding"
+    hf_table_keys = {f"{hf_ple_prefix}.ngram_embedding.shard_{index}.weight" for index in range(shard_count)}
+    assert {key for key in converted if key.startswith(f"{hf_ple_prefix}.ngram_embedding.")} == hf_table_keys
+    for buffer in ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets"):
+        assert torch.equal(converted[f"{hf_ple_prefix}.{buffer}"], original[f"{model_prefix}.ngram.tables.0.{buffer}"])
+    assert not any(".ngram.tables." in key for key in converted)
     apply_hf_to_prime(converted, operations)
     assert converted.keys() == original.keys()
     for name, value in original.items():
         torch.testing.assert_close(converted[name], value, rtol=0, atol=0)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("with_residual_injection", [True, False])
+def test_fused_hyper_connection_matches_eager(monkeypatch, with_residual_injection):
+    monkeypatch.setattr(qwen3_8_hyper_connection, "CHUNK_TOKENS", 32)
+    torch.manual_seed(0)
+    eager = HyperConnection(
+        hidden_size=48, stream_count=4, low_rank=8, norm_eps=1e-6, with_residual_injection=with_residual_injection
+    )
+    for parameter in eager.parameters():
+        torch.nn.init.normal_(parameter, std=0.1)
+    fused = copy.deepcopy(eager).to("cuda", torch.bfloat16)
+    x = torch.randn(2, 37, 4 * 48)
+    block = torch.randn(48)
+    grad = torch.randn(2, 37, 4 * 48 if with_residual_injection else 48)
+
+    def run(module, x, block, grad):
+        x = x.clone().requires_grad_()
+        block_input, residual_state = module.mix(x)
+        out = module.combine(block_input * block, residual_state) if with_residual_injection else block_input
+        out.backward(grad)
+        return [out, x.grad, *(parameter.grad for parameter in module.parameters())]
+
+    expected = run(eager, x, block, grad)
+    actual = run(fused, *(tensor.to("cuda", torch.bfloat16) for tensor in (x, block, grad)))
+    for fused_value, eager_value in zip(actual, expected, strict=True):
+        assert (fused_value.float().cpu() - eager_value).norm() / eager_value.norm() < 1e-2
