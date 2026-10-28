@@ -10,8 +10,8 @@ import psutil
 import pynvml
 import pytest
 
+from tests.regression.distributed.sft.archs import CASES
 from tests.regression.distributed.sft.cases import (
-    CASES,
     Case,
     assert_training_rows,
     completed_step,
@@ -95,8 +95,8 @@ def launch(tiny_checkpoint, tokenizer_files, run_process, output_dir) -> Callabl
 
     @cache
     def _launch(case: Case) -> Launch:
-        model_name = tiny_checkpoint(case.arch.name).as_posix()
-        tokenizer_files(case.arch.name)
+        model_name = tiny_checkpoint(case.arch).as_posix()
+        tokenizer_files(case.arch)
         run_dir = output_dir / case.id
         if run_dir.exists():
             shutil.rmtree(run_dir)
@@ -137,7 +137,7 @@ def launch(tiny_checkpoint, tokenizer_files, run_process, output_dir) -> Callabl
     return _launch
 
 
-@pytest.mark.parametrize("case", [case.param() for case in CASES])
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.id)
 def test_sft(case, launch):
     result = launch(case)
     for attempt in result.attempts:
@@ -147,7 +147,7 @@ def test_sft(case, launch):
     assert_training_rows(load_metrics(result.run_dir), range(1, last_step + 1))
 
 
-@pytest.mark.parametrize("case", [case.param() for case in CASES if case.check_graph_breaks])
+@pytest.mark.parametrize("case", [case for case in CASES if case.check_graph_breaks], ids=lambda case: case.id)
 def test_no_graph_breaks(case, launch):
     result = launch(case)
     metrics = result.run_dir / "monitors" / "file" / "metrics.jsonl"

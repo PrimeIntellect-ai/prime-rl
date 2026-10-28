@@ -6,8 +6,8 @@ import pytest
 import torch
 from huggingface_hub import snapshot_download
 
-from tests.regression.distributed.sft.cases import CASES, NUM_GPUS, assign_shards
-from tests.regression.distributed.tiny_models import TOKENIZERS, write_tiny_checkpoint
+from tests.regression.distributed.sft.archs import CASES, write_tiny_checkpoint
+from tests.regression.distributed.sft.cases import NUM_GPUS, Arch, assign_shards
 
 TOKENIZER_FILES = ["*.json", "*.txt", "tokenizer*", "*.jinja"]
 
@@ -43,22 +43,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(scope="session")
-def tiny_checkpoint(tmp_path_factory: pytest.TempPathFactory) -> Callable[[str], Path]:
+def tiny_checkpoint(tmp_path_factory: pytest.TempPathFactory) -> Callable[[Arch], Path]:
     """Build each arch's seeded tiny checkpoint once per session, on first use."""
 
     @cache
-    def _tiny_checkpoint(arch: str) -> Path:
-        return write_tiny_checkpoint(arch, tmp_path_factory.mktemp(arch))
+    def _tiny_checkpoint(arch: Arch) -> Path:
+        return write_tiny_checkpoint(arch, tmp_path_factory.mktemp(arch.name))
 
     return _tiny_checkpoint
 
 
 @pytest.fixture(scope="session")
-def tokenizer_files() -> Callable[[str], Path]:
+def tokenizer_files() -> Callable[[Arch], Path]:
     """Download each arch's tokenizer files once per session, so launches can run with `HF_HUB_OFFLINE=1`."""
 
     @cache
-    def _tokenizer_files(arch: str) -> Path:
-        return Path(snapshot_download(TOKENIZERS[arch], allow_patterns=TOKENIZER_FILES))
+    def _tokenizer_files(arch: Arch) -> Path:
+        return Path(snapshot_download(arch.tokenizer, allow_patterns=TOKENIZER_FILES))
 
     return _tokenizer_files
