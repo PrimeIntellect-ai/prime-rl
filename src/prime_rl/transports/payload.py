@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import queue
 import shutil
 import socket
 import threading
@@ -428,7 +429,17 @@ class PayloadHook:
         # The worker's traces in flight, for `persist`; a trace goes when its run does.
         self.traces: weakref.WeakValueDictionary[str, vf.Trace] = weakref.WeakValueDictionary()
         self.traces_lock = threading.Lock()
-        self.server = PayloadServer(*payload_host(bind_address), persist=self.persist)
+        self._hosts = payload_host(bind_address)
+        self._server: PayloadServer | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def server(self) -> PayloadServer:
+        """Started on first use: a pool broker installs the hook too but never keeps arrays."""
+        with self._lock:
+            if self._server is None:
+                self._server = PayloadServer(*self._hosts, persist=self.persist)
+            return self._server
 
     def watch(self, trace: vf.Trace) -> None:
         trace.info[PAYLOAD_WORKER_KEY] = self.server.url
@@ -482,12 +493,15 @@ class PayloadHook:
                     try:
                         arrays = encode_branch_arrays(branch, len(branch.token_ids))
                     except ValueError as error:
-                        # Keep the episode: eval never needs the arrays, and a train run
-                        # that needs them stops at the train sink's guard.
+                        # Keep the episode and its routing rows: eval never needs the sampler
+                        # evidence, and a train run that needs it stops at the train sink.
                         get_logger().warning(
-                            f"Not keeping the arrays of trace {trace.id} branch {branch.index}: {error}"
+                            f"Not keeping the sampling mask and top-k head of trace {trace.id} "
+                            f"branch {branch.index}: {error}"
                         )
-                        continue
+                        arrays = BranchArrays(
+                            routed_experts=_encode_routed_experts(branch.routed_experts, len(branch.token_ids))
+                        )
                     fields = _fields(arrays)
                     if not fields:
                         continue
@@ -511,6 +525,8 @@ class PayloadHook:
             raise
 
     def discard(self, episode: vf.Episode) -> None:
+        if self._server is None:
+            return
         for trace in episode.traces:
             with self.traces_lock:
                 self.traces.pop(trace.id, None)
@@ -564,11 +580,15 @@ def sample_payload_urls(samples: Iterable[TrainingSample]) -> list[str]:
     return [f"{s.payload.url}/{s.payload.id}" for s in samples if s.payload is not None]
 
 
+# Payload URLs are node-local addresses: never route them through an `HTTP_PROXY`.
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
     """The blob at `url`, or None if it is gone (404) or every attempt failed."""
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(url, timeout=60) as response:
+            with _opener.open(url, timeout=60) as response:
                 return _decoder.decode(response.read())
         except urllib.error.HTTPError as error:
             if error.code == 404:
@@ -580,18 +600,48 @@ def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
     return None
 
 
-def _delete(url: str) -> None:
-    try:
-        urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=60).close()
-    except OSError:
-        pass
+class _Deleter:
+    """Fire-and-forget DELETEs on daemon threads, so DELETEs still queued at exit (say,
+    to an env server that is gone) never hold the process up."""
+
+    def __init__(self, num_threads: int = 8) -> None:
+        self.num_threads = num_threads
+        self.queue: queue.Queue[str] = queue.Queue()
+        self._started = False
+        self._lock = threading.Lock()
+
+    def submit(self, urls: Iterable[str]) -> None:
+        with self._lock:
+            if not self._started:
+                for _ in range(self.num_threads):
+                    threading.Thread(target=self._run, daemon=True, name="payload-delete").start()
+                self._started = True
+        for url in urls:
+            self.queue.put(url)
+
+    def _run(self) -> None:
+        while True:
+            url = self.queue.get()
+            try:
+                _opener.open(urllib.request.Request(url, method="DELETE"), timeout=10).close()
+            except Exception:
+                pass
+            finally:
+                self.queue.task_done()
 
 
-def delete_payloads(urls: list[str], pool: ThreadPoolExecutor) -> None:
-    """Free fetched arrays on their workers, without waiting. Call only once every rank
-    that may read them has fetched them."""
-    for url in urls:
-        pool.submit(_delete, url)
+_deleter = _Deleter()
+
+
+def delete_payloads(urls: Iterable[str]) -> None:
+    """Free kept arrays on their env servers, without waiting. Call only once nothing will
+    read them again."""
+    _deleter.submit(urls)
+
+
+def wait_for_deletes() -> None:
+    """Block until every queued DELETE has run."""
+    _deleter.queue.join()
 
 
 def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> tuple[list[int], list[str]]:
@@ -652,6 +702,9 @@ def _assert_aligned(mb: MicroBatch, num_tokens: int) -> None:
     misaligned array would corrupt training silently."""
     if mb.routed_experts is not None:
         assert mb.routed_experts.shape[0] == num_tokens, f"routed_experts: {mb.routed_experts.shape} for {num_tokens}"
+        assert len(mb.routed_experts.data) == num_tokens * _routed_experts_row_size(mb.routed_experts), (
+            f"routed_experts: {len(mb.routed_experts.data)} bytes for {mb.routed_experts.shape}"
+        )
     if mb.sampling_mask is not None:
         counts = np.frombuffer(mb.sampling_mask.counts, dtype=np.int32)
         assert len(counts) == num_tokens, f"sampling_mask counts: {len(counts)} for {num_tokens}"

@@ -3,7 +3,6 @@ delivered trace is either shipped in a batch (the trainer deletes it) or deleted
 sink when it drops the sample or trace."""
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,7 +16,7 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
-from prime_rl.transports.payload import PayloadHook, sample_payload_urls
+from prime_rl.transports.payload import PayloadHook, sample_payload_urls, wait_for_deletes
 from tests.unit.orchestrator.test_train_sink import episode, trace
 
 
@@ -49,7 +48,7 @@ def payload_sink(*, constant=True, batch_size=100) -> TrainSink:
 
 
 def settle(sink: TrainSink) -> None:
-    sink.payload_pool.shutdown(wait=True)
+    wait_for_deletes()
 
 
 def test_sink_deletes_exactly_the_arrays_it_drops():
@@ -97,7 +96,7 @@ def test_eval_sink_deletes_the_arrays_of_eval_episodes():
     env = SimpleNamespace(examples=[None, None], config=SimpleNamespace(group_size=1))
     sink = EvalSink(eval_envs=SimpleNamespace(get=lambda name: env))
     assert sink.add(evaluated) is None
-    sink.payload_pool.shutdown(wait=True)
+    wait_for_deletes()
     assert not hook.server.blobs
 
 
@@ -108,7 +107,6 @@ def test_dispatcher_deletes_the_arrays_of_returned_episodes_it_drops():
         hook = PayloadHook()
         returned = episode([kept(hook)])
         dispatcher = Dispatcher.__new__(Dispatcher)
-        dispatcher.payload_pool = ThreadPoolExecutor(1)
 
         async def done():
             return returned
@@ -117,8 +115,24 @@ def test_dispatcher_deletes_the_arrays_of_returned_episodes_it_drops():
         await finished
         running = asyncio.ensure_future(asyncio.sleep(60))
         await dispatcher._cancel_claimed([finished, running])
-        dispatcher.payload_pool.shutdown(wait=True)
+        wait_for_deletes()
         assert running.cancelled()
         assert not hook.server.blobs
+
+    asyncio.run(run())
+
+
+def test_dispatcher_skips_claimed_tasks_still_pending(monkeypatch):
+    """`safe_cancel` can return with a task still pending when the caller is cancelled."""
+
+    async def noop(tasks) -> None:
+        pass
+
+    async def run() -> None:
+        dispatcher = Dispatcher.__new__(Dispatcher)
+        monkeypatch.setattr("prime_rl.orchestrator.dispatcher.safe_cancel_all", noop)
+        pending = asyncio.ensure_future(asyncio.sleep(60))
+        await dispatcher._cancel_claimed([pending])
+        pending.cancel()
 
     asyncio.run(run())

@@ -4,6 +4,7 @@ cut, packed and padded like its tokens, and the store must serve and free them."
 import base64
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import msgspec
 import numpy as np
@@ -26,6 +27,7 @@ from prime_rl.transports.payload import (
     encode_branch_arrays,
     payload_host,
     resolve_payloads,
+    wait_for_deletes,
 )
 
 
@@ -299,17 +301,39 @@ def test_keep_frees_what_it_kept_when_it_fails(monkeypatch):
     assert not hook.server.blobs
 
 
-def test_keep_skips_a_branch_whose_arrays_do_not_encode(monkeypatch):
-    """The episode still succeeds (eval never needs the arrays); the branch gets no
-    reference, so a train run that needs it stops at the train sink."""
+def test_keep_keeps_routing_when_the_sampler_evidence_does_not_encode(monkeypatch):
+    """The episode still succeeds (eval never needs the evidence) and keeps its routing
+    rows; a train run that needs the mask or head stops at the train sink."""
     hook = PayloadHook()
     episode = _two_trace_episode(np.random.default_rng(4))
     _failing_second_encode(monkeypatch, ValueError("Top logprobs are not aligned to branch tokens"))
     hook.keep(episode, vf.SamplingConfig())
     first, second = episode.traces
-    assert PAYLOAD_INFO_KEY in first.info and PAYLOAD_INFO_KEY not in second.info
-    assert len(hook.server.blobs) == 1
+    assert first.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == ["routed_experts", "top_logprobs"]
+    assert second.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == ["routed_experts"]
     assert all(node.routed_experts is None for node in second.nodes)
+
+
+def test_a_hook_that_keeps_nothing_starts_no_server():
+    """A pool broker installs the hook too; it must not open a payload server."""
+    hook = PayloadHook()
+    hook.discard(_episode(np.random.default_rng(5), 4, 4))
+    assert hook._server is None
+
+
+def test_fetches_bypass_http_proxies(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    server = PayloadServer("127.0.0.1")
+    server.put("a", payload._encoder.encode(wire.BranchArrays()))
+    assert payload._fetch(f"{server.url}/a") == wire.BranchArrays()
+
+
+def test_short_routing_rows_fail_the_alignment_check():
+    rows = wire.RoutedExperts(data=bytes(3 * 2 * 2), shape=[4, 2, 2], dtype="uint8")
+    mb = SimpleNamespace(routed_experts=rows, sampling_mask=None, top_logprobs=None)
+    with pytest.raises(AssertionError, match="bytes"):
+        payload._assert_aligned(mb, num_tokens=4)
 
 
 def test_payload_server_binds_the_env_server_host():
@@ -325,8 +349,8 @@ def test_store_serves_and_deletes():
     server.put("b", b"y" * 40)
     with urllib.request.urlopen(f"{server.url}/b") as response:
         assert response.read() == b"y" * 40
-    with ThreadPoolExecutor(1) as pool:
-        delete_payloads([f"{server.url}/b", f"{server.url}/missing"], pool)
+    delete_payloads([f"{server.url}/b", f"{server.url}/missing"])
+    wait_for_deletes()
     assert server.get("b") is None and server.get("a") is not None
 
 

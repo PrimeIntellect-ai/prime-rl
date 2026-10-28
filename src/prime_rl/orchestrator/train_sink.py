@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import verifiers.v1 as vf
@@ -42,7 +41,10 @@ def _kept(sample: TrainingSample, field: str) -> bool:
 
 
 # Training arrays reach the trainer only through env servers that keep them.
-_KEEP_ARRAYS_HINT = "Serve the env with prime-rl's `env-server` entrypoint, which keeps them for the trainer."
+_KEEP_ARRAYS_HINT = (
+    "Serve the env with prime-rl's `env-server` entrypoint, which keeps them for the trainer, "
+    "and check its log for arrays it could not keep."
+)
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -155,12 +157,11 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
-        # Train env servers keep the arrays of delivered traces; the sink deletes those of
-        # every sample and trace it drops without shipping.
-        self.payload_pool = ThreadPoolExecutor(8, thread_name_prefix="payload")
 
     def _release(self, urls: Iterable[str]) -> None:
-        delete_payloads(list(urls), self.payload_pool)
+        """Env servers keep the arrays of delivered traces; the sink deletes those of every
+        sample and trace it drops without shipping."""
+        delete_payloads(urls)
 
     def release_samples(self, samples: Iterable[TrainingSample]) -> None:
         """Delete the env-server arrays of samples that will never ship."""
