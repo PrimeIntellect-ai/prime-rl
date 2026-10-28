@@ -121,7 +121,64 @@ def test_failed_save_keeps_the_previous_best(tmp_path, monkeypatch):
     assert snapshot_files(tmp_path) == [BEST_JSON, "step_20/rank_00000-of-00001.pt"]
 
 
-def _two_node_worker(rank: int, world_size: int, port: int, base: str, queue) -> None:
+def test_resume_replaying_the_best_keeps_its_snapshot(tmp_path, monkeypatch):
+    """A resume from a checkpoint before the best step validates that step again: the live best is not rewritten
+    (here the save would fail, which used to delete the only copy) and keeps its recorded loss."""
+    torch.manual_seed(0)
+    model = Tiny()
+    train_step(model, 60)
+    first = BestCheckpoint(tmp_path)
+    assert first.consider(60, 0.59, model, val_logged_step=60)
+    expected = {k: v.clone() for k, v in local_tensors(model).items()}
+
+    resumed = BestCheckpoint(tmp_path)
+    resumed.load_state()
+
+    def broken_save(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(torch, "save", broken_save)
+    train_step(model, 1)  # the replayed weights are not bit-identical
+    assert not resumed.consider(60, 0.589, model, val_logged_step=60)
+    assert resumed.best_step == 60 and resumed.best_loss == 0.59 and resumed.history == {60: 0.59}
+    assert snapshot_files(tmp_path) == [BEST_JSON, "step_60/rank_00000-of-00001.pt"]
+    record = json.loads((tmp_path / BEST_JSON).read_text())
+    assert record["best"]["step"] == 60 and record["best"]["val_loss"] == 0.59
+    assert resumed.restore(model)
+    for name, tensor in local_tensors(model).items():
+        assert torch.equal(tensor, expected[name]), name
+
+
+def test_resume_replaying_another_step_can_become_the_best(tmp_path):
+    model = Tiny()
+    first = BestCheckpoint(tmp_path)
+    first.consider(20, 0.6, model, val_logged_step=20)
+    first.consider(40, 0.7, model, val_logged_step=40)
+    resumed = BestCheckpoint(tmp_path)
+    resumed.load_state()
+    assert resumed.consider(40, 0.55, model, val_logged_step=40)
+    assert resumed.best_step == 40 and resumed.history == {20: 0.6, 40: 0.55}
+    assert snapshot_files(tmp_path) == [BEST_JSON, "step_40/rank_00000-of-00001.pt"]
+
+
+def test_failed_mkdir_keeps_the_previous_best(tmp_path, monkeypatch):
+    model = Tiny()
+    keeper = BestCheckpoint(tmp_path)
+    keeper.consider(20, 0.6, model, val_logged_step=20)
+    real_mkdir = Path.mkdir
+
+    def broken_mkdir(self, *args, **kwargs):
+        if self.name == "step_40":
+            raise PermissionError(13, "Permission denied")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", broken_mkdir)
+    assert not keeper.consider(40, 0.5, model, val_logged_step=40)
+    assert keeper.best_step == 20
+    assert snapshot_files(tmp_path) == [BEST_JSON, "step_20/rank_00000-of-00001.pt"]
+
+
+def _two_node_worker(rank: int, world_size: int, port: int, base: str, fail_mkdir_rank: int | None, queue) -> None:
     os.environ.update(
         RANK=str(rank),
         WORLD_SIZE=str(world_size),
@@ -142,11 +199,21 @@ def _two_node_worker(rank: int, world_size: int, port: int, base: str, queue) ->
         # Same path on every rank, but each "node" has its own staged copy of the volume.
         root = Path(base) / f"node{rank}" / "best-weights"
         keeper = BestCheckpoint(root)
+        if rank == fail_mkdir_rank:
+            # This node's leader cannot create step_40: no rank may hang, and step 20 stays the best for now.
+            real_mkdir = Path.mkdir
+
+            def broken_mkdir(self, *args, **kwargs):
+                if self.name == "step_40":
+                    raise PermissionError(13, "Permission denied")
+                return real_mkdir(self, *args, **kwargs)
+
+            Path.mkdir = broken_mkdir
         expected = None
         for step, loss in [(20, 0.62), (40, 0.59), (60, 0.60)]:
             train_step(model, step)
             keeper.consider(step, loss, model, val_logged_step=step)
-            if step == 40:
+            if step == keeper.best_step:
                 expected = {k: v.clone() for k, v in local_tensors(model).items()}
         train_step(model, 80)
         ok = keeper.restore(model)
@@ -156,17 +223,28 @@ def _two_node_worker(rank: int, world_size: int, port: int, base: str, queue) ->
         dist.destroy_process_group()
 
 
-def test_two_ranks_on_separate_nodes(tmp_path):
+def run_two_nodes(tmp_path: Path, fail_mkdir_rank: int | None = None) -> list:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
-    mp.spawn(_two_node_worker, args=(2, port, str(tmp_path), queue), nprocs=2, join=True)
-    results = sorted(queue.get() for _ in range(2))
+    mp.spawn(_two_node_worker, args=(2, port, str(tmp_path), fail_mkdir_rank, queue), nprocs=2, join=True)
+    return sorted(queue.get() for _ in range(2))
+
+
+def test_two_ranks_on_separate_nodes(tmp_path):
+    results = run_two_nodes(tmp_path)
     assert results[0] == (0, 40, True, True, [BEST_JSON, "step_40/rank_00000-of-00002.pt"])
     # Rank 1's node holds only its own shard: best.json lives on the master's node only.
     assert results[1] == (1, 40, True, True, ["step_40/rank_00001-of-00002.pt"])
+
+
+def test_two_ranks_failed_mkdir_on_one_node(tmp_path):
+    # Step 40 fails on both ranks without a hang; training goes on and step 60 (0.60 < 0.62) replaces step 20.
+    results = run_two_nodes(tmp_path, fail_mkdir_rank=1)
+    assert results[0] == (0, 60, True, True, [BEST_JSON, "step_60/rank_00000-of-00002.pt"])
+    assert results[1] == (1, 60, True, True, ["step_60/rank_00001-of-00002.pt"])
 
 
 if __name__ == "__main__":

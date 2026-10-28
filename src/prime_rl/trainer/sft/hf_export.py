@@ -1,7 +1,8 @@
 """End-of-run Hugging Face export of an SFT run's checkpoints (``[hf_export]``).
 
 Runs after the final step and the final checkpoint, before the trainer exits. ``last`` is exported from the weights
-in memory; ``best`` is loaded from the ``[val] keep_best`` snapshot first (unless it is the final step). Each export
+in memory; ``best`` is loaded from the ``[val] keep_best`` snapshot first, or, when the best is the final step, copied
+from the ``last`` export (every rank links or copies only the files it wrote itself). Each export
 rewrites the safetensors files of ``base_dir`` (the HF checkpoint the run started from, e.g. the text-only
 ``NemotronHForCausalLM`` extract of Nemotron 3.5 Super):
 
@@ -13,6 +14,9 @@ rewrites the safetensors files of ``base_dir`` (the HF checkpoint the run starte
 4. global rank 0 checks the union against every base header, writes ``export_report.json`` and a model card, and,
    with a repo and ``HF_TOKEN``, the files are pushed: small files by rank 0, the shards by one rank per node
    (preupload, then one commit per node in turn), then the remote sha256 is checked against the report.
+
+Nodes are ``rank // local_world_size`` (torchrun's contiguous ranks per node), the same split as ``local_rank == 0``
+picking each node's uploader.
 
 Every rank writes only its own files and every node uploads only what its ranks wrote, so nothing depends on
 files another node wrote during the run (hosted runs stage the volume per node and sync it after the run).
@@ -256,15 +260,33 @@ the sha256 of every shard.
 # Distributed steps
 
 
-def make_dir(path: Path, group) -> None:
-    """Create ``path`` on every node (the volume may be staged per node): master first, then one rank per node."""
+def files_by_node(assignment: list[list[str]], local_world_size: int) -> dict[int, list[str]]:
+    """The files each node's ranks write, by node index (``rank // local_world_size``)."""
+    out: dict[int, list[str]] = {}
+    for rank, names in enumerate(assignment):
+        out.setdefault(rank // local_world_size, []).extend(names)
+    return out
+
+
+def make_dir(path: Path, group) -> str | None:
+    """Create ``path`` on every node (the volume may be staged per node): master first, then one rank per node.
+
+    Returns this rank's error, if any; every rank reaches both barriers either way."""
     world = get_world()
-    if world.is_master:
-        path.mkdir(parents=True, exist_ok=True)
+    error = None
+    try:
+        if world.is_master:
+            path.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        error = f"rank {world.rank}: {exc!r}"
     dist.barrier(group=group)
-    if world.local_rank == 0 and not path.is_dir():
-        path.mkdir(parents=True, exist_ok=True)
+    try:
+        if error is None and world.local_rank == 0 and not path.is_dir():
+            path.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        error = f"rank {world.rank}: {exc!r}"
     dist.barrier(group=group)
+    return error
 
 
 def gather(obj: Any, group) -> list[Any]:
@@ -311,7 +333,7 @@ class ExportContext:
     weight_map: dict[str, str]
     files: list[str]
     my_files: list[str]
-    files_by_host: dict[str, list[str]]
+    files_by_node: dict[int, list[str]]
     wanted: set[str]
     num_fine_tuned: int
     base_config: dict
@@ -334,10 +356,6 @@ def prepare(config, out_root: Path) -> ExportContext:
     my_files = assignment[world.rank]
     prefixes = tuple(cfg.keep_base_prefixes)
     wanted = {key for key, name in weight_map.items() if name in my_files and is_fine_tuned(key, prefixes)}
-    hosts = gather(socket.gethostname(), group)
-    files_by_host: dict[str, list[str]] = {}
-    for rank, names in enumerate(assignment):
-        files_by_host.setdefault(hosts[rank], []).extend(names)
     # Every rank must take the same upload branch (it issues collectives), so the master decides.
     has_token = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
     do_upload = bool(from_master(has_token, group))
@@ -354,7 +372,7 @@ def prepare(config, out_root: Path) -> ExportContext:
         weight_map=weight_map,
         files=files,
         my_files=my_files,
-        files_by_host=files_by_host,
+        files_by_node=files_by_node(assignment, world.local_world_size),
         wanted=wanted,
         num_fine_tuned=sum(is_fine_tuned(key, prefixes) for key in weight_map),
         base_config=json.loads((base_dir / "config.json").read_text()),
@@ -378,12 +396,13 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    make_dir(out_dir, ctx.group)
     changes: dict[str, float] = {}
     digests: dict[str, str] = {}
     headers: dict[str, dict] = {}
-    error = None
+    error = make_dir(out_dir, ctx.group)
     try:
+        if error is not None:
+            raise OSError(f"could not create {out_dir}: {error}")
         expected = {key for key in ctx.weight_map if is_fine_tuned(key, ctx.keep_base_prefixes)}
         if world.is_master and not produced <= set(ctx.weight_map):
             raise ValueError(f"the model produced keys the base lacks: {sorted(produced - set(ctx.weight_map))[:5]}")
@@ -439,13 +458,7 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
             "sha256": all_digests,
         }
         try:
-            for name in BASE_FILES:
-                if (ctx.base_dir / name).is_file():
-                    shutil.copyfile(ctx.base_dir / name, out_dir / name)
-            (out_dir / "README.md").write_text(
-                model_card(info, ctx.base_dir, ctx.base_config, ctx.description, num_tensors)
-            )
-            (out_dir / "export_report.json").write_text(json.dumps(report, indent=2) + "\n")
+            write_small_files(info, out_dir, ctx, report)
         except Exception as exc:
             problems.append(repr(exc))
         logger.info(f"[{info.name}] relative change from the base: {json.dumps(summary['groups'])}")
@@ -462,6 +475,77 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
     return out_dir if ok else None
 
 
+def write_small_files(info: ExportInfo, out_dir: Path, ctx: ExportContext, report: dict) -> None:
+    """Master: the base's config and tokenizer files, the model card and the export report."""
+    for name in BASE_FILES:
+        if (ctx.base_dir / name).is_file():
+            shutil.copyfile(ctx.base_dir / name, out_dir / name)
+    (out_dir / "README.md").write_text(
+        model_card(info, ctx.base_dir, ctx.base_config, ctx.description, report["tensors"])
+    )
+    (out_dir / "export_report.json").write_text(json.dumps(report, indent=2) + "\n")
+
+
+def link_or_copy(src: Path, dst: Path) -> None:
+    """A hard link where the filesystem allows it (exports are written once via tmp + rename), else a copy."""
+    tmp = dst.with_name(dst.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    try:
+        os.link(src, tmp)
+    except OSError:
+        shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
+
+
+def copy_export(src_info: ExportInfo, src_dir: Path, info: ExportInfo, ctx: ExportContext) -> Path | None:
+    """Make export ``info`` from ``src_info``'s, which holds the same weights (the best is the final step), without
+    gathering or writing the weights again. Every rank links or copies only the shards it wrote into ``src_dir``, and
+    the master its own small files with a new model card and report. Returns the directory if it passed."""
+    logger = get_logger()
+    world = get_world()
+    out_dir = ctx.out_root / info.name
+    error = make_dir(out_dir, ctx.group)
+    try:
+        if error is not None:
+            raise OSError(f"could not create {out_dir}: {error}")
+        for name in ctx.my_files:
+            link_or_copy(src_dir / name, out_dir / name)
+            if (out_dir / name).stat().st_size != (src_dir / name).stat().st_size:
+                raise OSError(f"{out_dir / name}: size differs from {src_dir / name}")
+    except Exception as exc:
+        error = f"rank {world.rank}: {exc!r}"
+        logger.error(f"[{info.name}] {error}")
+    errors = [e for e in gather(error, ctx.group) if e is not None]
+    ok = True
+    if world.is_master:
+        problems = list(errors)
+        if not problems:
+            try:
+                report = json.loads((src_dir / "export_report.json").read_text())
+                report["export"] = info.name
+                report["source"] = {
+                    "run_id": info.run_id,
+                    "step": info.step,
+                    "max_steps": info.max_steps,
+                    "val_loss": info.val_loss,
+                    **info.extra,
+                }
+                report["copied_from"] = src_info.name
+                write_small_files(info, out_dir, ctx, report)
+            except Exception as exc:
+                problems.append(repr(exc))
+        if problems:
+            logger.error(f"[{info.name}] copying the '{src_info.name}' export FAILED, not uploading: {problems[:5]}")
+            ok = False
+        else:
+            logger.success(
+                f"[{info.name}] step {info.step} is also '{src_info.name}': its {len(ctx.files)} files copied to "
+                f"{out_dir}"
+            )
+    ok = bool(from_master(ok, ctx.group))
+    return out_dir if ok else None
+
+
 def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
     """Push an export: small files first (rank 0), then each node's shards (preupload in parallel, commits in turn)."""
     from huggingface_hub import CommitOperationAdd, HfApi
@@ -471,7 +555,8 @@ def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
     group = ctx.group
     api = HfApi()
     host = socket.gethostname()
-    is_host_leader = world.local_rank == 0
+    node = world.rank // world.local_world_size
+    is_node_leader = world.local_rank == 0
     repo_id = info.repo_id
 
     ok = True
@@ -496,24 +581,24 @@ def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> None:
 
     operations: list = []
     error_text = None
-    if is_host_leader:
+    if is_node_leader:
         try:
-            operations = [CommitOperationAdd(name, out_dir / name) for name in ctx.files_by_host[host]]
+            operations = [CommitOperationAdd(name, out_dir / name) for name in ctx.files_by_node.get(node, [])]
             api.preupload_lfs_files(repo_id, additions=operations)
         except Exception as error:
             error_text = repr(error)
-            logger.error(f"[{info.name}] upload from {host} failed: {error_text}")
-    for turn in sorted(ctx.files_by_host):
-        if is_host_leader and turn == host and error_text is None and operations:
+            logger.error(f"[{info.name}] upload from node {node} ({host}) failed: {error_text}")
+    for turn in sorted(ctx.files_by_node):
+        if is_node_leader and turn == node and error_text is None and operations:
             try:
                 api.create_commit(
                     repo_id,
                     operations=operations,
-                    commit_message=f"Weights: {len(operations)} shards ({info.name}, {host})",
+                    commit_message=f"Weights: {len(operations)} shards ({info.name}, node {node})",
                 )
             except Exception as error:
                 error_text = repr(error)
-                logger.error(f"[{info.name}] commit from {host} failed: {error_text}")
+                logger.error(f"[{info.name}] commit from node {node} ({host}) failed: {error_text}")
         dist.barrier(group=group)
 
     if world.is_master:
@@ -550,29 +635,37 @@ def run(config, model: torch.nn.Module, best, final_step: int, ckpt_root: Path, 
         return
     history = best.history if best is not None else {}
     done: list[str] = []
+    # The passed export of the final weights (in memory), if any: 'best' at the final step is copied from it.
+    final_export: tuple[ExportInfo, Path] | None = None
     for name in [n for n in ("last", "best") if n in cfg.checkpoints]:
         try:
             if name == "last":
-                step = final_step
+                step, val_loss = final_step, history.get(final_step)
             else:
                 if best is None or best.best is None:
                     logger.error("HF export: no best checkpoint was recorded, skipping 'best'")
                     continue
-                step = best.best["step"]
+                # The loss measured on the snapshot's weights (a replayed validation never replaces it).
+                step, val_loss = best.best["step"], best.best["val_loss"]
                 if step != final_step and not best.restore(model):
                     logger.error(f"HF export: could not load the best checkpoint (step {step}), skipping 'best'")
                     continue
-            reshard_module(model)
             info = ExportInfo(
                 name=name,
                 repo_id=cfg.best_repo if name == "best" else cfg.last_repo,
                 step=step,
                 max_steps=config.max_steps,
-                val_loss=history.get(step),
+                val_loss=val_loss,
                 run_id=run_id,
                 extra=dict(extra or {}),
             )
-            out_dir = export_weights(model, info, ctx)
+            if final_export is not None and step == final_step:
+                out_dir = copy_export(*final_export, info, ctx)
+            else:
+                reshard_module(model)
+                out_dir = export_weights(model, info, ctx)
+                if out_dir is not None and step == final_step:
+                    final_export = (info, out_dir)
             if out_dir is None:
                 continue
             done.append(name)

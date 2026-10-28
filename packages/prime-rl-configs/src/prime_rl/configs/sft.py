@@ -166,7 +166,8 @@ class SFTValConfig(BaseConfig):
     """Run the interval validations after the step's optimizer update instead of before it. ``val/loss`` at
     step N is then the loss of the weights a checkpoint of step N holds, and the final step is validated as well
     (also when ``max_steps`` is not a multiple of ``interval``). ``eval_on_start`` still runs before the first
-    update. Off: ``val/loss`` at step N is the loss of the weights after N - 1 updates."""
+    update, except on a resume whose first step validates after its update anyway. Off: ``val/loss`` at step N
+    is the loss of the weights after N - 1 updates."""
 
     keep_best: bool = False
     """Keep a weights-only snapshot (model parameters and buffers, no optimizer state) of the lowest validation

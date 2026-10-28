@@ -429,10 +429,21 @@ def train(config: SFTConfig):
             else {}
         )
         # [val] after_optimizer_step moves the interval validations (and adds one at the last step) to after the
-        # optimizer update, below; eval_on_start always runs here, on the weights before the first update.
+        # optimizer update, below; eval_on_start runs here, on the weights before the first update.
         val_after_update = config.val is not None and config.val.after_optimizer_step
+        validate_after_update = val_after_update and (
+            progress.step % config.val.interval == 0 or (is_last_step and not paused)
+        )
+        # On a resume, eval_on_start re-validates the resumed weights; skip it when this step validates after its
+        # update anyway, so that val/loss is logged once per step.
+        eval_on_start_this_step = (
+            is_first_step
+            and config.val is not None
+            and config.val.eval_on_start
+            and not (checkpoint_step is not None and validate_after_update)
+        )
         run_validation_this_step = config.val is not None and (
-            (is_first_step and config.val.eval_on_start)
+            eval_on_start_this_step
             or (not val_after_update and not is_first_step and progress.step % config.val.interval == 0)
         )
         if gradient_manager is None:
@@ -541,7 +552,7 @@ def train(config: SFTConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        if val_after_update and (progress.step % config.val.interval == 0 or (is_last_step and not paused)):
+        if validate_after_update:
             val_loss = run_validation(progress.step)
             reshard_module(model)
             # These are exactly the weights after progress.step updates, i.e. what a checkpoint of this step holds.
