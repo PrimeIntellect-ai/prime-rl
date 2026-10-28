@@ -1,11 +1,11 @@
 import time
 from collections.abc import Sequence
 
-import torch
 from torch import nn
 
 from prime_rl.trainer.models.base import AttentionFlops, PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.device import device_module
 from prime_rl.utils.logger import get_logger
 
 
@@ -60,8 +60,8 @@ class PerfCounter:
         self._world = get_world()
         self._logger = get_logger()
 
-        if torch.cuda.is_available():
-            self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
+        if device_module.is_available():
+            self.gpu_peak_flops = self._get_peak_flops(device_module.get_device_name())
         else:
             self.gpu_peak_flops = 0
         self.flop_counter = FlopCounter(model)

@@ -35,6 +35,18 @@ DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
     "TORCH_FR_DUMP_TEMP_FILE": f"/tmp/nccl_trace_{os.getuid()}_rank_",
 }
 
+
+def local_trainer_env_vars() -> dict[str, str]:
+    """``DEFAULT_TRAINER_ENV_VARS`` for a trainer launched on this machine. Intel XPU's caching
+    allocator also reads ``PYTORCH_CUDA_ALLOC_CONF``, and oneCCL collectives segfault on
+    expandable-segment memory, so an XPU trainer keeps the default allocator."""
+    from prime_rl.utils.device import DEVICE_TYPE
+
+    if DEVICE_TYPE == "xpu":
+        return {**DEFAULT_TRAINER_ENV_VARS, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"}
+    return dict(DEFAULT_TRAINER_ENV_VARS)
+
+
 DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
@@ -47,9 +59,23 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
 }
 
 
-def get_physical_gpu_ids() -> list[int]:
-    """Return physical GPU IDs visible to the launcher."""
-    raw_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+def get_physical_gpu_ids() -> list[int | str]:
+    """Return the GPUs visible to the launcher, as the tokens its subprocess masks are built from.
+
+    CUDA reads ``CUDA_VISIBLE_DEVICES`` as GPU indices. Intel XPU reads ``ZE_AFFINITY_MASK``, whose
+    tokens may be devices (``1``) or tiles (``0.0``); they are kept verbatim so each process gets the
+    same selector. An unset, empty or ``default`` mask leaves every device visible. vLLM's XPU platform
+    accepts device indices only, so inference GPUs need plain indices.
+    """
+    from prime_rl.utils.device import DEVICE_TYPE, VISIBLE_DEVICES_ENV
+
+    raw_visible = os.environ.get(VISIBLE_DEVICES_ENV)
+    if DEVICE_TYPE == "xpu":
+        if raw_visible is None or raw_visible.strip().lower() in ("", "default"):
+            import torch
+
+            return list(range(torch.xpu.device_count()))
+        return [token.strip() for token in raw_visible.split(",") if token.strip()]
     if raw_visible is None:
         import pynvml
 
@@ -58,7 +84,7 @@ def get_physical_gpu_ids() -> list[int]:
     return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
 
 
-def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int], list[int]]:
+def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int | str], list[int | str]]:
     """Split the launcher's physical GPUs into inference GPUs followed by trainer GPUs."""
     physical_gpu_ids = get_physical_gpu_ids()
     if num_infer + num_train > len(physical_gpu_ids):

@@ -33,6 +33,7 @@ from prime_rl.utils.process import (
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
     ProcessGroup,
+    local_trainer_env_vars,
     partition_gpus,
     set_proc_title,
     torchrun_cmd,
@@ -302,6 +303,9 @@ def sft_slurm(config: SFTConfig):
 
 def sft_local(config: SFTConfig):
     """Run SFT training locally with process monitoring and cleanup."""
+    if not config.dry_run:
+        from prime_rl.utils.device import VISIBLE_DEVICES_ENV
+
     assert config.deployment.type == "single_node"
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
@@ -367,7 +371,7 @@ def sft_local(config: SFTConfig):
                     **DEFAULT_INFERENCE_ENV_VARS,
                     **config.env_vars,
                     **config.inference.env_vars,
-                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
+                    VISIBLE_DEVICES_ENV: ",".join(map(str, infer_gpu_ids)),
                 },
                 log_path=log_dir / "inference.log",
             )
@@ -408,7 +412,7 @@ def sft_local(config: SFTConfig):
         trainer_env = {
             **os.environ,
             **DEFAULT_COMMON_ENV_VARS,
-            **DEFAULT_TRAINER_ENV_VARS,
+            **local_trainer_env_vars(),
             **config.env_vars,
             **wandb_shared_env,
             **launcher_attempt_env(config_dir, log_dir),
@@ -417,7 +421,7 @@ def sft_local(config: SFTConfig):
             trainer_env["LOGURU_FORCE_COLORS"] = "1"
             trainer_env["WANDB_SHARED_LABEL"] = "trainer"
         if trainer_gpu_ids:
-            trainer_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, trainer_gpu_ids))
+            trainer_env[VISIBLE_DEVICES_ENV] = ",".join(map(str, trainer_gpu_ids))
         processes.start(
             "trainer",
             torchrun_cmd(

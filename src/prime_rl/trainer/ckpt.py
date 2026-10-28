@@ -27,6 +27,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.device import device_module
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
@@ -104,9 +105,9 @@ class AppState(Stateful):
                 optimizer.finish_checkpoint_save()
 
         if self._has_cpu_offload():
-            torch.cuda.synchronize()
+            device_module.synchronize()
             gc.collect()
-            torch.cuda.empty_cache()
+            device_module.empty_cache()
 
         return state_dict
 
@@ -226,7 +227,7 @@ class CheckpointManager:
         # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
         # reserves on top of them instead of reusing them.
         gc.collect()
-        torch.cuda.empty_cache()
+        device_module.empty_cache()
         if self.skip_optimizer:
             for optimizer in optimizers:
                 if isinstance(optimizer, OffloadOptimizer):

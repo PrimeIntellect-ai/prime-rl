@@ -1,0 +1,275 @@
+# syntax=docker/dockerfile:1
+
+# prime-rl on Intel GPUs (XPU): torch 2.14.0+xpu and vLLM 0.32.0+xpu.
+#
+# Dockerfile.cuda syncs uv.lock, which only resolves CUDA wheels. This image instead
+# resolves torch and vLLM from the PyTorch and vLLM XPU indexes and constrains every other
+# third-party package to the version pinned in uv.lock. The Intel GPU user-mode driver and
+# the Intel runtime wheel pins follow vLLM v0.32.0's docker/Dockerfile.xpu.
+#
+# FlashAttention-2 comes from the Kernel Hub: like transformers, prime-rl falls back to
+# kernels-community/flash-attn2 (version 3, which has XPU builds for this torch) when the
+# flash_attn package is absent, and the `kernels` package downloads it into the Hugging Face
+# cache on first use. CUDA-only packages are not installed: flash-attn (FA2/3/4),
+# ring-flash-attn, DeepEP, DeepGEMM, FlashMLA, mamba-ssm, TileLang, quack, sonic-moe, NIXL,
+# Mooncake.
+#
+# Build from the repo root with submodules checked out. The build args stamp the submodule
+# versions from the host's git tags, as CI does for Dockerfile.cuda (optional: without them
+# the highest `>=` floor declared in the tree is used):
+#   eval "$(bash scripts/docker-editable-pretend-versions.sh --shell .)"
+#   docker build -f Dockerfile.xpu -t prime-rl:xpu \
+#     --build-arg VERIFIERS_PRETEND_VERSION --build-arg RENDERERS_PRETEND_VERSION \
+#     --build-arg PYDANTIC_CONFIG_PRETEND_VERSION .
+# Run with the host GPUs. The by-path mount lets oneCCL exchange GPU memory handles inside the
+# container, which multi-GPU training needs:
+#   docker run --rm -it --device /dev/dri -v /dev/dri/by-path:/dev/dri/by-path --ipc=host \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface prime-rl:xpu
+
+ARG TORCH_VERSION=2.14.0
+ARG VLLM_VERSION=0.32.0
+# Loads the Kernel Hub FlashAttention-2 build; not a prime-rl dependency yet.
+ARG KERNELS_SPEC=">=0.16.0,<0.17.0"
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/xpu
+ARG VLLM_XPU_INDEX_URL=https://wheels.vllm.ai/0.32.0/xpu
+# Hosts triton==3.8.0+xpu and vllm_xpu_kernels, which the vLLM XPU wheel requires.
+ARG VLLM_XPU_EXTRA_INDEX_URL=https://wheels.vllm.ai/xpu
+# Environment packages installed alongside prime-rl (the basic examples' tasksets).
+ARG PRIME_RL_ENVS="deps/verifiers/environments/reverse_text deps/verifiers/environments/alphabet_sort deps/verifiers/environments/wordle deps/verifiers/environments/wiki_search deps/verifiers/environments/gsm8k"
+
+FROM ghcr.io/astral-sh/uv:0.11.9@sha256:6b6fa841d71a48fbc9e2c55651c5ad570e01104d7a7d701f57b2b22c0f58e9b1 AS uv
+
+FROM ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038ccd752c61b60 AS base
+LABEL repository="prime-rl"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# build-essential, python3.12-dev and ocl-icd-opencl-dev are runtime needs: Triton XPU
+# JIT-compiles kernel launchers against Python.h, and torch.compile's XPU backend compiles
+# SYCL host code that includes CL/cl.h.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        ffmpeg \
+        git \
+        git-lfs \
+        gpg \
+        libaio-dev \
+        libgl1 \
+        libsm6 \
+        libsndfile1 \
+        libxext6 \
+        numactl \
+        ocl-icd-opencl-dev \
+        python3.12 \
+        python3.12-dev \
+        python3.12-venv \
+        tmux \
+        vim \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Intel GPU user-mode driver: Level Zero, OpenCL ICD and IGC, same versions as vLLM v0.32.0.
+# apt-get resolves the debs' system dependencies, which a bare `dpkg -i` would not.
+ARG IGC_VERSION=2.38.2
+ARG IGC_BUILD=22051
+ARG COMPUTE_RUNTIME_VERSION=26.27.39122.11
+ARG GMMLIB_VERSION=22.10.0
+ARG LEVEL_ZERO_VERSION=1.32.0
+RUN mkdir /tmp/neo && cd /tmp/neo \
+    && wget -q \
+        "https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}/intel-igc-core-2_${IGC_VERSION}+${IGC_BUILD}_amd64.deb" \
+        "https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}/intel-igc-opencl-2_${IGC_VERSION}+${IGC_BUILD}_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/intel-ocloc_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/intel-opencl-icd_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/libigdgmm12_${GMMLIB_VERSION}_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/libze-intel-gpu1_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb" \
+        "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/libze1_${LEVEL_ZERO_VERSION}+u24.04_amd64.deb" \
+        "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/libze-dev_${LEVEL_ZERO_VERSION}+u24.04_amd64.deb" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ./*.deb \
+    && cd / && rm -rf /tmp/neo /var/lib/apt/lists/*
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+ENV UV_PYTHON_PREFERENCE=only-system
+ENV UV_LINK_MODE=copy
+ENV UV_HTTP_TIMEOUT=500
+ENV UV_CACHE_DIR=/root/.cache/uv
+ENV VIRTUAL_ENV=/app/.venv
+RUN uv venv --python /usr/bin/python3.12 /app/.venv
+# The Intel SYCL/oneCCL runtime wheels place their shared libraries in the venv's lib/.
+ENV PATH="/app/.venv/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/app/.venv/lib"
+WORKDIR /app
+
+# Source tree with versions stamped into the editable submodules. .dockerignore drops .git,
+# so hatch-vcs cannot read tags; bake the version into its fallback the way
+# Dockerfile.cuda does. Pass the *_PRETEND_VERSION build args to use the host's git
+# describe output; otherwise the highest `>=` floor declared in the tree is used.
+FROM base AS source
+ARG VERIFIERS_PRETEND_VERSION
+ARG RENDERERS_PRETEND_VERSION
+ARG PYDANTIC_CONFIG_PRETEND_VERSION
+COPY . /app
+RUN <<'EOF'
+set -euo pipefail
+eval "$(bash scripts/docker-editable-pretend-versions.sh --shell /app)"
+for entry in \
+    "deps/verifiers:${VERIFIERS_PRETEND_VERSION}" \
+    "deps/renderers:${RENDERERS_PRETEND_VERSION}" \
+    "deps/pydantic-config:${PYDANTIC_CONFIG_PRETEND_VERSION}"; do
+    path="${entry%%:*}"
+    version="${entry#*:}"
+    grep -q '^fallback-version = ' "${path}/pyproject.toml"
+    sed -i "s/^fallback-version = \".*\"$/fallback-version = \"${version}\"/" "${path}/pyproject.toml"
+done
+EOF
+
+# Resolve the full XPU dependency set. Writes /build/third-party.txt (fully pinned),
+# /build/no-deps.txt and /build/editables.txt.
+FROM base AS resolve
+ARG TORCH_VERSION
+ARG VLLM_VERSION
+ARG KERNELS_SPEC
+ARG TORCH_INDEX_URL
+ARG VLLM_XPU_INDEX_URL
+ARG VLLM_XPU_EXTRA_INDEX_URL
+ARG PRIME_RL_ENVS
+COPY --from=source /app /app
+RUN --mount=type=cache,target=/root/.cache/uv <<'EOF'
+set -euo pipefail
+mkdir -p /build
+
+uv export --frozen --all-extras --all-groups --no-hashes --no-annotate --no-header \
+    --no-emit-project --no-emit-workspace > /build/lock.txt
+
+# Constraints: every uv.lock pin except packages replaced by XPU builds, CUDA-only
+# packages, and direct URL / git sources.
+grep -vE '^\s*(-e |#|$)' /build/lock.txt \
+    | grep -v ' @ ' \
+    | grep -viE '^(torch|torchvision|torchaudio|torchcodec|torch-c-dlpack-ext|triton|vllm|cuda-[a-z-]+|cupy[a-z0-9-]*|nvidia-[a-z0-9-]+|flash-attn[a-z0-9-]*|flashinfer-[a-z-]+|flash-mla|deep-ep|deep-gemm|mamba-ssm|quack-kernels|sonic-moe|tilelang|apache-tvm-ffi|mooncake-transfer-engine|nixl[a-z0-9-]*|ring-flash-attn|xformers|ai-dynamo[a-z-]*|prime-kernels|modelexpress)==' \
+    > /build/constraints.txt
+# nvidia-ml-py is pure Python (pynvml); prime-rl imports it at module load.
+grep -E '^nvidia-ml-py==' /build/lock.txt >> /build/constraints.txt
+
+# Overrides: XPU torch, prime-rl's own [tool.uv] overrides that still apply (openenv-core),
+# and vLLM v0.32.0's Intel runtime re-pins.
+{
+    echo "torch==${TORCH_VERSION}+xpu"
+    python3.12 - <<'PY'
+import re
+import tomllib
+
+overrides = tomllib.load(open("/app/pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]
+for requirement in overrides:
+    name = re.split(r"[<>=!~ ;\[]", requirement, maxsplit=1)[0].lower()
+    if name == "openenv-core":
+        print(requirement)
+PY
+    cat <<'PINS'
+intel-cmplr-lib-rt==2026.1.1
+intel-cmplr-lib-ur==2026.1.1
+intel-cmplr-lic-rt==2026.1.1
+intel-sycl-rt==2026.1.1
+oneccl-devel==2022.1.2
+oneccl==2022.1.2
+dpcpp-cpp-rt==2026.1.1
+intel-opencl-rt==2026.1.1
+intel-openmp==2026.1.1
+intel-pti==1.1.0
+PINS
+} > /build/overrides.txt
+
+# Requirements: the XPU torch/vLLM stack, prime-rl and its submodules as editables, the
+# example environments, vllm-router (the HTTP router `inference` starts in front of the
+# engine), and the trainer's device-agnostic dependencies at their lock pins.
+{
+    echo "torch==${TORCH_VERSION}+xpu"
+    echo "torchvision"
+    echo "torchaudio"
+    echo "vllm==${VLLM_VERSION}+xpu"
+    echo "-e /app/packages/prime-rl-configs"
+    echo "-e /app/deps/pydantic-config"
+    echo "-e /app/deps/renderers[multimodal]"
+    echo "-e /app/deps/verifiers[harbor]"
+    echo "-e /app[dashboard]"
+    for env in ${PRIME_RL_ENVS}; do
+        echo "-e /app/${env}"
+    done
+    echo "kernels${KERNELS_SPEC}"
+    echo "torchdata"
+    # uv.lock pins a prime-kernels CUDA build of torchao; use the same release's XPU wheel.
+    echo "torchao==$(sed -nE 's/^torchao @ .*\/torchao-([0-9.]+)\+.*/\1/p' /build/lock.txt | head -n 1)+xpu"
+    echo "nvidia-ml-py"
+    echo "pytest"
+    echo "pytest-asyncio"
+    grep -E '^(torchtitan|dion|flash-linear-attention|prime-runs|prime-traces) @ |^vllm-router @ .*_x86_64\.whl' /build/lock.txt
+} > /build/requirements.in
+
+# Imported at module load but only usable on CUDA: install without their CUDA dependencies.
+grep -E '^modelexpress==|^prime-kernels @ .*linux_x86_64\.whl' /build/lock.txt | sed -E 's/ ;.*//' > /build/no-deps.txt
+
+# --no-config: run outside the project's [tool.uv] settings. Its exclude-newer cooldown
+# rejects index wheels that carry no upload time, which includes the XPU indexes; every
+# package that uv.lock also pins is still held to the lock's cooldown-vetted version.
+uv pip compile /build/requirements.in \
+    --no-config \
+    --constraint /build/constraints.txt \
+    --override /build/overrides.txt \
+    --python /app/.venv/bin/python \
+    --no-sources \
+    --index-strategy unsafe-best-match \
+    --extra-index-url "${TORCH_INDEX_URL}" \
+    --extra-index-url "${VLLM_XPU_INDEX_URL}" \
+    --extra-index-url "${VLLM_XPU_EXTRA_INDEX_URL}" \
+    --no-header --no-annotate \
+    --output-file /build/resolved.txt
+
+grep -E '^-e ' /build/resolved.txt > /build/editables.txt
+grep -vE '^-e ' /build/resolved.txt > /build/third-party.txt
+EOF
+
+# Third-party packages only, so source edits that leave the resolution unchanged reuse
+# this layer.
+FROM base AS dependencies
+ARG TORCH_INDEX_URL
+ARG VLLM_XPU_INDEX_URL
+ARG VLLM_XPU_EXTRA_INDEX_URL
+COPY --from=resolve /build/third-party.txt /build/no-deps.txt /build/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-config --no-deps --compile-bytecode \
+        --index-strategy unsafe-best-match \
+        --extra-index-url "${TORCH_INDEX_URL}" \
+        --extra-index-url "${VLLM_XPU_INDEX_URL}" \
+        --extra-index-url "${VLLM_XPU_EXTRA_INDEX_URL}" \
+        -r /build/third-party.txt \
+    && uv pip install --no-config --no-deps -r /build/no-deps.txt
+
+FROM dependencies AS runtime
+COPY --from=source /app /app
+COPY --from=resolve /build/editables.txt /build/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-config --no-deps -r /build/editables.txt \
+    && python - <<'PY'
+from importlib.metadata import version
+
+assert version("torch").endswith("+xpu"), version("torch")
+assert version("vllm").endswith("+xpu"), version("vllm")
+import prime_rl.configs.rl  # noqa: F401
+import prime_rl.entrypoints.rl  # noqa: F401
+import torch
+
+print(f"torch {torch.__version__}, vllm {version('vllm')}, transformers {version('transformers')}")
+PY
+
+ENV VLLM_TARGET_DEVICE=xpu
+ENV UV_NO_SYNC=1
+ENV VLLM_WORKER_MULTIPROC_METHOD=spawn
+# HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
+ENV HF_HUB_ETAG_TIMEOUT=500
+ENV HF_HUB_DOWNLOAD_TIMEOUT=300
+
+CMD ["bash"]

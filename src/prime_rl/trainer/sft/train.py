@@ -10,6 +10,7 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
+from prime_rl.utils.device import DEVICE_TYPE, device_module
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
@@ -241,17 +242,17 @@ def train(config: SFTConfig):
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
-        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
-        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
-        target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
-        loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
-        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        input_ids = micro_batch["input_ids"].to(DEVICE_TYPE, non_blocking=True)
+        position_ids = micro_batch["position_ids"].to(DEVICE_TYPE, non_blocking=True)
+        target_ids = micro_batch["target_ids"].to(DEVICE_TYPE, non_blocking=True)
+        loss_mask = micro_batch["loss_mask"].to(DEVICE_TYPE, non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].to(DEVICE_TYPE, non_blocking=True)
         mm_kwargs = micro_batch.get("mm_kwargs")
         if mm_kwargs is not None:
-            mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
+            mm_kwargs = {key: value.to(DEVICE_TYPE, non_blocking=True) for key, value in mm_kwargs.items()}
         mm_type_ids = micro_batch.get("mm_token_type_ids")
         if mm_type_ids is not None:
-            mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
+            mm_type_ids = mm_type_ids.to(DEVICE_TYPE, non_blocking=True)
 
         seq_lens_are_pre_shard = False
 
@@ -291,9 +292,9 @@ def train(config: SFTConfig):
 
     def run_eval_loop(data_iter):
         """Validation forward loop. Returns token-weighted global mean loss."""
-        total_loss_sum = torch.tensor(0.0, device="cuda")
-        total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
-        nan_count = torch.tensor(0, device="cuda")
+        total_loss_sum = torch.tensor(0.0, device=DEVICE_TYPE)
+        total_token_count = torch.tensor(0, dtype=torch.int64, device=DEVICE_TYPE)
+        nan_count = torch.tensor(0, device=DEVICE_TYPE)
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
         # every forward is a collective, so all ranks must agree on when to stop —
@@ -304,7 +305,7 @@ def train(config: SFTConfig):
         with torch.no_grad():
             while True:
                 micro_batch = next(data_iter, None)
-                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device="cuda")
+                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device=DEVICE_TYPE)
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
@@ -381,11 +382,13 @@ def train(config: SFTConfig):
         weight_sender.broadcast(model, startup_version)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
-    max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
+    max_memory = device_module.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
-        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        prof = profile(
+            activities=[ProfilerActivity.CPU, getattr(ProfilerActivity, DEVICE_TYPE.upper())], record_shapes=True
+        ).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
@@ -394,7 +397,7 @@ def train(config: SFTConfig):
     paused = False
     while True:
         # Reset peak memory stats
-        torch.cuda.reset_peak_memory_stats()
+        device_module.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
@@ -409,8 +412,8 @@ def train(config: SFTConfig):
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
 
-        step_loss_sum = torch.tensor(0.0, device="cuda")
-        nan_loss_count = torch.tensor(0, device="cuda")
+        step_loss_sum = torch.tensor(0.0, device=DEVICE_TYPE)
+        nan_loss_count = torch.tensor(0, device=DEVICE_TYPE)
         is_moe_model = is_tt_moe_model(model)
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
@@ -418,11 +421,11 @@ def train(config: SFTConfig):
         )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+            step_local_token_count = torch.tensor(0, dtype=torch.int64, device=DEVICE_TYPE)
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
-            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
+            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device=DEVICE_TYPE)
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item() // cp_size
             grad_scale = (
@@ -471,7 +474,7 @@ def train(config: SFTConfig):
                 routing_stats.append(take_moe_routing_stats(model))
 
         # Wait for the queued backward kernels so this times GPU work, not kernel launches.
-        torch.cuda.synchronize()
+        device_module.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         moe_stats, expert_load_stats = {}, {}
         if is_moe_model:
@@ -545,7 +548,7 @@ def train(config: SFTConfig):
             memory_profiler.step()
 
         # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device=DEVICE_TYPE)
         dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
         num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
         progress.total_tokens += num_tokens
@@ -558,7 +561,7 @@ def train(config: SFTConfig):
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        peak_memory = device_module.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics

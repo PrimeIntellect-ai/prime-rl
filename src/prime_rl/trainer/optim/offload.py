@@ -20,6 +20,7 @@ from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as nativ
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
 from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.utils.device import DEVICE_TYPE, device_module
 from prime_rl.utils.logger import get_logger
 
 
@@ -39,14 +40,14 @@ class _CPUGradientBuffer:
 class _PinnedTransferSlot:
     index: int
     tensor: torch.Tensor
-    event: torch.cuda.Event
+    event: torch.Event
 
 
 @dataclass
 class _GradientTransferRequest:
     param_id: int
     local_grad: torch.Tensor
-    ready_event: torch.cuda.Event
+    ready_event: torch.Event
     step: int
     backward: int
     final_backward: bool
@@ -95,7 +96,7 @@ class GradientOffloadManager:
         self._timeout_seconds = timeout_seconds
         # Per-step wall-time accumulators; each key is written by exactly one pipeline thread.
         self._timings: dict[str, float] = {}
-        self._cuda_device = torch.cuda.current_device()
+        self._device = device_module.current_device()
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._chunk_param_ids = [{id(param) for param in chunk} for chunk in chunks]
         self._chunk_by_param_id = {
@@ -127,7 +128,7 @@ class GradientOffloadManager:
             max_param_numel[gradient_dtype] = max(max_param_numel[gradient_dtype], local.numel())
         accumulator_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu")
         self._buffers: dict[int, _CPUGradientBuffer] = {}
-        self._ready_events: dict[int, list[torch.cuda.Event]] = {}
+        self._ready_events: dict[int, list[torch.Event]] = {}
         for param in dtensor_params:
             data = param.data
             local = data.to_local()
@@ -135,7 +136,7 @@ class GradientOffloadManager:
             template = copy.copy(data.detach())
             template._local_tensor = accumulator
             self._buffers[id(param)] = _CPUGradientBuffer(template, accumulator)
-            self._ready_events[id(param)] = [torch.cuda.Event() for _ in range(max_inflight_backwards)]
+            self._ready_events[id(param)] = [device_module.Event() for _ in range(max_inflight_backwards)]
 
         max_chunk_numel: dict[torch.dtype, int] = defaultdict(int)
         for chunk in chunks:
@@ -163,7 +164,7 @@ class GradientOffloadManager:
                 buffer_count, self._output_normal_capacity[dtype], max_numel, dtype
             )
 
-        self._d2h_stream = torch.cuda.Stream()
+        self._d2h_stream = device_module.Stream()
         self._transfer_requests: queue.SimpleQueue[_GradientTransferRequest | _BackwardBoundaryTask | None] = (
             queue.SimpleQueue()
         )
@@ -227,7 +228,7 @@ class GradientOffloadManager:
             _PinnedTransferSlot(
                 index=index,
                 tensor=torch.empty(normal_numel, dtype=dtype, device="cpu", pin_memory=True),
-                event=torch.cuda.Event(),
+                event=device_module.Event(),
             )
             for index in range(count)
         ]
@@ -236,7 +237,7 @@ class GradientOffloadManager:
                 _PinnedTransferSlot(
                     index=count,
                     tensor=torch.empty(max_numel, dtype=dtype, device="cpu", pin_memory=True),
-                    event=torch.cuda.Event(),
+                    event=device_module.Event(),
                 )
             )
         free_slots = {"normal": queue.Queue(), "oversized": queue.Queue()}
@@ -260,7 +261,7 @@ class GradientOffloadManager:
 
     def _worker_entry(self, target: Callable[[], None], name: str) -> None:
         try:
-            with torch.cuda.device(self._cuda_device):
+            with device_module.device(self._device):
                 target()
         except BaseException as error:
             with self._condition:
@@ -346,7 +347,7 @@ class GradientOffloadManager:
                     f"{slot.tensor.numel()}"
                 )
             destination = slot.tensor.narrow(0, 0, task.local_grad.numel()).view(task.local_grad.shape)
-            with torch.cuda.stream(self._d2h_stream):
+            with device_module.stream(self._d2h_stream):
                 self._d2h_stream.wait_event(task.ready_event)
                 destination.copy_(task.local_grad, non_blocking=True)
                 task.local_grad.record_stream(self._d2h_stream)
@@ -546,7 +547,7 @@ class GradientOffloadManager:
                 buffer.last_enqueued_backward = self._backward_generation
                 self._backward_enqueued_param_ids.add(param_id)
             ready_event = self._ready_events[param_id][event_index]
-            ready_event.record(torch.cuda.current_stream())
+            ready_event.record(device_module.current_stream())
             self._transfer_requests.put(
                 _GradientTransferRequest(
                     param_id=param_id,
@@ -620,7 +621,7 @@ class GradientOffloadManager:
             if buffer.initialized
         )
         local_squared_norm *= self._gradient_scale**2
-        total_norm = torch.tensor(local_squared_norm, dtype=torch.float32, device="cuda")
+        total_norm = torch.tensor(local_squared_norm, dtype=torch.float32, device=DEVICE_TYPE)
         dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
         total_norm.div_(self._dp_replicate).sqrt_()
         clip_coefficient = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0).item()
@@ -658,7 +659,7 @@ class GradientOffloadManager:
             offsets[dtype] += local.numel()
         return list(slots.values()), views
 
-    def release_output_chunk(self, slots: list[_PinnedTransferSlot], stream: torch.cuda.Stream) -> None:
+    def release_output_chunk(self, slots: list[_PinnedTransferSlot], stream: torch.Stream) -> None:
         for slot in slots:
             slot.event.record(stream)
             self._release_tasks.put(slot)
@@ -723,9 +724,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         # Reuse the transfer streams across steps: fresh streams each step land
         # their H2D/D2H staging in new per-stream allocator pools, growing
         # reserved memory every step and starving the default stream.
-        self._h2d_stream = torch.cuda.Stream()
-        self._d2h_stream = torch.cuda.Stream()
-        self._cuda_device = torch.cuda.current_device()
+        self._h2d_stream = device_module.Stream()
+        self._d2h_stream = device_module.Stream()
+        self._device = device_module.current_device()
         self._chunk_groups = self._build_chunk_groups()
         self._adamw = isinstance(optimizer, AdamW)
         get_logger().info(
@@ -778,11 +779,11 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     def _update_compute_weights(
         self,
         chunk_idx: int,
-        stream: torch.cuda.Stream,
+        stream: torch.Stream,
         sources: list[torch.Tensor],
     ) -> None:
         assert self._master_weights is not None
-        with torch.cuda.stream(stream):
+        with device_module.stream(stream):
             for param_idx, param in enumerate(self._chunks[chunk_idx]):
                 master = self._master_weights[id(param)]
                 if not isinstance(master.model_param, DTensor):
@@ -890,7 +891,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         timings["output_slot_wait"] = timings.get("output_slot_wait", 0.0) + kernel_start - acquire_start
         self._step_native_cpu_chunk(chunk_idx, gradients, compute_params)
         timings["optimizer_kernel"] = timings.get("optimizer_kernel", 0.0) + time.perf_counter() - kernel_start
-        with torch.cuda.device(self._cuda_device):
+        with device_module.device(self._device):
             self._update_compute_weights(chunk_idx, self._h2d_stream, compute_params)
             self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
 
@@ -900,7 +901,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         if self._gradient_manager.optimizer_overlapped:
             drain_start = time.perf_counter()
             self._gradient_manager.wait_for_optimizer()
-            torch.cuda.current_stream().wait_stream(self._h2d_stream)
+            device_module.current_stream().wait_stream(self._h2d_stream)
             timings = self._gradient_manager.consume_timings()
             timings["drain"] = time.perf_counter() - drain_start
             get_logger().debug(
@@ -917,8 +918,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._step_native_cpu_chunk(i, gradients_by_chunk[i], compute_params)
             self._update_compute_weights(i, self._h2d_stream, compute_params)
             self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
-        torch.cuda.current_stream().wait_stream(self._h2d_stream)
-        torch.cuda.synchronize()
+        device_module.current_stream().wait_stream(self._h2d_stream)
+        device_module.synchronize()
         self.optimizer._opt_called = True
         self._initialized = True
 
@@ -1021,8 +1022,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                     compute_param.copy_(self._master_weights[id(param)].cpu_tensor)
                 self._update_compute_weights(i, self._h2d_stream, compute_params)
                 self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
-            torch.cuda.current_stream().wait_stream(self._h2d_stream)
-            torch.cuda.synchronize()
+            device_module.current_stream().wait_stream(self._h2d_stream)
+            device_module.synchronize()
             self._gradient_manager.wait_for_output_slots()
         self._initialized = True
 
@@ -1034,7 +1035,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             if not isinstance(master.model_param, DTensor):
                 raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
             master.cpu_tensor.copy_(master.model_param.to_local(), non_blocking=True)
-        torch.cuda.synchronize()
+        device_module.synchronize()
         self._initialized = True
 
 
@@ -1119,11 +1120,11 @@ def _create_cpu_master_weights(
         if gradient_dtype not in (torch.bfloat16, torch.float32):
             raise TypeError(f"Full offload does not support {gradient_dtype} gradients ({name})")
         master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor, compute_dtype, gradient_dtype)
-    torch.cuda.synchronize()
+    device_module.synchronize()
 
     _cast_full_offload_compute_parameters(model, dtype_policy)
     del local_param
-    torch.cuda.empty_cache()
+    device_module.empty_cache()
 
     master_allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
     get_logger().info(
