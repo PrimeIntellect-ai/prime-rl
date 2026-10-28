@@ -558,20 +558,20 @@ def train(config: SFTConfig):
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
-        max_peak_memory = max(max_peak_memory, peak_memory)
-        # Memory outside the caching allocator (symmetric memory, NCCL buffers, CUDA context), max over ranks
+        # Includes memory outside the caching allocator (symmetric memory, NCCL buffers, CUDA context)
         free_device_memory, total_device_memory = torch.cuda.mem_get_info()
         non_torch_memory = (total_device_memory - free_device_memory - torch.cuda.memory_reserved()) / 1024**3
-        device_memory = torch.tensor([peak_memory + non_torch_memory, non_torch_memory], device="cuda")
-        dist.all_reduce(device_memory, op=dist.ReduceOp.MAX)
-        peak_device_memory, non_torch_memory = device_memory.tolist()
+        peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
+        memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+        dist.all_reduce(memory, op=dist.ReduceOp.MAX)
+        peak_memory, non_torch_memory = memory.tolist()  # GiB, max over ranks
+        max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
-        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%) | Peak Dev. Mem. {peak_device_memory:.1f}/{max_memory:.1f} GiB ({peak_device_memory / max_memory * 100:.1f}%)"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
             if name in moe_stats and (value := moe_stats[name].item()) > 0:
                 step_message += f" | {label} {value:.4f}"
@@ -607,7 +607,6 @@ def train(config: SFTConfig):
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
-            "perf/peak_device_memory": peak_device_memory,
             "perf/non_torch_memory": non_torch_memory,
             "perf/mfu": mfu,
             "perf/mfu_6dn": mfu_6dn,
