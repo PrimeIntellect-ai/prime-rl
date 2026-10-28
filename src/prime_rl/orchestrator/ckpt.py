@@ -277,6 +277,11 @@ class CheckpointRetention:
         self.state["best_step"], self.state["best_score"] = best if best is not None else (None, None)
 
 
+def should_export_final(ckpt: CheckpointConfig | None, final_step: int | None) -> bool:
+    """Final HF export is strictly opt-in and requires a completed final checkpoint."""
+    return final_step is not None and ckpt is not None and ckpt.export
+
+
 def build_state(progress: Progress, train_source: TrainSource) -> dict:
     """A snapshot of the orchestrator's checkpointed state, independent of later changes."""
     return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict()})

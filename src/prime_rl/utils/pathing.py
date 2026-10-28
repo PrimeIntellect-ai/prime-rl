@@ -488,7 +488,9 @@ def require_legacy_resume_step(ckpt_dir: Path, step: int | None) -> int:
             and "generation" not in manifest
         )
         if not legacy_manifest:
-            raise ValueError(f"Checkpoint step {step} has an invalid or generation-bearing manifest; refusing legacy fallback")
+            raise ValueError(
+                f"Checkpoint step {step} has an invalid or generation-bearing manifest; refusing legacy fallback"
+            )
     step_path = get_step_path(ckpt_dir, step)
     if (
         not (step_path / "trainer" / ".metadata").is_file()

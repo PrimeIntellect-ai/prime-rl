@@ -48,6 +48,7 @@ from prime_rl.orchestrator.ckpt import (
     eval_epoch_score,
     eval_plan_fingerprint,
     setup_ckpt_manager,
+    should_export_final,
 )
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -494,7 +495,7 @@ class Orchestrator:
                     await self.periodic_logger.stop()
                 # Export before completion. False or an exception leaves DCP sources intact
                 # and marks this attempt unsuccessful instead of finalizing its monitors.
-                if final_step is not None and self.config.ckpt is not None and self.config.ckpt.export:
+                if should_export_final(self.config.ckpt, final_step):
                     try:
                         await self.finalize_exports(final_step)
                     except Exception as exc:

@@ -333,9 +333,7 @@ def test_corrupted_published_export_invalidates_complete(fake_run: tuple[Path, L
 
 
 @pytest.mark.parametrize("relative_path", ["unexpected.txt", "nested/EXPORT.json"])
-def test_unlisted_published_asset_invalidates_complete(
-    fake_run: tuple[Path, LlamaForCausalLM], relative_path: str
-):
+def test_unlisted_published_asset_invalidates_complete(fake_run: tuple[Path, LlamaForCausalLM], relative_path: str):
     run_dir, model = fake_run
     _write_dcp(run_dir, 20, model)
     assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True

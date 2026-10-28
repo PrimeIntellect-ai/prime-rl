@@ -391,7 +391,9 @@ def test_legacy_resume_is_explicit_and_validates_both_components(tmp_path):
 
     (ckpt_dir / "step_40" / "manifest.json").write_text(json.dumps({"complete": True, "step": 40}))
     assert require_joint_resume_step(ckpt_dir, 40, allow_legacy=True) == 40
-    (ckpt_dir / "step_40" / "manifest.json").write_text(json.dumps({"complete": True, "step": 40, "generation": "mixed"}))
+    (ckpt_dir / "step_40" / "manifest.json").write_text(
+        json.dumps({"complete": True, "step": 40, "generation": "mixed"})
+    )
     with pytest.raises(ValueError, match="refusing legacy fallback"):
         require_joint_resume_step(ckpt_dir, 40, allow_legacy=True)
 
@@ -428,6 +430,17 @@ def test_shared_checkpoint_retention_config_propagates_to_both_components():
     )
     assert trainer_only.orchestrator.ckpt is not None
     assert trainer_only.orchestrator.ckpt.keep_last == 1
+
+
+def test_final_export_gate_is_false_by_default_and_true_only_when_opted_in():
+    from prime_rl.orchestrator.ckpt import should_export_final
+
+    ckpt = SimpleNamespace(export=False)
+    assert should_export_final(ckpt, 40) is False
+    assert should_export_final(None, 40) is False
+    ckpt.export = True
+    assert should_export_final(ckpt, None) is False
+    assert should_export_final(ckpt, 40) is True
 
 
 def test_split_checkpoint_root_is_rejected_before_writers_and_legacy_configs_do_not_export():
