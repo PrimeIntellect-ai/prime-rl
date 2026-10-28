@@ -31,6 +31,7 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
+    RUN_FINISHER_VAR,
     ProcessGroup,
     partition_gpus,
     set_proc_title,
@@ -140,6 +141,8 @@ def rl_local(config: RLConfig):
     wandb_shared_env: dict[str, str] = {
         "WANDB_SHARED_MODE": "1",
         "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
+        # The orchestrator finishes the shared Prime run; the trainer only flushes.
+        RUN_FINISHER_VAR: "orchestrator",
     }
     attempt_env = launcher_attempt_env(config_dir, log_dir)
 
