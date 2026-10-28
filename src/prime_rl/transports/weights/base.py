@@ -174,6 +174,10 @@ class WeightReceiver(ABC):
         """Acknowledge the offered version — unblocks the waiting trainer."""
         (self.step_dir(step) / RECEIVER_READY_MARKER).touch()
 
+    async def prepare(self, step: int) -> None:
+        """Work on the offered v{step} that needs no engine pause, done before the consumer stops dispatching for
+        the update. ``receive`` does it too if it was not done."""
+
     @abstractmethod
     async def receive(self, step: int) -> None:
         """Acknowledge the offered v{step} and move the engines onto it."""

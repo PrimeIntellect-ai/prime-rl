@@ -66,12 +66,17 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
-    async def receive(self, step: int) -> None:
+    prepared_step: int | None = None
+
+    async def prepare(self, step: int) -> None:
+        """Acknowledge v{step} and wait for its weights while the engines keep serving: a sparse delta's manifest
+        comes first and its part files as the trainer encodes, so the engines read and decode them now and the
+        pause only applies the delta."""
+        if self.prepared_step == step:
+            return
         weights_dir = self.step_dir(step)
         manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
         self._ack(step)
-        # A sparse delta's manifest comes first and its part files as the trainer encodes: the engines
-        # read and decode them while they keep serving, and the pause only applies the delta.
         while not (manifest.exists() or finished.exists()):
             await asyncio.sleep(0.05)
             revalidate(manifest.parent)
@@ -79,6 +84,12 @@ class FileSystemWeightReceiver(WeightReceiver):
             start = time.perf_counter()
             await self.admin_plane.prefetch_weights(weights_dir)
             self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
+        self.prepared_step = step
+
+    async def receive(self, step: int) -> None:
+        await self.prepare(step)
+        weights_dir = self.step_dir(step)
+        finished = weights_dir / FINISHED_MARKER
         while not finished.exists():
             await asyncio.sleep(0.05)
             revalidate(weights_dir)
