@@ -1,0 +1,153 @@
+# Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 tb4 (Terminal-Bench) trajectories, v2 data.
+# The restart of sft-hosted-tb4-1m.toml (run eivawxtikvt75p1ietxg4lok): same recipe (1M context, 7 epochs, lr 1e-5,
+# warmup 4, cosine to 1e-6) on the updated export, plus best/last checkpoint retention and an HF export at the end.
+# prime train configs/advanced/nemotron-3-super/sft-hosted-tb4-v2.toml --volume nemotron-sft-tb4 \
+#     -e ~/.config/prime-export/hf.env -y          # forwards HF_TOKEN for the end-of-run push; without it the
+#                                                  # exports stay on the volume
+#
+# Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
+# trained as its text-only language model (/volume/models/nemotron-3.5-super-text). Check before every
+# launch: data-prep/verify_checkpoint.py --revision fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe (exit 0).
+#
+# Data: datasets/nemotron-distill-sft-tb4-1m-v2, subset tb4, from export tb4-glm53-measure-sft-20261027 (the
+# 20261026 export plus additional tasks; same filters as the 1M build: teacher internal/glm-5.3-high-throughput,
+# reward >= 0.95, leaked api_key rows dropped; validation = the frozen data-prep/tb4-val-tasks.txt).
+# TODO(dataset build): fill in rows / tasks / tokens and packed rows per epoch, then max_steps below.
+#
+# Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
+# only) ~0.48 TB, each HF export ~0.25 TB. Peak ~3.9 TB of run data (rolling checkpoint + one in flight + best +
+# a best in flight) on top of models/ + datasets/. The volume must not hold old run directories.
+
+image_tag = "v0.10.1.dev74"
+# exp/nemotron-sft-tb4-v2 = 017c0883549e (the code that trained swe-marathon and the first TB4 run) + [val]
+# after_optimizer_step / keep_best + [hf_export]. Don't push other changes to it.
+source_ref = "exp/nemotron-sft-tb4-v2"
+gpu_type = "H200_141GB"
+
+# TODO(dataset build): 7 x steps per epoch of the v2 build (the 1M build had ~41 steps/epoch at batch_size 6,
+# i.e. 287). 287 is a placeholder: the cosine schedule ends at max_steps, so set it before launching.
+max_steps = 287
+dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
+
+[scheduler]
+type = "cosine"
+warmup_steps = 4   # 10% of epoch 1; linear 1e-6 -> 1e-5 (start = min_lr)
+min_lr = 1e-6      # then cosine decay to 1e-6 at max_steps
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 4
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "nemotron-3.5-super-distill-sft-tb4-1m-v2-7ep"
+
+[ckpt]
+interval = 48   # resumable checkpoints for crash recovery, ~every 1.2 epochs
+# Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
+# is always saved. The best weights are kept separately ([val] keep_best).
+keep_last = 1
+
+[resume]
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+# seq_len 1048576 (1M, the model's max) at cp=16 / ep=16 on 32 GPUs: proven by eivawxtikvt75p1ietxg4lok
+# (174 s/step, 69.4/140 GiB peak, no host OOM).
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
+
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-tb4-1m-v2"
+seq_len = 1048576
+batch_size = 6   # packed rows: ~5.8M tokens per step; 2 data ranks x 3 grad-accum micro-steps
+micro_batch_size = 1
+num_workers = 2
+stopping_strategy = "all_exhausted"
+shuffle = true
+seed = 42
+subsets = [
+    "tb4",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# Validation on the held-out tasks (one pass took ~4.6 training steps of compute on the 1M build). The rows must
+# be stored in an order that packs evenly on the 2 data ranks (world 32 / cp 16 x num_workers 1): build with
+# --val-data-ranks 2, keep shuffle = false and num_workers = 1.
+# after_optimizer_step: val/loss at step N is the loss of the weights after N updates (what a checkpoint of step N
+# holds), and the final step is validated too. eval_on_start still measures the base model before step 1.
+# keep_best: the lowest of those losses keeps a weights-only snapshot in runs/<id>/best-weights/ (best.json: step,
+# loss, every candidate's loss); the eval_on_start pass is not a candidate.
+[val]
+interval = 20
+eval_on_start = true
+after_optimizer_step = true
+keep_best = true
+
+[val.data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-tb4-1m-v2"
+subsets = [
+    "tb4",
+]
+splits = [
+    "validation",
+]
+seq_len = 1048576
+batch_size = 6
+micro_batch_size = 1
+num_workers = 1
+shuffle = false
+
+[val.data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# After the final step and checkpoint: the best and the last weights as text-only NemotronHForCausalLM models,
+# written into the layout of /volume/models/nemotron-3.5-super-text (63 shards, 42,683 tensors; the untrained
+# mtp.* tensors copied as they are) under runs/<id>/hf-export/{best,last}/, then pushed to private repos.
+[hf_export]
+checkpoints = ["best", "last"]
+best_repo = "PrimeIntellect/Nemotron-3.5-Super-tb4-v2-sft-best"
+last_repo = "PrimeIntellect/Nemotron-3.5-Super-tb4-v2-sft-last"
+private = true
+model_card = """
+- Base: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision fb0ee0bc), its language model only.
+- Data: GLM-5.3 Terminal-Bench (tb4) trajectories in the mini-swe-agent harness (export tb4-glm53-measure-sft-20261027),
+  1M-token packed sequences, 7 epochs, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
+- Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
+  `chat_template_kwargs={"truncate_history_thinking": false}`.
+"""
