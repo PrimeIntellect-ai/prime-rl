@@ -10,6 +10,9 @@ Notes:
   vocab, head counts and head dims, and the attention and indexer shapes stay published. At published widths the MoE
   checkpoints reach 26 GB, take up to 77 GB of host memory to build and double the launch time of the largest archs.
 - qwen4_exp `ngram_vocab_size_base` is 200000, not 20000000: the real per-layer n-gram table alone is about 51B params.
+- glm_moe_dsa `index_topk` is 128, not 2048, and deepseek_v4's is 64, not 512. The suite's documents are shorter
+  than the published top-k, so the indexer would keep every key and its selection would never drop one. 128 is the
+  smallest top-k FlashMLA's SM90 sparse prefill accepts for GLM-5.
 """
 
 from dataclasses import dataclass
@@ -97,7 +100,7 @@ glm_moe_dsa = TinyModel(
         hidden_size=2048,
         index_head_dim=128,
         index_n_heads=32,
-        index_topk=2048,
+        index_topk=128,
         indexer_rope_interleave=True,
         initializer_range=0.02,
         intermediate_size=4096,
@@ -148,7 +151,7 @@ deepseek_v4 = TinyModel(
         hidden_size=1024,
         index_head_dim=128,
         index_n_heads=64,
-        index_topk=512,
+        index_topk=64,
         initializer_range=0.02,
         max_position_embeddings=1048576,
         moe_intermediate_size=512,
