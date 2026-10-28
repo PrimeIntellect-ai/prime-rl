@@ -22,6 +22,7 @@ from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import (
     DataLoader,
     FakeDataLoader,
+    ReplayDataLoader,
     drop_micro_batches,
     prepare_micro_batch,
     raise_score_centering_data_errors,
@@ -195,10 +196,10 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing scheduler ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
-    # Set up weight broadcast (skip when using fake data since there's no inference server)
-    if config.data.fake:
+    # Set up weight broadcast (skip when using fake or replayed data since there's no inference server)
+    if config.data.fake or config.data.replay:
         weight_sender = None
-        logger.info("Skipping weight broadcast setup (fake data mode)")
+        logger.info("Skipping weight broadcast setup (fake or replayed data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
@@ -248,6 +249,8 @@ def train(config: TrainerConfig):
     t0 = time.perf_counter()
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
+    elif config.data.replay:
+        dataloader = ReplayDataLoader(config.data.replay, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
         dataloader = DataLoader(
             config.output_dir,
@@ -316,7 +319,7 @@ def train(config: TrainerConfig):
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
         dropped_micro_batches = 0
-        if not config.data.fake:
+        if not (config.data.fake or config.data.replay):
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")

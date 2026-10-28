@@ -20,6 +20,7 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.padding import pad_micro_batch
+from prime_rl.transports.batch.replay import read_replay_meta, read_replay_step
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
@@ -199,6 +200,39 @@ class FakeDataLoader:
         }
 
 
+class ReplayDataLoader:
+    """Replays packed micro batches recorded on disk (``tools/convert_traces_to_replay_batches.py``),
+    cycling through the recorded steps."""
+
+    def __init__(self, directory: Path, seq_len: int, dp_world_size: int):
+        self.world = get_world()
+        non_dp_world_size = self.world.world_size // dp_world_size
+        self.dp_rank = self.world.rank // non_dp_world_size
+        self.dp_world_size = dp_world_size
+        self.directory = directory
+        self.meta = read_replay_meta(directory)
+        if self.meta.num_train_workers != dp_world_size:
+            raise ValueError(
+                f"Replay data in {directory} was packed for {self.meta.num_train_workers} data ranks, "
+                f"but the trainer has {dp_world_size}. Convert it again with --num-train-workers {dp_world_size}."
+            )
+        if self.meta.seq_len != seq_len:
+            raise ValueError(
+                f"Replay data in {directory} was packed for seq_len {self.meta.seq_len}, but model.seq_len is "
+                f"{seq_len}. Convert it again with --seq-len {seq_len}."
+            )
+        self.batch_counter = 0
+
+    def wait_for_batch(self) -> None:
+        return
+
+    def get_batch(self) -> list[TensorMicroBatch]:
+        step = self.batch_counter % self.meta.num_steps
+        micro_batches = read_replay_step(self.directory, step, self.dp_rank)
+        self.batch_counter += 1
+        return [DataLoader.micro_batch_to_tensor(micro_batch) for micro_batch in micro_batches]
+
+
 def prepare_micro_batch(
     micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
 ) -> TensorMicroBatch:
@@ -272,7 +306,7 @@ class DataLoader:
         get_logger().debug(
             f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
         )
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        return [self.micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def release_payloads(self) -> None:
         """Free the last batch's arrays on the env servers. Call once every rank that may
@@ -289,7 +323,8 @@ class DataLoader:
                 setattr(micro_batch, name, np.frombuffer(values, dtype))
         pad_micro_batch(micro_batch, self.pad_to_multiple_of)
 
-    def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
+    @staticmethod
+    def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts

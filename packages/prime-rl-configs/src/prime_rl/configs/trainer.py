@@ -577,8 +577,17 @@ class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
+    replay: Path | None = None
+    """Replay the packed micro batches in this directory instead of receiving them from an orchestrator, cycling through its steps. Written by ``tools/convert_traces_to_replay_batches.py`` from a run's recorded episodes; it carries no sampler top logprobs, so it requires ``loss.score_centering = false``."""
+
     num_workers: int = Field(1, ge=0)
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
+
+    @model_validator(mode="after")
+    def validate_single_source(self):
+        if self.fake is not None and self.replay is not None:
+            raise ValueError("Set at most one of data.fake and data.replay")
+        return self
 
 
 class BaseTrainerConfig(BaseConfig):
@@ -733,6 +742,12 @@ class TrainerConfig(BaseTrainerConfig):
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
+
+    @model_validator(mode="after")
+    def validate_replay_score_centering(self):
+        if self.data.replay is not None and self.loss.type == "icepop" and self.loss.score_centering:
+            raise ValueError("data.replay carries no sampler top logprobs, so it requires loss.score_centering = false")
+        return self
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):

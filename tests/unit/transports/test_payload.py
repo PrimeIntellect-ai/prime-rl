@@ -222,7 +222,7 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
         assert resolve_payloads([packed], pool)[0] == []
     assert len(packed.top_logprobs.ids) == 3 * 4
     assert packed.padding == 16
-    tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    tensor = DataLoader.micro_batch_to_tensor(packed)
     for name in ("input_ids", "position_ids", "advantages", "inference_logprobs", "loss_mask", "temperatures"):
         assert tensor[name].shape == (1, 32)
     assert not tensor["loss_mask"][0, 16:].any()
