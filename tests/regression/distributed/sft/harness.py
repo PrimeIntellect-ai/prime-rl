@@ -1,13 +1,4 @@
-"""The SFT functionality matrix, rendered as `uv run sft` arguments.
-
-Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each `Arch`
-in `ARCHS` (in `archs.py`, with its tiny config and tokenizer) contributes two kinds of case:
-
-- A base case on every layout in its `layouts`. It trains `TRAIN_STEPS` steps (see `test_matrix.py`). The base case
-  on the arch's `resume_layout`, if set, also saves a checkpoint and resumes in a fresh process.
-- One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
-
-README.md explains why only qwen3_moe sets `features` and `resume_layout`.
+"""Running and checking SFT cases: `uv run sft` arguments, sharding, and the metric and log parsers.
 
 Base cases on the CP4 layouts (CP and, for MoE archs, EP, with default `fullgraph=False`) also launch with
 `TORCH_LOGS=graph_breaks,dynamo`. A second test, `test_no_graph_breaks`, reads the same launch's rank logs and fails on
@@ -15,131 +6,20 @@ any graph break, so graph breaks and training failures are reported as separate 
 logs lack dynamo's tracing messages, since then an empty graph-break log would prove nothing. Recompile-limit hits,
 which also fall back to eager, are not graph breaks and are not checked.
 
-`Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1).
-`Arch.overrides` holds arch-wide config, such as an explicit renderer. Case ids read `{arch}-{layout}-{feature or
-base}`. No name is a substring of another, so `-k` selects cases by arch, layout or
-feature name. For example, one case:
-
-    uv run pytest tests/regression/distributed -k "qwen3_moe and cp4_ep4 and base"
-
-or every case on one layout, including the feature cases pinned to it:
-
-    uv run pytest tests/regression/distributed -k cp4_ep4
-
 `--shard I/N` runs shard I of N. Each arch's base cases form one shard unit and its feature cases another, so a shard
 builds each checkpoint it needs once. `assign_shards` packs the units longest first by `Arch.launch_s` times the
 unit's launch count, and tests outside the matrix run in shard 1.
-
-`scripts/ci/run_distributed_nightly.sh` runs the same pytest command and passes extra args through to it.
 """
 
 import json
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
-from itertools import permutations
 from pathlib import Path
 
-from transformers import PretrainedConfig
+from tests.regression.distributed.sft.archs import NUM_GPUS, Case, Overrides
 
 CONFIG_DIR = Path("tests/regression/configs/distributed/sft")
-NUM_GPUS = 4
-Overrides = dict[str, object]
-
-
-@dataclass(frozen=True, eq=False)
-class Layout:
-    name: str
-    dp_replicate: int
-    cp: int
-    ep: int
-
-    def overrides(self) -> Overrides:
-        return {
-            "model.dp_replicate": self.dp_replicate,
-            "model.cp": self.cp,
-            "model.ep": self.ep,
-        }
-
-
-FSDP4_EP4 = Layout("fsdp4_ep4", dp_replicate=1, cp=1, ep=4)
-CP4_EP4 = Layout("cp4_ep4", dp_replicate=1, cp=4, ep=4)
-MOE_LAYOUTS = (FSDP4_EP4, CP4_EP4)
-
-FSDP4_EP1 = Layout("fsdp4_ep1", dp_replicate=1, cp=1, ep=1)
-CP4_EP1 = Layout("cp4_ep1", dp_replicate=1, cp=4, ep=1)
-DENSE_LAYOUTS = (FSDP4_EP1, CP4_EP1)
-
-
-@dataclass(frozen=True, eq=False)
-class Feature:
-    name: str
-    overrides: Overrides
-    layout: Layout = FSDP4_EP4
-
-
-FEATURES = (
-    Feature("ac_selective", {"model.ac.mode": "selective"}),
-    Feature("act_offload_off", {"model.ac_offloading": None}),
-    Feature("optim_offload_off", {"model.offload": "none"}),
-    Feature("full_offload", {"model.offload": "full"}),
-    Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP4_EP4),
-)
-
-
-@dataclass(frozen=True, eq=False)
-class Arch:
-    """A trainer arch: its tiny config, the tokenizer matching its vocab, and how the suite runs it."""
-
-    name: str
-    config: PretrainedConfig
-    tokenizer: str
-    layouts: tuple[Layout, ...] = MOE_LAYOUTS
-    features: tuple[Feature, ...] = ()
-    overrides: Overrides = field(default_factory=dict)
-    resume_layout: Layout | None = None
-    launch_s: int = 160
-
-    def cases(self) -> list["Case"]:
-        for feature in self.features:
-            if feature.layout not in self.layouts:
-                raise ValueError(
-                    f"{self.name}: feature {feature.name} runs on {feature.layout.name}, outside its layouts"
-                )
-        return [Case(self, layout) for layout in self.layouts] + [
-            Case(self, feature.layout, feature) for feature in self.features
-        ]
-
-
-@dataclass(frozen=True, eq=False)
-class Case:
-    arch: Arch
-    layout: Layout
-    feature: Feature | None = None
-
-    @property
-    def id_parts(self) -> tuple[str, str, str]:
-        return self.arch.name, self.layout.name, self.feature.name if self.feature else "base"
-
-    @property
-    def id(self) -> str:
-        return "-".join(self.id_parts)
-
-    @property
-    def resume(self) -> bool:
-        return self.feature is None and self.layout is self.arch.resume_layout
-
-    @property
-    def check_graph_breaks(self) -> bool:
-        return self.feature is None and self.layout in (CP4_EP4, CP4_EP1)
-
-    @property
-    def shard_unit(self) -> tuple[str, bool]:
-        return self.arch.name, self.feature is not None
-
-    def overrides(self) -> Overrides:
-        return self.arch.overrides | self.layout.overrides() | (self.feature.overrides if self.feature else {})
 
 
 def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], int]:
@@ -154,12 +34,6 @@ def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], 
         shards[unit] = loads.index(min(loads))
         loads[shards[unit]] += cost
     return shards
-
-
-def check_k_selectable(names: set[str]) -> None:
-    for name, other in permutations(sorted(names), 2):
-        if name in other:
-            raise ValueError(f"-k {name} would also select {other}")
 
 
 def sft_args(case: Case, model_name: str) -> list[str]:

@@ -1,3 +1,3 @@
 import pytest
 
-pytest.register_assert_rewrite(f"{__name__}.cases")
+pytest.register_assert_rewrite(f"{__name__}.harness")

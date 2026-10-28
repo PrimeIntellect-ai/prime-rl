@@ -6,8 +6,8 @@ import pytest
 import torch
 from huggingface_hub import snapshot_download
 
-from tests.regression.distributed.sft.archs import CASES, write_tiny_checkpoint
-from tests.regression.distributed.sft.cases import NUM_GPUS, Arch, assign_shards
+from tests.regression.distributed.sft.archs import CASES, NUM_GPUS, Arch, write_tiny_checkpoint
+from tests.regression.distributed.sft.harness import assign_shards
 
 TOKENIZER_FILES = ["*.json", "*.txt", "tokenizer*", "*.jinja"]
 
