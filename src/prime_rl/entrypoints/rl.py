@@ -95,7 +95,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
-    checkpoint_dirs = [get_ckpt_dir(config.output_dir)]
+    checkpoint_dirs = [get_ckpt_dir(config.run_dir)]
     if config.resume is not None and config.resume.dir is not None:
         checkpoint_dirs.append(config.resume.dir.parent)
     for split, source in env_servers(config):

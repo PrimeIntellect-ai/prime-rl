@@ -211,26 +211,35 @@ def test_a_sweep_keeps_the_newest_and_held_snapshots_only():
     asyncio.run(run())
 
 
-def test_open_work_survives_the_checkpoint_file(tmp_path):
-    import torch
+def wire(episode: vf.Episode) -> vf.WireEpisode:
+    """The episode as the env client returns it: a parametrized generic pickle cannot find."""
+    from verifiers.v1.serve.delta import dump
 
-    from prime_rl.orchestrator.ckpt import build_state
+    return vf.WireEpisode.model_validate(dump(episode))
+
+
+def test_open_work_survives_the_checkpoint_file(tmp_path):
+    from prime_rl.configs.orchestrator import CheckpointConfig
+    from prime_rl.orchestrator.ckpt import CheckpointManager, build_state
 
     d = dispatcher(["a"])
     a = group("a", to_schedule=1, emitted=1)
     d.groups = {a.group_id: a}
     d.inflight = {object(): inflight("a", a.group_id, streamed(["t1"]))}
     s = sink(["a"])
-    asyncio.run(s.add(member("a", "ga")))
-    work = {"groups": d.open_work(), "sink": s.state_dict(), "results": [member("a", "gb")], "snapshots": {}}
-    torch.save(build_state(Progress(step=6), TrainSource([train_env("a")]), work), tmp_path / "progress.pt")
+    asyncio.run(s.add(wire(member("a", "ga"))))
+    work = {"groups": d.open_work(), "sink": s.state_dict(), "results": [wire(member("a", "gb"))], "snapshots": {}}
+    manager = CheckpointManager(tmp_path, CheckpointConfig())
+    manager.save_state(build_state(Progress(step=6), TrainSource([train_env("a")]), work), step=6)
 
-    state = torch.load(tmp_path / "progress.pt", weights_only=False)
-    (resumed,) = state["open_work"]["groups"]
+    loaded = manager.load(Progress(), TrainSource([train_env("a")]), step=6)
+    (resumed,) = loaded["groups"]
     assert resumed.task.key == a.task.key and resumed.episodes_to_schedule == 2
-    assert resumed.restores[0].point == {"checkpoint": {"id": "ck-t1"}}
-    assert set(state["open_work"]["sink"]["pending_groups"]) == {"ga"}
-    assert state["open_work"]["results"][0].group.id == "gb"
+    # The rollout without persisted arrays (no env server here) starts over.
+    assert resumed.restores == []
+    (pending,) = loaded["sink"]["pending_groups"]["ga"]
+    assert isinstance(pending, vf.WireEpisode) and pending.traces[0].nodes
+    assert loaded["results"][0].group.id == "gb"
 
 
 def test_a_resumed_group_finalizes_at_the_size_it_opened_with():

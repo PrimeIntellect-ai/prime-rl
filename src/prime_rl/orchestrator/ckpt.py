@@ -10,12 +10,15 @@ import os
 import tempfile
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import torch
+import verifiers.v1 as vf
+from verifiers.v1.serve.delta import dump
 
 from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.train_source import TrainSource
@@ -44,6 +47,7 @@ class CheckpointManager:
         start = time.perf_counter()
         if state.get("open_work") is not None:
             persist_arrays(state["open_work"], (ckpt_path / ARRAYS_DIR).resolve())
+            state = {**state, "open_work": _map_episodes(state["open_work"], dump)}
         # Save to a temporary file and do an atomic rename, to avoid corrupting the last
         # file if the process gets killed while writing
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
@@ -82,6 +86,7 @@ class CheckpointManager:
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
         work = state.get("open_work")
         if work is not None:
+            work = _map_episodes(work, vf.WireEpisode.model_validate)
             resolve_arrays(work, (ckpt_path / ARRAYS_DIR).resolve())
         return work
 
@@ -101,6 +106,22 @@ ARRAYS_DIR = "arrays"
 PERSISTED_URL = "checkpoint"
 """Where a persisted blob's URL points in the saved state: the checkpoint's own
 ``arrays/``, wherever a resumed run finds it (``resolve_arrays``)."""
+
+
+def _map_episodes(work: dict, fn: Callable[[Any], Any]) -> dict:
+    """``work`` with ``fn`` applied to each of its episodes. A served episode's type is a
+    parametrized generic, which pickle cannot find by name, so the checkpoint file holds
+    the episodes dumped."""
+    sink = work["sink"]
+    return {
+        **work,
+        "sink": {
+            **sink,
+            "pending_groups": {gid: [fn(e) for e in group] for gid, group in sink["pending_groups"].items()},
+            "episode_by_trace": {tid: fn(e) for tid, e in sink["episode_by_trace"].items()},
+        },
+        "results": [r if isinstance(r, DispatchFailure | GroupCancellation) else fn(r) for r in work["results"]],
+    }
 
 
 def _work_episodes(work: dict) -> list[Any]:
