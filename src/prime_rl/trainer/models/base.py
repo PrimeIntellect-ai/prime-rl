@@ -5,6 +5,7 @@ from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.vlm import get_language_model
 
@@ -22,14 +23,14 @@ def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None 
     """Elements of `params` (default: all of the model's) that a token multiplies through.
 
     Every parameter counts (attention and MLP projections, norms, routers, the lm_head) except the
-    routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables, which
-    count only when tied to the lm_head.
+    routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables (n-gram
+    tables included), which count only when tied to the lm_head.
     """
     params = {id(param): param for param in (model.parameters() if params is None else params)}
     lm_head_params = {id(param) for param in model.lm_head.parameters()}
     inactive = 0
     for module in model.modules():
-        if isinstance(module, nn.Embedding):
+        if isinstance(module, (nn.Embedding, NGramTable)):
             inactive += sum(
                 param.numel()
                 for param in module.parameters(recurse=False)
@@ -81,14 +82,15 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         They keep their values from the base checkpoint for the whole run, so the inference
         engines keep the copy they loaded and a resume loads them from the base checkpoint again.
         Only whole inference-engine modules may be skipped: the engine re-initializes a module that
-        receives part of its weights. So these are the frozen input embeddings and every decoder
-        layer whose parameters are all frozen, buffers included.
+        receives part of its weights. So these are the frozen input embeddings, n-gram tables and
+        decoder layers, buffers included.
         """
         language_model = get_language_model(self)
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+        ngram_tables = [module for module in self.modules() if isinstance(module, NGramTable)]
         frozen_modules = [
             module
-            for module in [embed_module, *language_model.layers]
+            for module in [embed_module, *language_model.layers, *ngram_tables]
             if not any(param.requires_grad for param in module.parameters())
         ]
         # Matched by module prefix, not tensor identity: fused parameters reach the state dict as split views.

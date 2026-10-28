@@ -163,16 +163,27 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
 
 
 def get_chunked_conversion_ops(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, "ChunkedConvOp"]:
-    """Match independent chunked conversions to weights actually present, including wrapper prefixes."""
+    """Match chunked conversions to the weights present, including wrapper prefixes, and raise for an unmatched n-gram table."""
     from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
+    from prime_rl.trainer.models.layers.ngram import NGramTable
 
     if not isinstance(model, PreTrainedModelPrimeRL):
         return {}
     operations = {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, ChunkedConvOp)}
-    if not operations:
+    table_weights = {
+        resolve_fqn(model, f"{name}.weight") for name, module in model.named_modules() if isinstance(module, NGramTable)
+    }
+    if not operations and not table_weights:
         return {}
-    return {key: operations[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in operations}
+    fqns = {key: resolve_fqn(model, key) for key in state_dict}
+    unchunked_table_weights = [key for key, fqn in fqns.items() if fqn in table_weights and fqn not in operations]
+    if unchunked_table_weights:
+        raise ValueError(
+            f"NGramTable weights {unchunked_table_weights} match no ChunkedConvOp in the conversion chain. "
+            "Without one, a weight transfer would send each table as a single tensor."
+        )
+    return {key: operations[fqn] for key, fqn in fqns.items() if fqn in operations}
 
 
 def gather_weights_parallel(
