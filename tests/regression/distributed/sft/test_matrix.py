@@ -14,12 +14,14 @@ from tests.regression.distributed.sft.harness import (
     graph_break_reports,
     load_metrics,
     ranks_without_dynamo_logs,
+    resumed_loss_gaps,
     sft_args,
 )
 
 pytestmark = [pytest.mark.distributed, pytest.mark.gpu]
 
 TRAIN_STEPS, RESUME_STEPS, TIMEOUT_SEC = 5, 3, 900
+RESUME_LOSS_ATOL = 1e-3
 
 
 @dataclass
@@ -70,12 +72,13 @@ def run_case(tiny_checkpoint, tokenizer_files, run_process, output_dir) -> Calla
             log_dir = latest_log_dir.resolve() if latest_log_dir.exists() else None
             return SFTRun(label, result.returncode, result.timed_out, log_dir)
 
-        train = sft("train", "--max-steps", str(TRAIN_STEPS), *(["--ckpt"] if case.resume else []))
+        if not case.resume:
+            return CaseResult(run_dir, [sft("train", "--max-steps", str(TRAIN_STEPS))])
+        last_step = str(TRAIN_STEPS + RESUME_STEPS)
+        train = sft("train", "--max-steps", last_step, "--ckpt", "--ckpt.interval", str(TRAIN_STEPS))
         runs = [train]
-        if case.resume and train.ok:
-            runs.append(
-                sft("resume", "--max-steps", str(TRAIN_STEPS + RESUME_STEPS), "--resume.step", str(TRAIN_STEPS))
-            )
+        if train.ok:
+            runs.append(sft("resume", "--max-steps", last_step, "--resume.step", str(TRAIN_STEPS)))
         return CaseResult(run_dir, runs)
 
     return _run_case
@@ -87,8 +90,14 @@ def test_sft(case, run_case):
     for run in result.runs:
         if not run.ok:
             pytest.fail(f"run dir: {result.run_dir}\n{run.describe()}", pytrace=False)
-    last_step = TRAIN_STEPS + RESUME_STEPS if case.resume else TRAIN_STEPS
-    assert_training_rows(load_metrics(result.run_dir), range(1, last_step + 1))
+    rows = load_metrics(result.run_dir)
+    if not case.resume:
+        assert_training_rows(rows, range(1, TRAIN_STEPS + 1))
+        return
+    resumed_steps = range(TRAIN_STEPS + 1, TRAIN_STEPS + RESUME_STEPS + 1)
+    assert_training_rows(rows, [*range(1, TRAIN_STEPS + 1), *resumed_steps, *resumed_steps])
+    gaps = resumed_loss_gaps(rows, resumed_steps)
+    assert max(gaps.values()) <= RESUME_LOSS_ATOL, f"resumed losses differ from the original run's: {gaps}"
 
 
 @pytest.mark.parametrize("case", [case for case in CASES if case.check_graph_breaks], ids=lambda case: case.id)

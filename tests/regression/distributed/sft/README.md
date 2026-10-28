@@ -1,6 +1,6 @@
 # Distributed SFT suite
 
-A nightly functionality suite for the trainer. It runs trainer-only SFT (`uv run sft`) on seeded tiny checkpoints of every trainer arch, across a few parallel layouts and memory features, on one node. A case passes if training exits cleanly with a finite loss. Selected cases also check that checkpoint resume continues the step count and that the compiled model has no graph breaks.
+A nightly functionality suite for the trainer. It runs trainer-only SFT (`uv run sft`) on seeded tiny checkpoints of every trainer arch, across a few parallel layouts and memory features, on one node. A case passes if training exits cleanly with a finite loss. Selected cases also check that a run resumed from a checkpoint reproduces the original run's losses, and that the compiled model has no graph breaks.
 
 ## Layout
 

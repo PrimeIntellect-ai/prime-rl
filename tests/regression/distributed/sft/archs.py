@@ -3,7 +3,10 @@
 Each `Arch` contributes two kinds of case:
 
 - A base case on every layout in its `layouts`. It trains `TRAIN_STEPS` steps (see `test_matrix.py`). The base case
-  on the arch's `resume_layout`, if set, also saves a checkpoint and resumes in a fresh process.
+  on the arch's `resume_layout`, if set, trains a few steps further with a checkpoint partway, resumes from that
+  checkpoint in a fresh process, and checks that the resumed run reproduces the original run's losses. It adds
+  `RESUME_OVERRIDES`, a higher learning rate: at the default one a few steps barely move the weights, and a resume
+  that restored nothing would still pass.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
 
 README.md explains why only qwen3_moe sets `features` and `resume_layout`. `Arch.layouts` picks the layout family,
@@ -21,6 +24,7 @@ from tests.regression.distributed import tiny_models
 
 NUM_GPUS = 4
 Overrides = dict[str, object]
+RESUME_OVERRIDES: Overrides = {"optim.lr": 1e-4}
 
 
 @dataclass(frozen=True, eq=False)
@@ -116,7 +120,8 @@ class Case:
         return self.arch.name, self.feature is not None
 
     def overrides(self) -> Overrides:
-        return self.layout.overrides() | (self.feature.overrides if self.feature else {})
+        feature_overrides = self.feature.overrides if self.feature else {}
+        return self.layout.overrides() | feature_overrides | (RESUME_OVERRIDES if self.resume else {})
 
 
 def check_k_selectable(names: set[str]) -> None:

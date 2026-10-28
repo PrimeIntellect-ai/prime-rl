@@ -15,6 +15,7 @@ import json
 import math
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 from tests.regression.distributed.sft.archs import NUM_GPUS, Case, Overrides
@@ -58,12 +59,21 @@ def load_metrics(run_dir: Path) -> list[dict]:
         return [json.loads(line) for line in f]
 
 
-def assert_training_rows(rows: list[dict], expected_steps: range) -> None:
+def assert_training_rows(rows: list[dict], expected_steps: Sequence[int]) -> None:
     train_rows = [row for row in rows if "loss/nan_count" in row]
     assert [row["step"] for row in train_rows] == list(expected_steps)
     for row in train_rows:
         assert row["loss/nan_count"] == 0, row
         assert math.isfinite(row.get("loss/mean", math.nan)), row
+
+
+def resumed_loss_gaps(rows: list[dict], resumed_steps: Sequence[int]) -> dict[int, float]:
+    """Per resumed step, how far the resumed run's loss is from the original run's loss at that step."""
+    losses: defaultdict[int, list[float]] = defaultdict(list)
+    for row in rows:
+        if "loss/nan_count" in row:
+            losses[row["step"]].append(row["loss/mean"])
+    return {step: abs(losses[step][1] - losses[step][0]) for step in resumed_steps}
 
 
 GRAPH_BREAK_TAG = "[__graph_breaks]"
