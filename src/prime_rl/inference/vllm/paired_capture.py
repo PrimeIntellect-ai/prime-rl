@@ -199,10 +199,6 @@ def serialize_paired_support(packed, counts):
     ids = (bits & np.uint64(0xFFFFFFFF)).astype("<u4")
     values = ((bits >> np.uint64(32)).astype(np.uint32).view(np.int32) ^ NEG_INF_BITS).view("<f4")
     counts = np.asarray(counts, dtype=np.int32)
-    if (counts <= 0).any():
-        raise ValueError(
-            "Missing paired sampling-support evidence: the step's supports exceeded inference.sampling_support_capacity"
-        )
     if int(counts.sum()) != len(ids) or not np.isfinite(values).all():
         raise ValueError("Incomplete paired sampling-support evidence")
     return ids.astype(np.int32, copy=False), {
