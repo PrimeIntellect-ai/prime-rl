@@ -75,6 +75,7 @@ from prime_rl.trainer.utils import (
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
     get_ckpt_disk_metrics,
+    get_peak_memory,
     prepare_gradient_offload,
     scale_gradients_,
     setup_full_cpu_optimizer_offload,
@@ -731,7 +732,7 @@ def train(config: TrainerConfig):
         mfu_6dn = perf_counter.get_step_mfu(
             perf_counter.flop_counter.flops_per_token_6dn * num_tokens, forward_backward_time
         )
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        peak_memory = get_peak_memory()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
