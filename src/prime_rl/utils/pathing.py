@@ -331,8 +331,10 @@ def resolve_latest_ckpt_step(ckpt_dir: Path, components: tuple[str, ...]) -> int
     """Gets the latest checkpoint step that every component in ``components`` finished
     saving. Steps without a complete checkpoint of each component (a save killed
     mid-write, or the orchestrator checkpoint of a step the trainer never reached) are
-    skipped. Returns None if there are no checkpoints; raises if there are checkpoints
-    but none is complete."""
+    skipped. Returns None if there are no checkpoints, or if no step has a complete
+    trainer checkpoint (an attempt that crashed before its first trainer save finished);
+    raises if some step has a complete trainer checkpoint but none is complete for every
+    component (e.g. orchestrator checkpoints not written where the trainer's are)."""
     logger = get_logger()
     all_steps = get_all_ckpt_steps(ckpt_dir)
     if len(all_steps) == 0:
@@ -347,6 +349,21 @@ def resolve_latest_ckpt_step(ckpt_dir: Path, components: tuple[str, ...]) -> int
         )
     ]
     if len(steps) == 0:
+        # No step has a complete trainer checkpoint either: every step dir is a partial save from
+        # an attempt that crashed before the first trainer checkpoint finished (the orchestrator
+        # checkpoints a step as soon as it ships the batch, before the trainer has trained and
+        # saved it). Nothing trained was ever persisted, so start from scratch rather than
+        # raise on every restart. Leftovers are overwritten in place by the next saves.
+        if "trainer" in components and not any(
+            (get_step_path(ckpt_dir, step) / "trainer" / CKPT_COMPLETE_MARKERS["trainer"]).exists()
+            for step in all_steps
+        ):
+            logger.warning(
+                f"Checkpoint steps {all_steps} in {ckpt_dir} are all incomplete and none has a complete "
+                "trainer checkpoint (an attempt crashed before its first trainer checkpoint finished). "
+                "Starting from scratch."
+            )
+            return None
         raise FileNotFoundError(
             f"Checkpoint steps {all_steps} in {ckpt_dir} have no complete checkpoint of {list(components)} "
             f"(markers: {[CKPT_COMPLETE_MARKERS[c] for c in components]}). Enable checkpointing for every "

@@ -143,3 +143,20 @@ def test_resolve_latest_ckpt_step_skips_incomplete_steps(tmp_path):
     (trainer_only / ".metadata").touch()
     with pytest.raises(FileNotFoundError):
         resolve_latest_ckpt_step(tmp_path / "trainer_only", ("trainer", "orchestrator"))
+
+
+def test_resolve_latest_ckpt_step_starts_fresh_without_any_trainer_checkpoint(tmp_path):
+    # A crash before the first trainer checkpoint finished: the orchestrator already wrote
+    # step_40/orchestrator/progress.pt, the trainer save was killed mid-write (or never started).
+    ckpt_dir = tmp_path / "checkpoints"
+    for file in ["orchestrator/progress.pt", "trainer/__0_0.distcp"]:
+        path = get_step_path(ckpt_dir, 40) / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    assert resolve_latest_ckpt_step(ckpt_dir, ("trainer", "orchestrator")) is None
+    assert resolve_latest_ckpt_step(ckpt_dir, ("trainer",)) is None
+
+    orch_only = get_step_path(tmp_path / "orch_only", 40) / "orchestrator"
+    orch_only.mkdir(parents=True)
+    (orch_only / "progress.pt").touch()
+    assert resolve_latest_ckpt_step(tmp_path / "orch_only", ("trainer", "orchestrator")) is None
