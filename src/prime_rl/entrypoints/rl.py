@@ -23,7 +23,7 @@ from prime_rl.utils.pathing import (
     launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
-    resolve_latest_ckpt_step,
+    require_joint_resume_step,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -490,12 +490,10 @@ def rl(config: RLConfig):
     resume_step: int | None = None
     if config.resume is not None:
         if config.resume.dir is not None:
-            resume_step = config.resume.dir_step
+            resume_step = require_joint_resume_step(config.resume.dir.parent, config.resume.dir_step)
         else:
-            resume_step = config.resume.step
-            if resume_step is None:
-                ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+            ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
+            resume_step = require_joint_resume_step(get_ckpt_dir(ckpt_base), config.resume.step)
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

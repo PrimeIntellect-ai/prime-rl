@@ -28,7 +28,15 @@ from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
+from prime_rl.utils.pathing import (
+    complete_joint_ckpt_step,
+    get_all_ckpt_steps,
+    get_ckpt_dir,
+    get_step_path,
+    invalidate_joint_ckpt_step,
+    preflight_checkpoint_storage,
+    prune_joint_ckpts,
+)
 
 
 @dataclass
@@ -36,14 +44,6 @@ class Progress:
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
-
-
-def _try_rmtree(path: Path, logger) -> None:
-    """Remove a directory tree, logging and skipping on failure."""
-    try:
-        shutil.rmtree(path)
-    except OSError as e:
-        logger.warning(f"Failed to remove {path}: {e}, skipping cleanup")
 
 
 class AppState(Stateful):
@@ -156,8 +156,17 @@ class AppState(Stateful):
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
+    def __init__(
+        self,
+        output_dir: Path,
+        config: CheckpointConfig,
+        resume: ResumeConfig | None = None,
+        *,
+        joint: bool = False,
+    ):
         self.config = config
+        self.joint = joint
+        self.prune_failures: set[int] = set()
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -261,6 +270,8 @@ class CheckpointManager:
         """Load the trainer checkpoint for a given step (in-place). ``path`` overrides
         where the checkpoint is read from (an external run's ``step_<N>/trainer``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
+        if self.joint and not (ckpt_path / ".metadata").is_file():
+            raise FileNotFoundError(f"Complete trainer checkpoint not found at {ckpt_path / '.metadata'}")
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
@@ -279,44 +290,58 @@ class CheckpointManager:
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
         if self.world.is_master:
+            previous_steps = [s for s in self.ckpt_steps if s != step and get_step_path(self.ckpt_dir, s).exists()]
+            previous_paths = [get_step_path(self.ckpt_dir, previous_step) for previous_step in previous_steps]
+            required_bytes = max(
+                (
+                    sum(path.stat().st_size for path in previous.rglob("*") if path.is_file())
+                    for previous in previous_paths
+                ),
+                default=0,
+            )
+            preflight_checkpoint_storage(self.ckpt_dir, required_bytes=required_bytes)
+            if self.joint:
+                invalidate_joint_ckpt_step(self.ckpt_dir, step)
+                (ckpt_path / ".metadata").unlink(missing_ok=True)
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier(group=get_dcp_group())
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
+        if self.joint and self.world.is_master:
+            complete_joint_ckpt_step(self.ckpt_dir, step)
 
     def maybe_clean(self) -> None:
-        """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
+        """Prune RL jointly; retain the legacy trainer-only policy for SFT."""
+        if self.joint:
+            if self.world.is_master:
+                prune_joint_ckpts(
+                    self.ckpt_dir,
+                    keep_last=self.config.keep_last,
+                    keep_interval=self.config.keep_interval,
+                    failed_steps=self.prune_failures,
+                )
+            self.ckpt_steps = get_all_ckpt_steps(self.ckpt_dir)
+            return
         if self.config.keep_last is None and self.config.keep_interval is None:
             return
-
-        # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-
-        # Determine which steps to keep
         steps_to_keep = set()
-
-        # Keep the most recent keep_last steps
         if self.config.keep_last is not None:
             steps_to_keep.update(self.ckpt_steps[-self.config.keep_last :])
-
-        # Keep steps at keep_interval intervals
         if self.config.keep_interval is not None:
-            for step in self.ckpt_steps:
-                if step % self.config.keep_interval == 0:
-                    steps_to_keep.add(step)
-
-        # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
-        ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+            steps_to_keep.update(step for step in self.ckpt_steps if step % self.config.keep_interval == 0)
         if self.world.is_master:
-            for ckpt_step in ckpt_steps_to_delete:
-                trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
-                ckpt_path = trainer_ckpt_path.parent
-                if ckpt_path.exists():
-                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    _try_rmtree(ckpt_path, self.logger)
-
-        # Update checkpoint steps
+            for step in self.ckpt_steps:
+                if step in steps_to_keep:
+                    continue
+                path = get_step_path(self.ckpt_dir, step)
+                try:
+                    shutil.rmtree(path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    self.logger.warning(f"Failed to remove {path}: {exc}, skipping cleanup")
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
 
@@ -324,8 +349,10 @@ def setup_ckpt_manager(
     output_dir: Path,
     ckpt_config: CheckpointConfig | None,
     resume: ResumeConfig | None = None,
+    *,
+    joint: bool = False,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume, joint=joint)

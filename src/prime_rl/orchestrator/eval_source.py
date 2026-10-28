@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from itertools import zip_longest
 from typing import TYPE_CHECKING
 
@@ -51,19 +51,24 @@ class EvalSource:
         self.first_trigger = not is_resumed
 
     def trigger(
-        self, step: int, *, force: bool = False, completed: Iterable[vf.WireEpisode] = ()
+        self,
+        step: int,
+        *,
+        force: bool = False,
+        completed: Iterable[vf.WireEpisode] = (),
+        skip_envs: Collection[str] = (),
     ) -> tuple[list[str], list[vf.WireEpisode]]:
         """Fire eligible envs and return their names and matched saved episodes. On resume
         ``first_trigger`` is False, so the startup/base eval doesn't re-run.
         ``force`` fires every env regardless of interval (e.g. the evals process's
-        final-checkpoint eval)."""
+        final-checkpoint eval). ``skip_envs`` dedupes already valid completed epochs."""
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.skip_first_step:
             return [], []
         fired = [
             name
             for name, interval in self.intervals.items()
-            if (is_first or force or step % interval == 0) and self.tasks_by_env[name]
+            if name not in skip_envs and (is_first or force or step % interval == 0) and self.tasks_by_env[name]
         ]
         saved: dict[str, list[vf.WireEpisode]] = defaultdict(list)
         for episode in completed:

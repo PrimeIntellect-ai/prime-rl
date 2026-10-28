@@ -430,6 +430,12 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 
+    keep_last: int | None = Field(None, ge=1)
+    """Keep this many recent jointly complete checkpoints, plus BEST and pending-eval pins."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep jointly complete checkpoints at every N steps permanently."""
+
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the

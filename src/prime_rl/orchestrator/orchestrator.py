@@ -42,7 +42,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
-from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
+from prime_rl.orchestrator.ckpt import CheckpointRetention, build_state, eval_epoch_score, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
@@ -77,7 +77,15 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import (
+    get_broadcast_dir,
+    get_config_dir,
+    get_joint_manifest_path,
+    is_joint_ckpt_step,
+    preflight_checkpoint_storage,
+    require_joint_resume_step,
+    write_resolved_config,
+)
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -101,6 +109,7 @@ class Orchestrator:
     last_batch_at: float | None
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
+    retention: CheckpointRetention
     controller: Controller | None
     shipped_state: tuple[int, dict] | None
     component_tasks: list[asyncio.Task]
@@ -141,6 +150,10 @@ class Orchestrator:
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+        self.retention = CheckpointRetention(
+            self.ckpt_manager.ckpt_dir,
+            eval_envs=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
+        )
         self.controller = None
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
@@ -238,11 +251,9 @@ class Orchestrator:
 
         if config.resume is not None:
             if config.resume.dir is not None:
-                self.resume_step = config.resume.dir_step
+                self.resume_step = require_joint_resume_step(config.resume.dir.parent, config.resume.dir_step)
             else:
-                self.resume_step = config.resume.step
-                if self.resume_step is None:
-                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+                self.resume_step = require_joint_resume_step(self.ckpt_manager.ckpt_dir, config.resume.step)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
@@ -434,6 +445,8 @@ class Orchestrator:
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
         loop_done = False
+        final_step: int | None = None
+        export_error: Exception | None = None
         try:
             await self.main_loop()
             loop_done = True
@@ -454,8 +467,11 @@ class Orchestrator:
             # state for that step, and the trainer has no checkpoint for it.
             if loop_done and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
-                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                final_step = self.progress.step
+                get_logger().info(f"Saving final checkpoint at step {final_step}")
+                self.ckpt_manager.save(self.progress, self.train_source, step=final_step)
+                self.retention.reconcile()
+                self.ckpt_manager.maybe_clean()
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -464,9 +480,19 @@ class Orchestrator:
                     await self.inference_metrics.stop()
                 if self.periodic_logger is not None:
                     await self.periodic_logger.stop()
+                # Export before completion. False or an exception leaves DCP sources intact
+                # and marks this attempt unsuccessful instead of finalizing its monitors.
+                if final_step is not None:
+                    try:
+                        await self.finalize_exports(final_step)
+                    except Exception as exc:
+                        export_error = exc
+                        clean_exit = False
+                        get_logger().opt(exception=exc).error("Final HF export failed; DCP checkpoints retained")
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
-                await monitors.finalize()
+                if clean_exit:
+                    await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop(clean_exit)
@@ -475,6 +501,41 @@ class Orchestrator:
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
             await asyncio.to_thread(trim_process_memory)
+            if export_error is not None:
+                raise export_error
+
+    async def finalize_exports(self, latest_step: int) -> None:
+        """Wait for the trainer's final DCP commit, then export only validated BEST and LATEST."""
+        manifest = get_joint_manifest_path(self.ckpt_manager.ckpt_dir, latest_step)
+        deadline = time.monotonic() + self.config.weight_broadcast.timeout
+        while not is_joint_ckpt_step(self.ckpt_manager.ckpt_dir, latest_step):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for jointly complete final checkpoint: {manifest}")
+            await asyncio.sleep(0.5)
+        self.retention.reconcile()
+        self.ckpt_manager.maybe_clean()
+        best_step = self.retention.best_step
+        if best_step is not None and not is_joint_ckpt_step(self.ckpt_manager.ckpt_dir, best_step):
+            raise RuntimeError(f"BEST checkpoint step {best_step} is not jointly complete")
+        from prime_rl.orchestrator.hf_export import export_best_and_latest
+
+        export_dir = self.config.output_dir / "exports"
+        required_bytes = 0
+        for step in dict.fromkeys((best_step, latest_step)):
+            if step is None or (export_dir / f"step_{step}").exists():
+                continue
+            source = self.ckpt_manager.ckpt_dir / f"step_{step}"
+            required_bytes += sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+        preflight_checkpoint_storage(export_dir, required_bytes=required_bytes)
+        valid = await asyncio.to_thread(
+            export_best_and_latest,
+            output_dir=self.config.output_dir,
+            best_step=best_step,
+            latest_step=latest_step,
+        )
+        if valid is not True:
+            raise RuntimeError(f"Final HF export did not validate (BEST={best_step}, LATEST={latest_step})")
+        get_logger().success(f"Validated final HF exports (BEST={best_step}, LATEST={latest_step})")
 
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
@@ -788,9 +849,10 @@ class Orchestrator:
         if self.resume_step == step and self.config.eval is not None and not self.config.eval.retrigger_on_resume:
             return
         is_final = self.config.max_steps is not None and step >= self.config.max_steps
-        fired, _ = self.eval_source.trigger(step, force=is_final)
+        fired, _ = self.eval_source.trigger(step, force=is_final, skip_envs=self.retention.valid_eval_envs(step))
         if not fired:
             return
+        self.retention.mark_eval_pending(step, fired)
         self.eval_triggered_steps.add(step)
         reason = f"eval was triggered at step {step}"
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
@@ -906,9 +968,17 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch through the monitors."""
+        """Persist + log one completed eval epoch, then resolve its dedupe/BEST pin."""
+        if batch.env_name in self.retention.valid_eval_envs(batch.step):
+            get_logger().info(f"Skipping duplicate valid eval @ step={batch.step} env={batch.env_name}")
+            return
+        assert self.eval_envs is not None
+        eval_env = self.eval_envs.get(batch.env_name)
+        score = eval_epoch_score(batch, expected_tasks=len(eval_env.examples), group_size=eval_env.config.group_size)
         if not batch.episodes and not batch.failures:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
+            self.retention.complete_eval_epoch(batch, score=None)
+            self.ckpt_manager.maybe_clean()
             return
 
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
@@ -952,6 +1022,16 @@ class Orchestrator:
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
             f"Timeout {full.is_timeout.mean():.1%}"
         )
+        previous_best = self.retention.best_step
+        self.retention.complete_eval_epoch(batch, score=score)
+        self.ckpt_manager.maybe_clean()
+        if score is not None:
+            get_logger().info(
+                f"Valid eval epoch @ step={batch.step} env={batch.env_name}: "
+                f"task-macro continuous_reward={score:.6f}; BEST step={self.retention.best_step}"
+            )
+        if previous_best != self.retention.best_step:
+            get_logger().success(f"BEST checkpoint is now step {self.retention.best_step}")
 
     async def maybe_save_ckpt(self, step: int) -> float:
         """Checkpoint the step just shipped if it's an interval boundary. Returns
@@ -969,6 +1049,8 @@ class Orchestrator:
         # Synchronous on purpose: the payload is tiny, and snapshotting on the
         # event loop keeps the dispatcher from mutating TrainSource mid-save
         self.ckpt_manager.save(self.progress, self.train_source, step)
+        self.retention.reconcile()
+        self.ckpt_manager.maybe_clean()
         return time.perf_counter() - t
 
     def apply_control(self) -> None:

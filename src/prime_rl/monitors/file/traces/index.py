@@ -44,6 +44,43 @@ def trace_truncated(trace: dict) -> bool:
     return bool(last and last.get("finish_reason") == "length")
 
 
+def terminal_errors(rec: dict) -> list[dict]:
+    """Project terminal trace and episode errors to compact joinable metadata.
+
+    Error histories can include failures that a retry recovered from, so an error
+    is terminal only when its owning trace or episode did not finish successfully.
+    The last error describes that terminal failure; ``error_count`` retains the
+    full error-history size without copying tracebacks or task/runtime payloads.
+    """
+
+    def projection(source: dict, *, trace: dict | None = None) -> dict:
+        error = source["errors"][-1]
+        task = source.get("task") or rec.get("task") or {}
+        agent = (trace or {}).get("agent") or {}
+        runtime = agent.get("runtime") or {}
+        return {
+            "run": (rec.get("run") or {}).get("id"),
+            "group": (rec.get("group") or {}).get("id"),
+            "trace": (trace or {}).get("id"),
+            "task": task.get("key"),
+            "stop_condition": source.get("stop_condition"),
+            "type": error.get("type"),
+            "message": error.get("message"),
+            "status_code": error.get("status_code"),
+            "runtime_id": runtime.get("id"),
+            "error_count": len(source.get("errors") or []),
+        }
+
+    errors = [
+        projection(trace, trace=trace)
+        for trace in rec.get("traces") or []
+        if not trace.get("ok") and trace.get("errors")
+    ]
+    if not rec.get("ok") and rec.get("errors"):
+        errors.append(projection(rec))
+    return errors
+
+
 def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     """One index row: what the table, the filters, the chart and the sort need.
 
@@ -111,6 +148,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
         "num_errors": len(rec.get("errors") or []),
+        "terminal_errors": terminal_errors(rec),
         "reward": sum(rewards) / len(rewards) if rewards else None,
         "advantage": sum(advantages) / len(advantages) if advantages else None,
         "input_tokens": input_tokens,

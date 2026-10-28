@@ -107,6 +107,24 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
     return next((monitor for monitor in MONITORS if isinstance(monitor, monitor_cls)), None)
 
 
+def _log_monitor_exception(monitor: Monitor, operation: str, exc: Exception) -> None:
+    """Report a failed monitor operation without sending data back through fan-out."""
+    producer = getattr(monitor, "producer", None) or monitor.__class__.__name__
+    path = getattr(exc, "filename", None) or getattr(monitor, "path", None)
+    errno = getattr(exc, "errno", None)
+    get_logger().bind(
+        metric="monitor/errors",
+        value=1,
+        producer=producer,
+        operation=operation,
+        path=str(path) if path is not None else None,
+        errno=errno,
+    ).opt(exception=exc).warning(
+        f"Monitor {operation} failed | monitor={monitor.__class__.__name__} producer={producer} "
+        f"operation={operation} path={path} errno={errno}: {exc}"
+    )
+
+
 @overload
 async def log(data: dict[str, Any], step: int | None) -> None: ...
 
@@ -127,7 +145,7 @@ async def log(
         try:
             await monitor.log(data, step=step, kind=kind, subset=subset)
         except Exception as e:
-            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+            _log_monitor_exception(monitor, "log", e)
 
 
 async def log_annotations(updates: list[dict[str, Any]]) -> None:
@@ -136,7 +154,7 @@ async def log_annotations(updates: list[dict[str, Any]]) -> None:
         try:
             await monitor.log_annotations(updates)
         except Exception as e:
-            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+            _log_monitor_exception(monitor, "log_annotations", e)
 
 
 async def log_eval_plan(env_name: str, step: int, expected: int) -> None:
@@ -145,7 +163,7 @@ async def log_eval_plan(env_name: str, step: int, expected: int) -> None:
         try:
             await monitor.log_eval_plan(env_name, step, expected)
         except Exception as e:
-            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+            _log_monitor_exception(monitor, "log_eval_plan", e)
 
 
 async def log_live(events: list[dict[str, Any]]) -> None:
@@ -154,7 +172,7 @@ async def log_live(events: list[dict[str, Any]]) -> None:
         try:
             await monitor.log_live(events)
         except Exception as e:
-            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+            _log_monitor_exception(monitor, "log_live", e)
 
 
 async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
@@ -163,7 +181,7 @@ async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -
         try:
             await monitor.log_eval_epoch(env_name, step, episodes)
         except Exception as e:
-            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+            _log_monitor_exception(monitor, "log_eval_epoch", e)
 
 
 async def finalize(paused: bool = False) -> None:
@@ -172,4 +190,4 @@ async def finalize(paused: bool = False) -> None:
         try:
             await monitor.finalize(paused=paused)
         except Exception as e:
-            get_logger().warning(f"Failed to finalize {monitor.__class__.__name__}: {e}")
+            _log_monitor_exception(monitor, "finalize", e)

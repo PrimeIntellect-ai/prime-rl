@@ -1,0 +1,362 @@
+import copy
+import hashlib
+import json
+import os
+import sys
+import types
+from pathlib import Path
+
+import pytest
+import torch
+from safetensors import SafetensorError
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
+from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+
+import prime_rl.orchestrator.hf_export as hf_export
+import prime_rl.utils.weights as weight_utils
+from prime_rl.orchestrator.hf_export import export_best_and_latest
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _tree_hashes(path: Path) -> dict[str, str]:
+    return {str(file.relative_to(path)): _sha256(file) for file in sorted(path.rglob("*")) if file.is_file()}
+
+
+def _tiny_tokenizer() -> PreTrainedTokenizerFast:
+    words = ["[UNK]", "[EOS]", "[PAD]", "[BOS]", "HF", "export", "smoke", "hello", "world"]
+    backend = Tokenizer(WordLevel({word: index for index, word in enumerate(words)}, unk_token="[UNK]"))
+    backend.pre_tokenizer = Whitespace()
+    return PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="[UNK]",
+        eos_token="[EOS]",
+        pad_token="[PAD]",
+        bos_token="[BOS]",
+    )
+
+
+def _tiny_model(source_dir: Path) -> LlamaForCausalLM:
+    torch.manual_seed(7)
+    config = LlamaConfig(
+        vocab_size=9,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+        bos_token_id=3,
+        eos_token_id=1,
+        pad_token_id=2,
+    )
+    model = LlamaForCausalLM(config)
+    model.config.save_pretrained(source_dir)
+    model.generation_config.save_pretrained(source_dir)
+    _tiny_tokenizer().save_pretrained(source_dir)
+    return model
+
+
+def _write_dcp(run_dir: Path, step: int, model: torch.nn.Module) -> None:
+    dcp_dir = run_dir / "checkpoints" / f"step_{step}" / "trainer"
+    dcp_dir.parent.mkdir(parents=True, exist_ok=True)
+    dcp_save({"app": {"model": model.state_dict()}}, checkpoint_id=dcp_dir)
+
+
+@pytest.fixture
+def fake_run(tmp_path: Path) -> tuple[Path, LlamaForCausalLM]:
+    run_dir = tmp_path / "run"
+    source_dir = tmp_path / "tiny-model"
+    source_dir.mkdir()
+    model = _tiny_model(source_dir)
+    config_dir = run_dir / "configs" / "resolved"
+    config_dir.mkdir(parents=True)
+    (config_dir / "trainer.json").write_text(
+        json.dumps({"model": {"name": str(source_dir)}, "tokenizer": {"name": str(source_dir)}})
+    )
+    return run_dir, model
+
+
+def test_exports_sharded_best_then_latest_and_reuses_immutable_steps(
+    fake_run: tuple[Path, LlamaForCausalLM], monkeypatch: pytest.MonkeyPatch
+):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    latest_model = copy.deepcopy(model)
+    with torch.no_grad():
+        for parameter in latest_model.parameters():
+            parameter.add_(0.01)
+    _write_dcp(run_dir, 40, latest_model)
+    source_hashes = _tree_hashes(run_dir / "checkpoints")
+
+    # Exercise multi-shard index validation without a large fake model.
+    split_into_shards = weight_utils.split_torch_state_dict_into_shards
+
+    def tiny_shards(state_dict, *, filename_pattern, max_shard_size="5GB"):
+        return split_into_shards(state_dict, filename_pattern=filename_pattern, max_shard_size=256)
+
+    monkeypatch.setattr(weight_utils, "split_torch_state_dict_into_shards", tiny_shards)
+
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=40) is True
+
+    exports = run_dir / "exports"
+    assert os.readlink(exports / "best") == "step_20"
+    assert os.readlink(exports / "latest") == "step_40"
+    complete = json.loads((exports / "COMPLETE.json").read_text())
+    assert complete["status"] == "complete"
+    assert complete["best"]["step"] == 20
+    assert complete["latest"]["step"] == 40
+
+    for step in (20, 40):
+        step_dir = exports / f"step_{step}"
+        manifest = json.loads((step_dir / "EXPORT.json").read_text())
+        index = json.loads((step_dir / "model.safetensors.index.json").read_text())
+        assert len(manifest["shards"]) > 1
+        assert set(index["weight_map"]) == set(manifest["tensors"])
+        assert set(index["weight_map"].values()) == {shard["path"] for shard in manifest["shards"]}
+        for shard in manifest["shards"]:
+            assert _sha256(step_dir / shard["path"]) == shard["sha256"]
+        assert all(tensor["dtype"] == "torch.bfloat16" for tensor in manifest["tensors"].values())
+
+    assert _tree_hashes(run_dir / "checkpoints") == source_hashes
+    manifest_hashes = {step: _sha256(exports / f"step_{step}" / "EXPORT.json") for step in (20, 40)}
+
+    def unexpected_reconversion(**kwargs):
+        raise AssertionError("A valid immutable by-step export was converted again")
+
+    monkeypatch.setattr(hf_export, "_convert_checkpoint", unexpected_reconversion)
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=40) is True
+    assert {step: _sha256(exports / f"step_{step}" / "EXPORT.json") for step in (20, 40)} == manifest_hashes
+
+
+def test_latest_only_preserves_tokenizer_trust_and_leaves_best_unpublished(
+    fake_run: tuple[Path, LlamaForCausalLM],
+):
+    run_dir, model = fake_run
+    config_path = run_dir / "configs" / "resolved" / "trainer.json"
+    run_config = json.loads(config_path.read_text())
+    run_config["model"]["trust_remote_code"] = False
+    run_config["tokenizer"]["trust_remote_code"] = True
+    config_path.write_text(json.dumps(run_config))
+    _write_dcp(run_dir, 40, model)
+
+    assert export_best_and_latest(output_dir=run_dir, best_step=None, latest_step=40) is True
+
+    exports = run_dir / "exports"
+    assert not (exports / "best").exists()
+    assert os.readlink(exports / "latest") == "step_40"
+    complete = json.loads((exports / "COMPLETE.json").read_text())
+    assert complete["best"] is None
+    assert complete["latest"]["step"] == 40
+    manifest = json.loads((exports / "step_40" / "EXPORT.json").read_text())
+    assert manifest["trust_remote_code"] is False
+    assert manifest["tokenizer_trust_remote_code"] is True
+
+
+def test_equal_best_and_latest_convert_once(fake_run: tuple[Path, LlamaForCausalLM], monkeypatch: pytest.MonkeyPatch):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    convert = hf_export._convert_checkpoint
+    calls = []
+
+    def counted_convert(**kwargs):
+        calls.append(kwargs["step"])
+        return convert(**kwargs)
+
+    monkeypatch.setattr(hf_export, "_convert_checkpoint", counted_convert)
+
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
+    assert calls == [20]
+    exports = run_dir / "exports"
+    assert os.readlink(exports / "best") == "step_20"
+    assert os.readlink(exports / "latest") == "step_20"
+    assert len(json.loads((exports / "COMPLETE.json").read_text())["exports"]) == 1
+
+
+def test_invalid_latest_fails_closed_and_dcp_remains_retryable(fake_run: tuple[Path, LlamaForCausalLM]):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    invalid_model = copy.deepcopy(model)
+    with torch.no_grad():
+        invalid_model.lm_head.weight.view(-1)[0] = torch.nan
+    _write_dcp(run_dir, 40, invalid_model)
+    source_hashes = _tree_hashes(run_dir / "checkpoints")
+
+    with pytest.raises(RuntimeError, match="Non-finite"):
+        export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=40)
+
+    exports = run_dir / "exports"
+    assert not (exports / "COMPLETE.json").exists()
+    assert not (exports / "best").exists()
+    assert not (exports / "latest").exists()
+    assert (exports / "step_20" / "EXPORT.json").is_file()
+    assert not (exports / "step_40").exists()
+    assert not list(exports.glob("*.tmp"))
+    assert not list(exports.glob(".*.tmp"))
+    assert _tree_hashes(run_dir / "checkpoints") == source_hashes
+
+    _write_dcp(run_dir, 40, model)
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=40) is True
+    assert os.readlink(exports / "best") == "step_20"
+    assert os.readlink(exports / "latest") == "step_40"
+
+
+def test_failed_rerun_invalidates_stale_complete_marker(fake_run: tuple[Path, LlamaForCausalLM]):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
+    exports = run_dir / "exports"
+    shard = next((exports / "step_20").glob("*.safetensors"))
+    shard.write_bytes(shard.read_bytes() + b"corruption")
+
+    with pytest.raises((RuntimeError, SafetensorError)):
+        export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20)
+
+    assert not (exports / "COMPLETE.json").exists()
+
+
+def test_dcp_payload_change_during_conversion_blocks_publication(
+    fake_run: tuple[Path, LlamaForCausalLM], monkeypatch: pytest.MonkeyPatch
+):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    convert = hf_export._convert_checkpoint
+
+    def convert_then_change_source(**kwargs):
+        manifest = convert(**kwargs)
+        payload = next(kwargs["dcp_dir"].glob("*.distcp"))
+        with payload.open("ab") as handle:
+            handle.write(b"changed during conversion")
+        return manifest
+
+    monkeypatch.setattr(hf_export, "_convert_checkpoint", convert_then_change_source)
+
+    with pytest.raises(RuntimeError, match="changed while exporting step 20"):
+        export_best_and_latest(output_dir=run_dir, best_step=None, latest_step=20)
+
+    exports = run_dir / "exports"
+    assert not (exports / "step_20").exists()
+    assert not (exports / "latest").exists()
+    assert not (exports / "COMPLETE.json").exists()
+    assert not list(exports.glob(".*.tmp"))
+
+
+def test_nemotron_h_dcp_layout_exports_through_builtin_hf_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Exercise Mamba, MoE, latent projection, and attention conversion on CPU."""
+    # Import only NemotronH, not every PrimeRL architecture. Kernel functions are
+    # needed to construct the training model but are never called by this test.
+    monkeypatch.setitem(sys.modules, "prime_kernels", types.ModuleType("prime_kernels"))
+    import prime_rl.trainer
+
+    models_package = types.ModuleType("prime_rl.trainer.models")
+    models_package.__path__ = [str(Path(next(iter(prime_rl.trainer.__path__))) / "models")]
+    models_package.__package__ = "prime_rl.trainer.models"
+    monkeypatch.setitem(sys.modules, "prime_rl.trainer.models", models_package)
+
+    def unused_kernel(*args, **kwargs):
+        raise AssertionError("A kernel stub was called")
+
+    stub_modules = {
+        "fla": {},
+        "fla.modules": {},
+        "fla.modules.conv": {"causal_conv1d": unused_kernel},
+        "fla.ops": {},
+        "fla.ops.utils": {"prepare_sequence_ids": unused_kernel},
+        "mamba_ssm": {},
+        "mamba_ssm.ops": {},
+        "mamba_ssm.ops.triton": {},
+        "mamba_ssm.ops.triton.ssd_combined": {"mamba_chunk_scan_combined": unused_kernel},
+    }
+    for name, attributes in stub_modules.items():
+        module = types.ModuleType(name)
+        for key, value in attributes.items():
+            setattr(module, key, value)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+
+    config = NemotronHConfig(
+        vocab_size=9,
+        hidden_size=16,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=4,
+        max_position_embeddings=64,
+        intermediate_size=32,
+        expand=2,
+        mamba_num_heads=4,
+        mamba_head_dim=4,
+        ssm_state_size=4,
+        n_groups=1,
+        conv_kernel=4,
+        chunk_size=8,
+        n_routed_experts=2,
+        n_shared_experts=1,
+        moe_intermediate_size=8,
+        moe_shared_expert_intermediate_size=8,
+        moe_latent_size=8,
+        num_experts_per_tok=1,
+        norm_topk_prob=True,
+        routed_scaling_factor=1.0,
+        hybrid_override_pattern="ME*E",
+        attn_implementation="flash_attention_2",
+    )
+    model = NemotronHForCausalLM(config)
+    assert "model.layers.1.mlp.experts.up_proj" in model.state_dict()
+
+    # Remove fake kernel packages so HF selects its built-in PyTorch fallbacks.
+    for name in stub_modules:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    run_dir = tmp_path / "nemotron-run"
+    source_dir = tmp_path / "nemotron-model"
+    source_dir.mkdir()
+    model.config.save_pretrained(source_dir)
+    _tiny_tokenizer().save_pretrained(source_dir)
+    config_dir = run_dir / "configs" / "resolved"
+    config_dir.mkdir(parents=True)
+    (config_dir / "trainer.json").write_text(
+        json.dumps({"model": {"name": str(source_dir)}, "tokenizer": {"name": str(source_dir)}})
+    )
+    _write_dcp(run_dir, 20, model)
+
+    # Avoid importing unrelated GPU-only architectures in this CPU test. All
+    # subsequent DCP loading, PrimeRL conversion, saving, and HF validation are
+    # the production path and use the actual NemotronH model/conversion chain.
+    monkeypatch.setattr(hf_export, "_load_conversion_model", lambda model_config: (model, True))
+
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
+
+    step_dir = run_dir / "exports" / "step_20"
+    assert (step_dir / "generation_config.json").is_file()
+    manifest = json.loads((step_dir / "EXPORT.json").read_text())
+    expected_hf_keys = {
+        "backbone.embeddings.weight",
+        "backbone.layers.0.mixer.A_log",
+        "backbone.layers.1.mixer.experts.0.up_proj.weight",
+        "backbone.layers.1.mixer.fc1_latent_proj.weight",
+        "backbone.layers.2.mixer.q_proj.weight",
+    }
+    assert expected_hf_keys <= set(manifest["tensors"])
+    assert not any(".mlp.experts." in key for key in manifest["tensors"])
+
+    hf_config = AutoConfig.from_pretrained(step_dir, local_files_only=True)
+    assert hf_config.model_type == "nemotron_h"
+    assert type(hf_config).__module__ == "transformers.models.nemotron_h.configuration_nemotron_h"
+    hf_model, loading_info = AutoModelForCausalLM.from_pretrained(
+        step_dir,
+        local_files_only=True,
+        output_loading_info=True,
+        dtype="auto",
+        attn_implementation="eager",
+    )
+    assert type(hf_model).__module__ == "transformers.models.nemotron_h.modeling_nemotron_h"
+    assert not loading_info["missing_keys"]
+    assert not loading_info["unexpected_keys"]
+    assert not loading_info["mismatched_keys"]

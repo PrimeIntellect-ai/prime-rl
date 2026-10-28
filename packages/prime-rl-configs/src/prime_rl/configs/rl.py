@@ -407,6 +407,20 @@ class RLConfig(BaseConfig):
                     "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
                 },
             )
+            for field in ("keep_last", "keep_interval"):
+                # These used to be trainer-only. Inherit a one-sided value so old
+                # configs keep working while both RL components prune identically.
+                if field not in orchestrator.ckpt.model_fields_set:
+                    setattr(orchestrator.ckpt, field, getattr(trainer.ckpt, field))
+                elif field not in trainer.ckpt.model_fields_set:
+                    setattr(trainer.ckpt, field, getattr(orchestrator.ckpt, field))
+                require_equal(
+                    f"ckpt.{field}",
+                    {
+                        f"trainer.ckpt.{field}": getattr(trainer.ckpt, field),
+                        f"orchestrator.ckpt.{field}": getattr(orchestrator.ckpt, field),
+                    },
+                )
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(

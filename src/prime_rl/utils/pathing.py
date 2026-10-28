@@ -317,6 +317,152 @@ def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
 
+JOINT_CKPT_MANIFEST = "manifest.json"
+CKPT_RETENTION_FILE = "retention.json"
+
+
+def get_joint_manifest_path(ckpt_dir: Path, step: int) -> Path:
+    return get_step_path(ckpt_dir, step) / JOINT_CKPT_MANIFEST
+
+
+def get_retention_path(ckpt_dir: Path) -> Path:
+    return ckpt_dir / CKPT_RETENTION_FILE
+
+
+def is_joint_ckpt_step(ckpt_dir: Path, step: int) -> bool:
+    """A resume point exists only when both components and their commit record do."""
+    step_path = get_step_path(ckpt_dir, step)
+    if not (step_path / "trainer" / ".metadata").is_file():
+        return False
+    if not (step_path / "orchestrator" / "progress.pt").is_file():
+        return False
+    try:
+        manifest = json.loads(get_joint_manifest_path(ckpt_dir, step).read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(manifest, dict) and manifest.get("complete") is True and manifest.get("step") == step
+
+
+def invalidate_joint_ckpt_step(ckpt_dir: Path, step: int) -> None:
+    """Prevent an old commit record from certifying a component rewrite."""
+    get_joint_manifest_path(ckpt_dir, step).unlink(missing_ok=True)
+
+
+def complete_joint_ckpt_step(ckpt_dir: Path, step: int) -> bool:
+    """Commit a joint checkpoint after either component finishes; the later writer wins the race."""
+    step_path = get_step_path(ckpt_dir, step)
+    if not (step_path / "trainer" / ".metadata").is_file():
+        return False
+    if not (step_path / "orchestrator" / "progress.pt").is_file():
+        return False
+    manifest_path = get_joint_manifest_path(ckpt_dir, step)
+    payload = {"complete": True, "step": step}
+    fd, tmp_name = tempfile.mkstemp(dir=step_path, prefix=f".{JOINT_CKPT_MANIFEST}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, manifest_path)
+    except BaseException:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+    return True
+
+
+def get_joint_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """All jointly committed checkpoints, never directory-only or partial saves."""
+    return [step for step in get_all_ckpt_steps(ckpt_dir) if is_joint_ckpt_step(ckpt_dir, step)]
+
+
+def require_joint_resume_step(ckpt_dir: Path, step: int | None = None) -> int:
+    """Resolve one explicit or latest-valid resume point, with no directory-only fallback."""
+    if step is not None:
+        if not is_joint_ckpt_step(ckpt_dir, step):
+            raise FileNotFoundError(f"Checkpoint step {step} is not jointly complete in {ckpt_dir}")
+        return step
+    steps = get_joint_ckpt_steps(ckpt_dir)
+    if not steps:
+        raise FileNotFoundError(f"No jointly complete checkpoints found in {ckpt_dir}; cannot resume")
+    latest = steps[-1]
+    get_logger().info(f"Found latest jointly complete checkpoint in {ckpt_dir}: {latest}")
+    return latest
+
+
+def get_protected_ckpt_steps(ckpt_dir: Path) -> set[int]:
+    """BEST and pending-eval pins. A corrupt journal blocks pruning rather than losing protection."""
+    path = get_retention_path(ckpt_dir)
+    if not path.exists():
+        return set()
+    state = json.loads(path.read_text())
+    protected: set[int] = set()
+    best_step = state.get("best_step")
+    if best_step is not None:
+        if not isinstance(best_step, int):
+            raise ValueError(f"Invalid best_step in {path}: {best_step!r}")
+        protected.add(best_step)
+    pending = state.get("pending_eval", {})
+    if not isinstance(pending, dict):
+        raise ValueError(f"Invalid pending_eval in {path}")
+    protected.update(int(step) for step in pending)
+    return protected
+
+
+def prune_joint_ckpts(
+    ckpt_dir: Path,
+    *,
+    keep_last: int | None,
+    keep_interval: int | None,
+    failed_steps: set[int] | None = None,
+) -> list[int]:
+    """Prune committed, unpinned checkpoints and retry partially failed prior deletions."""
+    if keep_last is None and keep_interval is None:
+        return []
+    failures = failed_steps if failed_steps is not None else set()
+    joint_steps = get_joint_ckpt_steps(ckpt_dir)
+    keep = set(joint_steps[-keep_last:]) if keep_last is not None else set()
+    if keep_interval is not None:
+        keep.update(step for step in joint_steps if step % keep_interval == 0)
+    keep.update(get_protected_ckpt_steps(ckpt_dir))
+    deleted: list[int] = []
+    for step in sorted(set(joint_steps) | failures):
+        if step in keep or step in get_protected_ckpt_steps(ckpt_dir):
+            continue
+        path = get_step_path(ckpt_dir, step)
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            failures.discard(step)
+        except OSError as exc:
+            failures.add(step)
+            get_logger().warning(f"Failed to remove {path}: {exc}, skipping cleanup")
+        else:
+            failures.discard(step)
+            deleted.append(step)
+    return deleted
+
+
+def preflight_checkpoint_storage(ckpt_dir: Path, *, required_bytes: int = 0) -> None:
+    """Fail before writing when the checkpoint filesystem is unwritable or cannot hold a prior-sized save."""
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=ckpt_dir, prefix=".storage-preflight.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(b"0")
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    free = shutil.disk_usage(ckpt_dir).free
+    if free < required_bytes:
+        raise OSError(
+            f"Insufficient checkpoint storage at {ckpt_dir}: need approximately {required_bytes} bytes, "
+            f"only {free} available"
+        )
+
+
 def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     """Gets all checkpoint steps from the checkpoint directory, sorted in ascending order."""
     step_dirs = list(ckpt_dir.glob("step_*"))
