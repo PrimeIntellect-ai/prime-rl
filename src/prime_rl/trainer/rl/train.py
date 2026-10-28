@@ -214,7 +214,7 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
-    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
+    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device=DEVICE_TYPE)
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
@@ -320,7 +320,7 @@ def train(config: TrainerConfig):
         if not config.data.fake:
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
-            failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
+            failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device=DEVICE_TYPE)
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
             # Every rank has fetched its arrays now, so one rank per data rank frees them
@@ -624,7 +624,7 @@ def train(config: TrainerConfig):
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
             tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
             if micro_batch["staleness"] is not None:
-                staleness = micro_batch["staleness"].to("cuda")
+                staleness = micro_batch["staleness"].to(DEVICE_TYPE)
                 tensor_stats.add(
                     "mismatch_kl_by_staleness",
                     mismatch_kl,

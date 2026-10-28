@@ -206,7 +206,7 @@ PINS
     echo "nvidia-ml-py"
     echo "pytest"
     echo "pytest-asyncio"
-    grep -E '^(torchtitan|dion|flash-linear-attention) @ |^vllm-router @ .*_x86_64\.whl' /build/lock.txt
+    grep -E '^(torchtitan|dion|flash-linear-attention|prime-runs|prime-traces) @ |^vllm-router @ .*_x86_64\.whl' /build/lock.txt
 } > /build/requirements.in
 
 # Imported at module load but only usable on CUDA: install without their CUDA dependencies.
