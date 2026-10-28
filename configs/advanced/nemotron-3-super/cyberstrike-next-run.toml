@@ -13,7 +13,7 @@
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "2e47d5977789cc32c4b825735593fec525f847f4"
+source_ref = "8720a2d72af6bc9f77549fdf5ad62380084f48db"
 gpu_type = "H200_141GB"
 
 max_steps = 200
@@ -86,8 +86,8 @@ attn = "flash_attention_3"
 # activation + host-RAM offload, keeping full seq_len. On 32 GPUs: dp_shard=32/(cp16)=2; ep MUST
 # be a multiple of cp (parallel_dims) so ep 8->16 (ep=16 divides dp_shard*cp=32). Risk: dp_shard=2
 # may raise param/optim GPU memory -- verify trainer stays alive (no exit-137) at bring-up.
-cp = 16
-ep = 16
+cp = 8
+ep = 8
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -116,7 +116,7 @@ skip_optimizer = false
 # step-0 crash-loop was the long EVAL epoch blocking the weight broadcast, NOT this batch —
 # fixed by the raised timeouts + smaller eval group_size, so batch_size stays at baseline.
 batch_size = 128
-max_off_policy_steps = 32
+max_off_policy_steps = 16
 
 [orchestrator.train]
 group_size = 16
