@@ -131,9 +131,11 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
+        group: vf.GroupInfo,
         on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
-        """Run and return the native typed episode.
+        """Run and return the native typed episode. ``group`` is the rollout group the
+        episode belongs to; the env sees it on the episode while it runs.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
         change of one of the episode's traces — as it lands. The run goes to the replica
         with the fewest runs in flight."""
@@ -146,6 +148,7 @@ class Env:
                 model=model_name,
                 sampling=self._sampling(cache_salt),
                 on_delta=on_delta,
+                group=group,
             )
         finally:
             self._in_flight[replica] -= 1

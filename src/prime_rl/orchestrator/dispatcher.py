@@ -117,6 +117,15 @@ def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
         raise ValueError(f"Episode task provenance {actual} does not match dispatched task {expected}")
 
 
+def _validate_episode_group(episode: vf.WireEpisode, group_id: uuid.UUID) -> None:
+    expected = vf.GroupInfo(id=str(group_id))
+    if episode.group != expected:
+        raise ValueError(
+            f"Episode group {episode.group} does not match dispatched group {expected}; "
+            "the env server must carry the run request's group onto the episode"
+        )
+
+
 class Dispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules episodes
@@ -554,6 +563,7 @@ class Dispatcher:
                     model_name=model_name,
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
+                    group=vf.GroupInfo(id=str(group_id)),
                     on_delta=on_delta,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
@@ -688,10 +698,10 @@ class Dispatcher:
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
+        _validate_episode_group(episode, meta.group_id)
         policy_version = self.complete_group_member(meta, group)
 
         episode.env.name = meta.env_name
-        episode.group = vf.GroupInfo(id=str(meta.group_id))
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
             assert self.train_envs is not None
