@@ -1,7 +1,7 @@
 # Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 swe-marathon trajectories (OpenCode harness), redo.
 # Redoes run hnp5pwsw3fx9p5b7r6bjmnnx (655,360 context, rollouts filtered by reward) on every rollout at 1M context.
 # Same recipe as sft-hosted-tb4-v2.toml (1M context, cp16/ep16, lr 1e-5, warmup 10% of epoch 1, cosine to 1e-6, val
-# every 20 steps, best/last retention, text-only HF export at the end) for 2 epochs (the original spec).
+# every 20 steps, best/last retention, text-only HF export at the end) for 4 epochs (user, 2026-10-28; v1 was 2).
 # prime train configs/advanced/nemotron-3-super/sft-hosted-swem-1m.toml --volume nemotron-sft-swem-1m \
 #     -e ~/.config/prime-export/hf.env -y          # forwards HF_TOKEN for the end-of-run push; without it the
 #                                                  # exports stay on the volume
@@ -19,7 +19,7 @@
 #   train      3,597 rows, 450 tasks, 324.6M tokens, 245.1M loss tokens, longest row 300,752 tokens
 #   validation   400 rows,  50 tasks (frozen data-prep/swe-marathon-val-tasks.txt, unchanged from v1), 36.3M tokens
 # Packed as the trainer packs them (seed 42, 2 data ranks x 2 workers, data-prep/packing.py): 326 packed rows in
-# epoch 1 (54.33 steps at batch_size 6), 652 over 2 epochs (108.67 steps), ~5.97M tokens per step.
+# epoch 1 (54.33 steps at batch_size 6), 1,303 over 4 epochs (217.17 steps), ~5.98M tokens per step.
 #
 # Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
 # only) ~0.48 TB, each HF export ~0.25 TB, models/ + datasets/ ~0.25 TB. Peak ~3.4 TB of run data, ~3.6 TB in all:
@@ -33,9 +33,9 @@ image_tag = "v0.10.1.dev74"
 source_ref = "exp/nemotron-sft-v3"
 gpu_type = "H200_141GB"
 
-# 2 epochs: 652 packed rows / 6 = 108.67 steps. 108 is 2 epochs to within 4 packed rows (each of the 4 data
-# streams has consumed 162 packed rows; their 2-epoch lengths are 162 / 164 / 164 / 162). 109 would start epoch 3.
-max_steps = 108
+# 4 epochs: 1,303 packed rows / 6 = 217.17 steps (the 4 data streams' 4-epoch lengths are 327 / 324 / 326 / 326).
+# No step count is exactly 4 epochs; 217 is the floor.
+max_steps = 217
 dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
 
 [scheduler]
@@ -53,12 +53,13 @@ num_train_nodes = 4
 
 [monitors.wandb]
 project = "nemotron-3.5-super-sft"
-name = "nemotron-3.5-super-distill-sft-swem-1m-2ep"
+name = "nemotron-3.5-super-distill-sft-swem-1m-4ep"
 
 [ckpt]
-# Resumable checkpoints for crash recovery at 36 and 72 (~0.66 epoch, ~1.7 h apart; a save took ~205 s in
-# eivawxtikvt75p1ietxg4lok). 108 = 3 x 36: the final step is saved once, after the loop.
-interval = 36
+# Resumable checkpoints for crash recovery at 31, 62, ..., 186 (~0.57 epoch, ~1.5 h apart; a save took ~205 s in
+# eivawxtikvt75p1ietxg4lok). 217 = 7 x 31: the final step is saved once, after the loop. None falls on a
+# validation step (multiples of 20).
+interval = 31
 # Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
 # is always saved. The best weights are kept separately ([val] keep_best).
 keep_last = 1
@@ -118,8 +119,8 @@ tool = false
 # the 2 data ranks (world 32 / cp 16 x num_workers 1): built with --val-data-ranks 2, keep shuffle = false and
 # num_workers = 1.
 # after_optimizer_step: val/loss at step N is the loss of the weights after N updates (what a checkpoint of step N
-# holds), and the final step is validated too: base (eval_on_start, before step 1), then after steps 20, 40, 60,
-# 80, 100 and 108 (6 candidates).
+# holds), and the final step is validated too: base (eval_on_start, before step 1), then after steps 20, 40, ...,
+# 200 and 217 (11 candidates).
 # keep_best: the lowest of those losses keeps a weights-only snapshot in runs/<id>/best-weights/ (best.json: step,
 # loss, every candidate's loss); the eval_on_start pass is not a candidate.
 [val]
@@ -161,7 +162,7 @@ model_card = """
 - Base: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision fb0ee0bc), its language model only.
 - Data: every GLM-5.3 swe-marathon trajectory in the OpenCode harness (export swe-marathon-glm53-measure-sft-20261025,
   final branch of each trace; no reward or teacher filter, interrupted streams dropped), 450 training tasks,
-  1M-token packed sequences, 2 epochs, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
+  1M-token packed sequences, 4 epochs, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
 - Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
   `chat_template_kwargs={"truncate_history_thinking": false}`.
 """

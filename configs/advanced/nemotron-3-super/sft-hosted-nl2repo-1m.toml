@@ -31,8 +31,8 @@ image_tag = "v0.10.1.dev74"
 source_ref = "exp/nemotron-sft-v3"
 gpu_type = "H200_141GB"
 
-# 4 epochs: 2,464 packed rows / 6 = 410.67 steps. 410 is 4 epochs to within 4 packed rows (each of the 4 data
-# streams has consumed 615 packed rows; their 4-epoch lengths are 612 / 614 / 617 / 621).
+# 4 epochs: 2,464 packed rows / 6 = 410.67 steps. No step count is exactly 4 epochs; 410 is the floor (each of
+# the 4 data streams has consumed 615 packed rows; their 4-epoch lengths are 612 / 614 / 617 / 621).
 max_steps = 410
 dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
 
