@@ -16,6 +16,7 @@ from prime_rl.configs.trainer import (
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
+from prime_rl.trainer.distributed.per_rank.dispatcher import FusedPerRankTokenDispatcher
 from prime_rl.trainer.distributed.token_dispatcher import (
     FusedTokenDispatcher,
     LocalTokenDispatcher,
@@ -163,7 +164,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             else:
                 dispatcher_cls = TorchTokenDispatcher
                 if dispatch.transport == "bf16" and dispatch.token_copies == "per_rank":
-                    dispatcher_cls = PerRankTorchTokenDispatcher
+                    dispatcher_cls = FusedPerRankTokenDispatcher if dispatch.fused else PerRankTorchTokenDispatcher
                 token_dispatcher = dispatcher_cls(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,

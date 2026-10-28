@@ -211,6 +211,17 @@ class TorchMoEDispatchConfig(BaseConfig):
     move fewer bytes (top-8 of 256 experts on 8 ranks reaches 5.30 ranks per token) and activation checkpointing does
     not replay the combine; the partial sums travel in bf16. Applies to the ``bf16`` transport."""
 
+    fused: bool = False
+    """Run the ``per_rank`` dispatch with fused kernels: its indices built without sorting on the receiving rank, and
+    one Triton pass per direction for each scatter and sum of routed rows, the routing weights read and their gradient
+    computed in the expert-side sum. Requires ``token_copies = "per_rank"``."""
+
+    @model_validator(mode="after")
+    def fused_requires_per_rank(self):
+        if self.fused and (self.token_copies != "per_rank" or self.transport != "bf16"):
+            raise ValueError('model.moe.dispatch.fused requires token_copies = "per_rank" and transport = "bf16".')
+        return self
+
 
 class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""

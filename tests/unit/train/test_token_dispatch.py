@@ -1,4 +1,4 @@
-"""Expert-parallel token dispatchers on CPU (gloo): one copy per rank vs one copy per expert."""
+"""Expert-parallel token dispatchers on CPU (gloo): one copy per rank (reference and fused) vs one copy per expert."""
 
 import os
 import tempfile
@@ -8,6 +8,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from prime_rl.trainer.distributed.per_rank.dispatcher import FusedPerRankTokenDispatcher
+from prime_rl.trainer.distributed.per_rank.ops import SlotMap, scatter_slots, sum_slots
 from prime_rl.trainer.distributed.token_dispatcher import PerRankTorchTokenDispatcher, TorchTokenDispatcher
 
 NUM_EXPERTS, TOP_K, DIM = 16, 3, 6
@@ -73,9 +75,10 @@ def _worker(rank: int, world_size: int, store_path: str, result_path: str) -> No
                 # Compiling takes most of the time: on two ranks, the compiled dispatch runs every routing (an empty
                 # rank, local experts only) once, and both scoring orders, with one alignment.
                 compile_too = world_size == 2 and alignment == 4 and (not score_before_experts or index == 0)
-                per_rank = PerRankTorchTokenDispatcher(NUM_EXPERTS, TOP_K, alignment, group)
-                for compiled in (False, True) if compile_too else (False,):
-                    results.append((_run(per_rank, *args, compiled), expected))
+                for per_rank_cls in (PerRankTorchTokenDispatcher, FusedPerRankTokenDispatcher):
+                    per_rank = per_rank_cls(NUM_EXPERTS, TOP_K, alignment, group)
+                    for compiled in (False, True) if compile_too else (False,):
+                        results.append((_run(per_rank, *args, compiled), expected))
     torch.save(results, f"{result_path}.{rank}")
     dist.destroy_process_group()
 
@@ -89,3 +92,34 @@ def test_per_rank_dispatch_matches_per_expert_dispatch(world_size):
             for actual, expected in torch.load(f"{result_path}.{rank}"):
                 for a, e in zip(actual, expected, strict=True):
                     torch.testing.assert_close(a, e, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_slot_kernels_match_reference(dtype):
+    """The CUDA kernels of the slot-map ops match their PyTorch reference, values and gradients, with routing weights
+    and padding rows."""
+    generator = torch.Generator().manual_seed(0)
+    segments, slots, num_rows, cols = 300, 8, 700, 200
+    # 650 slots own a row each; the other 50 rows are padding.
+    rows = torch.randperm(num_rows, generator=generator)
+    index = torch.full((segments * slots,), -1, dtype=torch.int32)
+    index[torch.randperm(segments * slots, generator=generator)[:650]] = rows[:650].int()
+    padding_rows = torch.cat((rows[650:], torch.full((6,), -1))).int()
+    tensors = {
+        "rows": torch.randn(num_rows, cols, generator=generator).to(dtype),
+        "segments": torch.randn(segments, cols, generator=generator).to(dtype),
+        "weights": torch.rand(segments, slots, generator=generator),
+        "grad_rows": torch.randn(num_rows, cols, generator=generator).to(dtype),
+        "grad_segments": torch.randn(segments, cols, generator=generator).to(dtype),
+    }
+    results = []
+    for device in ("cpu", "cuda"):
+        slot_map = SlotMap(index.view(segments, slots).to(device), num_rows, padding_rows.to(device))
+        t = {name: v.detach().to(device).requires_grad_(not name.startswith("grad")) for name, v in tensors.items()}
+        summed = sum_slots(t["rows"], slot_map, t["weights"])
+        scattered = scatter_slots(t["segments"], slot_map, t["weights"])
+        ((summed * t["grad_segments"]).sum() + (scattered * t["grad_rows"]).sum()).float().backward()
+        results.append([summed, scattered, t["rows"].grad, t["segments"].grad, t["weights"].grad])
+    for expected, actual in zip(*results, strict=True):
+        torch.testing.assert_close(actual.cpu(), expected)
