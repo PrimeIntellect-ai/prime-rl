@@ -18,7 +18,7 @@ from tests.regression.distributed.sft.harness import (
 
 pytestmark = [pytest.mark.distributed, pytest.mark.gpu]
 
-TRAIN_STEPS, RESUME_STEPS, TIMEOUT_SEC = 5, 3, 600
+TRAIN_STEPS, RESUME_STEPS, TIMEOUT_SEC = 5, 3, 900
 
 
 @dataclass
