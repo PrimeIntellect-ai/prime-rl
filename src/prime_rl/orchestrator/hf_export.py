@@ -6,14 +6,17 @@ and ``COMPLETE.json`` is the commit marker for a requested pair of exports.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import shutil
 import tempfile
 import uuid
+from contextlib import contextmanager
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import torch
@@ -28,7 +31,10 @@ from prime_rl.utils.pathing import get_config_dir, preflight_checkpoint_storage
 
 _EXPORT_MANIFEST = "EXPORT.json"
 _COMPLETE = "COMPLETE.json"
+_CONVERTER_VERSION = 2
 _RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
+_SOURCE_ASSET_SUFFIXES = {".json", ".jinja", ".txt", ".py", ".model", ".tiktoken"}
+_UTF8_ASSET_SUFFIXES = {".json", ".jinja", ".txt", ".py", ".tiktoken"}
 # These PrimeRL implementations explicitly use the standard HF state-dict layout.
 _DIRECT_HF_MODEL_TYPES = {"llama", "qwen3"}
 
@@ -36,10 +42,9 @@ _DIRECT_HF_MODEL_TYPES = {"llama", "qwen3"}
 def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_step: int) -> bool:
     """Export BEST then LATEST, publishing them only after both validate.
 
-    DCP input is read from ``output_dir/checkpoints/step_N/trainer``.  Valid HF
-    artifacts are published under ``output_dir/exports``.  ``best_step=None``
-    requests only LATEST.  Any prior COMPLETE marker is preserved through
-    conversion and validation, then invalidated immediately before pointer updates.
+    All operations for one export root are serialized. A prior COMPLETE marker
+    survives unrelated early failures, but is removed before pointer mutation or
+    when an already-published export fails revalidation.
     """
     output_dir = Path(output_dir)
     steps = [latest_step] if best_step is None else [best_step, latest_step]
@@ -48,13 +53,30 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
 
     export_dir = output_dir / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
+    with _export_lock(export_dir):
+        return _export_locked(
+            output_dir=output_dir,
+            export_dir=export_dir,
+            steps=list(dict.fromkeys(steps)),
+            best_step=best_step,
+            latest_step=latest_step,
+        )
+
+
+def _export_locked(
+    *,
+    output_dir: Path,
+    export_dir: Path,
+    steps: list[int],
+    best_step: int | None,
+    latest_step: int,
+) -> bool:
     checkpoints_dir = output_dir / "checkpoints"
     required_bytes = 0
-    for step in dict.fromkeys(steps):
+    for step in steps:
         if (export_dir / f"step_{step}").exists():
             continue
-        source = checkpoints_dir / f"step_{step}"
-        required_bytes += sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+        required_bytes += _model_checkpoint_bytes(checkpoints_dir, step)
     preflight_checkpoint_storage(export_dir, required_bytes=required_bytes)
 
     model_config, tokenizer_config, config_path, config_sha256 = _resolve_run_config(output_dir)
@@ -63,7 +85,7 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
 
     # Do not publish either pointer until every requested conversion has passed.
     manifests: dict[int, dict[str, Any]] = {}
-    for step in dict.fromkeys(steps):
+    for step in steps:
         dcp_dir = _resolve_dcp_dir(checkpoints_dir, step)
         provenance = _provenance(dcp_dir, config_path, config_sha256, model_config, tokenizer_config)
         manifests[step] = _export_step(
@@ -73,13 +95,15 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
             model_config=model_config,
             tokenizer_config=tokenizer_config,
             provenance=provenance,
+            config_path=config_path,
         )
 
-    # Preserve the prior committed pair until all replacements are valid. From
-    # this point onward, a failure must leave no marker for a partially swapped pair.
-    (export_dir / _COMPLETE).unlink(missing_ok=True)
+    # From this point onward, a failure must leave no marker for a partial pair.
+    _invalidate_complete(export_dir)
     if best_step is not None:
         _atomic_symlink(f"step_{best_step}", export_dir / "best", export_dir)
+    else:
+        _remove_pointer(export_dir / "best", export_dir)
     _atomic_symlink(f"step_{latest_step}", export_dir / "latest", export_dir)
 
     def summary(step: int) -> dict[str, Any]:
@@ -88,6 +112,7 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
             "step": step,
             "path": f"step_{step}",
             "manifest": f"step_{step}/{_EXPORT_MANIFEST}",
+            "manifest_sha256": _sha256_file(export_dir / f"step_{step}" / _EXPORT_MANIFEST),
             "provenance_sha256": manifest["provenance_sha256"],
             "shards": manifest["shards"],
         }
@@ -97,7 +122,7 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
         "status": "complete",
         "best": summary(best_step) if best_step is not None else None,
         "latest": summary(latest_step),
-        "exports": [summary(step) for step in dict.fromkeys(steps)],
+        "exports": [summary(step) for step in steps],
     }
     _write_json_atomic(export_dir / _COMPLETE, complete)
     return True
@@ -111,16 +136,21 @@ def _export_step(
     model_config: ModelConfig,
     tokenizer_config: TokenizerConfig,
     provenance: dict[str, Any],
+    config_path: Path,
 ) -> dict[str, Any]:
     final_dir = export_dir / f"step_{step}"
     if final_dir.exists() or final_dir.is_symlink():
         if final_dir.is_symlink() or not final_dir.is_dir():
+            _invalidate_complete(export_dir)
             raise RuntimeError(f"Immutable export path is not a directory: {final_dir}")
-        manifest = _read_json(final_dir / _EXPORT_MANIFEST)
-        if manifest.get("provenance") != provenance:
-            raise RuntimeError(f"Existing export for step {step} has different provenance; refusing to replace it")
-        _validate_export(final_dir, manifest)
-        _assert_source_unchanged(step, provenance)
+        manifest = _revalidate_published_export(
+            final_dir=final_dir,
+            export_dir=export_dir,
+            model_config=model_config,
+            tokenizer_config=tokenizer_config,
+            provenance=provenance,
+        )
+        _assert_source_unchanged(step, dcp_dir, config_path, model_config, tokenizer_config, provenance)
         return manifest
 
     staging = Path(tempfile.mkdtemp(prefix=f".step_{step}.", suffix=".tmp", dir=export_dir))
@@ -133,20 +163,88 @@ def _export_step(
             tokenizer_config=tokenizer_config,
             provenance=provenance,
         )
-        _assert_source_unchanged(step, provenance)
-        # Another exporter may have won the publish race while this one worked.
+        _assert_source_unchanged(step, dcp_dir, config_path, model_config, tokenizer_config, provenance)
         if final_dir.exists():
-            existing = _read_json(final_dir / _EXPORT_MANIFEST)
-            if existing.get("provenance") != provenance:
-                raise RuntimeError(f"Existing export for step {step} has different provenance")
-            _validate_export(final_dir, existing)
-            _assert_source_unchanged(step, provenance)
+            existing = _revalidate_published_export(
+                final_dir=final_dir,
+                export_dir=export_dir,
+                model_config=model_config,
+                tokenizer_config=tokenizer_config,
+                provenance=provenance,
+            )
+            _assert_source_unchanged(step, dcp_dir, config_path, model_config, tokenizer_config, provenance)
             return existing
-        staging.rename(final_dir)
+        _fsync_tree(staging)
+        try:
+            staging.rename(final_dir)
+            _fsync_directory(export_dir)
+        except OSError as error:
+            if error.errno not in {errno.EEXIST, errno.ENOTEMPTY} or not final_dir.is_dir():
+                raise
+            existing = _revalidate_published_export(
+                final_dir=final_dir,
+                export_dir=export_dir,
+                model_config=model_config,
+                tokenizer_config=tokenizer_config,
+                provenance=provenance,
+            )
+            _assert_source_unchanged(step, dcp_dir, config_path, model_config, tokenizer_config, provenance)
+            return existing
         return manifest
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def _revalidate_published_export(
+    *,
+    final_dir: Path,
+    export_dir: Path,
+    model_config: ModelConfig,
+    tokenizer_config: TokenizerConfig,
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        _reject_symlinked_assets(final_dir)
+        manifest_path = final_dir / _EXPORT_MANIFEST
+        _validate_committed_manifest_hash(export_dir, final_dir, manifest_path)
+        manifest = _read_json(manifest_path)
+        if not isinstance(manifest, dict) or manifest.get("provenance") != provenance:
+            raise RuntimeError("Published export provenance does not match the requested checkpoint")
+        _validate_export(
+            final_dir,
+            manifest,
+            trust_flags=_resolved_trust_flags(model_config, tokenizer_config),
+        )
+        return manifest
+    except Exception:
+        _invalidate_complete(export_dir)
+        raise
+
+
+def _validate_committed_manifest_hash(export_dir: Path, final_dir: Path, manifest_path: Path) -> None:
+    complete_path = export_dir / _COMPLETE
+    if complete_path.is_symlink():
+        raise RuntimeError(f"Completion marker must not be a symlink: {complete_path}")
+    if not complete_path.exists():
+        return
+    complete = _read_json(complete_path)
+    if not isinstance(complete, dict) or not isinstance(complete.get("exports"), list):
+        raise RuntimeError(f"Invalid completion marker schema in {complete_path}")
+    matching = [
+        entry for entry in complete["exports"] if isinstance(entry, dict) and entry.get("path") == final_dir.name
+    ]
+    if not matching:
+        return
+    if len(matching) != 1:
+        raise RuntimeError(f"Duplicate step in completion marker: {final_dir.name}")
+    entry = matching[0]
+    if (
+        entry.get("manifest") != f"{final_dir.name}/{_EXPORT_MANIFEST}"
+        or not _is_sha256(entry.get("manifest_sha256"))
+        or entry["manifest_sha256"] != _sha256_file(manifest_path)
+    ):
+        raise RuntimeError(f"Published manifest hash mismatch: {manifest_path}")
 
 
 def _convert_checkpoint(
@@ -173,8 +271,9 @@ def _convert_checkpoint(
     for key, value in model.state_dict().items():
         value = value.detach().to(device="cpu")
         if value.is_floating_point():
-            dtype = torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else torch.bfloat16
-            value = value.to(dtype=dtype)
+            nemotron_fp32 = model.config.model_type == "nemotron_h" and key.endswith((".mamba.A_log", ".mamba.D"))
+            keep_fp32 = keep_in_fp32 is not None and keep_in_fp32(key)
+            value = value.to(dtype=torch.float32 if keep_fp32 or nemotron_fp32 else torch.bfloat16)
         state_dict[key] = value.contiguous()
 
     if getattr(model.config, "tie_word_embeddings", False):
@@ -202,29 +301,25 @@ def _convert_checkpoint(
     # Validation loads a second model; release the conversion model first.
     del model
 
-    shards = [
-        {"path": path.name, "size": path.stat().st_size, "sha256": _sha256_file(path)}
-        for path in sorted(staging.glob("*.safetensors"))
-    ]
+    assets = _asset_records(staging)
+    shards = [record for record in assets if record["path"].endswith(".safetensors")]
     if not shards:
         raise RuntimeError(f"Conversion produced no safetensors shards in {staging}")
+    model_trust, tokenizer_trust = _resolved_trust_flags(model_config, tokenizer_config)
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "step": step,
         "model": model_config.name,
-        "trust_remote_code": bool(model_config.trust_remote_code),
-        "tokenizer_trust_remote_code": bool(
-            tokenizer_config.trust_remote_code
-            if tokenizer_config.trust_remote_code is not None
-            else model_config.trust_remote_code
-        ),
+        "trust_remote_code": model_trust,
+        "tokenizer_trust_remote_code": tokenizer_trust,
         "provenance": provenance,
         "provenance_sha256": _hash_json(provenance),
         "tensors": tensors,
         "shards": shards,
+        "assets": assets,
     }
     _write_json(staging / _EXPORT_MANIFEST, manifest)
-    _validate_export(staging, manifest)
+    _validate_export(staging, manifest, trust_flags=(model_trust, tokenizer_trust))
     return manifest
 
 
@@ -244,10 +339,24 @@ def _load_conversion_model(model_config: ModelConfig):
         )
         return model, False
 
+    if config.model_type == "nemotron_h":
+        # Construct only the required custom architecture. Converting the HF
+        # config to the PrimeRL config adds training-only defaults without
+        # loading any original HF weights.
+        from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+
+        prime_config = NemotronHConfig(**config.to_dict())
+        prime_config._attn_implementation = "flash_attention_2"
+        if model_config.debug.num_layers is not None:
+            prime_config.num_hidden_layers = min(model_config.debug.num_layers, prime_config.num_hidden_layers)
+        return NemotronHForCausalLM.from_config(prime_config), True
+
     # Custom PrimeRL layouts need the training model's declarative conversion.
     from prime_rl.trainer.model import get_model
 
     conversion_config = model_config.model_copy(update={"attn": "flash_attention_2", "cp": 1, "dp_replicate": 1})
+    # get_model uses model_cls.from_config on CPU. Original HF weights must never
+    # be loaded: every parameter comes from the DCP checkpoint below.
     return get_model(conversion_config, device=torch.device("cpu"), dtype=torch.float32), True
 
 
@@ -271,35 +380,69 @@ def _save_model_assets(
         trust_remote_code = model_config.trust_remote_code
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=trust_remote_code)
     if tokenizer_config.chat_template is not None:
-        template = Path(tokenizer_config.chat_template)
-        tokenizer.chat_template = template.read_text() if template.is_file() else tokenizer_config.chat_template
+        tokenizer.chat_template = _resolve_chat_template(tokenizer_config)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.save_pretrained(output_dir)
 
-    # Local remote-code models need their code beside the exported config.
-    source_dir = Path(model_config.name)
-    if source_dir.is_dir():
-        for path in source_dir.glob("*.py"):
-            shutil.copyfile(path, output_dir / path.name)
+    # Local/cached remote code must travel with the weights. Never silently
+    # overwrite differing model and tokenizer modules with the same filename.
+    for source in dict.fromkeys((model_config.name, tokenizer_name)):
+        for path in _source_directory(source).glob("*.py"):
+            target = output_dir / path.name
+            if target.exists() and _sha256_file(target) != _sha256_file(path):
+                raise RuntimeError(f"Conflicting remote-code assets named {path.name}")
+            shutil.copyfile(path, target)
 
 
-def _validate_export(export_dir: Path, manifest: dict[str, Any]) -> None:
-    if manifest.get("format_version") != 1 or not isinstance(manifest.get("tensors"), dict):
+def _validate_export(
+    export_dir: Path,
+    manifest: dict[str, Any],
+    *,
+    trust_flags: tuple[bool, bool],
+) -> None:
+    if not isinstance(manifest, dict) or manifest.get("format_version") != 2:
         raise RuntimeError(f"Invalid export manifest in {export_dir}")
-    if manifest.get("provenance_sha256") != _hash_json(manifest.get("provenance")):
+    if type(manifest.get("step")) is not int or manifest["step"] < 0:
+        raise RuntimeError(f"Invalid checkpoint step in {export_dir}")
+    tensors = manifest.get("tensors")
+    if not isinstance(tensors, dict) or not tensors:
+        raise RuntimeError(f"Invalid tensor manifest in {export_dir}")
+    for key, tensor in tensors.items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(tensor, dict)
+            or not isinstance(tensor.get("shape"), list)
+            or any(type(size) is not int or size < 0 for size in tensor["shape"])
+            or not isinstance(tensor.get("dtype"), str)
+            or not tensor["dtype"].startswith("torch.")
+        ):
+            raise RuntimeError(f"Invalid tensor record in {export_dir}: {key}")
+    if not isinstance(manifest.get("provenance"), dict):
+        raise RuntimeError(f"Invalid provenance in {export_dir}")
+    if not _is_sha256(manifest.get("provenance_sha256")) or manifest["provenance_sha256"] != _hash_json(
+        manifest["provenance"]
+    ):
         raise RuntimeError(f"Provenance hash mismatch in {export_dir}")
+    model_trust, tokenizer_trust = trust_flags
+    if type(manifest.get("trust_remote_code")) is not bool or manifest["trust_remote_code"] is not model_trust:
+        raise RuntimeError(f"Model trust_remote_code does not match resolved config in {export_dir}")
+    if (
+        type(manifest.get("tokenizer_trust_remote_code")) is not bool
+        or manifest["tokenizer_trust_remote_code"] is not tokenizer_trust
+    ):
+        raise RuntimeError(f"Tokenizer trust_remote_code does not match resolved config in {export_dir}")
+    _validate_assets(export_dir, manifest)
 
-    trust_remote_code = bool(manifest.get("trust_remote_code", False))
-    tokenizer_trust_remote_code = bool(manifest.get("tokenizer_trust_remote_code", trust_remote_code))
     AutoConfig.from_pretrained(
         export_dir,
         local_files_only=True,
-        trust_remote_code=trust_remote_code,
+        trust_remote_code=model_trust,
     )
+    GenerationConfig.from_pretrained(export_dir, local_files_only=True)
     tokenizer = AutoTokenizer.from_pretrained(
         export_dir,
         local_files_only=True,
-        trust_remote_code=tokenizer_trust_remote_code,
+        trust_remote_code=tokenizer_trust,
     )
     encoded = tokenizer("HF export smoke", return_tensors="pt")
     input_ids = encoded["input_ids"]
@@ -309,12 +452,11 @@ def _validate_export(export_dir: Path, manifest: dict[str, Any]) -> None:
         raise RuntimeError(f"Tokenizer in {export_dir} failed decode smoke test")
 
     _validate_safetensors(export_dir, manifest)
-    _validate_shard_hashes(export_dir, manifest)
 
     loaded = AutoModelForCausalLM.from_pretrained(
         export_dir,
         local_files_only=True,
-        trust_remote_code=trust_remote_code,
+        trust_remote_code=model_trust,
         output_loading_info=True,
         dtype="auto",
         attn_implementation="eager",
@@ -347,7 +489,11 @@ def _validate_safetensors(export_dir: Path, manifest: dict[str, Any]) -> None:
     if index_path.exists():
         index = _read_json(index_path)
         weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
+        if (
+            not isinstance(weight_map, dict)
+            or not weight_map
+            or any(not isinstance(key, str) or not isinstance(shard, str) for key, shard in weight_map.items())
+        ):
             raise RuntimeError(f"Invalid safetensors index in {export_dir}")
     else:
         if [path.name for path in shard_paths] != [SAFE_WEIGHTS_NAME]:
@@ -383,22 +529,92 @@ def _validate_safetensors(export_dir: Path, manifest: dict[str, Any]) -> None:
             raise RuntimeError(f"Safetensors index does not match shards in {export_dir}")
         if set(weight_map.values()) != {path.name for path in shard_paths}:
             raise RuntimeError(f"Safetensors index and shard files disagree in {export_dir}")
-        indexed_size = index.get("metadata", {}).get("total_size")
+        metadata = index.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise RuntimeError(f"Invalid safetensors index metadata in {export_dir}")
+        indexed_size = metadata.get("total_size")
+        if indexed_size is not None and (type(indexed_size) is not int or indexed_size < 0):
+            raise RuntimeError(f"Invalid safetensors index total_size in {export_dir}")
         if indexed_size is not None and indexed_size != total_size:
             raise RuntimeError(f"Safetensors index total_size mismatch in {export_dir}")
 
 
-def _validate_shard_hashes(export_dir: Path, manifest: dict[str, Any]) -> None:
-    records = manifest.get("shards")
+def _asset_records(export_dir: Path) -> list[dict[str, Any]]:
+    _reject_symlinked_assets(export_dir)
+    records = []
+    for path in sorted(export_dir.rglob("*")):
+        if path.is_file():
+            records.append(
+                {
+                    "path": path.relative_to(export_dir).as_posix(),
+                    "size": path.stat().st_size,
+                    "sha256": _sha256_file(path),
+                }
+            )
+    return records
+
+
+def _validate_assets(export_dir: Path, manifest: dict[str, Any]) -> None:
+    records = manifest.get("assets")
     if not isinstance(records, list) or not records:
-        raise RuntimeError(f"Missing shard hashes in {export_dir}")
-    actual_names = {path.name for path in export_dir.glob("*.safetensors")}
-    if {record.get("path") for record in records} != actual_names:
-        raise RuntimeError(f"Shard manifest does not match files in {export_dir}")
+        raise RuntimeError(f"Missing asset manifest in {export_dir}")
+    expected: dict[str, dict[str, Any]] = {}
     for record in records:
-        path = export_dir / record["path"]
+        if not isinstance(record, dict):
+            raise RuntimeError(f"Invalid asset record in {export_dir}")
+        name = record.get("path")
+        size = record.get("size")
+        sha256 = record.get("sha256")
+        if not isinstance(name, str) or type(size) is not int or size < 0 or not _is_sha256(sha256):
+            raise RuntimeError(f"Invalid asset record in {export_dir}: {record}")
+        relative = PurePosixPath(name)
+        if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            raise RuntimeError(f"Unsafe asset path in {export_dir}: {name}")
+        if name == _EXPORT_MANIFEST or "\\" in name or name in expected:
+            raise RuntimeError(f"Duplicate or reserved asset path in {export_dir}: {name}")
+        expected[name] = record
+
+    _reject_symlinked_assets(export_dir)
+    actual = {
+        path.relative_to(export_dir).as_posix(): path
+        for path in export_dir.rglob("*")
+        if path.is_file() and path != export_dir / _EXPORT_MANIFEST
+    }
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise RuntimeError(f"Published asset set mismatch; missing={missing[:3]}, extra={extra[:3]}")
+    for name, path in actual.items():
+        record = expected[name]
         if path.stat().st_size != record["size"] or _sha256_file(path) != record["sha256"]:
-            raise RuntimeError(f"Shard hash mismatch: {path}")
+            raise RuntimeError(f"Asset hash mismatch: {path}")
+        if path.suffix in _UTF8_ASSET_SUFFIXES:
+            path.read_bytes().decode("utf-8")
+        if path.suffix == ".json":
+            _read_json(path)
+
+    shards = manifest.get("shards")
+    expected_shards = [record for record in records if record["path"].endswith(".safetensors")]
+    if shards != expected_shards:
+        raise RuntimeError(f"Shard manifest does not match asset manifest in {export_dir}")
+
+
+def _reject_symlinked_assets(export_dir: Path) -> None:
+    if export_dir.is_symlink():
+        raise RuntimeError(f"Export root must not be a symlink: {export_dir}")
+    for path in export_dir.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"Symlinked assets are not allowed: {path}")
+
+
+def _is_sha256(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _resolve_run_config(output_dir: Path) -> tuple[ModelConfig, TokenizerConfig, Path, str]:
@@ -406,7 +622,9 @@ def _resolve_run_config(output_dir: Path) -> tuple[ModelConfig, TokenizerConfig,
     for name in _RUN_CONFIG_NAMES:
         path = config_dir / name
         if path.exists():
-            raw = json.loads(path.read_text())
+            raw = _read_json(path)
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"Resolved run config must be a JSON object: {path}")
             model_config = ModelConfig(**raw["model"])
             tokenizer_config = TokenizerConfig(**raw.get("tokenizer", {}))
             if tokenizer_config.name is None:
@@ -423,6 +641,19 @@ def _resolve_dcp_dir(checkpoints_dir: Path, step: int) -> Path:
     return dcp_dir
 
 
+def _model_checkpoint_bytes(checkpoints_dir: Path, step: int) -> int:
+    dcp_dir = _resolve_dcp_dir(checkpoints_dir, step)
+    metadata = FileSystemReader(dcp_dir).read_metadata()
+    total = sum(
+        storage.length
+        for index, storage in metadata.storage_data.items()
+        if index.fqn == "app.model" or index.fqn.startswith("app.model.")
+    )
+    if total <= 0:
+        raise RuntimeError(f"No model payload found in DCP checkpoint {dcp_dir}")
+    return total
+
+
 def _provenance(
     dcp_dir: Path,
     config_path: Path,
@@ -430,25 +661,38 @@ def _provenance(
     model_config: ModelConfig,
     tokenizer_config: TokenizerConfig,
 ) -> dict[str, Any]:
+    model_trust, tokenizer_trust = _resolved_trust_flags(model_config, tokenizer_config)
+    template = _resolve_chat_template(tokenizer_config)
     return {
-        "checkpoint": str(dcp_dir.resolve()),
+        "checkpoint_step": dcp_dir.parent.name,
         "checkpoint_metadata_sha256": _sha256_file(dcp_dir / ".metadata"),
         "checkpoint_files_sha256": _tree_sha256(dcp_dir),
-        "run_config": str(config_path.resolve()),
         "run_config_sha256": config_sha256 or _sha256_file(config_path),
         "model": model_config.name,
         "tokenizer": tokenizer_config.name or model_config.name,
+        "trust_remote_code": {"model": model_trust, "tokenizer": tokenizer_trust},
+        "model_assets_sha256": _source_assets_sha256(model_config.name),
+        "tokenizer_assets_sha256": _source_assets_sha256(tokenizer_config.name or model_config.name),
+        "code_sha256": _source_code_sha256(model_config.name),
+        "tokenizer_code_sha256": _source_code_sha256(tokenizer_config.name or model_config.name),
+        "chat_template": None
+        if template is None
+        else {"content": template, "content_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest()},
+        "converter": _converter_provenance(),
     }
 
 
-def _assert_source_unchanged(step: int, provenance: dict[str, Any]) -> None:
-    checkpoint = Path(provenance["checkpoint"])
-    config_path = Path(provenance["run_config"])
-    if (
-        _tree_sha256(checkpoint) != provenance["checkpoint_files_sha256"]
-        or _sha256_file(config_path) != provenance["run_config_sha256"]
-    ):
-        raise RuntimeError(f"Checkpoint or run config changed while exporting step {step}")
+def _assert_source_unchanged(
+    step: int,
+    dcp_dir: Path,
+    config_path: Path,
+    model_config: ModelConfig,
+    tokenizer_config: TokenizerConfig,
+    provenance: dict[str, Any],
+) -> None:
+    current = _provenance(dcp_dir, config_path, None, model_config, tokenizer_config)
+    if current != provenance:
+        raise RuntimeError(f"Checkpoint or export source assets changed while exporting step {step}")
 
 
 def _tree_sha256(path: Path) -> str:
@@ -458,11 +702,106 @@ def _tree_sha256(path: Path) -> str:
     return _hash_json({str(file.relative_to(path)): _sha256_file(file) for file in files})
 
 
+def _source_assets_sha256(source: str) -> str:
+    source_dir = _source_directory(source)
+    records = {
+        path.name: _sha256_file(path)
+        for path in sorted(source_dir.iterdir())
+        if path.is_file()
+        and path.suffix in _SOURCE_ASSET_SUFFIXES
+        and not path.name.endswith(".safetensors.index.json")
+    }
+    if not records:
+        raise FileNotFoundError(f"No config/tokenizer assets found in {source_dir}")
+    return _hash_json(records)
+
+
+def _source_code_sha256(source: str) -> str:
+    source_dir = _source_directory(source)
+    return _hash_json({path.name: _sha256_file(path) for path in sorted(source_dir.glob("*.py")) if path.is_file()})
+
+
+def _source_directory(source: str) -> Path:
+    source_dir = Path(source)
+    if source_dir.is_dir():
+        return source_dir
+    from huggingface_hub import snapshot_download
+
+    return Path(
+        snapshot_download(
+            repo_id=source,
+            repo_type="model",
+            local_files_only=True,
+            allow_patterns=["*.json", "*.jinja", "*.txt", "*.py", "*.model", "*.tiktoken"],
+        )
+    )
+
+
+def _resolve_chat_template(tokenizer_config: TokenizerConfig) -> str | None:
+    if tokenizer_config.chat_template is None:
+        return None
+    template = Path(tokenizer_config.chat_template)
+    return template.read_text(encoding="utf-8") if template.is_file() else tokenizer_config.chat_template
+
+
+def _resolved_trust_flags(model_config: ModelConfig, tokenizer_config: TokenizerConfig) -> tuple[bool, bool]:
+    model_trust = model_config.trust_remote_code
+    tokenizer_trust = tokenizer_config.trust_remote_code
+    if tokenizer_trust is None:
+        tokenizer_trust = model_trust
+    if type(model_trust) is not bool or type(tokenizer_trust) is not bool:
+        raise TypeError("Resolved trust_remote_code values must be booleans")
+    return model_trust, tokenizer_trust
+
+
+def _converter_provenance() -> dict[str, Any]:
+    from prime_rl.utils import weights
+
+    return {
+        "name": "prime_rl.orchestrator.hf_export",
+        "version": _CONVERTER_VERSION,
+        "content_sha256": {
+            "hf_export.py": _sha256_file(Path(__file__)),
+            "weights.py": _sha256_file(Path(weights.__file__)),
+        },
+    }
+
+
+@contextmanager
+def _export_lock(export_dir: Path):
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(export_dir / ".export.lock", flags, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _invalidate_complete(export_dir: Path) -> None:
+    (export_dir / _COMPLETE).unlink(missing_ok=True)
+    _fsync_directory(export_dir)
+
+
+def _remove_pointer(pointer: Path, parent: Path) -> None:
+    if pointer.is_symlink():
+        pointer.unlink()
+        _fsync_directory(parent)
+    elif pointer.exists():
+        raise RuntimeError(f"Refusing to replace non-symlink pointer {pointer}")
+
+
 def _atomic_symlink(target: str, pointer: Path, parent: Path) -> None:
+    if pointer.exists() and not pointer.is_symlink():
+        raise RuntimeError(f"Refusing to replace non-symlink pointer {pointer}")
     temporary = parent / f".{pointer.name}.{uuid.uuid4().hex}.tmp"
     try:
         os.symlink(target, temporary)
         os.replace(temporary, pointer)
+        _fsync_directory(parent)
     finally:
         if temporary.is_symlink():
             temporary.unlink()
@@ -472,29 +811,76 @@ def _write_json_atomic(path: Path, value: Any) -> None:
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
+            json.dump(value, handle, indent=2, sort_keys=True, allow_nan=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)
+        _fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)
 
 
 def _write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True, allow_nan=False)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, UnicodeError, ValueError) as error:
         raise RuntimeError(f"Cannot read valid JSON from {path}") from error
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"Duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Non-standard JSON constant: {value}")
+
+
+def _fsync_tree(path: Path) -> None:
+    _reject_symlinked_assets(path)
+    for asset in path.rglob("*"):
+        if asset.is_file():
+            fd = os.open(asset, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    _fsync_directory(path)
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        # Directory fsync is not available on every supported filesystem.
+        pass
+
+
 def _hash_json(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
