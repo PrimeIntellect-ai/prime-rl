@@ -919,7 +919,9 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch through the monitors."""
+        """Persist + log one completed eval epoch through the monitors. Aggregating an epoch
+        walks every trace's node graph, which takes seconds for a large epoch, so it runs in
+        worker threads."""
         if not batch.episodes and not batch.failures:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
@@ -927,37 +929,46 @@ class Orchestrator:
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
-        policy_spans = [eval_work(episode).policy for episode in batch.episodes]
+        episodes = batch.episodes
+        effective = episodes.effective
+        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        if effective_episodes:
+            await monitors.log(effective_episodes, batch.step, "eval", "effective")
+            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
+            await monitors.log_annotations(annotations)
+        policy_spans = [eval_work(episode).policy for episode in episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
         policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
-        # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
-        # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
-        episodes = batch.episodes
-        effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
-        metrics["step"] = float(batch.step)
-        await monitors.log(metrics, step=batch.step)
 
-        # Success line — quality metrics over the effective set, error rate over the full returned
-        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
-        eff, full = effective.metrics, episodes.metrics
+        def epoch_metrics() -> dict[str, float]:
+            # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
+            # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
+            metrics: dict[str, float] = {}
+            for subset, pool in (("all", episodes), ("effective", effective)):
+                metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+            total_attempts = len(episodes) + len(batch.failures)
+            metrics |= dispatch_failure_metrics(
+                batch.failures,
+                prefix=f"eval/{batch.env_name}/all",
+                total_attempts=total_attempts,
+            )
+            metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+            metrics["step"] = float(batch.step)
+            return metrics
+
+        await monitors.log(await asyncio.to_thread(epoch_metrics), step=batch.step)
+
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        await asyncio.to_thread(self.log_eval_batch, batch, policy_version=policy_version, elapsed=elapsed)
+
+    def log_eval_batch(self, batch: EvalBatch, *, policy_version: int, elapsed: float) -> None:
+        """Success line — quality metrics over the effective set, error rate over the full returned
+        cohort. ``Stat.mean()`` is 0.0 for an empty set."""
+        eff, full = batch.episodes.effective.metrics, batch.episodes.metrics
         get_logger().success(
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
