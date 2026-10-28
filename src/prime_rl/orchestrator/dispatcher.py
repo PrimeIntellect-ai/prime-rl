@@ -788,34 +788,39 @@ class Dispatcher:
             breaker.probing = False  # the probe was cancelled before it reported
         return breaker.allows(time.monotonic())
 
-    def abort_env_episodes(self, kind: WorkKind, env_name: str, reason: str) -> int:
-        """Fail the env's in-flight episodes whose replies will never come."""
+    def abort_episodes(self, tasks: set[asyncio.Task], reason: str) -> int:
+        """Fail the in-flight episodes of ``tasks``, whose replies will never come."""
         aborted = 0
-        for task, meta in self.inflight.items():
-            if meta.kind == kind and meta.env_name == env_name and task not in self.aborted:
+        for task in list(tasks):
+            if task in self.inflight and task not in self.aborted:
                 self.aborted[task] = reason
                 task.cancel()
                 aborted += 1
         return aborted
 
     async def monitor_env_health(self) -> None:
-        """Probe every env server. One that misses ``ENV_HEALTH_FAILURES`` checks in a
-        row gets its in-flight episodes failed and its train env paused until it
-        answers again."""
+        """Probe every replica of every env server. A replica that misses
+        ``ENV_HEALTH_FAILURES`` checks in a row gets its in-flight episodes failed and
+        takes no new ones while another replica is up; a train env whose replicas are all
+        down is paused until one answers again."""
         envs: list[tuple[WorkKind, Any]] = [("train", env) for env in self.train_envs or ()]
         envs += [("eval", env) for env in self.eval_envs or ()]
-        misses: dict[tuple[WorkKind, str], int] = defaultdict(int)
+        misses: dict[tuple[WorkKind, str, int], int] = defaultdict(int)
         while True:
             await asyncio.sleep(ENV_HEALTH_INTERVAL_S)
+            probes = [(kind, env, replica) for kind, env in envs for replica in range(len(env.env_clients))]
             healthy = await asyncio.gather(
-                *(env.env_client.health(timeout=ENV_HEALTH_TIMEOUT_S) for _, env in envs), return_exceptions=True
+                *(env.env_clients[replica].health(timeout=ENV_HEALTH_TIMEOUT_S) for _, env, replica in probes),
+                return_exceptions=True,
             )
-            for (kind, env), result in zip(envs, healthy):
-                key = (kind, env.name)
+            for (kind, env, replica), result in zip(probes, healthy):
+                key = (kind, env.name, replica)
+                address = env.env_clients[replica].address
                 breaker = self.breakers.get(env.name) if kind == "train" else None
                 if result is True:
-                    if misses[key] >= ENV_HEALTH_FAILURES:
-                        get_logger().info(f"Env server of {kind} env {env.name} answers health checks again")
+                    if replica in env.down:
+                        get_logger().info(f"Env server of {kind} env {env.name} at {address} answers health checks again")
+                        env.down.discard(replica)
                     misses[key] = 0
                     if breaker is not None:
                         breaker.server_down = False
@@ -823,11 +828,12 @@ class Dispatcher:
                 misses[key] += 1
                 if misses[key] < ENV_HEALTH_FAILURES:
                     continue
-                reason = f"env server at {env.address} missed {misses[key]} health checks"
-                aborted = self.abort_env_episodes(kind, env.name, reason)
+                env.down.add(replica)
+                reason = f"env server at {address} missed {misses[key]} health checks"
+                aborted = self.abort_episodes(env.running_on(replica), reason)
                 if misses[key] == ENV_HEALTH_FAILURES or aborted:
                     get_logger().warning(f"{kind} env {env.name}: {reason}; failing {aborted} in-flight episodes")
-                if breaker is not None:
+                if breaker is not None and len(env.down) == len(env.env_clients):
                     breaker.server_down = True
                     if breaker.state != "open":
                         breaker.trip(reason, time.monotonic())
