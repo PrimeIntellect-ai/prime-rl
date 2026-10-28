@@ -70,6 +70,9 @@ class TensorMicroBatch(TypedDict):
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
 
+    # Per-token staleness, -1 on tokens the policy did not sample
+    staleness: Int[Tensor, "batch seq"] | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -152,6 +155,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -186,6 +190,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
 
@@ -341,6 +346,7 @@ class DataLoader:
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
+            staleness=stream("staleness", np.int16),
         )
 
 

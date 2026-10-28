@@ -209,6 +209,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     position_ids = np.arange(len(input_ids), dtype=np.int32)
     mm_token_type_ids = training_example.mm_token_type_ids
     mm_refs = training_example.mm_refs
+    staleness = training_example.staleness
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
 
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
@@ -241,6 +242,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             mm_token_type_ids = mm_token_type_ids[:cut]
         if payload is not None:
             payload = msgspec.structs.replace(payload, num_tokens=cut)
+        if staleness is not None:
+            staleness = staleness[:cut]
 
     assert (
         len(input_ids)
@@ -258,6 +261,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ("rl_weights", rl_weights),
         ("ce_weights", ce_weights),
         ("ref_kl_weights", ref_kl_weights),
+        ("staleness", staleness),
     ):
         if stream is not None:
             assert len(stream) == len(input_ids), f"{stream_name}: {len(stream)}"
@@ -281,6 +285,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
         payloads=[payload] if payload is not None else None,
+        staleness=staleness,
     )
 
 
@@ -352,6 +357,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for s in bin_content.samples) for name in STREAM_FILL}
+    has_staleness = any(sample.staleness is not None for sample in bin_content.samples)
 
     # Each sample's per-token arrays, concatenated once the bin is walked.
     input_ids: list[np.ndarray] = []
@@ -369,6 +375,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     trace_ids: list[str] = []
     branch_indices: list[int] = []
     payloads: list[PayloadSlice | None] = []
+    staleness: list[np.ndarray] | None = [] if has_staleness else None
 
     offset = 0
     for sample in bin_content.samples:
@@ -412,6 +419,10 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
         payloads.extend(sample.payloads or [None] * len(sample.sequence_lengths))
+        if staleness is not None:
+            staleness.append(
+                sample.staleness if sample.staleness is not None else np.full(sample_len, -1, dtype=np.int16)
+            )
         offset += sample_len
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
@@ -435,6 +446,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         trace_ids=trace_ids,
         branch_indices=branch_indices,
         payloads=payloads if any(payload is not None for payload in payloads) else None,
+        staleness=np.concatenate(staleness) if staleness is not None else None,
     )
 
 
@@ -561,6 +573,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
             setattr(micro_batch, stream_name, np.pad(stream, tail))
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids = np.pad(micro_batch.mm_token_type_ids, tail)
+    if micro_batch.staleness is not None:
+        micro_batch.staleness = np.pad(micro_batch.staleness, tail, constant_values=-1)
 
     return micro_batch
 
@@ -581,6 +595,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "ce_weights",
         "ref_kl_weights",
         "mm_token_type_ids",
+        "staleness",
     )
     for name in ("input_ids", *per_token_fields):
         values = getattr(micro_batch, name)

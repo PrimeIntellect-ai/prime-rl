@@ -111,6 +111,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples (e.g. fake data).
     trace_id: str | None = None
     branch_index: int | None = None
+    staleness: np.ndarray | None = None
     # The branch's training arrays (routing rows, sampling mask, top-k head), kept by an
     # env server; None when the branch has none.
     payload: PayloadSlice | None = None
@@ -131,6 +132,7 @@ MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
+    "staleness": np.int16,
 }
 
 
@@ -180,6 +182,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     top_logprobs: TopLogprobs | None = None
     # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
     padding: int = 0
+    staleness: memoryview | None = None
     # Per sequence, parallel to ``sequence_lengths``: the arrays an env server kept for it
     # (None if it has none). The trainer fetches them into ``routed_experts``,
     # ``sampling_mask`` and ``top_logprobs``; None if no sequence has arrays.
