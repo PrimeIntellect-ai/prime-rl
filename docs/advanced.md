@@ -115,14 +115,16 @@ score functions, normalization and routing weights remain FP32.
 
 For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply
 by FP32 routing weights and sum the contributions in FP32, then cast once to the expert output dtype.
-This also covers MXFP8 expert compute with Torch dispatch. DeepEP and MegaMoE use their own combine
-kernels and do not share this accumulation guarantee.
+This also covers MXFP8 expert compute with Torch dispatch. With `token_copies = "per_rank"`, each EP rank
+sums its share of a token's contributions in FP32 and sends the partial sum in the expert output dtype; the
+partial sums are then added in FP32. DeepEP and MegaMoE use their own combine kernels and do not share this
+accumulation guarantee.
 
 ### Expert Parallelism Backends
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
-- **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
+- **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100. With the BF16 transport, `token_copies = "per_rank"` sends each token once per EP rank instead of once per selected expert and combines one partial sum per token and rank (fewer bytes in both all-to-alls when a token's experts share ranks).
 - **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml

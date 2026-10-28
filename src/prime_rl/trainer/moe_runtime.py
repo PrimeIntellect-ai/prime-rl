@@ -20,6 +20,7 @@ from prime_rl.trainer.distributed.token_dispatcher import (
     FusedTokenDispatcher,
     LocalTokenDispatcher,
     MXFP8TorchTokenDispatcher,
+    PerRankTorchTokenDispatcher,
     TorchTokenDispatcher,
 )
 from prime_rl.trainer.models.layers.expert_compute import (
@@ -160,7 +161,10 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     group=ep_mesh.get_group(),
                 )
             else:
-                token_dispatcher = TorchTokenDispatcher(
+                dispatcher_cls = TorchTokenDispatcher
+                if dispatch.transport == "bf16" and dispatch.token_copies == "per_rank":
+                    dispatcher_cls = PerRankTorchTokenDispatcher
+                token_dispatcher = dispatcher_cls(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
                     token_group_alignment=compute.token_group_alignment,

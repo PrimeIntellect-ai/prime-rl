@@ -205,6 +205,12 @@ class TorchMoEDispatchConfig(BaseConfig):
     transport: Literal["bf16", "mxfp8"] = "bf16"
     """Wire format for routed activations and their reverse-path gradients."""
 
+    token_copies: Literal["per_expert", "per_rank"] = "per_expert"
+    """``per_expert`` sends a token to each of its selected experts. ``per_rank`` sends it once to every EP rank that
+    holds one of its experts and sums its weighted expert outputs on that rank before the combine, so both all-to-alls
+    move fewer bytes (top-8 of 256 experts on 8 ranks reaches 5.30 ranks per token) and activation checkpointing does
+    not replay the combine; the partial sums travel in bf16. Applies to the ``bf16`` transport."""
+
 
 class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
