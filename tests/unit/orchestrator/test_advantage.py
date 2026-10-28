@@ -242,6 +242,20 @@ def test_linear_equal_lengths_reduce_to_plain_grpo():
     assert penalized == pytest.approx(plain, abs=1e-6)
 
 
+def test_grpo_reconfigure_applies_new_length_penalty():
+    """A live update swaps the penalty for groups scored afterwards."""
+    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(), clients=None)
+    algo.reconfigure(GRPOAlgoConfig(length_penalty=cfg))
+    group = _make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30])
+
+    asyncio.run(algo.score_group(group))
+
+    assert [_scalar(episode) for episode in group] == pytest.approx(
+        _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30]), length_penalty=cfg)
+    )
+
+
 def test_linear_completion_term_penalizes_longer():
     """With only the completion term, longer completions get a larger penalty and a
     lower advantage; advantages stay zero-mean."""
