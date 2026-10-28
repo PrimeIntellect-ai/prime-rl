@@ -19,7 +19,7 @@ import torch.nn as nn
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
-from prime_rl.configs.shared import SparseFileSystemWeightBroadcastConfig
+from prime_rl.configs.shared import DeltaWeightBroadcastConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters, join_module_path
 from prime_rl.transports.weights.base import WeightSender
 from prime_rl.transports.weights.sparse_kernels import Pieces, build_pieces, count_changes, write_changes
@@ -1008,8 +1008,8 @@ class SparseFileSystemWeightSender(WeightSender):
 
     gathers_full_weights = False
 
-    def __init__(self, output_dir: Path, config: SparseFileSystemWeightBroadcastConfig):
-        super().__init__(output_dir, config.timeout)
+    def __init__(self, output_dir: Path, timeout: int, config: DeltaWeightBroadcastConfig):
+        super().__init__(output_dir, timeout)
         self.config = config
         self.encoder: SparseDeltaEncoder | None = None
         self.last_step: int | None = None

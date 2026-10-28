@@ -632,7 +632,7 @@ class RLConfig(BaseConfig):
                 dp = self.inference.vllm.data_parallel_size
                 if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
                     self.inference.vllm.api_server_count = dp
-                if self.weight_broadcast.type in ("nccl", "nixl"):
+                if self.weight_broadcast.type != "filesystem":
                     # Every inference GPU joins the in-memory transfer group, so size it after the DP fill.
                     world_size = dp * self.inference.vllm.tensor_parallel_size
                     self.trainer.weight_broadcast.inference_world_size = world_size
