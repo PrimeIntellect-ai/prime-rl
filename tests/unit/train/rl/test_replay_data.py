@@ -55,7 +55,7 @@ def world(monkeypatch):
 
 def test_replay_loader_returns_its_data_rank_of_each_step_and_cycles(replay_dir, world):
     directory, steps = replay_dir
-    loader = ReplayDataLoader(directory, SEQ_LEN, NUM_RANKS)
+    loader = ReplayDataLoader(directory, SEQ_LEN, NUM_RANKS, 4)
     assert loader.dp_rank == 1
 
     for step in [0, 1, 0]:
@@ -82,12 +82,18 @@ def test_replay_loader_returns_its_data_rank_of_each_step_and_cycles(replay_dir,
 
 
 @pytest.mark.parametrize(
-    "seq_len,dp_world_size,message",
-    [(SEQ_LEN, 1, "packed for 2 data ranks, but the trainer has 1"), (64, NUM_RANKS, "packed for seq_len 32")],
+    "seq_len,dp_world_size,pad_to_multiple_of,message",
+    [
+        (SEQ_LEN, 1, 8, "packed for 2 data ranks, but the trainer has 1"),
+        (64, NUM_RANKS, 8, "packed for seq_len 32"),
+        (SEQ_LEN, NUM_RANKS, 16, "padded to a multiple of 8, but the trainer requires a multiple of 16"),
+    ],
 )
-def test_replay_loader_rejects_a_mismatched_topology(replay_dir, world, seq_len, dp_world_size, message):
+def test_replay_loader_rejects_a_mismatched_topology(
+    replay_dir, world, seq_len, dp_world_size, pad_to_multiple_of, message
+):
     with pytest.raises(ValueError, match=message):
-        ReplayDataLoader(replay_dir[0], seq_len, dp_world_size)
+        ReplayDataLoader(replay_dir[0], seq_len, dp_world_size, pad_to_multiple_of)
 
 
 def test_replay_config_excludes_fake_data_and_score_centering(tmp_path):

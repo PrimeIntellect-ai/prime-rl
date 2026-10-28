@@ -204,7 +204,7 @@ class ReplayDataLoader:
     """Replays packed micro batches recorded on disk (``tools/convert_traces_to_replay_batches.py``),
     cycling through the recorded steps."""
 
-    def __init__(self, directory: Path, seq_len: int, dp_world_size: int):
+    def __init__(self, directory: Path, seq_len: int, dp_world_size: int, pad_to_multiple_of: int):
         self.world = get_world()
         non_dp_world_size = self.world.world_size // dp_world_size
         self.dp_rank = self.world.rank // non_dp_world_size
@@ -220,6 +220,12 @@ class ReplayDataLoader:
             raise ValueError(
                 f"Replay data in {directory} was packed for seq_len {self.meta.seq_len}, but model.seq_len is "
                 f"{seq_len}. Convert it again with --seq-len {seq_len}."
+            )
+        if self.meta.pad_to_multiple_of % pad_to_multiple_of != 0:
+            raise ValueError(
+                f"Replay data in {directory} was padded to a multiple of {self.meta.pad_to_multiple_of}, but the "
+                f"trainer requires a multiple of {pad_to_multiple_of}. Convert it again with --pad-to-multiple-of "
+                f"{pad_to_multiple_of}."
             )
         self.batch_counter = 0
 

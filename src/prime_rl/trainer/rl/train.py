@@ -250,7 +250,12 @@ def train(config: TrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     elif config.data.replay:
-        dataloader = ReplayDataLoader(config.data.replay, config.model.seq_len, parallel_dims.get_mesh("dp").size())
+        dataloader = ReplayDataLoader(
+            config.data.replay,
+            config.model.seq_len,
+            parallel_dims.get_mesh("dp").size(),
+            config.pad_to_multiple_of,
+        )
     else:
         dataloader = DataLoader(
             config.output_dir,
