@@ -13,7 +13,7 @@
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "eafed7db669532195f5c6ef5f3514f7b35e0dd57"
+source_ref = "2e47d5977789cc32c4b825735593fec525f847f4"
 gpu_type = "H200_141GB"
 
 max_steps = 200
@@ -700,8 +700,8 @@ idx = [566]
 # max 800 averages ~33. This follows the 600->700 probe based on low measured
 # KV, zero waiting, and unsaturated env gates, not a claimed safe ceiling.
 min_inflight = 384
-initial_inflight = 512
-max_inflight = 800
+initial_inflight = 800
+max_inflight = 1200
 
 [orchestrator.renderer]
 name = "nemotron-3.5"
