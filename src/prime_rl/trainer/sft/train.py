@@ -37,6 +37,8 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
+from prime_rl.trainer.sft import hf_export
+from prime_rl.trainer.sft.best_ckpt import BEST_DIR_NAME, BestCheckpoint
 from prime_rl.trainer.sft.data import (
     get_dataset_progress,
     get_dataset_state,
@@ -224,6 +226,13 @@ def train(config: SFTConfig):
     else:
         logger.info("Starting from scratch")
 
+    # [val] keep_best: the weights with the lowest validation loss, next to the checkpoints.
+    best_ckpt = None
+    if config.val is not None and config.val.keep_best:
+        best_ckpt = BestCheckpoint(ckpt_manager.ckpt_dir.parent / BEST_DIR_NAME)
+        if checkpoint_step is not None:
+            best_ckpt.load_state()
+
     # Create the iterator only after a potential resume: iter() forks workers with a
     # copy of the dataset's *current* state, so a later load_state_dict never reaches
     # an already-running worker (the run silently restarts the data from the beginning
@@ -319,7 +328,7 @@ def train(config: SFTConfig):
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
-    def run_validation(step: int) -> None:
+    def run_validation(step: int) -> float:
         val_dataset = setup_dataset(
             tokenizer,
             config.val.data,
@@ -348,6 +357,7 @@ def train(config: SFTConfig):
                 {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
             )
         )
+        return mean_loss
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -418,9 +428,12 @@ def train(config: SFTConfig):
             if is_moe_model
             else {}
         )
+        # [val] after_optimizer_step moves the interval validations (and adds one at the last step) to after the
+        # optimizer update, below; eval_on_start always runs here, on the weights before the first update.
+        val_after_update = config.val is not None and config.val.after_optimizer_step
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
+            or (not val_after_update and not is_first_step and progress.step % config.val.interval == 0)
         )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
@@ -497,11 +510,15 @@ def train(config: SFTConfig):
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
         if run_validation_this_step:
-            run_validation(progress.step)
+            val_loss = run_validation(progress.step)
             # The no-grad validation forward leaves the [lm_head, norm] FSDP2 group unsharded (it
             # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
             # unsharded parameters. Reshard so clipping sees every gradient.
             reshard_module(model)
+            # Validated here, the weights are those after progress.step - 1 updates (nothing has stepped them
+            # yet: the optimizer overlap is off on validation steps). The eval_on_start pass is not a candidate.
+            if best_ckpt is not None and not is_first_step:
+                best_ckpt.consider(progress.step - 1, val_loss, model, val_logged_step=progress.step)
 
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
@@ -523,6 +540,13 @@ def train(config: SFTConfig):
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
+
+        if val_after_update and (progress.step % config.val.interval == 0 or (is_last_step and not paused)):
+            val_loss = run_validation(progress.step)
+            reshard_module(model)
+            # These are exactly the weights after progress.step updates, i.e. what a checkpoint of this step holds.
+            if best_ckpt is not None:
+                best_ckpt.consider(progress.step, val_loss, model, val_logged_step=progress.step)
 
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
         # the loop, so skip it here to avoid a double-save. Weight broadcasts land at
@@ -682,6 +706,10 @@ def train(config: SFTConfig):
     if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
+
+    # [hf_export]: after the final checkpoint and the final broadcast, since exporting 'best' loads its weights.
+    if config.hf_export is not None and not paused:
+        hf_export.run(config, model, best_ckpt, progress.step, ckpt_manager.ckpt_dir.parent)
 
     if gradient_manager is not None:
         gradient_manager.close()

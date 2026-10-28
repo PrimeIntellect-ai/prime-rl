@@ -162,7 +162,66 @@ class SFTValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
+    after_optimizer_step: bool = False
+    """Run the interval validations after the step's optimizer update instead of before it. ``val/loss`` at
+    step N is then the loss of the weights a checkpoint of step N holds, and the final step is validated as well
+    (also when ``max_steps`` is not a multiple of ``interval``). ``eval_on_start`` still runs before the first
+    update. Off: ``val/loss`` at step N is the loss of the weights after N - 1 updates."""
+
+    keep_best: bool = False
+    """Keep a weights-only snapshot (model parameters and buffers, no optimizer state) of the lowest validation
+    loss so far under ``<checkpoint dir>/best-weights``, with ``best.json`` recording its step and loss. Each rank
+    writes and reads only its own shard file, so the snapshot only reloads into the same world size and sharding.
+    The ``eval_on_start`` validation is not a candidate. A new best replaces the previous snapshot."""
+
     data: SFTDataConfig
+
+
+class SFTHFExportConfig(BaseConfig):
+    """Export checkpoints as Hugging Face models before the trainer exits.
+
+    The export rewrites the safetensors files of ``base_dir`` (the HF checkpoint the run started from) with the
+    fine-tuned tensors, cast to the base file's dtypes. Every other tensor (e.g. an untrained MTP head) and the
+    shard layout, index, config and tokenizer stay the base's. The result goes to
+    ``<checkpoint dir>/hf-export/<name>``, is checked against the base (keys, dtypes, shapes, relative change of
+    each tensor) and, if a repo is set and ``HF_TOKEN`` is in the environment, pushed. A failed export or push
+    is logged and never fails the run."""
+
+    checkpoints: list[Literal["best", "last"]] = ["best", "last"]
+    """Which checkpoints to export: ``last`` is the final weights, ``best`` the ``[val] keep_best`` snapshot."""
+
+    best_repo: str | None = None
+    """Hugging Face repo id (``org/name``) for the best checkpoint. None keeps it on the volume only."""
+
+    last_repo: str | None = None
+    """Hugging Face repo id (``org/name``) for the last checkpoint. None keeps it on the volume only."""
+
+    private: bool = True
+    """Create the repos as private."""
+
+    base_dir: Path | None = None
+    """Local HF checkpoint whose files are rewritten. Defaults to ``model.name``, which must then be a local
+    directory."""
+
+    keep_base_prefixes: list[str] = ["mtp."]
+    """Base tensors under these name prefixes are not held by the trainer (prime-rl's NemotronH drops the MTP
+    head) and are copied from the base unchanged. Every other base tensor must come from the trained model."""
+
+    max_relative_change: float = Field(0.2, gt=0)
+    """Refuse to push when any fine-tuned tensor moved further than this (relative L2) from the base: that
+    points to a wrong key mapping, not training."""
+
+    model_card: str = ""
+    """Free text added to the generated README.md (what was trained on, how to run it)."""
+
+    @model_validator(mode="after")
+    def validate_checkpoints(self):
+        if not self.checkpoints or len(set(self.checkpoints)) != len(self.checkpoints):
+            raise ValueError("hf_export.checkpoints must be a non-empty list without duplicates")
+        for repo in (self.best_repo, self.last_repo):
+            if repo is not None and repo.count("/") != 1:
+                raise ValueError(f"hf_export repo {repo!r} must be 'org/name'")
+        return self
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
@@ -220,6 +279,9 @@ class SFTConfig(BaseTrainerConfig):
 
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
+
+    hf_export: SFTHFExportConfig | None = None
+    """Export the best and/or last checkpoint as Hugging Face models at the end of the run. If None, no export."""
 
     eval: SFTOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
@@ -499,6 +561,18 @@ class SFTConfig(BaseTrainerConfig):
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
             if self.val is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def validate_best_and_hf_export(self):
+        if self.hf_export is None:
+            return self
+        if "best" in self.hf_export.checkpoints and (self.val is None or not self.val.keep_best):
+            raise ValueError("hf_export of the 'best' checkpoint needs [val] keep_best = true")
+        if self.model.lora is not None:
+            raise ValueError("hf_export writes full weights and does not support LoRA")
+        if self.model.vlm is not None:
+            raise ValueError("hf_export does not support VLM training")
         return self
 
     @model_validator(mode="after")
