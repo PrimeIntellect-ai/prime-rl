@@ -27,7 +27,7 @@ import time
 import traceback
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Literal
@@ -52,6 +52,7 @@ from prime_rl.orchestrator.types import (
     Progress,
     WorkKind,
 )
+from prime_rl.transports.payload import delete_payloads, trace_payload_urls
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
@@ -546,6 +547,7 @@ class Dispatcher:
                 self.live_events.append(live.dispatched_event(meta))
 
         async def run_episode() -> vf.WireEpisode:
+            episode = None
             try:
                 episode = await env.run(
                     client=client,
@@ -561,6 +563,9 @@ class Dispatcher:
                 try:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
+                    if episode is not None:
+                        # Returned, but cancelled before it could be emitted.
+                        self._release_episodes([episode])
                     await cleanup
                     raise
 
@@ -568,6 +573,19 @@ class Dispatcher:
         self.inflight[task] = meta
         self.live_events.append(live.pending_event(meta))
         return True
+
+    def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
+        """Delete the training arrays env servers kept for episodes no sink will see."""
+        delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
+
+    async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:
+        """Cancel claimed episode tasks. A task that had already returned its episode
+        before the claim is never emitted, so its arrays are deleted here."""
+        await safe_cancel_all(tasks)
+        # A task can still be pending here: `safe_cancel` also swallows a cancel aimed at us.
+        self._release_episodes(
+            task.result() for task in tasks if task.done() and not task.cancelled() and task.exception() is None
+        )
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck
@@ -735,7 +753,7 @@ class Dispatcher:
             )
 
         if claimed:
-            await safe_cancel_all([task for task, _ in claimed])
+            await self._cancel_claimed([task for task, _ in claimed])
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
@@ -749,7 +767,7 @@ class Dispatcher:
         self.inflight.clear()
         self.groups.clear()
         if tasks:
-            await safe_cancel_all(tasks)
+            await self._cancel_claimed(tasks)
 
     async def cancel_inflight_train_episodes(self) -> list[GroupCancellation]:
         """Cancel in-flight train episodes, leaving eval alone. Used by the
@@ -795,7 +813,7 @@ class Dispatcher:
                 )
             cancelled_by_group[meta.group_id].count += 1
         if train_tasks:
-            await safe_cancel_all(train_tasks)
+            await self._cancel_claimed(train_tasks)
         return [cancellation for cancellation in cancelled_by_group.values() if cancellation.count]
 
     async def cancel_eval_step(self, step: int) -> int:
