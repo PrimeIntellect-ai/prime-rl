@@ -29,6 +29,7 @@ STOP_ACK = 900.0
 BYE = 1800.0
 GPU_FREE_MIB = 4096
 HARNESS_PREP = 4 * 3600.0  # without a cap: the longest the harness setup (offline install, caches) may take
+HEARTBEAT = 300.0  # how often node 0 refreshes status.json's heartbeat (liveness: time, phase, rollouts landed)
 
 
 def node_ip(master_addr: str) -> str:
@@ -199,11 +200,22 @@ class Driver:
             "skipped": plan.skipped,
             "checkpoints": {},
             "harness": None,
+            "heartbeat": None,
         }
         self.lock = threading.Lock()
         self.henv: harness.HarnessEnv | None = None
+        """Set only once the harness is completely ready (venv, caches with their modes, kernel bundle)."""
         self.harness_error: str | None = None
         self.kernel_rewrites: dict[str, str] = {}
+        # Heartbeat: what is running (checkpoint -> its flow stores), what landed, when anything last moved.
+        self.phase = "starting"
+        self.active_stores: dict[str, dict[str, Path]] = {}
+        self.planned: dict[str, int] = {}
+        self.progress: dict[str, dict[str, int]] = {}
+        self.last_progress = time.time()
+        self._last_counts: tuple | None = None
+        self._beat_stop = threading.Event()
+        self._beat_lock = threading.Lock()  # beats come from the heartbeat thread and the checkpoints' threads
 
     def write_status(self) -> None:
         """``<eval dir>/status.json``: where the eval is (node 0's staging; synced with the run's other files)."""
@@ -217,20 +229,71 @@ class Driver:
         except Exception as exc:
             self.log(f"could not write status.json: {exc!r}")
 
+    def set_phase(self, phase: str) -> None:
+        self.phase = phase
+        self.last_progress = time.time()
+
+    def beat(self) -> None:
+        """Refresh ``status.json``'s heartbeat: now, the phase, the rollouts landed so far (per checkpoint and in
+        all) and when anything last moved (a row landed, a phase changed)."""
+        with self._beat_lock:
+            self._beat()
+
+    def _beat(self) -> None:
+        now = time.time()
+        with self.lock:
+            active = {name: dict(stores) for name, stores in self.active_stores.items()}
+        for name, stores in active.items():
+            counts = {"rollouts_done": 0, "rows": 0}
+            for store in stores.values():
+                try:
+                    got = scoring.progress(store)
+                except Exception:
+                    continue
+                for key in counts:
+                    counts[key] += got[key]
+            self.progress[name] = {**counts, "rollouts_planned": self.planned.get(name)}
+        done = sum(c["rollouts_done"] for c in self.progress.values())
+        rows = sum(c["rows"] for c in self.progress.values())
+        if self._last_counts != (done, rows):
+            self._last_counts = (done, rows)
+            if done or rows:
+                self.last_progress = now
+        self.status["heartbeat"] = {
+            "time": now,
+            "phase": self.phase,
+            "last_progress": self.last_progress,
+            "seconds_since_progress": round(now - self.last_progress),
+            "rollouts_done": done,
+            "rows_landed": rows,
+            "rollouts_planned": sum(self.planned.values()) or None,
+            "per_checkpoint": {name: dict(c) for name, c in self.progress.items()},
+            "interval_seconds": HEARTBEAT,
+        }
+        self.write_status()
+
+    def heartbeat(self) -> None:
+        while not self._beat_stop.wait(HEARTBEAT):
+            try:
+                self.beat()
+            except Exception as exc:
+                self.log(f"heartbeat failed: {exc!r}")
+
     def prepare_harness(self) -> None:
-        """The harness venv, task caches and kernel bundle (in a thread, while the first engines load)."""
+        """The harness venv, task caches and kernel bundle (in a thread, while the first engines load). ``henv`` is
+        set only when all of it is ready."""
         try:
             problems = harness.check_bundle(self.cfg.harness, self.bundle)
             if problems:
                 raise RuntimeError(f"eval bundle {self.bundle}: {problems[:10]}")
-            self.henv = harness.build_env(self.cfg.harness, self.bundle, self.work / "harness", self.log)
+            henv = harness.build_env(self.cfg.harness, self.bundle, self.work / "harness", self.log)
             caches = []
             for label in self.cfg.harness.sources:
                 fields = flowcfg.taskset_fields((self.bundle / "flow-configs" / f"{label}.toml").read_bytes())
                 if label == "tb-sci" and self.cfg.harness.tb_sci_dataset:
                     fields["dataset"] = self.cfg.harness.tb_sci_dataset
                 caches.append(harbor_cache_name(fields["dataset"], fields["repo"], fields["registry_path"]))
-            problems = harness.stage_harbor_caches(self.bundle, Path(self.henv.env["HOME"]), sorted(set(caches)))
+            problems = harness.stage_harbor_caches(self.bundle, Path(henv.env["HOME"]), sorted(set(caches)), self.log)
             if problems:
                 raise RuntimeError(f"Harbor task caches: {problems}")
             bundles = {
@@ -240,8 +303,9 @@ class Driver:
             }
             for target in sorted(bundles):
                 self.kernel_rewrites.update(harness.stage_kernel_bundle(self.bundle, target, self.work, self.log))
-            self.status["harness"] = {"ok": True, **self.henv.info, "kernel_rewrites": self.kernel_rewrites}
-            self.log(f"harness ready: {self.henv.info.get('packages')}")
+            self.status["harness"] = {"ok": True, **henv.info, "kernel_rewrites": self.kernel_rewrites}
+            self.henv = henv
+            self.log(f"harness ready: {henv.info.get('packages')}")
         except Exception as exc:
             self.harness_error = f"{exc}"
             self.status["harness"] = {"ok": False, "error": str(exc)[:4000]}
@@ -258,23 +322,29 @@ class Driver:
         self.status["credentials"] = {k: v for k, v in creds.items() if k != "problem"}
         if creds["problem"]:
             # Nothing can run without sandboxes: fail the eval phase now instead of loading vLLM for nothing.
-            self.log(f"eval phase FAILED before serving: {creds['problem']}")
-            self.status["eval"] = {"status": "no_credentials", "error": creds["problem"]}
-            for ckpt in plan.checkpoints:
-                self.status["checkpoints"][ckpt.name] = {
-                    "status": "failed",
-                    "reason": "no_credentials",
-                    "error": creds["problem"],
-                    "step": ckpt.step,
-                    "val_loss": ckpt.val_loss,
-                }
-            self.finish(coord)
+            self.fail_before_serving(coord, "no_credentials", creds["problem"])
             return
         self.log(
             f"credentials: PRIME_API_KEY present, PRIME_TEAM_ID {creds['prime_team_id']} "
             f"({creds['prime_team_id_source']})"
         )
+        if cfg.harness.credential_probe:
+            self.set_phase("credential probe")
+            probe = harness.probe_credentials(
+                os.environ[harness.PRIME_API_KEY], creds["prime_team_id"], dict(os.environ)
+            )
+            self.status["credentials"]["probe"] = probe
+            if probe["status"] in ("no_credentials", "forbidden"):
+                self.fail_before_serving(coord, probe["status"], probe["error"])
+                return
+            if probe["status"] != "ok":
+                self.log(f"credentials: {probe['error']}")
+            else:
+                self.log(f"credentials: the Prime API accepts PRIME_API_KEY for team {creds['prime_team_id']}")
         self.write_status()
+        beat = threading.Thread(target=self.heartbeat, name="heartbeat", daemon=True)
+        beat.start()
+        self.set_phase("harness prep")
         prep = threading.Thread(target=self.prepare_harness, name="harness-prep", daemon=True)
         prep.start()
         server = NodeServer(plan, cfg, ip, self.log)
@@ -286,6 +356,7 @@ class Driver:
                 end = round_deadline(now, plan.deadline, reserve, len(plan.rounds) - i)
                 until = "no cap: until the flow runs finish" if end is None else f"capped at {time.ctime(end)}"
                 self.log(f"round {i}: {assignment}, harness {until}")
+                self.set_phase(f"round {i}: serving {sorted(assignment)}")
                 by_node = {str(node): name for name, nodes in assignment.items() for node in nodes}
                 coord.set(f"round/{i}", {"assign": by_node})
                 ready: dict[str, dict] = {}
@@ -304,17 +375,31 @@ class Driver:
                 )
                 for n in others:
                     ready[n] = found.get(f"ready/{i}/{n}") or {"ok": False, "error": "no answer"}
-                prep.join(timeout=HARNESS_PREP if end is None else max(0.0, end - time.time()))
-                if not prep.is_alive() and self.henv is None:
+                limit = HARNESS_PREP if end is None else max(0.0, end - time.time())
+                prep.join(timeout=limit)
+                if self.henv is None:
                     # No harness: every checkpoint left fails the same way; stop serving instead of reloading.
+                    if prep.is_alive():
+                        self.harness_error = (
+                            f"harness prep timed out: not ready after {(time.time() - plan.started) / 3600:.1f} h "
+                            f"(limit {limit / 3600:.1f} h for this round)"
+                        )
+                        self.status["harness"] = {"ok": False, "error": self.harness_error}
+                        self.log(f"eval phase FAILED: {self.harness_error}")
+                        reason = "harness_prep_timeout"
+                    else:
+                        reason = "harness_failed"
+                    self.status["eval"] = {"status": reason, "error": self.harness_error}
                     for later in plan.rounds[i:]:
                         for name in later:
                             self.status["checkpoints"][name] = {
                                 "status": "failed",
+                                "reason": reason,
                                 "error": f"no harness: {self.harness_error}",
                             }
                     coord.set(f"stop/{i}", {})
                     break
+                self.set_phase(f"round {i}: harness {sorted(assignment)}")
                 threads = []
                 for slot, (name, nodes) in enumerate(assignment.items()):
                     urls = [u for n in nodes for u in (ready[str(n)].get("urls") or []) if ready[str(n)].get("ok")]
@@ -333,6 +418,20 @@ class Driver:
             server.stop()
             self.finish(coord)
 
+    def fail_before_serving(self, coord: Coordinator, reason: str, error: str) -> None:
+        """End the eval phase before anything is served (no credentials, refused credentials)."""
+        self.log(f"eval phase FAILED before serving ({reason}): {error}")
+        self.status["eval"] = {"status": reason, "error": error}
+        for ckpt in self.plan.checkpoints:
+            self.status["checkpoints"][ckpt.name] = {
+                "status": "failed",
+                "reason": reason,
+                "error": error,
+                "step": ckpt.step,
+                "val_loss": ckpt.val_loss,
+            }
+        self.finish(coord)
+
     def evaluate(
         self, ckpt: Checkpoint, slot: int, urls: list[str], failed_nodes: dict, deadline: float | None
     ) -> None:
@@ -347,13 +446,13 @@ class Driver:
             if not urls:
                 raise RuntimeError(f"no node serves {ckpt.name}: {failed_nodes}")
             if self.henv is None:
-                raise RuntimeError(f"no harness: {self.harness_error or 'setup did not finish in time'}")
+                raise RuntimeError(f"no harness: {self.harness_error or 'harness prep timed out'}")
             port = self.cfg.serving.router_port + slot
             router_bin = shutil.which("vllm-router") or str(Path(sys.executable).parent / "vllm-router")
             router = serving.start(
                 f"router-{ckpt.name}",
                 serving.router_cmd(self.cfg.serving, router_bin, port, urls),
-                serving.clean_env(dict(os.environ)),
+                serving.serving_env(dict(os.environ)),
                 self.work / "logs" / f"router-{ckpt.name}.log",
             )
             base_url = f"http://127.0.0.1:{port}"
@@ -421,6 +520,7 @@ class Driver:
             changed[label] = keys
             stores[label] = Path(config["flow"]["store"])
             ks[label] = h.k or flowcfg.rollouts_k(source)
+            self.planned[ckpt.name] = self.planned.get(ckpt.name, 0) + len(names) * ks[label]
             procs[label] = serving.start(
                 f"flow-{label}",
                 harness.flow_cmd(h, self.henv.venv, path),
@@ -432,16 +532,34 @@ class Driver:
             f"{ckpt.name}: flow runs {list(procs)} started ({total} tasks, gate {gate_max} rollouts) against {base_url}"
         )
         started = time.time()
-        runs = harness.wait_flow_runs(procs, deadline, self.log)
-        finished = time.time()
+        with self.lock:
+            self.active_stores[ckpt.name] = dict(stores)
+        try:
+            runs = harness.wait_flow_runs(procs, deadline, self.log)
+        finally:
+            finished = time.time()
+            try:
+                self.beat()  # the checkpoint's final counts
+            except Exception as exc:
+                self.log(f"heartbeat failed: {exc!r}")
+            with self.lock:
+                self.active_stores.pop(ckpt.name, None)
 
         scores: list[scoring.TaskScore] = []
         diagnostics = {}
         by_name = {row.name: row for row in table}
         for label, names in selection.items():
             rows = [by_name[name] for name in names]
-            cut = bool(runs.get(label, {}).get("stopped"))
-            label_scores, diag = scoring.score_store(stores[label], rows, label, ks[label], cfg.pass_threshold, cut=cut)
+            run = runs.get(label, {})
+            label_scores, diag = scoring.score_store(
+                stores[label],
+                rows,
+                label,
+                ks[label],
+                cfg.pass_threshold,
+                cut=bool(run.get("stopped")),
+                stopped_at=run.get("stopped_at"),
+            )
             scores += label_scores
             diagnostics[label] = diag
         summary = scoring.summary_by_group(scores)
@@ -462,6 +580,11 @@ class Driver:
             "engines": engines,
             "rollout_gate": gate_max,
             "tasks": {label: len(names) for label, names in selection.items()},
+            "split_tasks": {
+                split: sum(by_name[name].split == split for names in selection.values() for name in names)
+                for split in ("val", "train", "other")
+            },
+            "tasks_tsv_sha256": harness.sha256_file(self.bundle / harness.TASKS),
             "summary": summary,
             "flow_runs": runs,
             "complete": not any(r.get("stopped") for r in runs.values()) and summary["overall"].get("missing", 0) == 0,
@@ -529,6 +652,12 @@ class Driver:
                 self.log(f"{ckpt.name}/{label}: archiving the store failed: {exc!r}")
 
     def finish(self, coord: Coordinator) -> None:
+        self._beat_stop.set()
+        self.phase = "finished"
+        try:
+            self.beat()
+        except Exception as exc:
+            self.log(f"heartbeat failed: {exc!r}")
         for alias, target in self.plan.aliases.items():
             entry = self.status["checkpoints"].get(target, {})
             self.status["checkpoints"][alias] = {"status": "alias", "same_as": target, "result": entry.get("status")}
@@ -539,6 +668,9 @@ class Driver:
                 )
             except Exception:
                 pass
+        if "eval" not in self.status:
+            ok = all(e.get("status") in ("done", "alias", "skipped") for e in self.status["checkpoints"].values())
+            self.status["eval"] = {"status": "done" if ok else "failed", "error": None}
         self.status["finished"] = time.time()
         self.write_status()
         try:

@@ -2,7 +2,8 @@
 
 The task table (``tasks.tsv`` in the eval bundle; private task names never go into this repository) has one line per
 task: ``<name>\\t<source>\\t<split>``, source one of ``tb-eng``, ``tb-eng-extra9``, ``tb-sci`` and split one of
-``val`` (the 44 frozen held-out tasks), ``train`` (tasks with training rows) or ``other``.
+``val`` (the dataset's held-out tasks: ``data-prep/tb4-val-tasks-v2.txt``, the 44 frozen ones plus 6 zero-pass
+tasks, 50 = 10%), ``train`` (tasks with training rows) or ``other``.
 """
 
 import hashlib

@@ -6,6 +6,10 @@ import hashlib
 import itertools
 import json
 import math
+import os
+import shutil
+import stat
+import threading
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -162,18 +166,31 @@ def test_score_rows():
 
 
 def test_cut_draws_are_excluded_from_pass_at_k():
-    """A source the safety cap stopped: its unfinished draws are 'cut', not failures; pass@k is over what is left."""
+    """A source the safety cap stopped: its draws still running at the stop are 'cut', not failures; pass@k is over
+    what is left. Which draws were running comes from prime-flow's call records."""
     table = tasks.parse_task_table(TABLE)
     sci = [r for r in table if r.source == "tb-sci"]
     a = f"{tasks.slug(sci[0].name)}-0123456789ab-qc"
     b = f"{tasks.slug(sci[1].name)}-ba9876543210-qc"
     rows = [row(a, 0, reward=1.0), row(a, 1, reward=0.0), row(a, 2, ok=False, reward=None, stop="error", error="H")]
     rows += [row(b, n, reward=1.0) for n in range(8)]
-    scores, diag = scoring.score_rows(rows, sci, "tb-sci", k=8, pass_threshold=1.0, cut=True)
+    stop = 1000.0
+    calls = {
+        (a, 0): scoring.CallState("finished", 10.0),
+        (a, 1): scoring.CallState("finished", 20.0),
+        (a, 2): scoring.CallState("open", 900.0),  # its HarnessError rerun was running at the stop
+        (a, 3): scoring.CallState("open", 30.0),  # running
+        (a, 4): scoring.CallState("failed", 1001.0),  # the stop ended it
+        # a/5, a/6, a/7: no record, no row: never started
+    }
+    scores, diag = scoring.score_rows(
+        rows, sci, "tb-sci", k=8, pass_threshold=1.0, cut=True, calls=calls, stopped_at=stop
+    )
     by_task = {s.task: s for s in scores}
     first = by_task[sci[0].name]
     assert [d.status for d in first.draws] == ["passed", "failed"] + ["cut"] * 6
     assert first.cut == 6 and first.graded == 2 and first.c == 1 and diag["cut_by_cap"] is True
+    assert diag["stopped_at"] == stop and diag["call_records"] == 5
     overall = scoring.summarize(scores)
     assert overall["cut"] == 6 and overall["errored"] == 0 and overall["missing"] == 0 and overall["failed"] == 1
     # pass@1 over both tasks (each has >= 1 draw): (1/2 + 8/8) / 2; pass@2 too; pass@4 / pass@8 only the full task.
@@ -186,6 +203,46 @@ def test_cut_draws_are_excluded_from_pass_at_k():
     # The same rows without the cap: the unfinished draws are failures (error / missing).
     scores, _ = scoring.score_rows(rows, sci, "tb-sci", k=8, pass_threshold=1.0)
     assert scoring.summarize(scores)["pass@1"] == (1 / 8 + 1.0) / 2
+
+
+def test_cut_keeps_draws_that_had_errored_before_the_stop(tmp_path):
+    """Only draws still running at the stop are cut: a draw whose call had failed before it (an error row, or a failed
+    record without a row) stays an error, i.e. a failure in pass@k; never-started draws are cut."""
+    table = tasks.parse_task_table(TABLE)
+    sci = [r for r in table if r.source == "tb-sci"][:1]
+    a = f"{tasks.slug(sci[0].name)}-0123456789ab-qc"
+    rows = [row(a, 0, reward=1.0), row(a, 1, ok=False, reward=None, stop="error", error="HarnessError")]
+    rows += [row(a, 2, ok=False, reward=None, stop="error", error="SandboxError")]
+    store = tmp_path / "store"
+    (store / "traces").mkdir(parents=True)
+    (store / "traces" / "index.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def record(draw, status, updated, seat="solver"):
+        path = store / "calls" / a / f"{draw}{seat}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        identity = {"job": a, "call": f"{seat}/draw{draw}-afd6fd69b71a"}
+        path.write_text(json.dumps({"identity": identity, "seat": seat, "status": status, "updated": updated}))
+
+    record(0, "finished", 10.0)
+    record(1, "failed", 50.0)  # errored long before the stop: an error
+    record(2, "failed", 2000.0)  # failed by the stop: cut
+    record(3, "failed", 60.0)  # failed before the stop, no row landed: an error
+    record(4, "open", 70.0)  # running: cut
+    record(5, "failed", 10.0, seat="investigator")  # not a solver draw: ignored
+    assert scoring.read_call_states(tmp_path / "nothing") is None
+    states = scoring.read_call_states(store)
+    assert states[(a, 1)] == scoring.CallState("failed", 50.0) and len(states) == 5
+    scores, diag = scoring.score_store(store, sci, "tb-sci", 8, 1.0, cut=True, stopped_at=1000.0)
+    statuses = [d.status for d in scores[0].draws]
+    assert statuses == ["passed", "error", "cut", "error", "cut", "cut", "cut", "cut"]
+    overall = scoring.summarize(scores)
+    assert overall["errored"] == 2 and overall["cut"] == 5 and math.isclose(overall["pass@1"], 1 / 3)
+    # Without call records (an older store): an error row had errored, a draw without a row is cut.
+    shutil.rmtree(store / "calls")
+    scores, diag = scoring.score_store(store, sci, "tb-sci", 8, 1.0, cut=True, stopped_at=1000.0)
+    assert [d.status for d in scores[0].draws] == ["passed", "error", "error"] + ["cut"] * 5
+    assert diag["call_records"] is None
+    assert scoring.progress(store) == {"rollouts_done": 1, "rows": 3}
 
 
 def test_unmapped_jobs_resolve_from_traces(tmp_path):
@@ -505,9 +562,17 @@ def test_engine_and_router_commands(tmp_path):
     with pytest.raises(ValueError):
         serving.router_cmd(serving_cfg, "vllm-router", 8000, [])
 
-    env = serving.engine_env(serving_cfg, {"RANK": "3", "MASTER_ADDR": "x", "TORCHELASTIC_RUN_ID": "y", "PATH": "/b"})
+    secrets_env = {var: "secret" for var in serving.SERVING_SECRET_VARS}
+    base = {"RANK": "3", "MASTER_ADDR": "x", "TORCHELASTIC_RUN_ID": "y", "PATH": "/b", **secrets_env}
+    env = serving.engine_env(serving_cfg, base)
     assert "RANK" not in env and "MASTER_ADDR" not in env and "TORCHELASTIC_RUN_ID" not in env
     assert env["PATH"] == "/b" and env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:False"
+    # The engines and the router get none of the pod's credentials.
+    assert {"PRIME_API_KEY", "HF_TOKEN", "WANDB_API_KEY", *harness.SECRET_VARS} <= set(serving.SERVING_SECRET_VARS)
+    assert not set(serving.SERVING_SECRET_VARS) & set(env) and "secret" not in env.values()
+    assert not set(serving.SERVING_SECRET_VARS) & set(serving.serving_env(base))
+    leaky = serving_cfg.model_copy(update={"env_vars": {"HF_TOKEN": "x", "VLLM_FLAG": "1"}})
+    assert "HF_TOKEN" not in serving.engine_env(leaky, base) and serving.engine_env(leaky, base)["VLLM_FLAG"] == "1"
 
 
 def test_check_model_dir(tmp_path):
@@ -608,6 +673,12 @@ def test_bundle_checks(tmp_path):
     manifest = {rel: hashlib.sha256(text.encode()).hexdigest() for rel, text in files.items()}
     (bundle / "manifest.json").write_text(json.dumps({"files": manifest}))
     problems = harness.check_bundle(h, bundle)
+    assert any("records no file modes" in p for p in problems)  # a version-1 manifest cannot restore exec bits
+    modes = {rel: "0644" for rel in files}
+    (bundle / "manifest.json").write_text(json.dumps({"version": 2, "files": manifest, "modes": modes}))
+    assert any("labels 1 tasks val, expected 50" in p for p in harness.check_bundle(h, bundle))
+    h = h.model_copy(update={"expected_val_tasks": 1})
+    problems = harness.check_bundle(h, bundle)
     assert problems == [
         "flow-configs/tb-sci.toml sha256 "
         + manifest["flow-configs/tb-sci.toml"]
@@ -615,13 +686,21 @@ def test_bundle_checks(tmp_path):
     ]
     h = h.model_copy(update={"source_config_sha256": {"tb-sci": manifest["flow-configs/tb-sci.toml"]}})
     assert harness.check_bundle(h, bundle) == []
+    (bundle / "manifest.json").write_text(
+        json.dumps({"version": 2, "files": manifest, "modes": {**modes, "tasks.tsv": "rwx"}})
+    )
+    assert harness.check_bundle(h, bundle) == ["manifest.json has invalid modes for ['tasks.tsv']"]
+    (bundle / "manifest.json").write_text(json.dumps({"version": 2, "files": manifest, "modes": modes}))
     (bundle / "tasks.tsv").write_text("changed")
-    assert harness.check_bundle(h, bundle) == ["tasks.tsv sha256 differs from the manifest"]
+    assert harness.check_bundle(h, bundle)[0] == "tasks.tsv sha256 differs from the manifest"
 
     # The Harbor caches and the kernel bundle (whose collection path is not creatable here).
     cache = bundle / "harbor-cache" / "ds_1"
     cache.mkdir(parents=True)
     (cache / "task.toml").write_text("x")
+    (bundle / "manifest.json").write_text(
+        json.dumps({"version": 2, "files": manifest, "modes": {**modes, "harbor-cache/ds_1/task.toml": "0644"}})
+    )
     home = tmp_path / "home"
     assert harness.stage_harbor_caches(bundle, home, ["ds_1", "ds_2"]) == ["harbor-cache/ds_2 missing"]
     assert (home / ".cache" / "harbor" / "ds_1" / "task.toml").read_text() == "x"
@@ -643,6 +722,129 @@ def test_bundle_checks(tmp_path):
     finally:
         blocked.chmod(0o700)
     assert rewrite == {str(blocked / "x" / "landlock.tgz"): str(tmp_path / "work" / "kernels" / "landlock.tgz")}
+
+
+def test_modes_survive_a_volume_that_keeps_none(tmp_path):
+    """stage_bundle records every file's mode; the volume drops them (every file 0644 here); the eval's staging
+    restores them on its copies: frpc, the host uv, sft-gen, every Harbor task file (tests/test.sh, helpers)."""
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[4]
+    spec = importlib.util.spec_from_file_location(
+        "stage_bundle", root / "scripts" / "tb4_inrun_eval" / "stage_bundle.py"
+    )
+    stage_bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stage_bundle)
+
+    bundle = tmp_path / "bundle"
+    layout = {
+        "harness/frpc/frpc": 0o755,
+        "harness/frpc/.frpc_version": 0o644,
+        "harness/host-uv/0.13.1/x86_64-unknown-linux-musl/uv": 0o644,
+        "sft-gen/sft_gen_gdpval/image/soffice-wrapper.sh": 0o755,
+        "sft-gen/sft_gen/task_qc.py": 0o644,
+        "harbor-cache/ds_1/ds/t1/tests/test.sh": 0o755,
+        "harbor-cache/ds_1/ds/t1/tests/helper.py": 0o755,
+        "harbor-cache/ds_1/ds/t1/tests/data.csv": 0o644,
+        "harbor-cache/ds_1/ds/t1/task.toml": 0o644,
+    }
+    for rel, mode in layout.items():
+        (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / rel).write_text(rel)
+        (bundle / rel).chmod(mode)
+    manifest = stage_bundle.write_manifest(bundle)
+    assert manifest["version"] == 2 and set(manifest["files"]) == set(layout)
+    assert manifest["modes"] == {rel: f"{mode:04o}" for rel, mode in layout.items()}
+    (bundle / "link").symlink_to("harness")
+    with pytest.raises(SystemExit, match="not a regular file"):
+        stage_bundle.write_manifest(bundle)
+    (bundle / "link").unlink()
+
+    # The volume: every file 0644 (no exec bit anywhere).
+    for rel in layout:
+        (bundle / rel).chmod(0o644)
+    assert harness.verify_manifest(bundle) == []
+    modes = harness.file_modes(bundle)
+    home = tmp_path / "home"
+    assert harness.stage_frpc(bundle, home, modes, log=lambda m: None) == 2
+    assert os.access(home / ".prime" / "bin" / "frpc", os.X_OK)
+    assert stat.S_IMODE((home / ".prime" / "bin" / ".frpc_version").stat().st_mode) == 0o644
+    assert harness.stage_frpc(tmp_path / "none", home, modes) is None
+    assert harness.stage_harbor_caches(bundle, home, ["ds_1"], log=lambda m: None) == []
+    task = home / ".cache" / "harbor" / "ds_1" / "ds" / "t1"
+    got = {p.relative_to(task).as_posix(): stat.S_IMODE(p.stat().st_mode) for p in task.rglob("*") if p.is_file()}
+    assert got == {"tests/test.sh": 0o755, "tests/helper.py": 0o755, "tests/data.csv": 0o644, "task.toml": 0o644}
+    sft = tmp_path / "sft-gen"
+    shutil.copytree(bundle / "sft-gen", sft)
+    assert harness.require_modes(modes, "sft-gen", sft, "sft-gen", log=lambda m: None) == 2
+    assert os.access(sft / "sft_gen_gdpval" / "image" / "soffice-wrapper.sh", os.X_OK)
+    # A copy that is not there (or a chmod that does not take) fails the staging, never silently.
+    (sft / "sft_gen" / "task_qc.py").unlink()
+    with pytest.raises(RuntimeError, match="1 file modes not restored"):
+        harness.require_modes(modes, "sft-gen", sft, "sft-gen", log=lambda m: None)
+    done, problems = harness.restore_modes(modes, "harbor-cache/ds_1", tmp_path / "elsewhere")
+    assert done == 0 and len(problems) == 4
+
+
+def test_credential_probe(tmp_path):
+    """The probe lists one sandbox and one tunnel of the team with the key; 401 / 403 are verdicts, a flaky API is
+    retried and then inconclusive; the key is sent but never recorded."""
+    key, seen = "pit_secret_value", []
+
+    def answer(codes):
+        it = iter(codes)
+
+        def get(url, api_key, timeout):
+            seen.append((url, api_key))
+            code = next(it)
+            return code, ("" if code == 200 else f"echo {api_key}")
+
+        return get
+
+    result = harness.probe_credentials(key, "team1", {}, get=answer([200, 200]), sleep=lambda s: None)
+    assert result["status"] == "ok" and result["base_url"] == "https://api.primeintellect.ai"
+    assert seen[0] == ("https://api.primeintellect.ai/api/v1/sandbox?page=1&per_page=1&team_id=team1", key)
+    assert seen[1][0] == "https://api.primeintellect.ai/api/v1/tunnel?page=1&perPage=1&teamId=team1"
+    result = harness.probe_credentials(key, "t", {}, get=answer([401]), sleep=lambda s: None)
+    assert result["status"] == "no_credentials" and key not in json.dumps(result) and "***" in result["error"]
+    result = harness.probe_credentials(key, "t", {}, get=answer([200, 403]), sleep=lambda s: None)
+    assert result["status"] == "forbidden" and "tunnels" in result["error"]
+    sleeps = []
+    result = harness.probe_credentials(
+        key, "t", {}, attempts=3, get=answer([0, 503, 200, 0, 0, 0]), sleep=sleeps.append
+    )
+    assert result["status"] == "inconclusive" and result["checks"]["sandboxes"] == {"http": 200, "attempts": 3}
+    assert result["checks"]["tunnels"]["attempts"] == 3 and len(sleeps) == 4
+    result = harness.probe_credentials(key, "t", {}, get=answer([404, 200]), sleep=lambda s: None)
+    assert result["status"] == "inconclusive"  # a changed API is no verdict on the key
+    base = {"PRIME_API_BASE_URL": "https://staging.example/api/v1/"}
+    assert harness.api_base_url(base) == "https://staging.example"
+
+    # The real HTTP path against a local server: the bearer header is what is checked.
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            ok = self.headers.get("Authorization") == f"Bearer {key}"
+            body = json.dumps({"sandboxes": [], "tunnels": []} if ok else {"detail": "Invalid token"}).encode()
+            self.send_response(200 if ok else 401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        local = {"PRIME_API_BASE_URL": f"http://127.0.0.1:{server.server_port}"}
+        assert harness.probe_credentials(key, "t", local)["status"] == "ok"
+        bad = harness.probe_credentials("wrong", "t", local)
+        assert bad["status"] == "no_credentials" and bad["checks"]["sandboxes"]["http"] == 401
+    finally:
+        server.shutdown()
 
 
 # Coordination and cleanup

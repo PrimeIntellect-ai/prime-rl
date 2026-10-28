@@ -376,6 +376,11 @@ class SFTInRunEvalHarnessConfig(BaseConfig):
     expected_tasks: int | None = 500
     """Refuse to start when the selected tasks are not this many (None: no check)."""
 
+    expected_val_tasks: int | None = 50
+    """The bundle's task table must label exactly this many tasks ``val`` (the summaries' val / train split): the v2
+    dataset's validation split, ``data-prep/tb4-val-tasks-v2.txt`` (the 44 frozen tasks plus 6 zero-pass ones, 10%).
+    None: no check."""
+
     rollouts_per_engine: int = Field(24, ge=1)
     """Rollouts in flight per vLLM engine serving the checkpoint (the rollout gate is engines x this)."""
 
@@ -389,6 +394,12 @@ class SFTInRunEvalHarnessConfig(BaseConfig):
     """The Prime team that owns the private task images. None: ``PRIME_TEAM_ID`` from the environment (the run
     config's ``[env_vars]``). The Prime API key is always the platform's per-run ``PRIME_API_KEY`` (``prime train -e``
     forwards only HF_TOKEN / WANDB_API_KEY): without it the eval records ``no_credentials`` and serves nothing."""
+
+    credential_probe: bool = True
+    """Before anything is served, list one of the team's sandboxes and one tunnel with the run's ``PRIME_API_KEY``
+    (cheap GETs to the Prime API): a 401 ends the eval phase as ``no_credentials``, a 402 / 403 as ``forbidden``
+    (``eval/status.json``), nothing is loaded; a network error or a 5xx that persists is recorded and the eval goes on.
+    The key is never logged."""
 
     python: str = "3.13"
     """Python of the harness virtualenv (sft-gen runs on 3.13; the image only has 3.12)."""

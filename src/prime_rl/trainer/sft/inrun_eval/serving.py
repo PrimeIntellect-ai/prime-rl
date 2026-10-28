@@ -33,9 +33,20 @@ TORCHRUN_VARS = (
 )
 TORCHRUN_PREFIXES = ("TORCHELASTIC_",)
 
+PRIME_API_KEY = "PRIME_API_KEY"
+SECRET_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "WANDB_API_KEY", "GITHUB_TOKEN", "GH_TOKEN")
+"""Credentials of the trainer pod the harness never gets (it gets the platform's ``PRIME_API_KEY`` only)."""
+SERVING_SECRET_VARS = (PRIME_API_KEY, *SECRET_VARS)
+"""Credentials the vLLM engines and the router never get: they serve a local checkpoint and need none."""
+
 
 def clean_env(env: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in env.items() if k not in TORCHRUN_VARS and not k.startswith(TORCHRUN_PREFIXES)}
+
+
+def serving_env(env: dict[str, str]) -> dict[str, str]:
+    """``clean_env`` without the pod's credentials: the environment of the engines and the router."""
+    return {k: v for k, v in clean_env(env).items() if k not in SERVING_SECRET_VARS}
 
 
 def sha256_file(path: Path) -> str:
@@ -161,11 +172,13 @@ def engine_specs(serving, config_path: Path, node_ip: str, python: str) -> list[
 
 
 def engine_env(serving, base: dict[str, str]) -> dict[str, str]:
-    """The node's inference environment: the process env without torchrun's variables, then prime-rl's launcher
-    defaults for inference (e.g. ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False``), then ``serving.env_vars``."""
+    """The node's inference environment: the process env without torchrun's variables and without the pod's
+    credentials (``SERVING_SECRET_VARS``), then prime-rl's launcher defaults for inference (e.g.
+    ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False``), then ``serving.env_vars``."""
     from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, DEFAULT_INFERENCE_ENV_VARS
 
-    return {**clean_env(base), **DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **serving.env_vars}
+    env = {**serving_env(base), **DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **serving.env_vars}
+    return {k: v for k, v in env.items() if k not in SERVING_SECRET_VARS}
 
 
 def router_cmd(serving, router_bin: str, port: int, worker_urls: list[str]) -> list[str]:

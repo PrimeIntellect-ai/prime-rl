@@ -17,6 +17,8 @@ import pytest
 
 PLUGINS = Path(__file__).resolve().parents[4] / "src" / "prime_rl" / "trainer" / "sft" / "inrun_eval" / "plugins"
 PROGRAM_SHA256 = "1467b440577f1a2fee1f628abdb3bd60b8375a2116b2e193ab97c752c14d0297"
+SCRIPT_SHA256 = "2cc22997b09d77990d388eac4b50cc0ec9dc0c34571bfa859cc6438a05b852a7"
+"""The rendered mini-swe-agent 2.4.6 script: its sha256 names the venv the agent sees (environments-v2/2cc22997...)."""
 EXCLUDE = "2026-10-24T07:23:00Z"
 
 try:
@@ -106,7 +108,8 @@ def test_exclude_newer_reaches_only_the_preparation(plugin):
 
     # setup + launch prepare the unmodified program, both times with the D5 variable on top of the harness env.
     expected_script = mini.PROGRAM_SOURCE.replace("{version}", "2.4.6")
-    assert [p["sha256"] for p in runtime.prepared] == [hashlib.sha256(expected_script.encode()).hexdigest()] * 2
+    assert hashlib.sha256(expected_script.encode()).hexdigest() == SCRIPT_SHA256
+    assert [p["sha256"] for p in runtime.prepared] == [SCRIPT_SHA256] * 2
     assert all(p["env"] == {"TASK_VAR": "1", "UV_EXCLUDE_NEWER": EXCLUDE} for p in runtime.prepared)
     # The uv pin ran first, with the harness env only; the program runs with exactly the collection's env.
     pin_cmd, pin_env = runtime.runs[0]
@@ -124,6 +127,29 @@ def test_without_d5_settings_it_is_the_collection_harness(plugin):
     runtime = FakeRuntime()
     asyncio.run(harness.setup(runtime))
     assert runtime.runs == [] and runtime.prepared[0]["env"] == {}
+
+
+def test_root_box_pins_where_verifiers_installs(plugin):
+    """Every TB4 box runs as root: the pin must take verifiers' _ENSURE_UV steps there too, including the inline
+    _INSTALL_CURL (apt-get / apk a curl) that an image with python3 but no pip / curl / wget needs."""
+    from verifiers.v1.runtimes.base import _ENSURE_UV, _INSTALL_CURL
+
+    mod = sys.modules[plugin[0].__module__]
+    cls, config_type = plugin
+    harness = cls(config_type.model_validate({"id": "x", "prepare_uv_version": "0.13.5"}))
+    runtime = FakeRuntime(user=None)
+    asyncio.run(harness.setup(runtime))
+    assert len(runtime.runs) == 1  # no separate root step: root runs _INSTALL_CURL inline, as _ENSURE_UV does
+    script = runtime.runs[0][0][2]
+    assert script == mod.pin_uv_script("0.13.5")
+    # The same steps as _ENSURE_UV, in its order, with the pinned version in both install paths.
+    assert f"{{ {{ {_INSTALL_CURL}; " in script and f"{{ {{ {_INSTALL_CURL}; " in _ENSURE_UV
+    order = [
+        script.index(part) for part in ("uv_supports_scripts && exit 0", "pip install", _INSTALL_CURL, "curl -LsSf")
+    ]
+    assert order == sorted(order)
+    assert "uv==0.13.5" in script and script.count("https://astral.sh/uv/0.13.5/install.sh") == 2
+    assert "astral.sh/uv/install.sh" not in script
 
 
 def test_user_box_installs_a_downloader_first(plugin):

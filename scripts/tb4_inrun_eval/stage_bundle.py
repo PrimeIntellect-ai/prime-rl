@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Assemble the in-run TB4 eval bundle (``[inrun_eval.harness] bundle_dir``) in a local directory, check it, and
-write its ``manifest.json``. Uploading it to the volume (``datasets/tb4-eval`` on nemotron-sft-tb4-v2) is a separate
+write its ``manifest.json`` (every file's sha256 and mode: a Prime volume keeps no modes, the eval restores them
+from the manifest). Uploading it to the volume (``datasets/tb4-eval`` on nemotron-sft-tb4-v2) is a separate
 step. Nothing private is in this script: every input comes from the command line (see PREREQS.md for where each one
 lives).
 
@@ -9,7 +10,7 @@ lives).
         --flow-config tb-eng=<.../tb-engineering-glm-measure-20261023/configs/attempt_2/flow.toml> \\
         --flow-config tb-eng-extra9=<.../tb-engineering-extra9-glm-measure-20261023/configs/attempt_2/flow.toml> \\
         --flow-config tb-sci=<.../tb-science-glm-measure-20261023/configs/attempt_2/flow.toml> \\
-        --tasks-tsv <tasks.tsv> | (--collection-traces <traces.jsonl> --val-tasks <tb4-val-tasks.txt>
+        --tasks-tsv <tasks.tsv> | (--collection-traces <traces.jsonl> --val-tasks <tb4-val-tasks-v2.txt>
                                    --train-dataset <dataset dir> | --train-tasks <file>  [--extra-task name=source]) \\
         --harbor-cache <~/.cache/harbor/<name>> [...]  (every one the configs need; extra ones, e.g. tb-sci's
                                                         collection pin 85df9700aaf4, are staged too) \\
@@ -26,7 +27,9 @@ name) and ``task.name`` per line (scratchpad replica-inv/collection-config/trace
 import argparse
 import hashlib
 import json
+import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -92,11 +95,33 @@ def build_task_table(args) -> str:
         raise SystemExit(f"val/train tasks without a collection run: {missing[:5]}")
     if val & train:
         raise SystemExit(f"tasks both val and train: {sorted(val & train)[:5]}")
-    lines = ["# name\tsource\tsplit (val: frozen held-out tasks; train: tasks with training rows; other: neither)"]
+    lines = [
+        "# name\tsource\tsplit (val: the dataset's held-out tasks; train: tasks with training rows; other: neither)"
+    ]
     for name in sorted(source_of):
         split = "val" if name in val else "train" if name in train else "other"
         lines.append(f"{name}\t{source_of[name]}\t{split}")
     return "\n".join(lines) + "\n"
+
+
+def write_manifest(out: Path) -> dict:
+    """``manifest.json`` (version 2): every file's sha256 and permission bits (octal), the bundle's own file excluded.
+    Only regular files: a symlink or a special file is refused (the volume could not hold it)."""
+    files, modes = {}, {}
+    for path in sorted(out.rglob("*")):
+        rel = str(path.relative_to(out))
+        if rel == "manifest.json":
+            continue
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode):
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            raise SystemExit(f"{path}: not a regular file (the bundle holds regular files only)")
+        files[rel] = sha256(path)
+        modes[rel] = f"{stat.S_IMODE(st.st_mode):04o}"
+    manifest = {"version": 2, "files": files, "modes": modes}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+    return manifest
 
 
 def main() -> None:
@@ -200,10 +225,12 @@ def main() -> None:
     (out / "kernels").mkdir()
     shutil.copyfile(args.kernel, out / "kernels" / args.kernel.name)
 
-    files = {str(path.relative_to(out)): sha256(path) for path in sorted(out.rglob("*")) if path.is_file()}
-    (out / "manifest.json").write_text(json.dumps({"version": 1, "files": files}, indent=1) + "\n")
+    files = write_manifest(out)["files"]
     size = sum((out / rel).stat().st_size for rel in files)
-    print(f"bundle at {out}: {len(files)} files, {size / 2**30:.2f} GiB, caches {sorted(given)}")
+    executable = sum(1 for path in out.rglob("*") if path.is_file() and os.stat(path).st_mode & 0o111)
+    print(
+        f"bundle at {out}: {len(files)} files ({executable} executable), {size / 2**30:.2f} GiB, caches {sorted(given)}"
+    )
 
 
 if __name__ == "__main__":

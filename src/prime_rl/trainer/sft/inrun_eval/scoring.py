@@ -7,10 +7,14 @@ an error; HarnessError reruns land rows of their own); a draw without one is an 
 missing. Errors and missing draws count as failures, and are reported separately.
 
 The one exception is a source whose flow run the optional safety cap (``[inrun_eval] budget_hours``) stopped: its
-unfinished draws (error or missing) are ``cut``. A cut draw is not an outcome: it is excluded from pass@k, which is
-then computed per task over its n = k - cut remaining draws, for every reported k <= n (a task left with fewer than
-k draws is not in pass@k's average; ``pass@<k>_tasks`` says how many are). The summary's ``coverage`` states the
-share of planned draws that are not cut. Without a cap nothing is cut.
+draws that were still running at the stop, or had not started, are ``cut``. Which ones: prime-flow's call record of
+each draw (``<store>/calls/<job>/<digest>.json``): ``open`` (running), or ``failed`` / ``finished`` at or after the
+stop (the stop ended it, or its row never landed), or no record and no row (never started). A draw that had already
+errored before the stop (its record ``failed`` earlier, or an error row and no record) stays an error. A cut draw is
+not an outcome: it is excluded from pass@k, which is then computed per task over its n = k - cut remaining draws, for
+every reported k <= n (a task left with fewer than k draws is not in pass@k's average; ``pass@<k>_tasks`` says how
+many are). The summary's ``coverage`` states the share of planned draws that are not cut. Without a cap nothing is
+cut.
 
 pass@k = 1 - C(n - c, k) / C(n, k) per task (c = draws with reward >= the pass threshold), averaged over tasks; with
 n = k = 8, pass@1 is the mean of c / 8 and pass@8 the share of tasks solved at least once.
@@ -27,6 +31,50 @@ from prime_rl.trainer.sft.inrun_eval.tasks import TaskRow, job_slug, slug_index
 
 DRAW_CALL = re.compile(r"^solver/draw(?P<n>\d+)(?:-[0-9A-Za-z]+)?$")
 SOLVER_SEAT = "solver"
+CALLS = "calls"
+"""prime-flow's call records under a store (``calls/<job>/<digest>.json``, ``prime_flow.calls`` at ed23e23)."""
+
+
+@dataclass(frozen=True)
+class CallState:
+    """A solver draw's prime-flow call record: ``open`` (running, or cut off), ``finished`` or ``failed``."""
+
+    status: str
+    updated: float | None
+
+
+def read_call_states(store: Path) -> dict[tuple[str, int], CallState] | None:
+    """(job, draw) -> the draw's call record state, None when the store keeps no call records."""
+    root = Path(store) / CALLS
+    if not root.is_dir():
+        return None
+    states: dict[tuple[str, int], CallState] = {}
+    for path in root.glob("*/*.json"):
+        try:
+            record = json.loads(path.read_bytes())
+        except (OSError, json.JSONDecodeError):
+            continue
+        identity = record.get("identity") if isinstance(record, dict) else None
+        if not isinstance(identity, dict) or record.get("seat") not in (None, SOLVER_SEAT):
+            continue
+        match = DRAW_CALL.match(str(identity.get("call") or ""))
+        if match is None or not identity.get("job"):
+            continue
+        key = (str(identity["job"]), int(match.group("n")))
+        updated = record.get("updated")
+        state = CallState(str(record.get("status") or "open"), float(updated) if updated is not None else None)
+        if key not in states or (state.updated or 0) >= (states[key].updated or 0):
+            states[key] = state
+    return states
+
+
+def cut_at_stop(state: CallState | None, landed: bool, stopped_at: float | None) -> bool:
+    """Whether a draw without a finished row was cut by the stop (else it had errored before it)."""
+    if state is None:
+        return not landed  # never started; an error row without a record had errored
+    if state.status == "open":
+        return True
+    return stopped_at is None or state.updated is None or state.updated >= stopped_at
 
 
 def pass_at_k(n: int, c: int, k: int) -> float:
@@ -153,10 +201,13 @@ def score_rows(
     pass_threshold: float,
     traces_path: Path | None = None,
     cut: bool = False,
+    calls: dict[tuple[str, int], CallState] | None = None,
+    stopped_at: float | None = None,
 ) -> tuple[list[TaskScore], dict]:
     """Score one source's index rows against its expected tasks. Returns the per-task scores (every expected task,
     plus unexpected ones the store holds) and diagnostics (unmapped jobs, draws beyond k). ``cut``: the safety cap
-    stopped this source's run, so its unfinished draws are ``cut`` instead of error / missing."""
+    stopped this source's run (at ``stopped_at``), so its draws still running then (``calls``: the store's call
+    records, ``cut_at_stop``) or never started are ``cut`` instead of error / missing."""
     names = [row.name for row in tasks]
     by_name = {row.name: row for row in tasks}
     slugs, ambiguous = slug_index(names)
@@ -194,6 +245,19 @@ def score_rows(
             continue
         per_task_draw.setdefault((task, n), []).append(row)
 
+    # Each task's draw call states (a task has one job; the latest record wins should it have more).
+    task_calls: dict[tuple[str, int], CallState] = {}
+    for (job, n), state in (calls or {}).items():
+        task = job_task.get(job)
+        if task is None:
+            key = job_slug(job)
+            task = slugs.get(key) if key is not None and key not in ambiguous else None
+        if task is None:
+            continue
+        old = task_calls.get((task, n))
+        if old is None or (state.updated or 0) >= (old.updated or 0):
+            task_calls[(task, n)] = state
+
     scored_names = list(names) + sorted({t for (t, _) in per_task_draw} - set(names))
     scores: list[TaskScore] = []
     for name in scored_names:
@@ -219,14 +283,19 @@ def score_rows(
                 row = landed[-1]
                 draw = Draw(
                     draw=n,
-                    status="cut" if cut else "error",
+                    status="cut" if cut and cut_at_stop(task_calls.get((name, n)), True, stopped_at) else "error",
                     stop_condition=row.get("stop_condition"),
                     error=row.get("error"),
                     trace_id=row.get("id"),
                     rows=len(landed),
                 )
+            elif cut:
+                state = task_calls.get((name, n))
+                draw = Draw(draw=n, status="cut" if cut_at_stop(state, False, stopped_at) else "error")
+                if draw.status == "error":
+                    draw.error = f"call record {state.status} before the stop, no row landed"
             else:
-                draw = Draw(draw=n, status="cut" if cut else "missing")
+                draw = Draw(draw=n, status="missing")
             score.cut += draw.status == "cut"
             score.draws.append(draw)
         scores.append(score)
@@ -238,6 +307,8 @@ def score_rows(
         "unexpected_tasks": sorted({t for (t, _) in per_task_draw} - set(names)),
         "row_errors": dict(Counter(str(row.get("error")) for _, _, row in draws if row.get("error"))),
         "cut_by_cap": cut,
+        "stopped_at": stopped_at,
+        "call_records": None if calls is None else len(calls),
     }
     return scores, diagnostics
 
@@ -303,9 +374,34 @@ def summary_by_group(scores: list[TaskScore]) -> dict:
 
 
 def score_store(
-    store: Path, tasks: list[TaskRow], source: str, k: int, pass_threshold: float, cut: bool = False
+    store: Path,
+    tasks: list[TaskRow],
+    source: str,
+    k: int,
+    pass_threshold: float,
+    cut: bool = False,
+    stopped_at: float | None = None,
 ) -> tuple[list[TaskScore], dict]:
     """Score a flow store (``<store>/traces/index.jsonl``, task names of unmapped jobs from ``<store>/traces.jsonl``).
-    ``cut``: the safety cap stopped its run."""
+    ``cut``: the safety cap stopped its run at ``stopped_at`` (its call records tell which draws were running)."""
     rows = read_jsonl(store / "traces" / "index.jsonl")
-    return score_rows(rows, tasks, source, k, pass_threshold, traces_path=store / "traces.jsonl", cut=cut)
+    calls = read_call_states(store) if cut else None
+    return score_rows(
+        rows,
+        tasks,
+        source,
+        k,
+        pass_threshold,
+        traces_path=store / "traces.jsonl",
+        cut=cut,
+        calls=calls,
+        stopped_at=stopped_at,
+    )
+
+
+def progress(store: Path) -> dict[str, int]:
+    """A store's landed solver draws so far (the heartbeat): ``rollouts_done`` (draws with a finished row), ``rows``
+    (draw rows, reruns and errors included)."""
+    draws = draw_rows(read_jsonl(Path(store) / "traces" / "index.jsonl"))
+    done = {(job, n) for job, n, row in draws if is_finished(row)}
+    return {"rollouts_done": len(done), "rows": len(draws)}

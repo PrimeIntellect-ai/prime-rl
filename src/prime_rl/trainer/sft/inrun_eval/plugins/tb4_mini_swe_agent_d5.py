@@ -7,11 +7,13 @@ What changes, only in the preparation step (``Runtime.prepare_uv_script``, befor
 
 - ``UV_EXCLUDE_NEWER=<prepare_exclude_newer>`` is added to the environment of the ``uv sync --script`` command, so
   the script's unlocked dependencies (mini-swe-agent 2.4.6 and its ~126 packages) resolve as at collection time.
-- With ``prepare_uv_version``: a box whose image has no script-capable uv gets that uv version, installed the way
-  verifiers' ``_ENSURE_UV`` would install the latest one (``pip install -q -U --user uv``, else the astral installer
-  script into ``$HOME/.local/bin``), before the bootstrap runs. The bootstrap then finds it and uses it. An image's own
-  script-capable uv is used as is, as in collection. A box where neither works falls through to verifiers' unchanged
-  bootstrap (the host's uv 0.13.1, as in collection).
+- With ``prepare_uv_version``: a box whose image has no script-capable uv gets that uv version, installed exactly
+  where and how verifiers' ``_ENSURE_UV`` would install the latest one, for any user (root boxes included: every TB4
+  task runs as root): ``pip install -q -U --user uv``, else verifiers' ``_INSTALL_CURL`` inline (apt-get / apk a curl
+  when the image has no downloader, as ``_ENSURE_UV`` does) and the astral installer script into
+  ``$HOME/.local/bin``; for a non-root user the root-run ``_INSTALL_CURL`` first, as ``prepare_uv_script`` does. The
+  bootstrap then finds it and uses it. An image's own script-capable uv is used as is, as in collection. A box where
+  neither works falls through to verifiers' unchanged bootstrap (the host's uv 0.13.1, as in collection).
 
 What does not change: ``program.py`` and so the script's sha256 (``2cc22997...``) and the venv path the agent sees
 (``environments-v2/2cc22997...-fd57668a0b15dabf``: uv names a script environment by the script's file stem and a
@@ -47,10 +49,15 @@ class D5MiniSWEAgentHarnessConfig(MiniSWEAgentHarnessConfig):
 
 
 def pin_uv_script(version: str) -> str:
-    """Install uv ``version`` the way verifiers' ``_ENSURE_UV`` installs the latest, unless a script-capable uv is
-    already on its PATH. Exits ``PIN_FAILED`` when it could not."""
+    """verifiers 24107a4ea's ``_ENSURE_UV`` with uv ``version`` instead of the latest: the same steps in the same
+    order (a script-capable uv on PATH: nothing; else ``pip install --user``; else ``_INSTALL_CURL`` inline, then the
+    installer script), for any user. Exits ``PIN_FAILED`` when it could not."""
     v = shlex.quote(version)
     installer = shlex.quote(f"https://astral.sh/uv/{version}/install.sh")
+    download = (
+        f"{{ command -v curl >/dev/null 2>&1 && curl -LsSf {installer} | sh; }} "
+        f"|| {{ command -v wget >/dev/null 2>&1 && wget -qO- {installer} | sh; }}"
+    )
     return (
         f'export PATH="$HOME/.local/bin:{FALLBACK_BIN}:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
         "uv_supports_scripts() { "
@@ -58,9 +65,8 @@ def pin_uv_script(version: str) -> str:
         "&& uv python find --help 2>/dev/null | grep -q -- '--script'; }; "
         "uv_supports_scripts && exit 0; "
         f"{{ pip install -q -U --user uv=={v} 2>/dev/null && hash -r && uv_supports_scripts; }} && exit 0; "
-        f"{{ {{ command -v curl >/dev/null 2>&1 && curl -LsSf {installer} | sh; }} "
-        f"|| {{ command -v wget >/dev/null 2>&1 && wget -qO- {installer} | sh; }}; }} >/dev/null 2>&1; "
-        f"hash -r; uv_supports_scripts && exit 0; exit {PIN_FAILED}"
+        f"{{ {{ {_INSTALL_CURL}; {download}; }} >/dev/null 2>&1 && hash -r && uv_supports_scripts; }} && exit 0; "
+        f"exit {PIN_FAILED}"
     )
 
 

@@ -35,13 +35,20 @@ must be the GA template.
 ## 2. The eval bundle: `/volume/datasets/tb4-eval`
 
 Assemble it with `scripts/tb4_inrun_eval/stage_bundle.py`. The script checks every input and writes
-`manifest.json`. At run time the eval re-checks every sha256 before using anything. Layout and where each input
-comes from (all fetched from the QC box without writing outside `/tmp/azh_*`):
+`manifest.json` (version 2): every file's sha256 **and mode**. At run time the eval re-checks every sha256 before
+using anything. A Prime volume keeps no file modes (its objects carry only `md5chksum` / `mtime` metadata), so the
+eval restores each file's recorded mode on its node-local copies before anything runs: sft-gen, frpc (also made
+executable explicitly; prime_tunnel runs it as is), the host uv, and every Harbor task file (1,771 executable in the
+three caches the eval uses: `tests/test.sh`, helper scripts under `tests/`, ...). A mode that cannot be restored, or a
+manifest without modes, fails the harness setup (`eval/status.json` `harness.ok = false`, `eval.status =
+"harness_failed"`) before any rollout. The Harbor caches' modes and blobs equal the git trees at the registry-pinned
+commits (22,263 files over the four caches, 0 mismatches). Layout and where each input comes from (all fetched from
+the QC box without writing outside `/tmp/azh_*`):
 
 | Path | Source |
 |---|---|
 | `flow-configs/{tb-eng,tb-eng-extra9,tb-sci}.toml` | `<run>/configs/attempt_2/flow.toml` of the three `*-glm-measure-20261023` runs (sha256 d0e5b6c7… / 86a3fba8… / 06d60eb7…, pinned in the config) |
-| `tasks.tsv` | `name<TAB>source<TAB>split` for all 500 tasks, from the collection trace extract (run per task), `data-prep/tb4-val-tasks.txt` (44 val), the v2 dataset's train split (`--train-dataset`) and `--extra-task terminal-bench/convolution_filters_english=tb-sci` |
+| `tasks.tsv` | `name<TAB>source<TAB>split` for all 500 tasks, from the collection trace extract (run per task), `data-prep/tb4-val-tasks-v2.txt` (50 val: the 44 frozen tasks plus 6 zero-pass ones, the dataset's 10% validation split; sha256 `3d7fc49f…a76`), the v2 dataset's train split (`--train-dataset`, 450 tasks) and `--extra-task terminal-bench/convolution_filters_english=tb-sci`. The eval refuses a table that does not label exactly `[inrun_eval.harness] expected_val_tasks` (50) tasks val |
 | `smoke-tasks.txt` | 3 task names for the smokes, one per source |
 | `sft-gen/` | sft-gen **@ bca802f**: `git -C /data/repos/sft-gen archive bca802f` (box git needs `HOME=<dir with [safe] directory=*>`). Includes `prompts/` (the configs name `prompts/*.md` relative to the flow's cwd) and `uv.lock` |
 | `harness/requirements.txt` | the flow host's closure: `verifiers[harbor]` + `prime-flow[qc,dashboard]` in bca802f's `uv.lock` (with its `prime-sandboxes` 49a99bc override), evaluated for linux x86_64 / CPython 3.13, exact versions, 137 packages, git sources as `name==version` |
@@ -69,16 +76,19 @@ eval cannot be given its own Prime key. It uses:
 | Variable | From | Notes |
 |---|---|---|
 | `HF_TOKEN` | `-e ~/.config/prime-export/hf.env` (the run only) | the export push; also the eval's fallback download of an incomplete node copy |
-| `PRIME_API_KEY` | the platform: it creates a per-run token and wires it into the run's pods as `PRIME_API_KEY` (k8s `secretKeyRef`; confirmed for the RL orchestrator, **unconfirmed for SFT trainer pods**) | sandboxes, tunnels, the team's private task images. Only its presence is logged (`in-run eval: node 0: PRIME_API_KEY present: yes/NO`) and recorded (`eval/status.json` `credentials`). Without it the eval phase ends at once with `eval/status.json` `eval.status = "no_credentials"` and every checkpoint `failed` / `reason: no_credentials`; nothing is served |
+| `PRIME_API_KEY` | the platform: it creates a per-run token and wires it into the run's pods as `PRIME_API_KEY` (k8s `secretKeyRef`; confirmed for the RL orchestrator, **unconfirmed for SFT trainer pods**) | sandboxes, tunnels, the team's private task images. Only its presence is logged (`in-run eval: node 0: PRIME_API_KEY present: yes/NO`) and recorded (`eval/status.json` `credentials`). Without it the eval phase ends at once with `eval/status.json` `eval.status = "no_credentials"` and every checkpoint `failed` / `reason: no_credentials`; nothing is served. With it, before vLLM loads, a probe lists one of the team's sandboxes and one tunnel with the key (`GET /api/v1/sandbox?team_id=…`, `GET /api/v1/tunnel?teamId=…`): 401 ends the eval phase as `no_credentials`, 402 / 403 (e.g. "You are not a member of this team") as `forbidden`; a network error or 5xx that persists after 6 tries is recorded as `inconclusive` and the eval goes on. The result is in `eval/status.json` `credentials.probe`; the key is never logged (`[inrun_eval.harness] credential_probe = false` skips it) |
 | `PRIME_TEAM_ID` | `[env_vars] PRIME_TEAM_ID = "cmlr3u2er002zhr01tj8f48ts"` in the config (not a secret); the hand-off also reads it from the config if the pods' environment lacks it | the team owning the 499/499 + the 500th task's images (COMPLETED, PRIVATE) |
 
-The vLLM key the harness sends is generated per run; the engines do not check it, and the pods have no ingress.
+The vLLM key the harness sends is generated per run; the engines do not check it, and the pods have no ingress. The
+vLLM engines and the router get none of the pod's credentials (`PRIME_API_KEY`, `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`,
+`WANDB_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN` are stripped from their environment); the harness gets only
+`PRIME_API_KEY`.
 
 Launch commands: the run `prime train configs/advanced/nemotron-3-super/sft-hosted-tb4-v2.toml --volume
 nemotron-sft-tb4-v2 -e ~/.config/prime-export/hf.env -y`; the smokes without `-e` (nothing is pushed).
 
-Whether the per-run token may create sandboxes and pull the team's private images is the first thing the smoke
-answers.
+The probe shows that the per-run token is accepted for the team's sandboxes and tunnels. Whether it may pull the
+team's private images shows only in the first rollouts.
 
 ## 4. Smoke test (before the run depends on it)
 
@@ -134,10 +144,15 @@ without a lockfile: its ~126 packages would resolve against PyPI at eval time. D
   the script path>`. Checked locally with uv 0.13.5: the same script synced with and without `UV_EXCLUDE_NEWER`
   lands in the same `environments-v2/2cc22997…-<digest>` directory.
 - uv in the box: images with a script-capable uv use it, as in collection. Otherwise verifiers' bootstrap installs
-  the latest uv (`pip install -U --user uv`, else astral's installer); collection boxes reported uv 0.13.5 (94
-  rows; 0.13.6 came out 2026-10-27). The plugin installs `uv==0.13.5` the same way first (pip, then
-  `https://astral.sh/uv/0.13.5/install.sh`), so the bootstrap finds it. A box where neither works falls through to
-  verifiers' unchanged path (the host's uv 0.13.1, as in collection).
+  the latest uv (`pip install -U --user uv`, else `_INSTALL_CURL`, i.e. apt-get / apk a curl when the image has no
+  downloader, then astral's installer); collection boxes reported uv 0.13.5 (94 rows; 0.13.6 came out 2026-10-27).
+  The plugin installs `uv==0.13.5` the same way first, with the same steps in the same order and for any user (all
+  500 boxes run as root): pip, else `_INSTALL_CURL` inline and `https://astral.sh/uv/0.13.5/install.sh`; a non-root
+  user also gets the root-run `_INSTALL_CURL` first, as `prepare_uv_script` does. The bootstrap then finds it. Checked
+  in amd64 containers as root: debian:bookworm-slim with python3 but no pip / curl / wget (the case of ~21 tasks)
+  gets curl and uv 0.13.5, verifiers' own `_ENSURE_UV` then changes nothing, and the synced venv is
+  `environments-v2/2cc22997…-fd57668a0b15dabf` with `uv = 0.13.5` in its `pyvenv.cfg`. A box where neither works
+  falls through to verifiers' unchanged path (the host's uv 0.13.1, as in collection).
 - Only host-side error messages name the harness differently. `d5_exclude_newer = None` restores the collection's
   `mini_swe_agent` harness unchanged.
 
@@ -166,12 +181,17 @@ model and the v2 dataset. **It needs your confirmation**; nothing has been delet
 - **No wall-clock cap** (`budget_hours` unset): a round lasts until its flow runs exit, under the collection's own
   limits (rollout 86400 s, scoring up to 21600 s per task, stage 1209600 s). The hosted platform's own maximum run
   length is unknown. An optional `budget_hours` safety cap splits what is left equally between rounds; when it
-  fires, the flow runs get SIGTERM and their unfinished draws are reported as `cut`: excluded from pass@k, which is
-  then over each task's remaining draws (`pass@<k>_tasks` per k), with `coverage` in `summary.json` and
-  `complete: false`. Never scored as failures. The smokes set a cap; the run does not.
+  fires, the flow runs get SIGTERM and the draws still running then (prime-flow's call record `open`, or ended at or
+  after the stop) or never started are reported as `cut`: excluded from pass@k, which is then over each task's
+  remaining draws (`pass@<k>_tasks` per k), with `coverage` in `summary.json` and `complete: false`. A draw that had
+  already errored before the stop stays an error. The smokes set a cap; the run does not.
+- **Liveness:** node 0 refreshes `eval/status.json` `heartbeat` every 5 min: `time`, `phase`, `rollouts_done` /
+  `rows_landed` / `rollouts_planned` (in all and per checkpoint), `last_progress` and `seconds_since_progress`. It
+  only reports; nothing is stopped for lack of progress.
 - **Scoring:** per task and draw, the last finished row counts. pass@k is unbiased, with n = 8; errored and missing
-  draws of a run that ended on its own are failures, counted separately. Results are given overall, for val (44),
-  train and other, and per source; diagnostics include unmapped jobs, row errors and stop conditions.
+  draws of a run that ended on its own are failures, counted separately. Results are given overall, for val (50,
+  `tb4-val-tasks-v2.txt`), train (450) and other, and per source (`split_tasks` and the `tasks.tsv` sha256 are in
+  each `summary.json`); diagnostics include unmapped jobs, row errors and stop conditions.
 - **The only flow-config changes** (checked against an allow-list and recorded per source in `summary.json`): run
   name and dir, store, `flow.model` / `flow.solver.model`, the solver client's `base_url` / `api_key_var`, the
   rollout gate, tb-sci's dataset (@71124a84e6f3 for the 500th task), the D5 harness id and its two settings, and

@@ -126,11 +126,20 @@ def setup_fakes(tmp_path, monkeypatch) -> tuple[Path, MemoryStore]:
         "tb-science-vendor@71124a84e6f3", "PrimeIntellect-ai/nvidia-delivery@main", "registries/tb-science.json"
     )
     files[f"harbor-cache/{cache}/a/task.toml"] = "x"
+    files[f"harbor-cache/{cache}/a/tests/test.sh"] = "#!/bin/bash\n"
     for rel, text in files.items():
         (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
         (bundle / rel).write_text(text)
+        (bundle / rel).chmod(0o644)  # as the volume serves them: no exec bits
+    modes = {rel: "0755" if rel.endswith("test.sh") else "0644" for rel in files}
     (bundle / "manifest.json").write_text(
-        json.dumps({"files": {rel: hashlib.sha256(text.encode()).hexdigest() for rel, text in files.items()}})
+        json.dumps(
+            {
+                "version": 2,
+                "files": {rel: hashlib.sha256(text.encode()).hexdigest() for rel, text in files.items()},
+                "modes": modes,
+            }
+        )
     )
 
     bin_dir = tmp_path / "bin"
@@ -151,6 +160,12 @@ def setup_fakes(tmp_path, monkeypatch) -> tuple[Path, MemoryStore]:
         return harness.HarnessEnv(venv=venv, cwd=cwd, env=env, info={"packages": {"verifiers": "0.4.1.dev340"}})
 
     monkeypatch.setattr(harness, "build_env", fake_build_env)
+    probes = []
+    monkeypatch.setattr(
+        harness,
+        "probe_credentials",
+        lambda key, team, base: probes.append(team) or {"status": "ok", "checks": {}, "error": None},
+    )
     monkeypatch.setattr(
         node.NodeServer, "serve", lambda self, ckpt, deadline: [f"http://127.0.0.1:{9000 + self.plan.node}"]
     )
@@ -170,6 +185,7 @@ def harness_cfg(bundle: Path) -> dict:
         "tasks_file": bundle / "smoke-tasks.txt",
         "k": 2,
         "expected_tasks": 2,
+        "expected_val_tasks": 1,
     }
 
 
@@ -203,8 +219,16 @@ def test_driver_end_to_end(tmp_path, monkeypatch):
         "prime_api_key_present": True,
         "prime_team_id": "team",
         "prime_team_id_source": "environment",
+        "probe": {"status": "ok", "checks": {}, "error": None},
     }
+    assert status["credentials"]["probe"]["status"] == "ok" and status["eval"]["status"] == "done"
     assert "key" not in json.dumps(status["credentials"]).replace("prime_api_key_present", "")
+    # Liveness: node 0's heartbeat, with what landed.
+    beat = status["heartbeat"]
+    assert beat["phase"] == "finished" and beat["rollouts_done"] == 4 and beat["rows_landed"] == 4
+    assert beat["rollouts_planned"] == 4 and beat["per_checkpoint"]["base"]["rollouts_done"] == 4
+    assert beat["last_progress"] <= beat["time"] and beat["interval_seconds"] == node.HEARTBEAT
+    assert summary["split_tasks"] == {"val": 1, "train": 1, "other": 0} and len(summary["tasks_tsv_sha256"]) == 64
     changed = summary["changed_config_keys"]["tb-sci"]
     assert "flow.taskset.dataset" in changed and "flow.pieces.rollouts.k" in changed
     assert "flow.solver.harness.id" in changed and summary["d5"]["exclude_newer"] == "2026-10-24T07:23:00Z"
@@ -314,6 +338,69 @@ def test_no_platform_credential_fails_the_eval_before_serving(tmp_path, monkeypa
     assert served == [] and json.loads(store.get("done")) == {"ok": False}
     top = json.loads((tmp_path / "run" / "eval" / "summary.json").read_text())
     assert top["base"]["reason"] == "no_credentials"
+
+
+def test_refused_credentials_fail_the_eval_before_serving(tmp_path, monkeypatch):
+    """The probe's verdict (the Prime API refuses the key for the team): nothing is served, the status says why."""
+    bundle, store = setup_fakes(tmp_path, monkeypatch)
+    served = []
+    monkeypatch.setattr(node.NodeServer, "serve", lambda self, ckpt, deadline: served.append(ckpt) or [])
+    refusal = {"status": "forbidden", "checks": {"sandboxes": {"http": 403}}, "error": "HTTP 403 not a member"}
+    monkeypatch.setattr(harness, "probe_credentials", lambda key, team, base: refusal)
+    cfg = SFTInRunEvalConfig(eval_only=True, model_dir=tmp_path / "m", harness=harness_cfg(bundle))
+    p = plan.build_plan(
+        cfg, run_dir=tmp_path / "run", exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x"
+    )
+    node.Driver(p, cfg, lambda m: None).run()
+    status = json.loads((tmp_path / "run" / "eval" / "status.json").read_text())
+    assert status["eval"] == {"status": "forbidden", "error": "HTTP 403 not a member"}
+    assert status["credentials"]["probe"] == refusal and status["checkpoints"]["base"]["reason"] == "forbidden"
+    assert served == [] and json.loads(store.get("done")) == {"ok": False}
+
+
+def test_harness_prep_timeout_is_recorded(tmp_path, monkeypatch):
+    """A harness prep that outlasts its limit: recorded as such (no AttributeError), the checkpoint fails cleanly."""
+    bundle, store = setup_fakes(tmp_path, monkeypatch)
+    slow = threading.Event()
+    real = harness.build_env
+
+    def slow_build(*a, **k):
+        slow.wait(30)
+        return real(*a, **k)
+
+    monkeypatch.setattr(harness, "build_env", slow_build)
+    monkeypatch.setattr(node, "HARNESS_PREP", 0.5)
+    cfg = SFTInRunEvalConfig(
+        eval_only=True, model_dir=tmp_path / "m", serving={"router_port": 18461}, harness=harness_cfg(bundle)
+    )
+    p = plan.build_plan(
+        cfg, run_dir=tmp_path / "run", exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x"
+    )
+    try:
+        node.Driver(p, cfg, lambda m: None).run()
+    finally:
+        slow.set()
+    status = json.loads((tmp_path / "run" / "eval" / "status.json").read_text())
+    assert status["eval"]["status"] == "harness_prep_timeout"
+    assert "harness prep timed out" in status["eval"]["error"] and status["harness"]["ok"] is False
+    entry = status["checkpoints"]["base"]
+    assert entry["status"] == "failed" and entry["reason"] == "harness_prep_timeout"
+    assert "harness prep timed out" in entry["error"] and "AttributeError" not in json.dumps(status)
+
+
+def test_harness_staging_restores_task_modes(tmp_path, monkeypatch):
+    """The real prepare_harness staging (build_env faked): the Harbor cache copy gets the manifest's exec bits."""
+    bundle, store = setup_fakes(tmp_path, monkeypatch)
+    cfg = SFTInRunEvalConfig(eval_only=True, model_dir=tmp_path / "m", harness=harness_cfg(bundle))
+    p = plan.build_plan(
+        cfg, run_dir=tmp_path / "run", exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x"
+    )
+    driver = node.Driver(p, cfg, lambda m: None)
+    driver.prepare_harness()
+    assert driver.henv is not None, driver.status["harness"]
+    home = Path(driver.henv.env["HOME"])
+    (test_sh,) = (home / ".cache" / "harbor").rglob("test.sh")
+    assert os.access(test_sh, os.X_OK) and not os.access(test_sh.parent.parent / "task.toml", os.X_OK)
 
 
 def test_safety_cap_reports_cut_draws_apart(tmp_path, monkeypatch):

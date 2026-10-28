@@ -2,7 +2,10 @@
 
 Bundle layout (``[inrun_eval.harness] bundle_dir``, staged on the volume; see PREREQS.md):
 
-    manifest.json                    {"files": {"<relative path>": "<sha256>", ...}}: every file below
+    manifest.json                    {"version": 2, "files": {"<relative path>": "<sha256>", ...},
+                                     "modes": {"<relative path>": "0755" | "0644" | ..., ...}}: every file below.
+                                     A Prime volume keeps no file modes (S3 objects): the eval restores them from
+                                     ``modes`` on its copies (frpc, the Harbor task files: tests/, test.sh, ...)
     tasks.tsv                        <name>\\t<source>\\t<split> for every task (tasks.py)
     flow-configs/<source>.toml       the collection runs' configs/attempt_2/flow.toml (sha256-pinned in the config)
     sft-gen/                         sft-gen @ bca802f (sft_gen/, plugins/, prompts/, ...): the flow runs from a copy
@@ -22,15 +25,21 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from prime_rl.trainer.sft.inrun_eval.serving import clean_env
+from prime_rl.trainer.sft.inrun_eval.serving import PRIME_API_KEY, SECRET_VARS, clean_env
 
 MANIFEST = "manifest.json"
+MANIFEST_VERSION = 2
+"""Version 2 records every file's mode (``modes``) next to its sha256."""
 TASKS = "tasks.tsv"
 REQUIREMENTS = "harness/requirements.txt"
 WHEELS = "harness/wheels"
@@ -44,10 +53,11 @@ FLOW_POLL = 30.0
 PLUGINS = Path(__file__).resolve().parent / "plugins"
 """Harness plugins of the eval (the D5 mini_swe_agent harness), put on the flow runs' PYTHONPATH."""
 D5_MODULE = "tb4_mini_swe_agent_d5"
-PRIME_API_KEY = "PRIME_API_KEY"
+PRIME_API_BASE_URL = "https://api.primeintellect.ai"
+"""prime-sandboxes' / prime-tunnel's default API (``PRIME_API_BASE_URL`` / ``PRIME_BASE_URL`` override it, as there)."""
 
-# Never handed to the harness (it gets the platform's PRIME_API_KEY, PRIME_TEAM_ID and its own vLLM key only).
-SECRET_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "WANDB_API_KEY", "GITHUB_TOKEN", "GH_TOKEN")
+# SECRET_VARS (serving) are never handed to the harness: it gets the platform's PRIME_API_KEY, PRIME_TEAM_ID and
+# its own vLLM key only.
 UV_PROJECT_VARS = (
     "UV_PROJECT_ENVIRONMENT",
     "UV_PYTHON_PREFERENCE",
@@ -87,13 +97,38 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def load_manifest(bundle: Path) -> dict:
+    return json.loads((bundle / MANIFEST).read_text())
+
+
+def file_modes(bundle: Path) -> dict[str, int]:
+    """The manifest's file modes (relative path -> permission bits)."""
+    return {rel: int(mode, 8) for rel, mode in load_manifest(bundle).get("modes", {}).items()}
+
+
 def verify_manifest(bundle: Path) -> list[str]:
-    """Every file the manifest lists exists with its sha256 (problems; empty when the bundle is intact)."""
+    """Every file the manifest lists exists with its sha256, and has a recorded mode (problems; empty when the bundle
+    is intact). The modes of the bundle's own files are not checked: the volume does not keep them."""
     path = bundle / MANIFEST
     if not path.is_file():
         return [f"{path} missing"]
-    files = json.loads(path.read_text()).get("files", {})
+    manifest = json.loads(path.read_text())
+    files = manifest.get("files", {})
+    modes = manifest.get("modes")
     problems = []
+    if manifest.get("version", 1) < MANIFEST_VERSION or not isinstance(modes, dict):
+        problems.append(
+            f"{MANIFEST} records no file modes (version {manifest.get('version', 1)}): the volume loses them and the "
+            "eval could not restore frpc's or the task files' exec bits; rebuild it with stage_bundle.py"
+        )
+        modes = {}
+    else:
+        unmoded = sorted(set(files) - set(modes))
+        if unmoded:
+            problems.append(f"{MANIFEST} has no mode for {len(unmoded)} files, e.g. {unmoded[:3]}")
+        bad = sorted(rel for rel, mode in modes.items() if not _valid_mode(mode))
+        if bad:
+            problems.append(f"{MANIFEST} has invalid modes for {bad[:3]}")
     for rel, digest in sorted(files.items()):
         target = bundle / rel
         if not target.is_file():
@@ -103,6 +138,57 @@ def verify_manifest(bundle: Path) -> list[str]:
     return problems
 
 
+def _valid_mode(mode) -> bool:
+    try:
+        value = int(mode, 8)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= value <= 0o777
+
+
+def restore_modes(modes: dict[str, int], prefix: str, target: Path) -> tuple[int, list[str]]:
+    """Give each copy under ``target`` of a bundle file under ``prefix`` its recorded mode (the volume kept none) and
+    check it took. Returns how many files were set and the problems (a copy missing, a chmod that did not take)."""
+    problems = []
+    done = 0
+    lead = prefix.rstrip("/") + "/"
+    for rel, mode in sorted(modes.items()):
+        if not rel.startswith(lead):
+            continue
+        path = target / rel[len(lead) :]
+        if path.is_symlink():
+            problems.append(f"{rel}: {path} is a symlink (the bundle has regular files only)")
+            continue
+        try:
+            os.chmod(path, mode)
+            got = stat.S_IMODE(os.stat(path).st_mode)
+        except OSError as exc:
+            problems.append(f"{rel}: cannot set mode {mode:04o} on {path}: {exc}")
+            continue
+        if got != mode:
+            problems.append(f"{rel}: mode {got:04o} after chmod {mode:04o} on {path}")
+            continue
+        done += 1
+    return done, problems
+
+
+def require_modes(modes: dict[str, int], prefix: str, target: Path, what: str, log=print) -> int:
+    """``restore_modes``, raising on any problem (the eval phase then fails cleanly at 'harness ready')."""
+    done, problems = restore_modes(modes, prefix, target)
+    if problems:
+        raise RuntimeError(f"{what}: {len(problems)} file modes not restored: {problems[:5]}")
+    executable = sum(1 for rel, mode in modes.items() if rel.startswith(prefix.rstrip("/") + "/") and mode & 0o111)
+    log(f"{what}: restored the modes of {done} files ({executable} executable) from the manifest")
+    return done
+
+
+def make_executable(path: Path) -> None:
+    """``path`` executable (0755) whatever the volume gave it, checked."""
+    os.chmod(path, 0o755)
+    if not os.access(path, os.X_OK):
+        raise RuntimeError(f"{path} is not executable after chmod 0755")
+
+
 def check_bundle(harness, bundle: Path) -> list[str]:
     """What the eval needs from the bundle beyond the manifest: the task table, the pinned source configs, the
     sft-gen tree and the requirements."""
@@ -110,6 +196,19 @@ def check_bundle(harness, bundle: Path) -> list[str]:
     for rel in (TASKS, REQUIREMENTS, f"{SFT_GEN}/plugins/sft_gen_task_qc.py", f"{SFT_GEN}/sft_gen/task_qc.py"):
         if not (bundle / rel).is_file():
             problems.append(f"{rel} missing")
+    if harness.expected_val_tasks is not None and (bundle / TASKS).is_file():
+        from prime_rl.trainer.sft.inrun_eval.tasks import parse_task_table
+
+        try:
+            val = sum(row.split == "val" for row in parse_task_table((bundle / TASKS).read_text()))
+        except ValueError as exc:
+            problems.append(f"{TASKS}: {exc}")
+        else:
+            if val != harness.expected_val_tasks:
+                problems.append(
+                    f"{TASKS} labels {val} tasks val, expected {harness.expected_val_tasks} (the dataset's validation "
+                    "split, data-prep/tb4-val-tasks-v2.txt): rebuild the bundle's task table"
+                )
     for label in harness.sources:
         path = bundle / "flow-configs" / f"{label}.toml"
         if not path.is_file():
@@ -170,6 +269,9 @@ def python_for_venv(harness, bundle: Path, work: Path, env: dict[str, str], log)
         candidates = sorted((target / "python" / "bin").glob("python3.*"))
         candidates = [c for c in candidates if c.name.count(".") == 1]
         if candidates:
+            # The tarball carries its own modes (tarfile keeps them); check the interpreter can run all the same.
+            if not os.access(candidates[0], os.X_OK):
+                raise RuntimeError(f"harness Python {candidates[0]} is not executable after extraction")
             log(f"harness Python: {candidates[0]} (from {tarballs[0].name})")
             return str(candidates[0])
     env["UV_PYTHON_PREFERENCE"] = "only-managed"
@@ -212,17 +314,36 @@ def build_env(harness, bundle: Path, work: Path, log=print, run=subprocess.run) 
     if problems:
         raise RuntimeError(f"harness pins: {problems}")
 
+    modes = file_modes(bundle)
     cwd = work / SFT_GEN
     if cwd.exists():
         shutil.rmtree(cwd)
     shutil.copytree(bundle / SFT_GEN, cwd, symlinks=True)
-    frpc = bundle / FRPC
-    if frpc.is_dir():
-        shutil.copytree(frpc, work / "home" / ".prime" / "bin", dirs_exist_ok=True)
-    stage_host_uv(bundle, env)
+    info["modes_restored"] = {SFT_GEN: require_modes(modes, SFT_GEN, cwd, "sft-gen", log)}
+    staged = stage_frpc(bundle, work / "home", modes, log)
+    if staged is not None:
+        info["modes_restored"][FRPC] = staged
+    cache = stage_host_uv(bundle, env)
+    if cache is not None:
+        info["modes_restored"][HOST_UV] = require_modes(modes, HOST_UV, cache, "host uv", log)
     hen = HarnessEnv(venv=venv, cwd=cwd, env=env, info=info)
     hen.info["plugins_dir"] = str(plugins)
     return hen
+
+
+def stage_frpc(bundle: Path, home: Path, modes: dict[str, int], log=print) -> int | None:
+    """Put the bundle's frpc where prime_tunnel looks for it (``~/.prime/bin``), with its recorded mode and
+    executable: prime_tunnel runs it as is when ``.frpc_version`` matches (it never re-downloads or chmods it), so a
+    copy without its exec bit would fail every tunnel. Returns the files whose modes were restored, None without
+    an frpc in the bundle (prime_tunnel then downloads it)."""
+    src = bundle / FRPC
+    if not src.is_dir():
+        return None
+    bin_dir = home / ".prime" / "bin"
+    shutil.copytree(src, bin_dir, dirs_exist_ok=True)
+    done = require_modes(modes, FRPC, bin_dir, "frpc", log)
+    make_executable(bin_dir / "frpc")
+    return done
 
 
 def stage_host_uv(bundle: Path, env: dict[str, str]) -> Path | None:
@@ -276,6 +397,94 @@ def credentials(harness, base: dict[str, str], fallback_team: str | None = None)
     return {"prime_api_key_present": present, "prime_team_id": team, "prime_team_id_source": source, "problem": problem}
 
 
+def api_base_url(base: dict[str, str]) -> str:
+    """The Prime API the harness's clients talk to, resolved as prime-sandboxes 0.4.3 / prime-tunnel 0.1.14 do for a
+    home without a CLI config (``PRIME_API_BASE_URL`` / ``PRIME_BASE_URL``, else the default)."""
+    url = base.get("PRIME_API_BASE_URL") or base.get("PRIME_BASE_URL") or PRIME_API_BASE_URL
+    return url.rstrip("/").removesuffix("/api/v1")
+
+
+PROBES = (
+    # (name, path, query): what every rollout needs from the key — the team's sandboxes and the tunnel service.
+    ("sandboxes", "/api/v1/sandbox", {"page": 1, "per_page": 1, "team_id": None}),
+    ("tunnels", "/api/v1/tunnel", {"page": 1, "perPage": 1, "teamId": None}),
+)
+PROBE_STATUS = {401: "no_credentials", 402: "forbidden", 403: "forbidden"}
+"""HTTP status of a probe -> the eval status it means (the key is not accepted / not allowed for the team)."""
+
+
+def _probe_get(url: str, api_key: str, timeout: float) -> tuple[int, str]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "prime-rl-inrun-eval",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(65536)
+            try:
+                payload = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return 0, f"HTTP {response.status} without JSON"
+            if not isinstance(payload, dict):
+                return 0, f"HTTP {response.status} with a {type(payload).__name__}"
+            return response.status, ""
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read(2048).decode(errors="replace")
+        except Exception:
+            detail = ""
+        return exc.code, detail
+    except Exception as exc:
+        return 0, f"{type(exc).__name__}: {exc}"
+
+
+def probe_credentials(
+    api_key: str,
+    team: str,
+    base: dict[str, str],
+    attempts: int = 6,
+    wait: float = 60.0,
+    timeout: float = 30.0,
+    get=_probe_get,
+    sleep=time.sleep,
+) -> dict:
+    """Cheap authenticated calls with the run's key before anything is served: list one of the team's sandboxes and
+    one tunnel (what every rollout needs: creating the team's sandboxes, its tunnel to the router). Returns
+    ``{"status": "ok" | "no_credentials" | "forbidden" | "inconclusive", "checks": {...}, "error": ...}``: 401 is
+    ``no_credentials``, 402 / 403 ``forbidden`` (both end the eval phase before serving); a network error or a 5xx
+    is retried and, if it persists, ``inconclusive`` (the eval goes on: it only fails fast on a definite refusal).
+    The key is only sent, never logged or recorded (any echo of it in an error body is masked)."""
+    root = api_base_url(base)
+    checks: dict[str, dict] = {}
+    for name, path, query in PROBES:
+        params = {k: (team if v is None else v) for k, v in query.items()}
+        url = f"{root}{path}?{urllib.parse.urlencode(params)}"
+        for attempt in range(1, attempts + 1):
+            code, detail = get(url, api_key, timeout)
+            detail = detail.replace(api_key, "***")[:300] if api_key else detail[:300]
+            checks[name] = {"http": code, "attempts": attempt, **({"detail": detail} if detail else {})}
+            if 200 <= code < 300:
+                break
+            if code in PROBE_STATUS:
+                status = PROBE_STATUS[code]
+                error = f"the Prime API refused PRIME_API_KEY for {name} of team {team}: HTTP {code} {detail}".strip()
+                return {"status": status, "base_url": root, "checks": checks, "error": error}
+            if 400 <= code < 500:
+                break  # e.g. a 404 / 422 from a changed API: not a credential verdict
+            if attempt < attempts:
+                sleep(wait)
+    failed = {name: check for name, check in checks.items() if not 200 <= check["http"] < 300}
+    if failed:
+        error = f"credential probe inconclusive (the eval goes on): {failed}"
+        return {"status": "inconclusive", "base_url": root, "checks": checks, "error": error}
+    return {"status": "ok", "base_url": root, "checks": checks, "error": None}
+
+
 def run_env(harness, hen: HarnessEnv, base: dict[str, str], fallback_team: str | None = None) -> dict[str, str]:
     """The flow runs' environment: the install env plus the venv, the sft-gen modules and the eval's plugins, the
     platform's Prime credential and team, and a fresh vLLM key. Raises when the credentials are missing."""
@@ -297,9 +506,12 @@ def run_env(harness, hen: HarnessEnv, base: dict[str, str], fallback_team: str |
     return env
 
 
-def stage_harbor_caches(bundle: Path, home: Path, names: list[str]) -> list[str]:
-    """Copy the bundle's Harbor dataset exports to ``~/.cache/harbor`` of the harness (missing ones: problems)."""
+def stage_harbor_caches(bundle: Path, home: Path, names: list[str], log=print) -> list[str]:
+    """Copy the bundle's Harbor dataset exports to ``~/.cache/harbor`` of the harness and give every file its
+    recorded mode (the task files' exec bits: tests/test.sh, helper scripts; the volume kept none). Problems: missing
+    caches, modes that could not be restored."""
     problems = []
+    modes = file_modes(bundle)
     for name in names:
         src = bundle / HARBOR_CACHE / name
         dst = home / ".cache" / "harbor" / name
@@ -309,6 +521,13 @@ def stage_harbor_caches(bundle: Path, home: Path, names: list[str]) -> list[str]
         if not dst.is_dir():
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(src, dst, symlinks=True)
+        prefix = f"{HARBOR_CACHE}/{name}"
+        done, failed = restore_modes(modes, prefix, dst)
+        if not done:
+            failed.append(f"{prefix}: no file modes in the manifest")
+        problems += failed[:20]
+        executable = sum(1 for rel, mode in modes.items() if rel.startswith(prefix + "/") and mode & 0o111)
+        log(f"{prefix}: restored the modes of {done} files ({executable} executable) from the manifest")
     return problems
 
 
@@ -367,13 +586,15 @@ def wait_flow_runs(
         if not running:
             return status
         if deadline is not None and time.time() >= deadline:
-            log(f"eval safety cap reached: stopping the flow runs {running} (their unfinished draws are 'cut')")
+            log(f"eval safety cap reached: stopping the flow runs {running} (their draws still running are 'cut')")
+            stopped_at = time.time()
             serving.stop([procs[label] for label in running], grace=grace)
             for label in running:
                 status[label] = {
                     "exit_code": procs[label].popen.returncode,
                     "seconds": time.time() - start,
                     "stopped": True,
+                    "stopped_at": stopped_at,
                 }
             return status
         if time.time() - last_note > 1800:
