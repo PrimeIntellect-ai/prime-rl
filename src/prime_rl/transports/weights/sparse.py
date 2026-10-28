@@ -236,11 +236,13 @@ class SparseDeltaEncoder:
         module parameters during forward, but the sharded storage stays put). With ``gather``, ``gathered`` is
         ``(previous, current)`` full bf16 tensors of fp8 tensors whose blocks straddle ranks, all-gathered here
         because ``encode`` runs no collectives."""
-        shards = []
+        shards, seen = [], set()
         for key, value in trainer_tensors(model).items():
             fqn = self.key_fqn[key]
-            if fqn not in self.segments:
+            # A tied weight's other names (e.g. a tied lm_head) carry nothing: engines hold it once
+            if fqn not in self.segments or id(value) in seen:
                 continue
+            seen.add(id(value))
             shard = self._local_shard(key, value, is_master)
             empty = shard is None or shard[0].numel() == 0
             gathered = None
@@ -1005,7 +1007,7 @@ class SparseFileSystemWeightSender(WeightSender):
     written as the step goes; the rest is finished in the background while the next step trains, and the trainer
     waits only before its next final backward, until that work has read the weights. A broadcast that does not
     follow an optimizer step collected this way (the first one, or any broadcast without ``diff_in_optimizer``)
-    publishes a full checkpoint. Anchors (full checkpoints every ``anchor_interval`` steps) serve engines that fall
+    publishes a full checkpoint. Anchors (full checkpoints every ``interval`` steps) serve engines that fall
     off the delta chain. The writer thread commits a step once every rank's files are on disk."""
 
     gathers_full_weights = False
@@ -1078,7 +1080,7 @@ class SparseFileSystemWeightSender(WeightSender):
     def _arm(self, step: int) -> None:
         """Collect v{step}'s delta, and its anchor slices at anchor steps, in the coming optimizer step."""
         encoder = self.encoder
-        anchor = self._anchor_writer(step, encoder.anchor_slices()) if step % self.config.anchor_interval == 0 else None
+        anchor = self._anchor_writer(step, encoder.anchor_slices()) if step % self.config.interval == 0 else None
         step_dir = get_step_path(self.storage, step)
         # Parts written during the step go next to the broadcast step dir, which the broadcast handshake recreates,
         # and are moved in when it is published; on separate storage straight into the step dir

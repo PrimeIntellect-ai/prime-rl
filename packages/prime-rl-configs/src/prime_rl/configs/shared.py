@@ -49,9 +49,10 @@ class DeltaWeightBroadcastConfig(BaseConfig):
     """Between anchors, publish only the weight elements that changed since the previous broadcast. Engines patch
     their weights in place and verify every update. Not supported with LoRA."""
 
-    anchor_interval: int = Field(50, ge=1)
-    """Publish a full checkpoint every this many steps. Engines that join or fall off the delta chain load
-    the last one and replay the deltas since."""
+    interval: int = Field(50, ge=1)
+    """Publish a full checkpoint (anchor) every this many steps; the steps in between publish their delta
+    against the previous step. Engines that join or fall off the delta chain load the last anchor and replay
+    the deltas since."""
 
     path: str | None = None
     """Where the trainer publishes deltas and anchors and engines read them: the broadcast dir (default),
