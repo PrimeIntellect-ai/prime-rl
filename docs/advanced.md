@@ -26,6 +26,7 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
+| Qwen3.8 Flash Next VLM | `Qwen/Qwen3.8-Flash-Next` | ✅ | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Muse Glimmer (text only) | `meta-models/Muse-Glimmer-30B` | — | ✅ |
@@ -161,12 +162,13 @@ The built-in VLM registry covers:
 |---|---|
 | Qwen3.5 | `qwen3_5` |
 | Qwen3.5-MoE | `qwen3_5_moe` |
+| Qwen3.8 Flash Next | `qwen4_exp` |
 
 The trainer finds the vision encoder at `model.visual` and the language model at `model.language_model`.
 
 ### Enabling VLM Mode
 
-Add `[model.vlm]`:
+Add `[model.vlm]` to your RL or SFT config:
 
 ```toml
 [model]
@@ -183,7 +185,8 @@ VLM training requires a registered custom PrimeRL implementation.
 ### Limitations
 
 - **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
-- **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
+- **Precision settings are separate.** The examples serve with `inference.vllm.dtype = "bfloat16"` while retaining `trainer.model.optimization_dtype = "float32"` and `reduce_dtype = "float32"`. VLM mode does not require BF16 optimizer state or gradient reduction.
+- **Monitor trainer–inference mismatch.** Image encoding, parallel reductions and model kernels can contribute numerical differences. Track `mismatch_kl/all/mean`, `masked_mismatch_kl/mean`, `unmasked_mismatch_kl/mean` and `is_masked/mean` alongside reward.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
 
 ## LoRA Training
