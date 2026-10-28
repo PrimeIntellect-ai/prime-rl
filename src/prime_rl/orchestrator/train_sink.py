@@ -182,22 +182,34 @@ class TrainSink:
         """Re-queue saved traces and finished group members. Like any queued
         trace, their tokens past ``max_staleness`` are masked by the staleness
         sweep. Returns one request per saved group for its missing members (same
-        task, same group id), which the train source hands out before any new task."""
-        self.pending_batch = state_dict["pending_batch"]
-        self.episode_by_trace = {
-            trace_id: vf.WireEpisode.model_validate(ep) for trace_id, ep in state_dict["queued_episodes"].items()
+        task, same group id), which the train source hands out before any new task.
+        Env servers keep training arrays only while they run, so saved work whose arrays
+        they kept is dropped: queued traces are lost and group members are rerun."""
+        self.pending_batch = {
+            trace_id: samples
+            for trace_id, samples in state_dict["pending_batch"].items()
+            if not sample_payload_urls(samples)
         }
+        self.episode_by_trace = {
+            trace_id: vf.WireEpisode.model_validate(ep)
+            for trace_id, ep in state_dict["queued_episodes"].items()
+            if trace_id in self.pending_batch
+        }
+        dropped = len(state_dict["pending_batch"]) - len(self.pending_batch)
         requests = []
         kept = 0
-        for group_id, (env_name, task, episodes) in state_dict["open_groups"].items():
+        for group_id, (env_name, task, dumps) in state_dict["open_groups"].items():
             group_size = self.group_size_for(env_name)
-            if len(episodes) >= group_size:
+            if len(dumps) >= group_size:
                 raise ValueError(
-                    f"Checkpoint has an open group for env {env_name!r} with {len(episodes)} finished episodes, "
+                    f"Checkpoint has an open group for env {env_name!r} with {len(dumps)} finished episodes, "
                     f"but its group_size is now {group_size}. Lowering group_size across a resume is not supported."
                 )
+            episodes = [vf.WireEpisode.model_validate(ep) for ep in dumps]
+            episodes = [ep for ep in episodes if not any(trace_payload_urls(trace) for trace in ep.traces)]
+            dropped += len(dumps) - len(episodes)
             if episodes:
-                self.pending_groups[group_id] = [vf.WireEpisode.model_validate(ep) for ep in episodes]
+                self.pending_groups[group_id] = episodes
                 kept += len(episodes)
             rollouts = group_size - len(episodes)
             requests.append(
@@ -205,7 +217,7 @@ class TrainSink:
             )
         get_logger().info(
             f"Resuming with {len(self.pending_batch)} queued traces and {len(requests)} open groups "
-            f"({kept} finished episodes kept)"
+            f"({kept} finished episodes kept, {dropped} traces and episodes dropped with their env-server arrays)"
         )
         return requests
 
