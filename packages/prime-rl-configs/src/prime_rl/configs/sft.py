@@ -186,15 +186,15 @@ class SFTValConfig(BaseConfig):
 class SFTExportCleanupConfig(BaseConfig):
     """Keep run data that is safe elsewhere off the volume.
 
-    Hosted runs stage the volume on each node and sync it after the run, so a file deleted from the staging before
-    the run ends is never uploaded: deleting it here is the cheap way to keep the volume small (deleting folders on the
-    volume afterwards needs a read-write session that stages the whole volume first). Every node's ``local_rank 0``
-    deletes in its own staging, and only what the conditions below prove is safe."""
+    Deleting it from within the run is the cheap way to keep the volume small (deleting folders on the volume
+    afterwards needs a read-write session that stages the whole volume first). The run dir behaves as shared by all
+    nodes (a delete on one node removes the file for every node), so each deletion waits until the export that
+    replaces the data is verified on Hugging Face."""
 
     best_snapshot: bool = False
     """Delete the ``[val] keep_best`` snapshot (``best-weights/``, fp32 parameters, ~0.48 TB for Nemotron 3.5 Super)
-    once the 'best' export passed its checks. The snapshot then no longer reloads into the run (a restart of a finished
-    run could not export 'best' again)."""
+    once the 'best' export is on Hugging Face and its sha256s were verified there. A restart of the finished run then
+    reuses that export as it is (it could not export 'best' again)."""
 
     final_checkpoint: bool = False
     """Delete the final full checkpoint (``checkpoints/step_<max_steps>``, parameters + optimizer state, ~1.45 TB)
@@ -244,7 +244,7 @@ class SFTHFExportConfig(BaseConfig):
     """Free text added to the generated README.md (what was trained on, how to run it)."""
 
     cleanup: SFTExportCleanupConfig = SFTExportCleanupConfig()
-    """What to delete from the node staging once the exports made it safe (default: nothing)."""
+    """What to delete once the exports made it safe (default: nothing)."""
 
     @model_validator(mode="after")
     def validate_checkpoints(self):

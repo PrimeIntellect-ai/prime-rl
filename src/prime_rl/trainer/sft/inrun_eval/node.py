@@ -86,6 +86,8 @@ class NodeServer:
         for spec in specs:
             if spec.overrides_path is not None:
                 spec.overrides_path.write_text(json.dumps(spec.overrides))
+            # vLLM binds its ZMQ ipc sockets in this dir but never creates it (as _launch_rank.sh.j2's mkdir -p).
+            Path(spec.env["VLLM_RPC_BASE_PATH"]).mkdir(parents=True, exist_ok=True)
             log = self.work / "logs" / f"vllm-{ckpt.name}-node{self.plan.node}-dp{spec.dp_rank}.log"
             self.procs.append(serving.start(f"vllm-dp{spec.dp_rank}", spec.cmd, {**env, **spec.env}, log))
         self.log(f"{ckpt.name}: started {len(specs)} vLLM engines from {model_dir}")
@@ -324,6 +326,13 @@ class Driver:
         coord.set("node/0", {"ip": ip, "host": socket.gethostname()})
         for name in plan.skipped:
             self.status["checkpoints"][name] = {"status": "skipped", "reason": plan.skipped[name]}
+        for name, entry in plan.evaluated.items():
+            # A restart: this checkpoint's complete results are already in eval/<name>/ (never run again).
+            self.status["checkpoints"][name] = {"status": "done", "reused": True, **entry}
+        if not plan.rounds:
+            self.log("nothing left to evaluate")
+            self.finish(coord)
+            return
         creds = harness.credentials(cfg.harness, dict(os.environ), plan.prime_team_id)
         self.status["credentials"] = {k: v for k, v in creds.items() if k != "problem"}
         if creds["problem"]:
@@ -692,6 +701,7 @@ class Driver:
                 "error",
                 "same_as",
                 "reason",
+                "reused",
             )
             summary = {
                 name: {k: v for k, v in entry.items() if k in keys}
@@ -704,7 +714,7 @@ class Driver:
             ok = all(e.get("status") in ("done", "alias", "skipped") for e in self.status["checkpoints"].values())
             coord.set("done", {"ok": ok})
             others = [f"bye/{n}" for n in range(1, self.plan.num_nodes)]
-            # Exit last: the other nodes clean their staging first.
+            # Exit last: the other nodes are done with the exports before node 0's cleanup may delete them.
             coord.wait_all(others, time.time() + BYE, clock=time.time)
         except Exception as exc:
             self.log(f"could not signal the other nodes: {exc!r}")
@@ -714,28 +724,16 @@ class Driver:
 
 
 def cleanup(plan: Plan, cfg, log) -> None:
-    """Drop what must not reach the volume from this node's staging: the duplicate copies of the exports (keep this
-    node's upload share; the master keeps the small files), verified exports when configured, the work dir."""
-    for name, result in plan.exports.items():
-        directory = result.get("dir")
-        if not directory or not Path(directory).is_dir():
-            continue
-        directory = Path(directory)
-        if plan.delete_pushed_exports and result.get("verified"):
-            shutil.rmtree(directory, ignore_errors=True)
-            log(f"deleted the verified export {directory} from this node's staging")
-            continue
-        if not plan.dedupe_exports:
-            continue
-        keep = set(plan.node_files)
-        removed = 0
-        for path in directory.iterdir():
-            duplicate = path.suffix == ".safetensors" and path.name not in keep
-            small_copy = plan.node != 0 and path.name in plan.master_files
-            if duplicate or small_copy:
-                path.unlink(missing_ok=True)
-                removed += 1
-        log(f"{directory}: removed {removed} files other nodes upload")
+    """Drop what must not stay on the volume: this node's work dir and, when configured, the exports verified on
+    Hugging Face. The run dir is shared by all nodes (a delete on one node removes the file for every node), so the
+    nodes never delete export files of each other's: only node 0 deletes the verified exports, after the other nodes
+    said bye (they are done serving them)."""
+    if plan.node == 0 and plan.delete_pushed_exports:
+        for result in plan.exports.values():
+            directory = result.get("dir")
+            if result.get("verified") and directory and Path(directory).is_dir():
+                shutil.rmtree(directory, ignore_errors=True)
+                log(f"deleted the export {directory} (verified on Hugging Face)")
     if not cfg.keep_work_dir:
         shutil.rmtree(plan.work_dir, ignore_errors=True)
 

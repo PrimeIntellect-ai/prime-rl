@@ -25,9 +25,12 @@
 # Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
 # only) ~0.48 TB, each HF export ~0.25 TB. Peak ~3.9 TB of run data (rolling checkpoint + one in flight + best +
 # a best in flight) on top of models/ + datasets/. The volume must not hold old run directories.
-# What reaches the volume after the run ([hf_export.cleanup], [inrun_eval]): the final checkpoint (1.45 TB), the
-# two exports (2 x 0.25 TB, each file from one node) and runs/<id>/eval/ (results + compressed stores). The best
-# snapshot and the per-node duplicate export copies are deleted from the node staging before the sync.
+# What stays on the volume after the run ([hf_export.cleanup], [inrun_eval]): the final checkpoint (1.45 TB), the
+# best snapshot (best-weights/ + best.json, 0.48 TB), the two exports (2 x 0.25 TB; every node writes the same
+# paths of the shared run dir, so one copy of each file) and runs/<id>/eval/ (results + compressed stores): ~2.4 TB
+# of run data. Nothing is deleted: a delete on one node removes the file for every node (the run dir is shared), and
+# a restart after the last step must still find best.json and its snapshot (it then trains nothing, reuses the
+# checked exports and skips the checkpoints whose eval is complete).
 
 image_tag = "v0.10.1.dev74"
 # exp/nemotron-sft-tb4-v2 = 017c0883549e (the code that trained swe-marathon and the first TB4 run) + [val]
@@ -165,11 +168,10 @@ model_card = """
   `chat_template_kwargs={"truncate_history_thinking": false}`.
 """
 
-# Delete from the node staging (never synced to the volume) what the exports made redundant. Each deletion waits
-# for its proof: the best snapshot once the 'best' export passed its checks; the final checkpoint only once the
-# 'last' export is verified on Hugging Face.
+# What the exports made redundant may be deleted, each only once its export is verified on Hugging Face. All off:
+# the volume has room (5 TiB), and the best snapshot is what lets a restart keep the true best.
 [hf_export.cleanup]
-best_snapshot = true
+best_snapshot = false   # keep best-weights/ and best.json (0.48 TB)
 # DECISION: true drops the 1.45 TB final checkpoint (parameters + optimizer state): the run could not be resumed or
 # trained further. The 'last' export (bf16 weights) is on HF either way.
 final_checkpoint = false

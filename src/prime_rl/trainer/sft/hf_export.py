@@ -19,24 +19,32 @@ Nodes are ``rank // local_world_size`` (torchrun's contiguous ranks per node), t
 picking each node's uploader.
 
 Every rank writes only its own files and every node uploads only what its ranks wrote, so nothing depends on
-files another node wrote during the run (hosted runs stage the volume per node and sync it after the run).
-Failures are logged and never raised: the run must still end cleanly so that its checkpoints are kept.
+files another node wrote during the run. Every file is written to a temp file of its writer's own (host, pid, random
+suffix) and renamed onto its path atomically, and the checks read that temp file: this holds whether the run dir is
+staged per node or shared by all nodes (as the hosted volume behaves: a delete on one node removes other nodes'
+files too). Failures are logged and never raised: the run must still end cleanly so that its checkpoints are kept.
 
 With ``full_per_node`` (the in-run eval serves the export with vLLM on every node) the files are spread over the
 ranks of each node instead of over all ranks, so every node writes a complete copy from the same gather (no extra
-traffic). The copies are byte-identical (no reduction in the gather, a fixed cast and writer), which the master checks
-from every node's sha256; uploads still take each file from one node only.
+traffic). On a shared run dir the nodes write the same paths at once: each writer renames its own complete temp file,
+so a path only ever holds one complete copy. The copies are byte-identical (no reduction in the gather, a fixed cast
+and writer), which the master checks from the sha256 each writer took of its own temp file; uploads still take each
+file from one node only.
+
+A restart of a finished run (``training_done``) reuses an export whose ``export_report.json`` (written last, after
+every check passed) is there for the same step, and pushes it again only if the repo does not have it.
 
 Every rank hands a file to its writer thread as soon as all of the file's tensors are gathered: the writes overlap
 the gather, and host memory holds the files not written yet instead of all of the rank's files.
 
-``run`` returns what it exported (``ExportResult`` per checkpoint) and, per ``[hf_export.cleanup]``, deletes from the
-node staging what the exports made redundant (the best snapshot, the final checkpoint, verified exports).
+``run`` returns what it exported (``ExportResult`` per checkpoint) and, per ``[hf_export.cleanup]``, deletes what the
+exports made redundant once they are verified on Hugging Face (the best snapshot, the final checkpoint, the exports).
 
 Adapted from the one-off export jobs of exp/nemotron-sft-hf-export (19cabb8ae, TEXT_LAYOUT) and
 exp/nemotron-sft-text-extract (039ecaaaf, check_against_training_base).
 """
 
+import filecmp
 import hashlib
 import json
 import os
@@ -44,6 +52,7 @@ import shutil
 import socket
 import struct
 import time
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import timedelta
@@ -101,12 +110,42 @@ def is_fine_tuned(key: str, keep_base_prefixes: tuple[str, ...]) -> bool:
     return not key.startswith(keep_base_prefixes)
 
 
+def training_done(checkpoint_step: int | None, max_steps: int | None) -> bool:
+    """The resumed checkpoint is at (or past) the last step: a restart of a finished run (e.g. its export or its
+    in-run eval died). It must train nothing (no step past ``max_steps``, no new final checkpoint, no new best) and
+    go straight to the export, which reuses what the earlier attempt exported."""
+    return checkpoint_step is not None and max_steps is not None and checkpoint_step >= max_steps
+
+
+def temp_path(dst: Path) -> Path:
+    """A temp name next to ``dst`` no other writer uses (ending in ``.tmp``, which uploads skip)."""
+    return dst.with_name(f"{dst.name}.{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+
+
+def replace_atomically(dst: Path, write: Callable[[Path], Any]) -> Any:
+    """``write`` this writer's own temp file, then rename it onto ``dst`` (atomic): ``dst`` never holds a partial
+    file, even when other nodes write the same path at the same time. Returns what ``write`` returned."""
+    tmp = temp_path(dst)
+    try:
+        out = write(tmp)
+        os.replace(tmp, dst)
+        return out
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def copy_atomically(src: Path, dst: Path) -> None:
+    replace_atomically(dst, lambda tmp: shutil.copyfile(src, tmp))
+
+
 def write_file(
     src: Path, dst: Path, fine_tuned: dict[str, Tensor], keep_base_prefixes: tuple[str, ...]
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, tuple[str, list[int]]], str]:
     """Write ``src`` to ``dst`` with its fine-tuned keys swapped in (cast to the source dtype).
 
-    Consumes the swapped-in entries of ``fine_tuned`` and returns each one's relative L2 change.
+    Consumes the swapped-in entries of ``fine_tuned``. Returns each one's relative L2 change, and the header and
+    sha256 of the written file, read back (and checked against ``src``) from this writer's temp file before the
+    rename: another node may rename its copy onto ``dst`` at any time.
     """
     tensors: dict[str, Tensor] = {}
     changes: dict[str, float] = {}
@@ -129,10 +168,14 @@ def write_file(
             delta_norm = (new.float() - base.float()).norm().item()
             changes[key] = delta_norm / base_norm if base_norm > 0 else delta_norm
             tensors[key] = new
-    tmp = dst.with_name(dst.name + ".tmp")
-    save_file(tensors, tmp, metadata=metadata)
-    os.replace(tmp, dst)
-    return changes
+
+    def save(tmp: Path) -> tuple[dict, str]:
+        save_file(tensors, tmp, metadata=metadata)
+        check_layout(src, tmp)
+        return read_header(tmp), sha256_file(tmp)
+
+    header, digest = replace_atomically(dst, save)
+    return changes, header, digest
 
 
 def read_header(path: Path) -> dict[str, tuple[str, list[int]]]:
@@ -427,6 +470,7 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
     digests: dict[str, str] = {}
     headers: dict[str, dict] = {}
     error: str | None = None
+    drop_report(out_dir)
     mkdir_error = make_dir(out_dir, ctx.group)
     if mkdir_error is not None:
         error = f"rank {world.rank}: {OSError(f'could not create {out_dir}: {mkdir_error}')!r}"
@@ -443,9 +487,7 @@ def export_weights(model: torch.nn.Module, info: ExportInfo, ctx: ExportContext)
     writes: dict[str, Future] = {}
 
     def write(name: str, tensors: dict[str, Tensor]) -> tuple[dict[str, float], dict, str]:
-        file_changes = write_file(ctx.base_dir / name, out_dir / name, tensors, ctx.keep_base_prefixes)
-        check_layout(ctx.base_dir / name, out_dir / name)
-        return file_changes, read_header(out_dir / name), sha256_file(out_dir / name)
+        return write_file(ctx.base_dir / name, out_dir / name, tensors, ctx.keep_base_prefixes)
 
     def submit(names: list[str]) -> None:
         for name in names:
@@ -573,6 +615,17 @@ class _RankFailed(Exception):
     """This rank's error is already recorded."""
 
 
+def drop_report(out_dir: Path) -> None:
+    """Master, before an export (re)writes ``out_dir``: ``export_report.json`` marks a complete, checked export (a
+    restart reuses it), so an earlier one must not stay next to files being rewritten."""
+    if not get_world().is_master:
+        return
+    try:
+        (out_dir / "export_report.json").unlink(missing_ok=True)
+    except OSError as exc:
+        get_logger().warning(f"could not remove the old {out_dir / 'export_report.json'}: {exc!r}")
+
+
 def check_node_copies(rank_digests: list[dict[str, str]], local_world_size: int, files: list[str]) -> list[str]:
     """With a full copy per node: every node wrote every file, and all copies of a file are identical."""
     num_nodes = len(rank_digests) // local_world_size
@@ -592,38 +645,43 @@ def check_node_copies(rank_digests: list[dict[str, str]], local_world_size: int,
 
 def copy_base_files_on_node(out_dir: Path, ctx: ExportContext) -> None:
     """With a full copy per node, the other nodes' ``local_rank 0`` also put the base's config and tokenizer next to
-    their copy (the master wrote its own with the report): enough to serve it. Best effort, logged."""
+    their copy (the master wrote its own with the report): enough to serve it. On a shared run dir they are there
+    already (left alone); otherwise each is written by atomic rename, so the master's upload never reads a partial
+    one. Best effort, logged."""
     world = get_world()
     if not ctx.full_per_node or world.is_master or world.local_rank != 0:
         return
     try:
         for name in BASE_FILES:
-            if (ctx.base_dir / name).is_file():
-                shutil.copyfile(ctx.base_dir / name, out_dir / name)
+            src, dst = ctx.base_dir / name, out_dir / name
+            if src.is_file() and not (dst.is_file() and filecmp.cmp(src, dst, shallow=False)):
+                copy_atomically(src, dst)
     except Exception as exc:
         get_logger().error(f"copying the base config/tokenizer next to {out_dir} failed: {exc!r}")
 
 
 def write_small_files(info: ExportInfo, out_dir: Path, ctx: ExportContext, report: dict) -> None:
-    """Master: the base's config and tokenizer files, the model card and the export report."""
+    """Master: the base's config and tokenizer files, the model card and, last, the export report."""
     for name in BASE_FILES:
         if (ctx.base_dir / name).is_file():
-            shutil.copyfile(ctx.base_dir / name, out_dir / name)
-    (out_dir / "README.md").write_text(
-        model_card(info, ctx.base_dir, ctx.base_config, ctx.description, report["tensors"])
-    )
-    (out_dir / "export_report.json").write_text(json.dumps(report, indent=2) + "\n")
+            copy_atomically(ctx.base_dir / name, out_dir / name)
+    card = model_card(info, ctx.base_dir, ctx.base_config, ctx.description, report["tensors"])
+    replace_atomically(out_dir / "README.md", lambda tmp: tmp.write_text(card))
+    text = json.dumps(report, indent=2) + "\n"
+    replace_atomically(out_dir / "export_report.json", lambda tmp: tmp.write_text(text))
 
 
 def link_or_copy(src: Path, dst: Path) -> None:
-    """A hard link where the filesystem allows it (exports are written once via tmp + rename), else a copy."""
-    tmp = dst.with_name(dst.name + ".tmp")
-    tmp.unlink(missing_ok=True)
-    try:
-        os.link(src, tmp)
-    except OSError:
-        shutil.copyfile(src, tmp)
-    os.replace(tmp, dst)
+    """A hard link where the filesystem allows it (exports are only ever replaced by rename, never rewritten in
+    place), else a copy; through this writer's own temp file."""
+
+    def make(tmp: Path) -> None:
+        try:
+            os.link(src, tmp)
+        except OSError:
+            shutil.copyfile(src, tmp)
+
+    replace_atomically(dst, make)
 
 
 def copy_export(src_info: ExportInfo, src_dir: Path, info: ExportInfo, ctx: ExportContext) -> Path | None:
@@ -633,6 +691,7 @@ def copy_export(src_info: ExportInfo, src_dir: Path, info: ExportInfo, ctx: Expo
     logger = get_logger()
     world = get_world()
     out_dir = ctx.out_root / info.name
+    drop_report(out_dir)
     error = make_dir(out_dir, ctx.group)
     try:
         if error is not None:
@@ -675,6 +734,50 @@ def copy_export(src_info: ExportInfo, src_dir: Path, info: ExportInfo, ctx: Expo
     if ok:
         copy_base_files_on_node(out_dir, ctx)
     return out_dir if ok else None
+
+
+def remote_mismatches(api, repo_id: str, expected: dict[str, str]) -> list[str]:
+    """The files of ``expected`` (name -> sha256) that ``repo_id`` lacks or holds with another sha256."""
+    remote = {
+        item.path: item.lfs.sha256
+        for item in api.get_paths_info(repo_id, list(expected), expand=True)
+        if getattr(item, "lfs", None) is not None
+    }
+    return sorted(name for name, digest in expected.items() if remote.get(name) != digest)
+
+
+def reusable_export(out_dir: Path, base_dir: Path, step: int | None) -> dict | None:
+    """The report of a complete export in ``out_dir`` that passed its checks, for ``step`` (None: any step), else
+    None. The report is written last, only after every check passed; the files it lists must still be there with the
+    base's layout (headers only: cheap)."""
+    try:
+        report = json.loads((out_dir / "export_report.json").read_text())
+        if report.get("problems") != [] or (step is not None and report["source"]["step"] != step):
+            return None
+        files = sorted(set(json.loads((base_dir / "model.safetensors.index.json").read_text())["weight_map"].values()))
+        if sorted(report["sha256"]) != files:
+            return None
+        for name in REQUIRED_BASE_FILES:
+            if not (out_dir / name).is_file():
+                return None
+        for name in files:
+            check_layout(base_dir / name, out_dir / name)
+    except Exception:
+        return None
+    return report
+
+
+def on_hub(repo_id: str, expected: dict[str, str], group) -> bool:
+    """Collective: whether ``repo_id`` holds every file of ``expected`` with its sha256 (the master asks)."""
+    found = False
+    if get_world().is_master:
+        try:
+            from huggingface_hub import HfApi
+
+            found = not remote_mismatches(HfApi(), repo_id, expected)
+        except Exception as exc:
+            get_logger().warning(f"could not check {repo_id}: {exc!r}")
+    return bool(from_master(found, group))
 
 
 def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> bool:
@@ -738,12 +841,7 @@ def upload(info: ExportInfo, out_dir: Path, ctx: ExportContext) -> bool:
     if world.is_master:
         try:
             expected = json.loads((out_dir / "export_report.json").read_text())["sha256"]
-            remote = {
-                item.path: item.lfs.sha256
-                for item in api.get_paths_info(repo_id, list(expected), expand=True)
-                if getattr(item, "lfs", None) is not None
-            }
-            missing = sorted(name for name, digest in expected.items() if remote.get(name) != digest)
+            missing = remote_mismatches(api, repo_id, expected)
             if missing:
                 logger.error(f"[{info.name}] {len(missing)} shards missing or different on {repo_id}: {missing[:5]}")
             else:
@@ -784,11 +882,15 @@ def run(
     extra: dict | None = None,
     full_per_node: bool = False,
     defer_export_cleanup: bool = False,
+    resumed_finished: bool = False,
 ) -> dict[str, ExportResult]:
     """Export ``config.hf_export.checkpoints`` (last first, from memory; then best). Never raises.
 
     ``full_per_node``: every node writes a complete copy (for the in-run eval). ``defer_export_cleanup``: leave the
-    exports in place (the in-run eval deletes them after it is done, per ``[hf_export.cleanup] pushed_exports``)."""
+    exports in place (the in-run eval deletes them after it is done, per ``[hf_export.cleanup] pushed_exports``).
+    An export already complete for the same step (``reusable_export``) is kept, not written again, and pushed only
+    if its repo lacks it. ``resumed_finished`` (``training_done``: nothing was trained): without a recorded best (its
+    snapshot was deleted after the 'best' export was verified), the 'best' export there is reused whatever its step."""
     from prime_rl.trainer.model import reshard_module
 
     logger = get_logger()
@@ -806,17 +908,59 @@ def run(
     done: list[str] = []
     # The passed export of the final weights (in memory), if any: 'best' at the final step is copied from it.
     final_export: tuple[ExportInfo, Path] | None = None
+
+    def reuse(name: str, step: int | None) -> tuple[ExportInfo, Path] | None:
+        """Collective: keep an export that is already complete for ``step``, and make sure its repo has it."""
+        out_dir = out_root / name
+        report = from_master(reusable_export(out_dir, ctx.base_dir, step) if get_world().is_master else None, ctx.group)
+        if report is None:
+            return None
+        source = report["source"]
+        info = ExportInfo(
+            name=name,
+            repo_id=cfg.best_repo if name == "best" else cfg.last_repo,
+            step=source["step"],
+            max_steps=source.get("max_steps"),
+            val_loss=source.get("val_loss"),
+            run_id=run_id,
+            extra=dict(extra or {}),
+        )
+        result = results[name]
+        result.ok, result.dir, result.step, result.val_loss = True, str(out_dir), info.step, info.val_loss
+        result.repo_id, result.same_as = info.repo_id, report.get("copied_from")
+        logger.info(f"[{name}] the export of step {info.step} in {out_dir} is complete and checked: kept as it is")
+        if info.repo_id is not None and ctx.do_upload:
+            result.pushed = True
+            result.verified = on_hub(info.repo_id, report["sha256"], ctx.group)
+            if result.verified:
+                logger.info(f"[{name}] {info.repo_id} already has it (sha256 checked)")
+            else:
+                result.verified = upload(info, out_dir, ctx)
+        return info, out_dir
+
     for name in [n for n in ("last", "best") if n in cfg.checkpoints]:
         result = results[name]
         try:
             if name == "last":
                 step, val_loss = final_step, history.get(final_step)
-            else:
-                if best is None or best.best is None:
-                    logger.error("HF export: no best checkpoint was recorded, skipping 'best'")
-                    continue
+            elif best is not None and best.best is not None:
                 # The loss measured on the snapshot's weights (a replayed validation never replaces it).
                 step, val_loss = best.best["step"], best.best["val_loss"]
+            elif resumed_finished:
+                step, val_loss = None, None
+            else:
+                logger.error("HF export: no best checkpoint was recorded, skipping 'best'")
+                continue
+            reused = reuse(name, step)
+            if reused is not None:
+                done.append(name)
+                if name == "last":
+                    final_export = reused
+                continue
+            if step is None:
+                logger.error("HF export: no best checkpoint was recorded and no 'best' export to reuse, skipping it")
+                continue
+            if name == "best":
                 if step != final_step and not best.restore(model):
                     logger.error(f"HF export: could not load the best checkpoint (step {step}), skipping 'best'")
                     continue
@@ -860,10 +1004,12 @@ def run(
 def staging_deletions(
     cleanup, results: dict[str, ExportResult], best_root: Path | None, ckpt_root: Path, final_step: int, exports: bool
 ) -> list[Path]:
-    """What ``[hf_export.cleanup]`` allows deleting now, given the export results (pure; unit-tested)."""
+    """What ``[hf_export.cleanup]`` allows deleting now, given the export results (pure; unit-tested). Every deletion
+    waits until the export that replaces the data is verified on Hugging Face: the run dir is shared by the nodes, so
+    nothing deleted here survives anywhere else on the volume."""
     out: list[Path] = []
     best, last = results.get("best"), results.get("last")
-    if cleanup.best_snapshot and best_root is not None and best is not None and best.ok:
+    if cleanup.best_snapshot and best_root is not None and best is not None and best.ok and best.verified:
         out.append(best_root)
     if cleanup.final_checkpoint and last is not None and last.ok and last.verified:
         # prime_rl.utils.pathing: get_step_path(get_ckpt_dir(run dir), step)
@@ -876,7 +1022,8 @@ def staging_deletions(
 def cleanup_staging(
     cleanup, results: dict[str, ExportResult], best, ckpt_root: Path, final_step: int, group, defer_exports: bool
 ) -> None:
-    """Collective: after every rank is done reading, each node's ``local_rank 0`` deletes in its own staging."""
+    """Collective: after every rank is done reading, each node's ``local_rank 0`` deletes the targets (the same paths
+    on every node: whichever node gets there first removes them, the others find nothing left)."""
     logger = get_logger()
     world = get_world()
     targets = staging_deletions(
@@ -887,5 +1034,5 @@ def cleanup_staging(
         for path in targets:
             if path.exists():
                 shutil.rmtree(path, ignore_errors=True)
-                logger.info(f"Deleted {path} from this node's staging ([hf_export.cleanup])")
+                logger.info(f"Deleted {path} ([hf_export.cleanup])")
     dist.barrier(group=group)

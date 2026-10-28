@@ -4,6 +4,7 @@ the shard layout stay the base's, the checks catch a broken mapping, and nothing
 
 import json
 import os
+import shutil
 import socket
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,6 +90,7 @@ def _worker(
     drop: str | None,
     fail_mkdir_rank: int | None,
     full_per_node: bool,
+    shared: bool,
     queue,
 ) -> None:
     os.environ.update(
@@ -122,8 +124,9 @@ def _worker(
                 base_dir=None, keep_base_prefixes=["mtp."], max_relative_change=0.2, private=True, model_card="Test."
             ),
         )
-        # Each rank's "node" has its own copy of the run directory.
-        ctx = hf_export.prepare(config, tmp / f"node{rank}" / "hf-export", full_per_node=full_per_node)
+        # Each rank's "node" has its own copy of the run directory, or (shared) both write the same one.
+        run_dir = tmp / "shared" if shared else tmp / f"node{rank}"
+        ctx = hf_export.prepare(config, run_dir / "hf-export", full_per_node=full_per_node)
         if rank == fail_mkdir_rank:
             real_mkdir = Path.mkdir
 
@@ -145,15 +148,115 @@ def _worker(
         dist.destroy_process_group()
 
 
-def run_export(
-    tmp_path: Path, drop: str | None = None, fail_mkdir_rank: int | None = None, full_per_node: bool = False
-) -> list:
+def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
+        return s.getsockname()[1]
+
+
+def run_export(
+    tmp_path: Path,
+    drop: str | None = None,
+    fail_mkdir_rank: int | None = None,
+    full_per_node: bool = False,
+    shared: bool = False,
+) -> list:
     queue = mp.get_context("spawn").Queue()
-    mp.spawn(_worker, args=(2, port, str(tmp_path), drop, fail_mkdir_rank, full_per_node, queue), nprocs=2, join=True)
+    args = (2, free_port(), str(tmp_path), drop, fail_mkdir_rank, full_per_node, shared, queue)
+    mp.spawn(_worker, args=args, nprocs=2, join=True)
     return sorted(queue.get() for _ in range(2))
+
+
+def _run_worker(rank: int, world_size: int, port: int, tmp: str, queue) -> None:
+    """``hf_export.run`` as the trainer calls it, three times on one shared run dir: the run's end, a restart of the
+    finished run (nothing trained, the best record gone), a run that ended at another step."""
+    import sys
+    import types
+
+    os.environ.update(
+        RANK=str(rank),
+        WORLD_SIZE=str(world_size),
+        LOCAL_RANK="0",
+        LOCAL_WORLD_SIZE="1",
+        MASTER_ADDR="127.0.0.1",
+        MASTER_PORT=str(port),
+    )
+    os.environ.pop("HF_TOKEN", None)
+    os.environ.pop("HUGGING_FACE_HUB_TOKEN", None)
+    # The real reshard_module needs the GPU stack; the fake model has nothing to reshard.
+    sys.modules["prime_rl.trainer.model"] = types.SimpleNamespace(reshard_module=lambda model: None)
+    reset_world()
+    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    try:
+        tmp = Path(tmp)
+        base = {}
+        for name in BASE:
+            with safe_open(tmp / "base" / name, "pt") as f:
+                base.update({key: f.get_tensor(key) for key in f.keys()})
+        model = FakeLM(trained_weights(base))
+        cleanup = SimpleNamespace(best_snapshot=True, final_checkpoint=False, pushed_exports=False)
+        config = SimpleNamespace(
+            model=SimpleNamespace(name=str(tmp / "base")),
+            max_steps=7,
+            hf_export=SimpleNamespace(
+                base_dir=None,
+                keep_base_prefixes=["mtp."],
+                max_relative_change=0.2,
+                private=True,
+                model_card="Test.",
+                checkpoints=["best", "last"],
+                best_repo=None,
+                last_repo=None,
+                cleanup=cleanup,
+            ),
+        )
+        run_dir = tmp / "shared" / "run"
+        best = SimpleNamespace(
+            best={"step": 7, "val_loss": 0.5}, history={7: 0.5}, root=run_dir / "best-weights", restore=lambda m: True
+        )
+        (run_dir / "best-weights").mkdir(parents=True, exist_ok=True)
+        dist.barrier()
+        first = hf_export.run(config, model, best, 7, run_dir, full_per_node=True)
+        out = run_dir / "hf-export" / "last"
+        stamps = {p.name: (p.stat().st_ino, p.stat().st_mtime_ns) for p in out.iterdir()}
+        dist.barrier()
+        # Different weights now: anything exported again would differ from the first export.
+        with torch.no_grad():
+            for param in model.parameters():
+                param.mul_(1.001)
+        again = hf_export.run(config, model, None, 7, run_dir, full_per_node=True, resumed_finished=True)
+        unchanged = stamps == {p.name: (p.stat().st_ino, p.stat().st_mtime_ns) for p in out.iterdir()}
+        dist.barrier()
+        later = hf_export.run(config, model, None, 8, run_dir, full_per_node=True)
+        report = json.loads((out / "export_report.json").read_text())
+        queue.put(
+            (
+                rank,
+                {k: v.to_dict() for k, v in first.items()},
+                {k: v.to_dict() for k, v in again.items()},
+                unchanged,
+                {k: v.to_dict() for k, v in later.items()},
+                report["source"]["step"],
+                (run_dir / "best-weights").exists(),
+            )
+        )
+    finally:
+        dist.destroy_process_group()
+
+
+def test_restart_reuses_the_finished_exports(tmp_path):
+    make_base(tmp_path / "base")
+    queue = mp.get_context("spawn").Queue()
+    mp.spawn(_run_worker, args=(2, free_port(), str(tmp_path), queue), nprocs=2, join=True)
+    for _, first, again, unchanged, later, step, snapshot_kept in sorted(queue.get() for _ in range(2)):
+        assert first["last"]["ok"] and first["best"]["ok"] and first["best"]["same_as"] == "last"
+        # The restart keeps both exports as they are (not rewritten), 'best' still the copy of step 7.
+        assert again["last"]["ok"] and again["last"]["step"] == 7 and unchanged
+        assert again["best"]["ok"] and again["best"]["step"] == 7 and again["best"]["same_as"] == "last"
+        # Another final step: 'last' is exported again; no best recorded and not a restart: no 'best'.
+        assert later["last"]["ok"] and later["last"]["step"] == 8 and step == 8 and not later["best"]["ok"]
+        # best_snapshot = true, but nothing was verified on HF (no repo): the snapshot stays.
+        assert snapshot_kept
 
 
 def test_export_two_nodes(tmp_path):
@@ -229,6 +332,78 @@ def test_full_copy_per_node(tmp_path):
     ]
 
 
+def test_full_copy_per_node_on_a_shared_run_dir(tmp_path):
+    """The hosted volume behaves as shared: both nodes write every file to the same paths at once. Each writer has
+    its own temp file and renames it, so every path ends up one complete copy and the node-copy check passes."""
+    make_base(tmp_path / "base")
+    results = run_export(tmp_path, full_per_node=True, shared=True)
+    assert all(out is not None and best is not None for _, out, _, best in results)
+    out = tmp_path / "shared" / "hf-export" / "last"
+    assert {r[1] for r in results} == {str(out)}
+    report = json.loads((out / "export_report.json").read_text())
+    assert report["problems"] == [] and report["full_copy_per_node"] is True
+    for name in BASE:
+        assert hf_export.sha256_file(out / name) == report["sha256"][name]
+    for directory in (out, out.parent / "best"):
+        assert not [p.name for p in directory.iterdir() if p.name.endswith(".tmp")]
+        assert hf_export.reusable_export(directory, tmp_path / "base", 7) is not None
+
+
+def test_temp_names_and_atomic_replace(tmp_path):
+    dst = tmp_path / "model-00001-of-00003.safetensors"
+    names = {hf_export.temp_path(dst).name for _ in range(100)}
+    assert len(names) == 100 and all(n.startswith(dst.name + ".") and n.endswith(".tmp") for n in names)
+    dst.write_text("old")
+    with pytest.raises(RuntimeError):
+
+        def fail(tmp):
+            tmp.write_text("partial")
+            raise RuntimeError("disk full")
+
+        hf_export.replace_atomically(dst, fail)
+    assert dst.read_text() == "old" and sorted(p.name for p in tmp_path.iterdir()) == [dst.name]
+    hf_export.copy_atomically(tmp_path / dst.name, tmp_path / "copy")
+    assert (tmp_path / "copy").read_text() == "old"
+
+
+def test_training_done():
+    assert hf_export.training_done(551, 551) and hf_export.training_done(552, 551)
+    assert not hf_export.training_done(550, 551)
+    assert not hf_export.training_done(None, 551) and not hf_export.training_done(551, None)
+
+
+def test_reusable_export(tmp_path):
+    """A restart reuses an export only when its report (written last) is there for the same step with no problems,
+    and every file it lists is still there with the base's layout."""
+    make_base(tmp_path / "base")
+    run_export(tmp_path)  # node0 holds shards 1+3 and the small files, node1 shard 2: merge into one dir
+    out = tmp_path / "node0" / "hf-export" / "last"
+    for shard in (tmp_path / "node1" / "hf-export" / "last").glob("*.safetensors"):
+        shutil.copyfile(shard, out / shard.name)
+    reuse = hf_export.reusable_export
+    base = tmp_path / "base"
+    assert reuse(out, base, 7)["source"]["step"] == 7 and reuse(out, base, None) is not None
+    assert reuse(out, base, 8) is None  # another step
+    report = json.loads((out / "export_report.json").read_text())
+    (out / "export_report.json").write_text(json.dumps({**report, "problems": ["x"]}))
+    assert reuse(out, base, 7) is None  # failed its checks
+    (out / "export_report.json").write_text("{")
+    assert reuse(out, base, 7) is None  # unreadable
+    (out / "export_report.json").write_text(json.dumps(report))
+    assert reuse(out, base, 7) is not None
+    (out / "model-00002-of-00003.safetensors").unlink()
+    assert reuse(out, base, 7) is None  # a shard is gone
+    assert reuse(tmp_path / "nowhere", base, 7) is None
+
+    class Api:
+        def get_paths_info(self, repo_id, paths, expand):
+            lfs = SimpleNamespace(sha256="1")
+            return [SimpleNamespace(path="a", lfs=lfs), SimpleNamespace(path="b", lfs=None)]
+
+    assert hf_export.remote_mismatches(Api(), "o/r", {"a": "1"}) == []
+    assert hf_export.remote_mismatches(Api(), "o/r", {"a": "2", "b": "1", "c": "1"}) == ["a", "b", "c"]
+
+
 def test_node_copy_check_and_cleanup_targets(tmp_path):
     files = ["a", "b"]
     assert hf_export.check_node_copies([{"a": "1", "b": "2"}, {"a": "1", "b": "2"}], 1, files) == []
@@ -243,11 +418,20 @@ def test_node_copy_check_and_cleanup_targets(tmp_path):
     R = hf_export.ExportResult
     results = {
         "last": R(name="last", ok=True, dir="/run/hf-export/last", verified=True),
-        "best": R(name="best", ok=True, dir="/run/hf-export/best", verified=False),
+        "best": R(name="best", ok=True, dir="/run/hf-export/best", verified=True),
     }
     run = Path("/run")
     targets = hf_export.staging_deletions(cleanup, results, run / "best-weights", run, 288, exports=True)
-    assert targets == [run / "best-weights", run / "checkpoints" / "step_288", Path("/run/hf-export/last")]
+    assert targets == [
+        run / "best-weights",
+        run / "checkpoints" / "step_288",
+        Path("/run/hf-export/last"),
+        Path("/run/hf-export/best"),
+    ]
+    # The best snapshot stays until the 'best' export is verified on HF (passing its checks is not enough).
+    results["best"].verified = False
+    targets = hf_export.staging_deletions(cleanup, results, run / "best-weights", run, 288, exports=True)
+    assert targets == [run / "checkpoints" / "step_288", Path("/run/hf-export/last")]
     # The exports stay for the in-run eval; nothing goes unless proven safe.
     assert hf_export.staging_deletions(cleanup, results, None, run, 288, exports=False) == [
         run / "checkpoints" / "step_288"
@@ -283,9 +467,12 @@ def test_file_logic(tmp_path):
         "backbone.layers.0.mixer.experts.0.up_proj.weight": base["backbone.layers.0.mixer.experts.0.up_proj.weight"]
         + 0.01
     }
-    changes = hf_export.write_file(tmp_path / "base" / name, tmp_path / name, fine_tuned, ("mtp.",))
+    changes, header, digest = hf_export.write_file(tmp_path / "base" / name, tmp_path / name, fine_tuned, ("mtp.",))
     assert not fine_tuned and list(changes) == ["backbone.layers.0.mixer.experts.0.up_proj.weight"]
     hf_export.check_layout(tmp_path / "base" / name, tmp_path / name)
+    # Header and sha256 come from the writer's own temp file: what it wrote, whatever lands on the path later.
+    assert header == hf_export.read_header(tmp_path / name) and digest == hf_export.sha256_file(tmp_path / name)
+    assert not list(tmp_path.glob("*.tmp"))
     with pytest.raises(ValueError, match="key set differs"):
         save_file({"x": torch.zeros(1)}, tmp_path / "bad.safetensors")
         hf_export.check_layout(tmp_path / "base" / name, tmp_path / "bad.safetensors")

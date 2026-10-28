@@ -272,8 +272,6 @@ def test_two_nodes_in_parallel(tmp_path, monkeypatch):
             num_nodes=2,
             gpus_per_node=8,
             master_addr="127.0.0.1",
-            node_files=[f"{'ab'[n]}.safetensors"],
-            master_files=["config.json"],
         )
         for n in range(2)
     ]
@@ -298,8 +296,43 @@ def test_two_nodes_in_parallel(tmp_path, monkeypatch):
             in (run_dir / "eval" / name / "configs" / "tb-sci.toml").read_text()
         )
         assert f'name = "tb4-eval-{name}"' in (run_dir / "eval" / name / "configs" / "tb-sci.toml").read_text()
-    # Node 1's staging keeps its upload share of each export, not the master's small files.
-    assert sorted(p.name for p in (run_dir / "hf-export" / "last").iterdir()) == ["b.safetensors"]
+    # The run dir is shared: node 1's cleanup leaves the exports whole.
+    for name in ("best", "last"):
+        assert sorted(p.name for p in (run_dir / "hf-export" / name).iterdir()) == [
+            "a.safetensors",
+            "b.safetensors",
+            "config.json",
+        ]
+
+
+def test_restart_reuses_complete_results(tmp_path, monkeypatch):
+    """A restart after both checkpoints were evaluated completely: nothing is served or run again (credentials are
+    not even needed), the earlier results are kept and reported as done."""
+    bundle, store = setup_fakes(tmp_path, monkeypatch)
+    monkeypatch.delenv("PRIME_API_KEY")
+    run_dir = tmp_path / "run"
+    exports = {}
+    for name, step in (("best", 80), ("last", 280)):
+        exports[name] = {"name": name, "ok": True, "dir": str(run_dir / "hf-export" / name), "step": step}
+        out = run_dir / "eval" / name
+        out.mkdir(parents=True)
+        (out / "per_task.jsonl").write_text("earlier\n")
+        summary = {"overall": {"pass@1": 0.5}, "split": {"val": {"pass@1": 1.0}, "train": {"pass@1": 0.0}}}
+        (out / "summary.json").write_text(
+            json.dumps({"checkpoint": name, "step": step, "complete": True, "summary": summary})
+        )
+    cfg = SFTInRunEvalConfig(serving={"router_port": 18451}, harness=harness_cfg(bundle))
+    p = plan.build_plan(cfg, run_dir=run_dir, exports=exports, node=0, num_nodes=1, gpus_per_node=8, master_addr="x")
+    assert p.rounds == [] and sorted(p.evaluated) == ["best", "last"]
+    node.Driver(p, cfg, lambda m: None).run()
+    status = json.loads((run_dir / "eval" / "status.json").read_text())
+    assert status["eval"]["status"] == "done" and "credentials" not in status
+    for name in ("best", "last"):
+        assert status["checkpoints"][name]["status"] == "done" and status["checkpoints"][name]["reused"]
+        assert (run_dir / "eval" / name / "per_task.jsonl").read_text() == "earlier\n"
+    top = json.loads((run_dir / "eval" / "summary.json").read_text())
+    assert top["last"]["status"] == "done" and top["last"]["val"] == {"pass@1": 1.0} and top["last"]["reused"]
+    assert not list((run_dir / "eval").glob("*/configs"))  # no flow run was started
 
 
 def test_no_harness_fails_cleanly(tmp_path, monkeypatch):

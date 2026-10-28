@@ -466,8 +466,6 @@ def test_build_plan_round_trips(tmp_path):
         num_nodes=2,
         gpus_per_node=8,
         master_addr="node0",
-        node_files=["b.safetensors"],
-        master_files=["config.json"],
         now=100.0,
     )
     assert p.deadline == 100.0 + 7200 and p.work_dir == str(tmp_path / ".inrun-eval-work" / "node1")
@@ -483,7 +481,7 @@ def test_build_plan_round_trips(tmp_path):
         ).deadline
         is None
     )  # no cap by default
-    assert p.eval_dir == str(tmp_path / "eval") and p.dedupe_exports
+    assert p.eval_dir == str(tmp_path / "eval") and p.evaluated == {}
     assert [c.name for c in p.checkpoints] == ["last"] and p.skipped == {"best": "the export failed its checks"}
     again = plan.Plan.from_json(p.to_json())
     assert again == p
@@ -491,7 +489,56 @@ def test_build_plan_round_trips(tmp_path):
     smoke = SFTInRunEvalConfig(eval_only=True, model_dir="/volume/models/base")
     p = plan.build_plan(smoke, run_dir=tmp_path, exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x")
     assert [(c.name, c.model_dir) for c in p.checkpoints] == [("base", "/volume/models/base")]
-    assert p.rounds == [{"base": [0]}] and not p.dedupe_exports
+    assert p.rounds == [{"base": [0]}] and p.evaluated == {}
+
+
+def test_restart_skips_checkpoints_already_evaluated(tmp_path):
+    """A restart of a finished run: a checkpoint whose eval/<name>/summary.json is complete for the same step is
+    not evaluated again; an incomplete one, or one of another step, is."""
+    exports = {
+        "best": {"ok": True, "dir": "/run/hf-export/best", "step": 80},
+        "last": {"ok": True, "dir": "/run/hf-export/last", "step": 280},
+    }
+
+    def write(name, **fields):
+        path = tmp_path / "eval" / name / "summary.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        summary = {"checkpoint": name, "step": exports[name]["step"], "val_loss": 0.4, "complete": True}
+        summary["summary"] = {"overall": {"pass@1": 0.5}, "split": {"val": {"pass@1": 0.25}, "train": {}}}
+        path.write_text(json.dumps({**summary, **fields}))
+
+    def build():
+        return plan.build_plan(
+            SFTInRunEvalConfig(),
+            run_dir=tmp_path,
+            exports=exports,
+            node=0,
+            num_nodes=4,
+            gpus_per_node=8,
+            master_addr="x",
+        )
+
+    assert [c.name for c in build().checkpoints] == ["best", "last"]
+    write("best")
+    write("last", complete=False)
+    p = build()
+    assert [c.name for c in p.checkpoints] == ["last"] and p.rounds == [{"last": [0, 1, 2, 3]}]
+    assert p.evaluated["best"]["overall"] == {"pass@1": 0.5} and p.evaluated["best"]["val"] == {"pass@1": 0.25}
+    assert p.evaluated["best"]["step"] == 80 and p.evaluated["best"]["complete"] is True
+    assert plan.Plan.from_json(p.to_json()) == p
+    write("last", step=279)  # another step's eval
+    assert sorted(build().evaluated) == ["best"]
+    write("last")
+    p = build()
+    assert sorted(p.evaluated) == ["best", "last"] and p.checkpoints == [] and p.rounds == []
+    (tmp_path / "eval" / "best" / "summary.json").write_text("{")
+    assert sorted(build().evaluated) == ["last"]
+    assert plan.previous_result(tmp_path / "eval", "nowhere", 1) is None
+    # The smoke's model_dir checkpoint is always evaluated.
+    write("best")
+    smoke = SFTInRunEvalConfig(eval_only=True, model_dir="/m", model_name="best")
+    p = plan.build_plan(smoke, run_dir=tmp_path, exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x")
+    assert [c.name for c in p.checkpoints] == ["best"] and p.evaluated == {}
 
 
 # Serving
@@ -862,7 +909,10 @@ def test_coordinator_waits():
     assert coord.wait_any(["c"], deadline=10**9, abort=lambda: True) is None
 
 
-def test_cleanup_keeps_one_copy_per_file(tmp_path):
+def test_cleanup_never_deletes_other_nodes_files(tmp_path):
+    """The run dir is shared by the nodes: no node deduplicates the exports, a follower deletes nothing of them, and
+    only node 0 deletes the verified ones (when configured, after the others are done); each its own work dir."""
+
     def export(name):
         directory = tmp_path / "hf-export" / name
         directory.mkdir(parents=True)
@@ -886,15 +936,63 @@ def test_cleanup_keeps_one_copy_per_file(tmp_path):
         checkpoints=[],
         rounds=[],
         exports=exports,
-        node_files=["b.safetensors"],
-        master_files=["config.json", "export_report.json"],
-        dedupe_exports=True,
         config=cfg.model_dump(mode="json"),
     )
+    files = ["a.safetensors", "b.safetensors", "c.safetensors", "config.json", "export_report.json"]
     work = tmp_path / "work1"
     work.mkdir()
-    p = plan.Plan(node=1, work_dir=str(work), delete_pushed_exports=True, **base)
-    node.cleanup(p, cfg, log=lambda m: None)
-    # Node 1 keeps its upload share; the master's small files go; the verified export goes entirely.
-    assert sorted(x.name for x in (tmp_path / "hf-export" / "last").iterdir()) == ["b.safetensors"]
-    assert not (tmp_path / "hf-export" / "best").exists() and not work.exists()
+    node.cleanup(plan.Plan(node=1, work_dir=str(work), delete_pushed_exports=True, **base), cfg, log=lambda m: None)
+    for name in ("last", "best"):
+        assert sorted(x.name for x in (tmp_path / "hf-export" / name).iterdir()) == files
+    assert not work.exists()
+    work = tmp_path / "work0"
+    work.mkdir()
+    node.cleanup(plan.Plan(node=0, work_dir=str(work), **base), cfg, log=lambda m: None)
+    assert (tmp_path / "hf-export" / "best").is_dir() and not work.exists()  # pushed_exports off: kept
+    node.cleanup(plan.Plan(node=0, work_dir=str(work), delete_pushed_exports=True, **base), cfg, log=lambda m: None)
+    assert sorted(x.name for x in (tmp_path / "hf-export" / "last").iterdir()) == files  # not verified: kept
+    assert not (tmp_path / "hf-export" / "best").exists()
+
+
+def test_engines_get_their_rpc_dir_before_they_start(tmp_path, monkeypatch):
+    """vLLM binds its ZMQ ipc sockets in VLLM_RPC_BASE_PATH and never creates it: the node creates each engine's."""
+    model = tmp_path / "model"
+    model.mkdir()
+    cfg = SFTInRunEvalConfig()
+    real_specs = serving.engine_specs
+
+    def specs(*args):
+        out = real_specs(*args)
+        for spec in out:
+            spec.env["VLLM_RPC_BASE_PATH"] = str(tmp_path / "rpc" / str(spec.port))
+        return out
+
+    started = []
+
+    def start(name, cmd, env, log, cwd=None):
+        started.append((name, Path(env["VLLM_RPC_BASE_PATH"]).is_dir()))
+        return SimpleNamespace(name=name, alive=lambda: True, log=log)
+
+    monkeypatch.setattr(serving, "engine_specs", specs)
+    monkeypatch.setattr(serving, "start", start)
+    monkeypatch.setattr(serving, "check_model_dir", lambda serving_cfg, path: [])
+    monkeypatch.setattr(serving, "wait_gpus_free", lambda *a, **k: True)
+    monkeypatch.setattr(serving, "serves_model", lambda url, name: True)
+    p = plan.Plan(
+        run_dir=str(tmp_path),
+        eval_dir=str(tmp_path / "eval"),
+        work_dir=str(tmp_path / "work"),
+        node=0,
+        num_nodes=1,
+        master_addr="x",
+        coord_port=1,
+        started=0,
+        deadline=None,
+        checkpoints=[],
+        rounds=[],
+    )
+    server = node.NodeServer(p, cfg, "10.0.0.5", log=lambda m: None)
+    urls = server.serve(plan.Checkpoint(name="last", model_dir=str(model)), deadline=1e18)
+    assert urls == [f"http://10.0.0.5:{port}" for port in (8100, 8101, 8102, 8103)]
+    assert started == [(f"vllm-dp{d}", True) for d in range(4)]
+    server.procs = []

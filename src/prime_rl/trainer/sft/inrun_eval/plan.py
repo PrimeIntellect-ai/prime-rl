@@ -38,13 +38,10 @@ class Plan:
     """Checkpoint -> the evaluated checkpoint it is identical to ('best' at the final step is 'last')."""
     skipped: dict[str, str] = field(default_factory=dict)
     """Checkpoints not evaluated, and why."""
+    evaluated: dict[str, dict] = field(default_factory=dict)
+    """Checkpoints a previous attempt of the run already evaluated completely (a restart): name -> its result."""
     exports: dict[str, dict] = field(default_factory=dict)
     """The export results (``hf_export.ExportResult``), for the cleanup."""
-    node_files: list[str] = field(default_factory=list)
-    """The export files this node uploads (its share of the world-wide split): what it keeps of its full copies."""
-    master_files: list[str] = field(default_factory=list)
-    """Non-weight files of an export that only the master keeps."""
-    dedupe_exports: bool = False
     delete_pushed_exports: bool = False
     config: dict[str, Any] = field(default_factory=dict)
     """``[inrun_eval]``, resolved."""
@@ -97,6 +94,30 @@ def checkpoints_to_eval(
     return out, aliases, skipped
 
 
+def previous_result(eval_dir: Path, name: str, step: int | None) -> dict | None:
+    """The result of a complete eval of checkpoint ``name`` at ``step`` that ``eval/<name>/summary.json`` already holds
+    (an earlier attempt of a restarted run), as ``Driver.run_harness`` returns it; None if there is none."""
+    path = Path(eval_dir) / name / "summary.json"
+    try:
+        summary = json.loads(path.read_text())
+    except Exception:
+        return None
+    if summary.get("checkpoint") != name or summary.get("step") != step or summary.get("complete") is not True:
+        return None
+    totals = summary.get("summary") or {}
+    split = totals.get("split") or {}
+    return {
+        "summary": str(path),
+        "step": step,
+        "val_loss": summary.get("val_loss"),
+        "overall": totals.get("overall"),
+        "val": split.get("val"),
+        "train": split.get("train"),
+        "complete": True,
+        "coverage": summary.get("coverage"),
+    }
+
+
 def make_rounds(names: list[str], num_nodes: int, schedule: str) -> list[dict[str, list[int]]]:
     """``sequential``: one checkpoint per round on every node. ``parallel``: up to ``num_nodes`` checkpoints per
     round, the nodes split into contiguous groups as even as possible (node 0 in the first group)."""
@@ -134,8 +155,6 @@ def build_plan(
     num_nodes: int,
     gpus_per_node: int,
     master_addr: str,
-    node_files: list[str] | None = None,
-    master_files: list[str] | None = None,
     delete_pushed_exports: bool = False,
     prime_team_id: str | None = None,
     credentials: dict[str, Any] | None = None,
@@ -148,6 +167,14 @@ def build_plan(
         aliases, skipped = {}, {}
     else:
         checkpoints, aliases, skipped = checkpoints_to_eval(list(cfg.checkpoints), exports, cfg.evaluate_aliases)
+    # A restart of a run whose eval already finished a checkpoint at the same step does not evaluate it again.
+    evaluated = {}
+    if cfg.model_dir is None:
+        for ckpt in checkpoints:
+            result = previous_result(Path(run_dir) / "eval", ckpt.name, ckpt.step)
+            if result is not None:
+                evaluated[ckpt.name] = result
+        checkpoints = [c for c in checkpoints if c.name not in evaluated]
     work_dir = Path(cfg.work_dir) if cfg.work_dir is not None else Path(run_dir) / ".inrun-eval-work"
     return Plan(
         run_dir=str(run_dir),
@@ -163,10 +190,8 @@ def build_plan(
         rounds=make_rounds([c.name for c in checkpoints], num_nodes, cfg.schedule),
         aliases=aliases,
         skipped=skipped,
+        evaluated=evaluated,
         exports=exports,
-        node_files=sorted(node_files or []),
-        master_files=sorted(master_files or []),
-        dedupe_exports=cfg.model_dir is None and node_files is not None,
         delete_pushed_exports=delete_pushed_exports,
         config=cfg.model_dump(mode="json"),
         gpus_per_node=gpus_per_node,

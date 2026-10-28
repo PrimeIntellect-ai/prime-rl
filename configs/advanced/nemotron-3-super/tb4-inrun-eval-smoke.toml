@@ -2,9 +2,9 @@
 # real training: 3 optimizer steps at 64k tokens on a tiny dataset, validation after every step with keep_best (best
 # capped at step 2, so 'best' is a snapshot older than 'last' and its export reloads it), then exactly what the real
 # run does after training: the full_per_node HF export of best and last (no HF push: no token, no repos), the node-copy
-# check, cleanup_staging (the best snapshot), the GPU hand-off from the trained FSDP model, vLLM on both nodes
+# check, cleanup_staging, the GPU hand-off from the trained FSDP model, vLLM on both nodes
 # (TP2 x DP4 each), node 0's router over 8 engines, two rounds (best, then last: a vLLM stop/restart in between), the
-# pinned harness with D5 on 3 tasks x 1 rollout per checkpoint, scoring, the export dedupe and the work-dir cleanup.
+# pinned harness with D5 on 3 tasks x 1 rollout per checkpoint, scoring and the work-dir cleanup.
 #
 # prime train configs/advanced/nemotron-3-super/tb4-inrun-eval-smoke.toml --volume nemotron-sft-tb4-v2 -y
 # (no -e: nothing is pushed to HF. The Prime credential is the platform's per-run PRIME_API_KEY; the team is
@@ -14,9 +14,9 @@
 # smoke-tasks.txt) and datasets/nemotron-distill-sft-tb4-smoke, made from the v2 build with
 #     python scripts/tb4_inrun_eval/make_smoke_dataset.py --src <nemotron-distill-sft-tb4-1m-v2> \
 #         --out <dir>/nemotron-distill-sft-tb4-smoke        (24 train / 4 val whole rows of <= 65536 tokens)
-# Leaves on the volume: runs/<id>/hf-export/{best,last} (2 x ~0.25 TB, one copy of each file) and runs/<id>/eval/.
-# No full checkpoint is written (no [ckpt]), the best snapshot and the per-node duplicate copies are deleted before
-# the sync: their absence on the volume is part of the check (PREREQS.md section 4).
+# Leaves on the volume: runs/<id>/hf-export/{best,last} (2 x ~0.25 TB, one copy of each file), runs/<id>/best-weights/
+# (kept, as in the run) and runs/<id>/eval/. No full checkpoint is written (no [ckpt]); the eval work dir is deleted
+# before the exit: its absence on the volume is part of the check (PREREQS.md section 4).
 
 image_tag = "v0.10.1.dev74"
 source_ref = "exp/nemotron-sft-tb4-v2"
@@ -127,7 +127,7 @@ tool = false
 checkpoints = ["best", "last"]
 
 [hf_export.cleanup]
-best_snapshot = true
+best_snapshot = false   # as the run
 
 [inrun_eval]
 checkpoints = ["best", "last"]

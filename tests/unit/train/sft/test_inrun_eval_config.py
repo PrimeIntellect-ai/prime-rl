@@ -47,7 +47,9 @@ def test_tb4_run_config(tmp_path):
     }
     assert cfg.harness.expected_tasks == 500 and cfg.harness.k is None and cfg.harness.tasks_file is None
     assert cfg.harness.tb_sci_dataset == "tb-science-vendor@71124a84e6f3"
-    assert config.hf_export.cleanup.best_snapshot and not config.hf_export.cleanup.final_checkpoint
+    # The run dir is shared by the nodes and a restart needs best.json: nothing is deleted.
+    cleanup = config.hf_export.cleanup
+    assert not cleanup.best_snapshot and not cleanup.final_checkpoint and not cleanup.pushed_exports
 
 
 def test_smoke_config(tmp_path):
@@ -70,7 +72,8 @@ def test_smoke_config(tmp_path):
     assert config.val.after_optimizer_step and config.val.keep_best and config.val.keep_best_max_step == 2
     assert config.val.interval == 1 and config.hf_export.checkpoints == ["best", "last"]
     assert config.hf_export.best_repo is None and config.hf_export.last_repo is None
-    assert config.hf_export.cleanup.best_snapshot and config.env_vars["PRIME_TEAM_ID"] == run.env_vars["PRIME_TEAM_ID"]
+    assert config.hf_export.cleanup == run.hf_export.cleanup
+    assert config.env_vars["PRIME_TEAM_ID"] == run.env_vars["PRIME_TEAM_ID"]
     # Launched without any -e (no HF_TOKEN: nothing can be pushed).
     assert "-e " not in "".join(
         line

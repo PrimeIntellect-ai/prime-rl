@@ -8,7 +8,6 @@ process (same pid, so torchrun keeps watching it; the trainer's GPU and host mem
 """
 
 import gc
-import json
 import os
 import socket
 import subprocess
@@ -67,26 +66,6 @@ def close_inherited_fds() -> None:
                 pass
 
 
-def node_files(config) -> tuple[list[str] | None, list[str]]:
-    """The export files this node keeps after the eval (its share of the world-wide upload split) and the small
-    files only the master keeps, from the base checkpoint's layout (as ``hf_export.prepare`` splits it)."""
-    from prime_rl.trainer.sft.hf_export import BASE_FILES, assign_files, files_by_node
-
-    world = get_world()
-    cfg = config.hf_export
-    if cfg is None:
-        return None, []
-    base_dir = Path(cfg.base_dir) if cfg.base_dir is not None else Path(config.model.name)
-    try:
-        weight_map = json.loads((base_dir / "model.safetensors.index.json").read_text())["weight_map"]
-        sizes = {name: (base_dir / name).stat().st_size for name in sorted(set(weight_map.values()))}
-    except Exception as exc:
-        get_logger().warning(f"in-run eval: cannot read the export layout from {base_dir} ({exc!r}): no dedupe")
-        return None, []
-    split = files_by_node(assign_files(sizes, world.world_size), world.local_world_size)
-    return split.get(world.rank // world.local_world_size, []), [*BASE_FILES, "README.md", "export_report.json"]
-
-
 def master_addr() -> str:
     return os.environ.get("MASTER_ADDR") or socket.gethostname()
 
@@ -121,7 +100,6 @@ def start(config, result) -> None:
             f"PRIME_TEAM_ID: {creds['prime_team_id'] or 'unset'} ({creds['prime_team_id_source']})"
             + (f"; the eval will fail: {creds['problem']}" if creds["problem"] else "")
         )
-        keep, master_only = node_files(config) if cfg.model_dir is None else (None, [])
         cleanup = config.hf_export.cleanup if config.hf_export is not None else None
         plan = build_plan(
             cfg,
@@ -131,8 +109,6 @@ def start(config, result) -> None:
             num_nodes=world.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             master_addr=master_addr(),
-            node_files=keep,
-            master_files=master_only,
             delete_pushed_exports=bool(cleanup and cleanup.pushed_exports),
             prime_team_id=team,
             credentials={k: v for k, v in creds.items() if k != "problem"},
@@ -148,7 +124,8 @@ def start(config, result) -> None:
 
     logger.info(
         f"in-run eval: node {node} hands over to its eval process ({len(plan.checkpoints)} checkpoint(s): "
-        f"{[c.name for c in plan.checkpoints]}, aliases {plan.aliases}, skipped {plan.skipped}; "
+        f"{[c.name for c in plan.checkpoints]}, aliases {plan.aliases}, skipped {plan.skipped}, "
+        f"already evaluated {sorted(plan.evaluated)}; "
         f"rounds {plan.rounds}; "
         f"{'no cap' if cfg.budget_hours is None else f'safety cap {cfg.budget_hours} h'})"
     )

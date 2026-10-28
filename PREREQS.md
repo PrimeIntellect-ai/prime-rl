@@ -13,7 +13,7 @@ Configs:
   3 real training steps at 64k on a tiny dataset with val + keep_best (best capped at step 2), then the run's
   post-training path unchanged: the full_per_node export of best and last (no push), check_node_copies,
   cleanup_staging, the hand-off, vLLM on both nodes, the router, two rounds (best, then last) of 3 tasks x 1 rollout
-  with the pinned harness, the dedupe and the cleanup.
+  with the pinned harness, and the cleanup.
 - `configs/advanced/nemotron-3-super/tb4-inrun-eval-smoke-evalonly.toml`: the quick eval-only check (1 node, serves
   the base model, no training, no export).
 
@@ -110,15 +110,15 @@ volume after the sync:
    candidate". The best snapshot is written by every rank.
 2. Export: `[last]` from memory, `[best]` after reloading the snapshot; no `export check FAILED` (that check
    includes `check_node_copies`: every node's copy of every file has the same sha256), `export_report.json` with
-   `full_copy_per_node: true` and no `problems`; `Deleted …/best-weights from this node's staging` on both nodes.
+   `full_copy_per_node: true` and no `problems`; nothing `Deleted` (`best_snapshot = false`, as in the run).
 3. Hand-off: `PRIME_API_KEY present: yes`, `PRIME_TEAM_ID: cmlr3u2er002zhr01tj8f48ts (environment)`, then
    `node <n> hands over to its eval process` on both nodes and `started (pid …), safety cap …`.
 4. Eval: `harness ready` (offline install, pins, D5 plugin resolved), `engines ready after …s` on both nodes (vLLM
    fits 1M context at TP2; note the start-up time), the router over 8 engines and `probe ok`, `flow runs […]
    started` and `pass@…` for `best`, then the engines stop and restart for `last` and its `pass@…`.
 5. After the sync: `runs/<id>/eval/{status.json,summary.json,best/,last/}` with `summary.json`, `per_task.jsonl`,
-   `configs/`, `stores/`; `runs/<id>/hf-export/{best,last}` hold each file once (the dedupe); `runs/<id>/best-weights/`
-   and `runs/<id>/.inrun-eval-work/` do **not** exist (files deleted before the exit are not uploaded).
+   `configs/`, `stores/`; `runs/<id>/hf-export/{best,last}` complete (all 63 shards + small files) and
+   `runs/<id>/best-weights/` with `best.json`; `runs/<id>/.inrun-eval-work/` does **not** exist.
 
 What the smoke leaves on the volume: the two exports (2 x ~0.25 TB) and the eval results; no full checkpoint (no
 `[ckpt]`). With the run's peak (~3.9 TB) and the model that still fits the 5 TiB volume.
@@ -160,17 +160,19 @@ without a lockfile: its ~126 packages would resolve against PyPI at eval time. D
 
 Deleting folders on a volume afterwards does not work in practice. A read-write session first stages the whole
 volume and hits the platform's 60-minute cap (3.9 TB timed out), and putting files under `runs/` is refused. The
-effective lever is to keep the data off the volume in the first place. Hosted runs stage the volume per node and sync
-it after the run, so a file deleted from the staging before the run ends is never uploaded (the smoke's step 5
-checks this).
+effective lever is to keep the data off the volume in the first place, by deleting it from within the run. The run
+dir behaves as **shared by all nodes**, not as private per-node staging: in v1, keep_last pruning on node 0 removed the
+checkpoint shards nodes 1-3 wrote. So a delete on any node removes the file for every node: the exports are never
+deduplicated per node, every node writes the same export paths through its own temp file + atomic rename, and every
+deletion waits until its export is verified on Hugging Face.
 
 | Item | Size | What happens | Switch |
 |---|---|---|---|
-| best snapshot `best-weights/` | ~0.48 TB | deleted on every node once the 'best' export passed | `[hf_export.cleanup] best_snapshot = true` (set) |
-| duplicate export copies (each node writes a full copy to serve it) | sync traffic, not volume space (all nodes write the same paths) | after the eval each node keeps only the files it uploads; the master keeps the small files | always, with the eval |
+| best snapshot `best-weights/` + `best.json` | ~0.48 TB | **kept**: a restart after the last step needs it to keep the true best | `[hf_export.cleanup] best_snapshot = true` deletes it once 'best' is verified on HF (off in the run) |
+| export copies (each node writes a full copy to serve it) | write traffic, not volume space (all nodes write the same paths) | one copy of each file on the volume; nothing deleted | always, with the eval |
 | eval work dir (venv, flow stores, vLLM configs) | ~0.1–0.2 TB | deleted on every node before the exit; the stores go to `eval/<ckpt>/stores/*.tar.zst` | `[inrun_eval] keep_work_dir = false` (default) |
 | final checkpoint `checkpoints/step_<N>` | ~1.45 TB | **kept** | `[hf_export.cleanup] final_checkpoint = true` deletes it once 'last' is verified on HF. **Your decision**: deleting it means the run cannot be resumed or trained further |
-| the exports themselves `hf-export/{best,last}` | 2 x 0.25 TB | kept | `pushed_exports = true` deletes the HF-verified ones after the eval |
+| the exports themselves `hf-export/{best,last}` | 2 x 0.25 TB | kept | `pushed_exports = true` deletes the HF-verified ones after the eval (node 0, once the other nodes are done) |
 
 The old volume **`nemotron-sft-tb4`** (3.66 TB) cannot be cleaned folder by folder for the same reason. The
 effective way is to delete the whole volume (`prime volumes delete nemotron-sft-tb4`) once the new volume has the

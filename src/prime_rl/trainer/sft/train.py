@@ -236,6 +236,17 @@ def train(config: SFTConfig) -> TrainResult:
     else:
         logger.info("Starting from scratch")
 
+    # A restart of a run that already finished its last step (its export or in-run eval died): train nothing (no step
+    # past max_steps, no new final checkpoint replacing the last one, no new best) and go straight to the export,
+    # which reuses what the earlier attempt exported, and the eval.
+    finished_before = hf_export.training_done(checkpoint_step, config.max_steps)
+    if finished_before:
+        progress.step = checkpoint_step
+        logger.warning(
+            f"Resumed checkpoint step {checkpoint_step} is the last step (max_steps={config.max_steps}): not training, "
+            f"going straight to the export and eval"
+        )
+
     # [val] keep_best: the weights with the lowest validation loss, next to the checkpoints.
     best_ckpt = None
     if config.val is not None and config.val.keep_best:
@@ -409,7 +420,7 @@ def train(config: SFTConfig) -> TrainResult:
     control_server = ControlServer(controller, config.control if world.is_master else None)
     control_server.start()
     paused = False
-    while True:
+    while not finished_before:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
@@ -713,8 +724,8 @@ def train(config: SFTConfig) -> TrainResult:
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    # Write final checkpoint
-    if config.ckpt is not None or paused:
+    # Write final checkpoint (a restart after the last step keeps the one it resumed from)
+    if (config.ckpt is not None or paused) and not finished_before:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         if paused:
@@ -724,7 +735,7 @@ def train(config: SFTConfig) -> TrainResult:
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.
-    if weight_sender is not None and not paused:
+    if weight_sender is not None and not paused and not finished_before:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
 
@@ -742,6 +753,7 @@ def train(config: SFTConfig) -> TrainResult:
             ckpt_manager.ckpt_dir.parent,
             full_per_node=evaluates_exports,
             defer_export_cleanup=evaluates_exports,
+            resumed_finished=finished_before,
         )
 
     if gradient_manager is not None:

@@ -5,8 +5,10 @@ exported or evaluated, while the regular ``[ckpt]`` checkpoints are for resuming
 validation that measured it, before anything else touches the weights, so it is exactly the weights that produced
 the recorded loss.
 
-Every rank saves its own local shards (``rank_<r>-of-<world>.pt``) and only ever reads back its own file. Nothing
-depends on files another node wrote, so this works when the volume is staged per node and synced after the run.
+Every rank saves its own local shards (``rank_<r>-of-<world>.pt``, through its own temp file) and only ever reads
+back or deletes its own file; a step directory is removed only after every rank removed its file. Nothing depends on
+files another node wrote, and no rank touches another rank's file, so this works whether the volume is staged per
+node or shared by all nodes.
 The cost is that a snapshot only reloads into the same world size and sharding (the same run, or a resume of it
 with the same topology).
 
