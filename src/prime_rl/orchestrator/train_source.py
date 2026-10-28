@@ -8,13 +8,14 @@ from typing import Any
 
 import verifiers.v1 as vf
 
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
 
 
-class TrainSource:
+class TrainSource(Reconfigurable):
     """Mix train envs and host one user-authored curriculum per env."""
 
     def __init__(self, train_envs: TrainEnvs) -> None:
@@ -34,6 +35,10 @@ class TrainSource:
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
+
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        ratios = {source.resolved_name: source.ratio for source in update.config.train.source}
+        self.weights = [float(ratios[name]) for name in self.env_names]
 
     def next_task(self, *, step: int, exclude: set[str] = frozenset()) -> TaskRequest | None:
         """Sample the next task from an env not in ``exclude``; None when every env is excluded."""

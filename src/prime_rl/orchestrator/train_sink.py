@@ -17,6 +17,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
@@ -121,7 +122,7 @@ def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, 
     return masked
 
 
-class TrainSink:
+class TrainSink(Reconfigurable):
     """Score native episodes, admit groups, then compile trainer payloads."""
 
     def __init__(
@@ -154,6 +155,13 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        """Queued traces stay queued: the next readiness check sweeps them against the new
+        ``max_staleness`` and cuts batches of the new ``batch_size``."""
+        self.config = update.config
+        self.batch_size = update.config.batch_size
+        self._swept_step = 0
 
     def _release(self, urls: Iterable[str]) -> None:
         """Env servers keep the arrays of delivered traces; the sink deletes those of every
@@ -336,7 +344,8 @@ class TrainSink:
             return
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
-        temperature = env.config.sampling.temperature
+        # The temperature the group sampled with, which a live update may have changed since.
+        temperature = env.sampling_at(train_work(group[0]).step).temperature
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
