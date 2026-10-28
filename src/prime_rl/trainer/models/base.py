@@ -86,13 +86,14 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         language_model = get_language_model(self)
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        frozen_tensors = {
-            id(tensor)
+        frozen_modules = [
+            module
             for module in [embed_module, *language_model.layers]
             if not any(param.requires_grad for param in module.parameters())
-            for tensor in [*module.parameters(), *module.buffers()]
-        }
-        return {key for key, value in self.state_dict(keep_vars=True).items() if id(value) in frozen_tensors}
+        ]
+        # Matched by module prefix, not tensor identity: fused parameters reach the state dict as split views.
+        prefixes = tuple(f"{name}." for name, module in self.named_modules() if module in frozen_modules)
+        return {key for key in self.state_dict() if key.startswith(prefixes)}
 
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):

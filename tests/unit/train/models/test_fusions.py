@@ -10,6 +10,7 @@ from prime_rl.trainer.models.fusions import (
 )
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.moe import GroupedExperts
+from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
 NUM_EXPERTS, DIM, HIDDEN = 4, 16, 24
 NUM_HEADS, NUM_KV_HEADS, HEAD_DIM = 4, 2, 8
@@ -118,3 +119,26 @@ def test_write_back_of_a_partial_state_dict_leaves_other_packed_parameters_uncha
 
     assert torch.equal(model.experts.gate_up_proj, torch.zeros_like(model.experts.gate_up_proj))
     assert torch.equal(model.attention.qkv_proj.weight, qkv_before)
+
+
+def test_frozen_weight_keys_include_fused_weights():
+    config = Qwen3MoeConfig(
+        hidden_size=64,
+        head_dim=16,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        moe_intermediate_size=32,
+        num_experts=4,
+        num_experts_per_tok=2,
+        num_hidden_layers=2,
+        vocab_size=128,
+    )
+    with torch.device("meta"):
+        model = Qwen3MoeForCausalLM._from_config(config)
+    apply_model_fusions(model, ["gate_up", "qkv"])
+    model.model.embed_tokens.requires_grad_(False)
+    model.model.layers[0].requires_grad_(False)
+
+    assert model.frozen_weight_keys() == {
+        key for key in model.state_dict() if key.startswith(("model.embed_tokens.", "model.layers.0."))
+    }
