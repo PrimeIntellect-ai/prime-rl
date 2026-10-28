@@ -181,6 +181,8 @@ Long rollouts span several weight updates, and finished rollouts can wait in the
 
 `orchestrator.max_staleness` (default 8) bounds token staleness. The orchestrator masks tokens past the bound out of the loss, and drops a sample only when no token is left to train. Rollouts are never cancelled for staleness.
 
+The orchestrator ships each sample's per-token staleness to the trainer. The trainer logs the mismatch KL per log2 staleness bin (`0`, `1`, `2-3`, `4-7`, …, `64+`) as `mismatch_kl_by_staleness/{bin}/{mean,std,max}`. Use these metrics to separate the drift that staleness causes from the trainer–inference numerical mismatch: bin `0` holds only the numerical mismatch.
+
 ## Loss
 
 ### Loss Components
