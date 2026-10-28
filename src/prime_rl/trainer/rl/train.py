@@ -733,6 +733,12 @@ def train(config: TrainerConfig):
         )
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
+        # Memory outside the caching allocator (symmetric memory, NCCL buffers, CUDA context), max over ranks
+        free_device_memory, total_device_memory = torch.cuda.mem_get_info()
+        non_torch_memory = (total_device_memory - free_device_memory - torch.cuda.memory_reserved()) / 1024**3
+        device_memory = torch.tensor([peak_memory + non_torch_memory, non_torch_memory], device="cuda")
+        dist.all_reduce(device_memory, op=dist.ReduceOp.MAX)
+        peak_device_memory, non_torch_memory = device_memory.tolist()
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
@@ -748,7 +754,7 @@ def train(config: TrainerConfig):
             step_message += f" | Mismatch KL {tensor_metrics['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
-        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB | Peak Dev. Mem. {peak_device_memory:.1f} GiB"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
         if "routing_confidence/mean" in tensor_metrics:
@@ -762,6 +768,8 @@ def train(config: TrainerConfig):
             "perf/mfu": mfu,
             "perf/mfu_6dn": mfu_6dn,
             "perf/peak_memory": peak_memory,
+            "perf/peak_device_memory": peak_device_memory,
+            "perf/non_torch_memory": non_torch_memory,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
