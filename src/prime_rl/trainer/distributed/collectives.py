@@ -4,6 +4,9 @@ import prime_kernels
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
+from torch.distributed.device_mesh import DeviceMesh
+
+from prime_rl.utils.logger import get_logger
 
 
 @torch.library.custom_op("prime_rl_collectives::all_to_all_single", mutates_args=())
@@ -272,3 +275,30 @@ __all__ = [
     "mxfp8_all_to_all_combine",
     "mxfp8_all_to_all_dispatch",
 ]
+
+
+def warm_up_all_to_all(mesh: DeviceMesh, label: str) -> None:
+    """Connect the NCCL peers of a 1-D mesh's group with one bulk all-to-all, at setup.
+
+    NCCL connects a group's peers at its first all-to-all: without this, the first training step pays for it and the
+    connection buffers are allocated when weights and activations already fill the GPU. For Muon it is also a
+    correctness workaround: multi-node GLM-Air training can deadlock on Muon's first bulk all-to-all without it.
+    """
+    # get_group() without a mesh dim is only valid for 1-D meshes; the
+    # replicate-only world mesh is 2-D and has no single group to warm.
+    if mesh.ndim != 1:
+        return
+    group = mesh.get_group()
+    size = dist.get_world_size(group)
+    if size <= 1 or dist.get_backend(group) != "nccl":
+        return
+
+    get_logger().info(f"Warming {label} all-to-all connections on group {group.group_name} ({size} ranks)")
+    device = torch.device("cuda", torch.cuda.current_device())
+    # Use a bulk list all-to-all, matching Dion's path rather than a scalar
+    # collective that may leave bulk-transfer peer channels uninitialized.
+    inputs = [torch.zeros(3 * 1024 * 1024, dtype=torch.bfloat16, device=device) for _ in range(size)]
+    outputs = [torch.empty_like(tensor) for tensor in inputs]
+    dist.all_to_all(outputs, inputs, group=group, async_op=True).wait()
+    torch.cuda.synchronize()
+    get_logger().info(f"Finished warming {label} all-to-all connections on group {group.group_name}")

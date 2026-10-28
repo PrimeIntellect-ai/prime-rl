@@ -15,6 +15,7 @@ from prime_rl.configs.trainer import (
     MXFP8MoEComputeConfig,
     TorchMoEDispatchConfig,
 )
+from prime_rl.trainer.distributed.collectives import warm_up_all_to_all
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
 from prime_rl.trainer.distributed.token_dispatcher import (
     FusedTokenDispatcher,
@@ -184,6 +185,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
         if ep_mesh is not None:
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
+
+    if ep_mesh is not None and isinstance(dispatch, TorchMoEDispatchConfig):
+        warm_up_all_to_all(ep_mesh, "expert-parallel")
 
     get_logger().info(
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
