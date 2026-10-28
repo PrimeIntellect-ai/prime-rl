@@ -37,17 +37,12 @@ def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], 
 
 
 def sft_args(case: Case, model_name: str) -> list[str]:
-    return [
-        "@",
-        (CONFIG_DIR / "base.toml").as_posix(),
-        "--model.name",
-        model_name,
-        "--tokenizer.name",
-        case.arch.tokenizer,
-        "--deployment.num-train-gpus",
-        str(NUM_GPUS),
-        *to_cli(case.overrides()),
-    ]
+    tiny_model = case.arch.model
+    args = ["@", (CONFIG_DIR / "base.toml").as_posix(), "--model.name", model_name]
+    args += ["--tokenizer.name", tiny_model.tokenizer, "--deployment.num-train-gpus", str(NUM_GPUS)]
+    if tiny_model.renderer is not None:
+        args += ["--renderer.name", tiny_model.renderer]
+    return args + to_cli(case.overrides())
 
 
 def to_cli(overrides: Overrides) -> list[str]:
