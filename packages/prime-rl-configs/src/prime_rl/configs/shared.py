@@ -53,7 +53,7 @@ class DeltaWeightBroadcastConfig(BaseConfig):
     """Publish a full checkpoint every this many steps. Engines that join or fall off the delta chain load
     the last one and replay the deltas since."""
 
-    storage: str | None = None
+    path: str | None = None
     """Where the trainer publishes deltas and anchors and engines read them: the broadcast dir (default),
     another dir, or an S3-compatible bucket (``s3://bucket/prefix``) so engines can run in another region.
     Endpoint and credentials come from the standard AWS environment variables (e.g. ``AWS_ENDPOINT_URL``).

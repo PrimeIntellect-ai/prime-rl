@@ -1027,8 +1027,8 @@ class SparseFileSystemWeightSender(WeightSender):
         self.errors: list[BaseException] = []
         self.weights_read: threading.Event | None = None
         self.part_bytes = 0
-        self.storage = storage_path(config.storage) if config.storage else get_broadcast_dir(output_dir)
-        if config.storage and self.world.is_master:
+        self.storage = storage_path(config.path) if config.path else get_broadcast_dir(output_dir)
+        if config.path and self.world.is_master:
             # Leftovers of an earlier run would look like anchors and deltas of this one
             for path in self.storage.glob("step_*"):
                 remove(path)
@@ -1082,7 +1082,7 @@ class SparseFileSystemWeightSender(WeightSender):
         step_dir = get_step_path(self.storage, step)
         # Parts written during the step go next to the broadcast step dir, which the broadcast handshake recreates,
         # and are moved in when it is published; on separate storage straight into the step dir
-        if self.config.storage:
+        if self.config.path:
             self.streamed_dir = step_dir / DELTA_DIR
         else:
             self.streamed_dir = step_dir.with_name(f".{step_dir.name}.delta{self.world.rank}")
@@ -1234,7 +1234,7 @@ class SparseFileSystemWeightSender(WeightSender):
             num_parts = self.num_streamed
             if self.world.is_master:
                 self._submit(self.writes, self._write_manifest, step_dir, step, base_step, self.world.world_size)
-            if not self.config.storage:
+            if not self.config.path:
                 self._submit(self.writes, self._move_streamed, self.streamed_dir, step_dir / DELTA_DIR)
 
             def diffed(scale_changes: int) -> None:
@@ -1336,7 +1336,7 @@ class SparseFileSystemWeightSender(WeightSender):
         # Engines replay from the last anchor, so keep everything since it
         step = step if self.anchor_step is None else min(step, self.anchor_step + 1)
         super()._clean(step)
-        if self.config.storage:  # the base class cleans the broadcast dir
+        if self.config.path:  # the base class cleans the broadcast dir
             for path in self.storage.glob("step_*"):
                 if int(path.name.removeprefix("step_")) < step - 1:
                     remove(path)
