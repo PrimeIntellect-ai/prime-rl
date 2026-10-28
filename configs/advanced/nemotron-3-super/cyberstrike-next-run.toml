@@ -13,7 +13,7 @@
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "33107e9e555e109281c9428294b3fb2007c68e1f"
+source_ref = "8c91fbbfe82d12df72e4940a767b2e77c73f9ccb"
 gpu_type = "H200_141GB"
 
 max_steps = 200
