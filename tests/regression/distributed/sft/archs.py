@@ -1,15 +1,17 @@
 """The archs the SFT suite runs, each with a seeded tiny HF checkpoint built from explicit config kwargs.
 
-afmoe is the one registered trainer arch left out: SFT has no typed renderer for it.
-
 Each config is the arch's published HF config with `num_hidden_layers` cut to the shortest prefix that covers every
 layer kind, and its per-layer lists cut to match. Quantization and MTP fields are left out because the checkpoints are
-bf16 and train without MTP. Other values that differ from the published configs:
+bf16 and train without MTP.
 
-- MoE archs use a smaller hidden size, smaller intermediate sizes and fewer experts. Layer kinds, vocab, head counts
-  and head dims, and the attention and indexer shapes stay published. At published widths the MoE checkpoints reach
-  26 GB, take up to 77 GB of host memory to build and double the launch time of the largest archs.
+Notes:
+
+- MoE archs use a smaller hidden size, smaller intermediate sizes and fewer experts than published. Layer kinds,
+  vocab, head counts and head dims, and the attention and indexer shapes stay published. At published widths the MoE
+  checkpoints reach 26 GB, take up to 77 GB of host memory to build and double the launch time of the largest archs.
 - qwen4_exp `ngram_vocab_size_base` is 200000, not 20000000: the real per-layer n-gram table alone is about 51B params.
+
+TODO: afmoe is the one registered trainer arch left out: SFT has no typed renderer for it.
 """
 
 from pathlib import Path
@@ -38,7 +40,7 @@ from tests.regression.distributed.sft.cases import DENSE_LAYOUTS, FEATURES, FSDP
 SEED = 0
 
 ARCHS = (
-    # The only arch with feature rows and resume, as the cases.py docstring explains.
+    # The only arch with feature rows and resume, as README.md explains.
     Arch(
         "qwen3_moe",
         Qwen3MoeConfig(
@@ -592,6 +594,7 @@ CASES = [case for arch in ARCHS for case in arch.cases()]
 check_k_selectable({part for case in CASES for part in case.id_parts})
 
 
+# TODO: build DSv4's `tid2eid` in the model when it is created from a config, then drop this.
 def _fill_hash_tables(model: torch.nn.Module) -> None:
     """Give every DSv4 hash router a `tid2eid` table with distinct experts per token, as a real one has."""
     for router in model.modules():
@@ -600,6 +603,7 @@ def _fill_hash_tables(model: torch.nn.Module) -> None:
             router.tid2eid.copy_(torch.stack(rows))
 
 
+# TODO: initialize MoE weights in `_from_config` (not on the `from_pretrained` path, which loads them), then drop this.
 def _init_moe_weights(model: torch.nn.Module, init_std: float) -> None:
     """Initialize every MoE layer's experts and router, which `_from_config` leaves as uninitialized memory."""
     for moe in model.modules():
