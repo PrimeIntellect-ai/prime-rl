@@ -14,6 +14,10 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Loss](#loss)
   - [Loss Components](#loss-components)
   - [IPO Loss](#ipo-loss)
+  - [IcePop Loss](#icepop-loss)
+  - [IcePop with Score Centering](#icepop-with-score-centering)
+  - [REINFORCE Loss](#reinforce-loss)
+  - [Sampler KL](#sampler-kl)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -290,6 +294,95 @@ Compact HTTP transport packs token IDs and probabilities into binary buffers.
 Metrics report captured sampler `score_centering/head_mass`, modeled
 `score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
 baseline's logit-gradient L1 norm before advantage scaling).
+
+### REINFORCE Loss
+
+REINFORCE uses no importance weights:
+
+$$
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_t \tau_A \hat{A}_t \log\pi(y_t).
+$$
+
+Off-policy, the expected update at a prefix is the covariance of advantage and
+score under the sampler $\mu$ plus a drift
+$\mathbb{E}_\mu[\hat{A}]\,\mathbb{E}_\mu[\nabla\log\pi]$. The drift pulls the
+trainer toward the sampler where the prefix's mean advantage is positive and pushes it
+away where it is negative. Score centering removes it:
+
+$$
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_t \tau_A \hat{A}_t
+\Big(\log\pi(y_t) - \sum_v \mathrm{sg}[\hat{\mu}_v] \log\pi_v\Big),
+$$
+
+where $\hat{\mu}$ is the captured sampler head with the proportional tail, or the
+complete recorded support under sampling replay, as for IcePop.
+
+```toml
+[trainer.loss]
+type = "reinforce"
+score_centering = true
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
+| `score_centering` | false | Center the score under the sampler. |
+| `score_centering_topk` | 128 | Captured head size for untruncated sampling. |
+| `sampler_kl` | None | KL(sampler ‖ trainer) penalty, see [Sampler KL](#sampler-kl). |
+
+Score-centering metrics are those of IcePop; `score_centering/tail_scale` reports the
+sampler-to-trainer tail mass ratio.
+
+### Sampler KL
+
+`sampler_kl` adds $\beta\,\mathrm{KL}(\mu\,\|\,\pi)$ on every rl token of the
+`reinforce` and `icepop` losses, accepted and rejected IcePop tokens alike. Its gradient,
+$-\beta\,\mathbb{E}_\mu[\nabla\log\pi]$, is the drift direction that score centering
+removes, with a fixed nonnegative coefficient in place of the mean advantage: a pull
+toward the sampler that does not depend on the reward.
+
+```toml
+[trainer.loss]
+type = "reinforce"  # or "icepop"
+score_centering = true
+
+[trainer.loss.sampler_kl]
+coef = 0.05
+estimator = "exact"
+min_staleness = 1
+
+# Optional: adapt coef toward a target KL
+[trainer.loss.sampler_kl.adaptive]
+target = 1e-3
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `coef` | 0.01 | KL coefficient $\beta$; the initial value when adaptive. |
+| `estimator` | `exact` | `exact` sums the captured head and one aggregate tail bin. It is a lower bound on full-vocabulary KL, exact under the proportional-tail assumption or on complete replay support. It misses redistribution within the uncaptured tail; prefix sampling still introduces noise. `k1` uses $\log\mu(y_t) - \log\pi(y_t)$ on the sampled token and needs no captured head. |
+| `min_staleness` | 1 | Only tokens at least this many policy versions stale train the KL. |
+| `adaptive.target` | — | Mean per-token KL to hold: after each step the coefficient doubles above $1.5\times$ target and halves below target$/1.5$. |
+| `adaptive.min_coef`, `adaptive.max_coef` | 1e-4, 10 | Bounds of the adapted coefficient. |
+
+A token sampled by the trained policy itself has a sampler that is a numerically
+perturbed copy of the trainer rather than a past policy, and pulling toward it follows the
+numerical bias; `min_staleness = 1` leaves those tokens unpenalized. The rl entrypoint
+then enables `orchestrator.ship_token_staleness`, which ships each token's staleness to
+the trainer. Stale tokens still contain numerical mismatch; this gate does not isolate it.
+
+The rl entrypoint disables `orchestrator.prune_zero_advantages` when the sampler KL
+can be nonzero: zero-advantage tokens still have a KL gradient. Set this explicitly
+when launching components separately. Explicit curriculum admission gates still apply;
+an advantage-range gate restricts the population on which the KL is trained. For matched
+ablations, use the same pruning and admission settings in all arms.
+
+An adapted coefficient restarts from `coef` when training resumes from a
+checkpoint.
+
+Metrics report `sampler_kl/kl` (the per-token KL of the penalized tokens, which the
+adaptive coefficient tracks), `sampler_kl/k1` (the sampled-token log-ratio estimate on
+the same tokens, useful for checking the tail approximation), `sampler_kl/active` (the share of rl tokens penalized), and
+`sampler_kl/coef`.
 
 ### Custom Loss
 

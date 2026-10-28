@@ -391,7 +391,7 @@ def train(config: TrainerConfig):
         routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
-        score_centering = config.loss.type == "icepop" and config.loss.score_centering
+        score_centering = getattr(config.loss, "captures_sampler_head", False)
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
@@ -415,6 +415,7 @@ def train(config: TrainerConfig):
             ref_kl_weights = (
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
+            staleness = micro_batch["staleness"].to("cuda") if micro_batch["staleness"] is not None else None
             # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
             routed_experts = micro_batch["routed_experts"]
 
@@ -590,6 +591,7 @@ def train(config: TrainerConfig):
                 sampler_support_complete=sampler_support_complete.squeeze(0).split(sequence_lengths)
                 if sampler_support_complete is not None
                 else None,
+                staleness=staleness.squeeze(0).split(sequence_lengths) if staleness is not None else None,
             )
 
             # Backward pass
@@ -717,6 +719,10 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
+        # Every rank sees the same reduced KL, so the adapted coefficient stays in sync.
+        sampler_kl = getattr(rl_loss_fn, "sampler_kl", None)
+        if sampler_kl is not None and "sampler_kl/kl/mean" in tensor_metrics:
+            sampler_kl.adapt(tensor_metrics["sampler_kl/kl/mean"])
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 

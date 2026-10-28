@@ -357,7 +357,7 @@ class TrainSink:
                         f"env {env_name!r} requested sampler top logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
-            if self.config.constant_trainer_batch_size:
+            if self.config.constant_trainer_batch_size and self.config.prune_zero_advantages:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
@@ -463,7 +463,7 @@ class TrainSink:
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
-        if not self.config.constant_trainer_batch_size:
+        if not self.config.constant_trainer_batch_size and self.config.prune_zero_advantages:
 
             def prune_selected() -> dict[str, list[TrainingSample]]:
                 pruned = {

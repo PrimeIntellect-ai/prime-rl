@@ -11,6 +11,8 @@ from prime_rl.configs.trainer import (
     IcePopLossConfig,
     IPOLossConfig,
     LossConfig,
+    ReinforceLossConfig,
+    SamplerKLConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
@@ -36,6 +38,7 @@ class LossInputs:
     sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
     topk_valid: Bool[Tensor, "seq head"] | None = None
     sampler_support_complete: Bool[Tensor, " seq"] | None = None
+    staleness: Int[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -196,6 +199,84 @@ def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
     return trainer, sampler, valid
 
 
+def _sampler_head_distribution(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Trainer head logprobs on the rl tokens with the sampler distribution they center on:
+    ``q_hat = q`` on the head and ``rho * p`` on the tail, ``rho`` the sampler-to-trainer tail
+    mass ratio. Returns the head logprobs and the detached ``p``, ``q`` and ``rho``; ``rho`` is
+    0 where the head is the complete recorded support, which has no tail."""
+    head, sampler, valid = _centering_head(inputs)
+    with torch.no_grad():
+        p = head.exp().masked_fill(~valid, 0.0)
+        q = sampler.exp().masked_fill(~valid, 0.0)
+        rho = (1.0 - q.sum(-1)).clamp_min(1e-6) / (1.0 - p.sum(-1)).clamp_min(1e-6)
+        if inputs.sampler_support_complete is not None:
+            rho = rho.masked_fill(inputs.sampler_support_complete[inputs.loss_mask], 0.0)
+    return head, p, q, rho
+
+
+def _logit_correction_l1(mass: Tensor, p: Tensor) -> Tensor:
+    """L1 norm over the full vocabulary of ``sum_v mass_v * (e_v - p)``, the logit gradient of
+    ``sum_v mass_v * log p_v``; the head-only ``p`` puts its remaining mass on the tail."""
+    head_l1 = (mass - p * mass.sum(-1, keepdim=True)).abs().sum(-1)
+    tail_l1 = (1.0 - p.sum(-1)).clamp_min(0.0) * mass.sum(-1).abs()
+    return head_l1 + tail_l1
+
+
+class SamplerKL:
+    """KL(sampler || trainer) penalty on the rl tokens. Its gradient, ``-coef * E_q[grad log p]``,
+    pulls the trainer toward the sampler independently of the advantage."""
+
+    def __init__(self, config: SamplerKLConfig):
+        self.config = config
+        self.coef = config.coef
+
+    def loss(self, inputs: LossInputs, weights: Tensor | None) -> tuple[Tensor, dict[str, Tensor]]:
+        mask = inputs.loss_mask
+        if self.config.min_staleness > 0:
+            if inputs.staleness is None:
+                raise ValueError(
+                    "sampler_kl.min_staleness > 0 needs per-token staleness: set orchestrator.ship_token_staleness"
+                )
+            active = inputs.staleness[mask] >= self.config.min_staleness
+        else:
+            active = torch.ones_like(mask[mask])
+        if self.config.estimator == "k1":
+            trainer_logprobs = inputs.trainer_logprobs[mask]
+            kl = (inputs.inference_logprobs[mask] - trainer_logprobs).detach()
+            surrogate = -trainer_logprobs
+        else:
+            head, p, q, rho = _sampler_head_distribution(inputs)
+            with torch.no_grad():
+                # KL(q_hat || p) = sum_head q (log q - log p) + q_tail log(q_tail / p_tail), and
+                # its gradient is -sum_head (q - rho * p) grad log p.
+                logq = inputs.sampler_topk_logprobs[mask].masked_fill(q == 0, 0.0)
+                q_tail = (1.0 - q.sum(-1)).clamp_min(1e-6)
+                kl = (q * (logq - head)).sum(-1) + torch.where(rho > 0, q_tail * rho.clamp_min(1e-30).log(), 0.0)
+                coefficients = q - rho.unsqueeze(-1) * p
+            surrogate = -(coefficients * head).sum(-1)
+        per_token_loss = self.coef * surrogate * active
+        if weights is not None:
+            per_token_loss = per_token_loss * weights
+        metrics = {
+            "sampler_kl/kl": kl[active],
+            "sampler_kl/k1": (inputs.inference_logprobs[mask] - inputs.trainer_logprobs[mask]).detach()[active],
+            "sampler_kl/active": active.float(),
+            "sampler_kl/coef": surrogate.new_tensor(self.coef),
+        }
+        return per_token_loss.sum(), metrics
+
+    def adapt(self, kl: float) -> None:
+        """Move the coefficient toward the adaptive target given the step's mean KL."""
+        adaptive = self.config.adaptive
+        if adaptive is None:
+            return
+        if kl > 1.5 * adaptive.target:
+            self.coef *= 2.0
+        elif kl < adaptive.target / 1.5:
+            self.coef /= 2.0
+        self.coef = min(max(self.coef, adaptive.min_coef), adaptive.max_coef)
+
+
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
@@ -246,6 +327,7 @@ class IcePopLoss:
 
     def __init__(self, config: IcePopLossConfig):
         self.config = config
+        self.sampler_kl = SamplerKL(config.sampler_kl) if config.sampler_kl is not None else None
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
@@ -287,14 +369,16 @@ class IcePopLoss:
                 mass = mass - alpha.unsqueeze(-1) * p
                 centering_metrics["score_centering/tail_scale"] = alpha
                 centering_metrics["score_centering/head_mass"] = q.sum(-1)
-                centering_metrics["score_centering/logit_correction_l1"] = (
-                    mass - p * mass.sum(-1, keepdim=True)
-                ).abs().sum(-1) + (1.0 - p.sum(-1)).clamp_min(0.0) * mass.sum(-1).abs()
+                centering_metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(mass, p)
             correction = loss_config.adv_tau * advantages.detach() * (mass * head).sum(-1)
             if weights is not None:
                 correction = correction * weights
             # Rejected sampled actions still contribute the centering correction.
             loss = loss + correction.sum()
+        if self.sampler_kl is not None and log_importance_ratio.numel():
+            kl_loss, kl_metrics = self.sampler_kl.loss(inputs, weights)
+            loss = loss + kl_loss
+            centering_metrics.update(kl_metrics)
 
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
@@ -305,6 +389,43 @@ class IcePopLoss:
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
             **centering_metrics,
         }
+        return LossOutputs(loss=loss, metrics=metrics)
+
+
+class ReinforceLoss:
+    """Reinforce loss type: policy gradient without importance weights, optionally centered
+    under the sampler and regularized toward it."""
+
+    def __init__(self, config: ReinforceLossConfig):
+        self.config = config
+        self.sampler_kl = SamplerKL(config.sampler_kl) if config.sampler_kl is not None else None
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        loss_config = self.config
+        trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+        advantages = inputs.advantages[inputs.loss_mask].detach()
+        weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
+
+        per_token_loss = -loss_config.adv_tau * advantages * trainer_logprobs
+        metrics = {}
+        if loss_config.score_centering and trainer_logprobs.numel():
+            head, p, q, rho = _sampler_head_distribution(inputs)
+            with torch.no_grad():
+                # E_q_hat[grad log p] = sum_head (q - rho * p) grad log p, as the tail sums to
+                # minus the head under the trainer.
+                mass = q - rho.unsqueeze(-1) * p
+                metrics["score_centering/tail_scale"] = rho
+                metrics["score_centering/head_mass"] = q.sum(-1)
+                metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(mass, p)
+            per_token_loss = per_token_loss + loss_config.adv_tau * advantages * (mass * head).sum(-1)
+        if weights is not None:
+            per_token_loss = per_token_loss * weights
+        loss = per_token_loss.sum()
+
+        if self.sampler_kl is not None and trainer_logprobs.numel():
+            kl_loss, kl_metrics = self.sampler_kl.loss(inputs, weights)
+            loss = loss + kl_loss
+            metrics.update(kl_metrics)
         return LossOutputs(loss=loss, metrics=metrics)
 
 
@@ -389,6 +510,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
+        case ReinforceLossConfig():
+            return ReinforceLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
@@ -410,6 +533,7 @@ def compute_loss(
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
     sampler_support_complete: list[Tensor] | None = None,
+    staleness: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -463,6 +587,7 @@ def compute_loss(
     topk_valid = topk_valid if topk_valid is not None else [None] * n
 
     sampler_support_complete = sampler_support_complete if sampler_support_complete is not None else [None] * n
+    staleness = staleness if staleness is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -477,7 +602,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, complete in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, complete, stale in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -490,6 +615,7 @@ def compute_loss(
         sampler_topk_logprobs,
         topk_valid,
         sampler_support_complete,
+        staleness,
         strict=True,
     ):
 
@@ -505,6 +631,7 @@ def compute_loss(
                 sampler_topk_logprobs=q_head,
                 topk_valid=valid,
                 sampler_support_complete=complete,
+                staleness=stale,
             )
 
         if rl_w is None:

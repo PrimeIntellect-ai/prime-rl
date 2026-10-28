@@ -535,8 +535,9 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
+        """Capture the sampler's probabilities for score centering and the exact sampler KL."""
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        if not getattr(loss, "captures_sampler_head", False):
             return self
         samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
@@ -566,6 +567,17 @@ class RLConfig(BaseConfig):
                 "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
                 stacklevel=2,
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_token_staleness(self):
+        """A staleness-gated sampler KL needs every token's staleness on the trainer."""
+        sampler_kl = getattr(self.trainer.loss, "sampler_kl", None)
+        if sampler_kl is not None:
+            if sampler_kl.min_staleness > 0:
+                self.orchestrator.ship_token_staleness = True
+            if sampler_kl.coef > 0 or sampler_kl.adaptive is not None:
+                self.orchestrator.prune_zero_advantages = False
         return self
 
     @model_validator(mode="after")

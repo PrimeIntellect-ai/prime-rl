@@ -72,8 +72,10 @@ def episode(traces, *, group="g", version=0):
     )
 
 
-def sink(*, constant=True, admitted=True, batch_size=100):
-    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
+def sink(*, constant=True, admitted=True, batch_size=100, prune=True):
+    config = OrchestratorConfig(
+        batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1, prune_zero_advantages=prune
+    )
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
@@ -119,6 +121,20 @@ def test_zero_output_finalization_releases_objects_without_reporting(constant, a
             assert window.discarded == 40
         else:
             assert window.metrics.to_dict()["rollout/queued/pruned"] == 40
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("constant", [True, False])
+def test_sampler_kl_keeps_zero_advantage_tokens(constant):
+    async def run():
+        s = sink(constant=constant, batch_size=1, prune=False)
+        batch = await s.add(episode([trace(advantage=0)]))
+        assert batch is not None and len(batch.samples) == 1
+        sample = batch.samples[0]
+        assert np.count_nonzero(sample.mask) == 2
+        assert sample.rl_weights is None or np.all(np.asarray(sample.rl_weights)[sample.mask] != 0)
+        assert not np.any(sample.advantages)
 
     asyncio.run(run())
 

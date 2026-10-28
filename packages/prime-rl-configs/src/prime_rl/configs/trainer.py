@@ -510,6 +510,71 @@ class IPOLossConfig(BaseConfig):
     """Temperature for the advantage term."""
 
 
+class AdaptiveKLCoefConfig(BaseConfig):
+    target: float = Field(gt=0, allow_inf_nan=False)
+    """Mean per-token sampler KL to hold. After every step the coefficient doubles when the
+    step's KL exceeds ``1.5 * target`` and halves when it falls below ``target / 1.5``."""
+
+    min_coef: float = Field(1e-4, gt=0, allow_inf_nan=False)
+    """Lower bound of the adapted coefficient."""
+
+    max_coef: float = Field(10.0, gt=0, allow_inf_nan=False)
+    """Upper bound of the adapted coefficient."""
+
+    @model_validator(mode="after")
+    def validate_coef_bounds(self):
+        if self.min_coef > self.max_coef:
+            raise ValueError("min_coef must not exceed max_coef")
+        return self
+
+
+class SamplerKLConfig(BaseConfig):
+    """Penalty on KL(sampler || trainer) over the rl tokens: a pull toward the policy that
+    sampled each token that does not depend on the advantage."""
+
+    coef: float = Field(0.01, ge=0, allow_inf_nan=False)
+    """KL coefficient. With ``adaptive`` set, its initial value."""
+
+    estimator: Literal["exact", "k1"] = "exact"
+    """``exact`` sums the captured head plus one aggregate tail bin. This is a lower bound
+    on full-vocabulary KL, exact under the proportional-tail model or on complete replay
+    support; it cannot detect redistribution within the uncaptured tail. ``k1`` uses ``log q(y) - log p(y)``
+    on the sampled token and needs no captured head."""
+
+    min_staleness: int = Field(1, ge=0)
+    """Only tokens at least this many policy versions stale train the KL. The default leaves
+    tokens sampled by the trained policy itself, whose mismatch is purely numerical,
+    unpenalized. Stale tokens still include numerical mismatch. ``0`` applies the KL to every rl token."""
+
+    adaptive: AdaptiveKLCoefConfig | None = None
+    """Adapt the coefficient toward a target KL. If None, the coefficient is fixed."""
+
+
+class ReinforceLossConfig(BaseConfig):
+    """REINFORCE without importance weights. Off-policy, the update carries a drift toward the
+    sampler scaled by the mean advantage at each prefix unless the score is centered."""
+
+    type: Literal["reinforce"] = "reinforce"
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Center the score under the sampler."""
+
+    score_centering_topk: int = Field(128, ge=1)
+    """Captured head size for an untruncated sampler with a proportional tail, used by score
+    centering and the exact sampler KL. With sampling replay, the complete recorded support
+    is captured instead."""
+
+    sampler_kl: SamplerKLConfig | None = None
+    """KL(sampler || trainer) penalty. If None, no penalty."""
+
+    @property
+    def captures_sampler_head(self) -> bool:
+        return self.score_centering or (self.sampler_kl is not None and self.sampler_kl.estimator == "exact")
+
+
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
@@ -526,9 +591,17 @@ class IcePopLossConfig(BaseConfig):
     """Center the ratio-masked importance-weighted score under the sampler."""
 
     score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization. With sampling replay, the
-    complete recorded support is captured instead."""
+    """Captured head size for an untruncated sampler with a proportional tail, used by score
+    centering and the exact sampler KL. Probabilities retain full-vocabulary normalization.
+    With sampling replay, the complete recorded support is captured instead."""
+
+    sampler_kl: SamplerKLConfig | None = None
+    """KL(sampler || trainer) penalty, applied to accepted and rejected tokens alike. If None,
+    no penalty."""
+
+    @property
+    def captures_sampler_head(self) -> bool:
+        return self.score_centering or (self.sampler_kl is not None and self.sampler_kl.estimator == "exact")
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
@@ -548,7 +621,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | ReinforceLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 
