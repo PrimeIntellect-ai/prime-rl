@@ -1,7 +1,7 @@
 """The SFT functionality matrix, rendered as `uv run sft` arguments.
 
-Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each arch
-contributes two kinds of case:
+Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each `Arch`
+in `ARCHS` (in `archs.py`, with its tiny config and tokenizer) contributes two kinds of case:
 
 - A base case on every layout in its `layouts`. It trains `TRAIN_STEPS` steps (see `test_matrix.py`). The base case
   on the arch's `resume_layout`, if set, also saves a checkpoint and resumes in a fresh process.
@@ -17,10 +17,9 @@ any graph break, so graph breaks and training failures are reported as separate 
 logs lack dynamo's tracing messages, since then an empty graph-break log would prove nothing. Recompile-limit hits,
 which also fall back to eager, are not graph breaks and are not checked.
 
-`Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1). `Arch.skip`
-removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows in the
-pytest report. `Arch.overrides` holds arch-wide config, such as an explicit renderer. Case ids read
-`{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k` selects cases by arch, layout or
+`Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1).
+`Arch.overrides` holds arch-wide config, such as an explicit renderer. Case ids read `{arch}-{layout}-{feature or
+base}`. No name is a substring of another, so `-k` selects cases by arch, layout or
 feature name. For example, one case:
 
     uv run pytest tests/regression/distributed -k "qwen3_moe and cp4_ep4 and base"
@@ -44,9 +43,7 @@ from dataclasses import dataclass, field
 from itertools import permutations
 from pathlib import Path
 
-import pytest
-
-from tests.regression.distributed.tiny_models import TOKENIZERS
+from transformers import PretrainedConfig
 
 CONFIG_DIR = Path("tests/regression/configs/distributed/sft")
 NUM_GPUS = 4
@@ -95,10 +92,13 @@ FEATURES = (
 
 @dataclass(frozen=True, eq=False)
 class Arch:
+    """A trainer arch: its tiny config, the tokenizer matching its vocab, and how the suite runs it."""
+
     name: str
+    config: PretrainedConfig
+    tokenizer: str
     layouts: tuple[Layout, ...] = MOE_LAYOUTS
     features: tuple[Feature, ...] = ()
-    skip: dict[Layout | Feature, str] = field(default_factory=dict)
     overrides: Overrides = field(default_factory=dict)
     resume_layout: Layout | None = None
     launch_s: int = 160
@@ -137,26 +137,18 @@ class Case:
         return self.feature is None and self.layout in (CP4_EP4, CP4_EP1)
 
     @property
-    def skip_reason(self) -> str | None:
-        return self.arch.skip.get(self.layout) or self.arch.skip.get(self.feature)
-
-    @property
     def shard_unit(self) -> tuple[str, bool]:
         return self.arch.name, self.feature is not None
 
     def overrides(self) -> Overrides:
         return self.arch.overrides | self.layout.overrides() | (self.feature.overrides if self.feature else {})
 
-    def param(self):
-        reason = self.skip_reason
-        return pytest.param(self, id=self.id, marks=[pytest.mark.skip(reason=reason)] if reason else [])
-
 
 def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], int]:
     """Map each shard unit (an arch's base cases, or its feature cases) to a shard, balancing estimated launch time."""
     costs: defaultdict[tuple[str, bool], int] = defaultdict(int)
     for case in cases:
-        launches = 0 if case.skip_reason else 2 if case.resume else 1
+        launches = 2 if case.resume else 1
         costs[case.shard_unit] += launches * case.arch.launch_s
     loads = [0] * num_shards
     shards = {}
@@ -172,30 +164,6 @@ def check_k_selectable(names: set[str]) -> None:
             raise ValueError(f"-k {name} would also select {other}")
 
 
-ARCHS = (
-    # The only arch with feature rows and resume, as the module docstring explains.
-    Arch("qwen3_moe", features=FEATURES, resume_layout=FSDP4_EP4),
-    Arch("glm_moe_dsa"),
-    Arch("deepseek_v4", launch_s=350),
-    Arch("llama", layouts=DENSE_LAYOUTS, overrides={"renderer.name": "llama-3"}),
-    Arch("qwen3_dense", layouts=DENSE_LAYOUTS),
-    Arch("qwen3_5_dense", layouts=DENSE_LAYOUTS),
-    Arch("glm4_moe"),
-    Arch("gpt_oss"),
-    Arch("laguna"),
-    Arch("minimax_m2"),
-    Arch("nemotron_h"),
-    Arch("qwen3_5_moe"),
-    Arch("qwen4_exp"),
-    Arch(
-        "afmoe",
-        skip={layout: "SFT needs a typed renderer and none is registered for afmoe" for layout in MOE_LAYOUTS},
-    ),
-)
-CASES = [case for arch in ARCHS for case in arch.cases()]
-check_k_selectable({part for case in CASES for part in case.id_parts})
-
-
 def sft_args(case: Case, model_name: str) -> list[str]:
     return [
         "@",
@@ -203,7 +171,7 @@ def sft_args(case: Case, model_name: str) -> list[str]:
         "--model.name",
         model_name,
         "--tokenizer.name",
-        TOKENIZERS[case.arch.name],
+        case.arch.tokenizer,
         "--deployment.num-train-gpus",
         str(NUM_GPUS),
         *to_cli(case.overrides()),
