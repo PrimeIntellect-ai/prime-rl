@@ -239,7 +239,7 @@ def train(config: SFTConfig) -> TrainResult:
     # [val] keep_best: the weights with the lowest validation loss, next to the checkpoints.
     best_ckpt = None
     if config.val is not None and config.val.keep_best:
-        best_ckpt = BestCheckpoint(ckpt_manager.ckpt_dir.parent / BEST_DIR_NAME)
+        best_ckpt = BestCheckpoint(ckpt_manager.ckpt_dir.parent / BEST_DIR_NAME, max_step=config.val.keep_best_max_step)
         if checkpoint_step is not None:
             best_ckpt.load_state()
 

@@ -48,6 +48,20 @@ def snapshot_files(root: Path) -> list[str]:
     return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
 
 
+def test_max_step_caps_the_candidates(tmp_path):
+    """[val] keep_best_max_step (the smoke): later validations are recorded but never become the best."""
+    torch.manual_seed(0)
+    model = Tiny()
+    keeper = BestCheckpoint(tmp_path, max_step=2)
+    for step, loss in ((1, 0.70), (2, 0.65), (3, 0.40)):
+        train_step(model, step)
+        assert keeper.consider(step, loss, model, val_logged_step=step) == (step <= 2)
+    assert keeper.best_step == 2 and keeper.history == {1: 0.70, 2: 0.65, 3: 0.40}
+    record = json.loads((tmp_path / BEST_JSON).read_text())
+    assert record["best"]["step"] == 2 and record["history"]["3"] == 0.40
+    assert snapshot_files(tmp_path) == [BEST_JSON, "step_2/rank_00000-of-00001.pt"]
+
+
 def test_keeps_only_the_best_and_restores_it_exactly(tmp_path):
     torch.manual_seed(0)
     model = Tiny()

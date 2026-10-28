@@ -28,7 +28,8 @@ class Plan:
     master_addr: str
     coord_port: int
     started: float
-    deadline: float
+    deadline: float | None
+    """The optional safety cap (``budget_hours``) as a wall-clock time; None: no cap."""
     checkpoints: list[Checkpoint]
     """To evaluate, in order."""
     rounds: list[dict[str, list[int]]]
@@ -48,6 +49,10 @@ class Plan:
     config: dict[str, Any] = field(default_factory=dict)
     """``[inrun_eval]``, resolved."""
     gpus_per_node: int = 8
+    prime_team_id: str | None = None
+    """``PRIME_TEAM_ID`` as the trainer saw it (its environment, else the run config's ``[env_vars]``)."""
+    credentials: dict[str, Any] = field(default_factory=dict)
+    """What the hand-off found: ``prime_api_key_present`` (never the key), ``prime_team_id_source``."""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -60,10 +65,10 @@ class Plan:
 
 
 def checkpoints_to_eval(
-    names: list[str], exports: dict[str, dict]
+    names: list[str], exports: dict[str, dict], evaluate_aliases: bool = False
 ) -> tuple[list[Checkpoint], dict[str, str], dict[str, str]]:
     """The exports to evaluate (in ``names`` order), aliases (an export that is a copy of another evaluated one) and
-    the skipped ones with the reason."""
+    the skipped ones with the reason. ``evaluate_aliases`` evaluates a copy in its own right (the smoke test)."""
     out: list[Checkpoint] = []
     aliases: dict[str, str] = {}
     skipped: dict[str, str] = {}
@@ -76,7 +81,7 @@ def checkpoints_to_eval(
             skipped[name] = "the export failed its checks"
             continue
         same = result.get("same_as")
-        if same is not None and same in names and (exports.get(same) or {}).get("ok"):
+        if not evaluate_aliases and same is not None and same in names and (exports.get(same) or {}).get("ok"):
             aliases[name] = same
             continue
         out.append(
@@ -112,8 +117,10 @@ def make_rounds(names: list[str], num_nodes: int, schedule: str) -> list[dict[st
     return rounds
 
 
-def round_deadline(now: float, deadline: float, reserve: float, rounds_left: int) -> float:
-    """An equal share of what is left of the budget (minus the reserve) for the next round."""
+def round_deadline(now: float, deadline: float | None, reserve: float, rounds_left: int) -> float | None:
+    """An equal share of what is left of the cap (minus the reserve) for the next round; None without a cap."""
+    if deadline is None:
+        return None
     usable = max(0.0, deadline - reserve - now)
     return now + usable / max(1, rounds_left)
 
@@ -130,6 +137,8 @@ def build_plan(
     node_files: list[str] | None = None,
     master_files: list[str] | None = None,
     delete_pushed_exports: bool = False,
+    prime_team_id: str | None = None,
+    credentials: dict[str, Any] | None = None,
     now: float | None = None,
 ) -> Plan:
     """``cfg`` is the resolved ``[inrun_eval]`` config."""
@@ -138,7 +147,7 @@ def build_plan(
         checkpoints = [Checkpoint(name=cfg.model_name, model_dir=str(cfg.model_dir))]
         aliases, skipped = {}, {}
     else:
-        checkpoints, aliases, skipped = checkpoints_to_eval(list(cfg.checkpoints), exports)
+        checkpoints, aliases, skipped = checkpoints_to_eval(list(cfg.checkpoints), exports, cfg.evaluate_aliases)
     work_dir = Path(cfg.work_dir) if cfg.work_dir is not None else Path(run_dir) / ".inrun-eval-work"
     return Plan(
         run_dir=str(run_dir),
@@ -149,7 +158,7 @@ def build_plan(
         master_addr=master_addr,
         coord_port=cfg.coord_port,
         started=now,
-        deadline=now + cfg.budget_hours * 3600,
+        deadline=None if cfg.budget_hours is None else now + cfg.budget_hours * 3600,
         checkpoints=checkpoints,
         rounds=make_rounds([c.name for c in checkpoints], num_nodes, cfg.schedule),
         aliases=aliases,
@@ -161,4 +170,6 @@ def build_plan(
         delete_pushed_exports=delete_pushed_exports,
         config=cfg.model_dump(mode="json"),
         gpus_per_node=gpus_per_node,
+        prime_team_id=prime_team_id,
+        credentials=dict(credentials or {}),
     )

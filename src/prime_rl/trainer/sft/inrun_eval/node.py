@@ -7,6 +7,7 @@ volume and pushed; a failed pod could cost the run its post-run sync).
 """
 
 import json
+import math
 import os
 import shutil
 import socket
@@ -27,6 +28,7 @@ UNREACHABLE = 1800.0  # node 0's store unreachable this long: it is gone, give u
 STOP_ACK = 900.0
 BYE = 1800.0
 GPU_FREE_MIB = 4096
+HARNESS_PREP = 4 * 3600.0  # without a cap: the longest the harness setup (offline install, caches) may take
 
 
 def node_ip(master_addr: str) -> str:
@@ -151,7 +153,7 @@ def follow(plan: Plan, cfg, log) -> None:
     coord.set(f"node/{plan.node}", {"ip": ip, "host": socket.gethostname()})
     server = NodeServer(plan, cfg, ip, log)
     ckpts = {c.name: c for c in plan.checkpoints}
-    end = plan.deadline + 3600
+    end = math.inf if plan.deadline is None else plan.deadline + 3600
     i = 0
     try:
         while True:
@@ -191,6 +193,7 @@ class Driver:
         self.status: dict = {
             "started": plan.started,
             "deadline": plan.deadline,
+            "cap_hours": cfg.budget_hours,
             "rounds": plan.rounds,
             "aliases": plan.aliases,
             "skipped": plan.skipped,
@@ -251,6 +254,26 @@ class Driver:
         coord.set("node/0", {"ip": ip, "host": socket.gethostname()})
         for name in plan.skipped:
             self.status["checkpoints"][name] = {"status": "skipped", "reason": plan.skipped[name]}
+        creds = harness.credentials(cfg.harness, dict(os.environ), plan.prime_team_id)
+        self.status["credentials"] = {k: v for k, v in creds.items() if k != "problem"}
+        if creds["problem"]:
+            # Nothing can run without sandboxes: fail the eval phase now instead of loading vLLM for nothing.
+            self.log(f"eval phase FAILED before serving: {creds['problem']}")
+            self.status["eval"] = {"status": "no_credentials", "error": creds["problem"]}
+            for ckpt in plan.checkpoints:
+                self.status["checkpoints"][ckpt.name] = {
+                    "status": "failed",
+                    "reason": "no_credentials",
+                    "error": creds["problem"],
+                    "step": ckpt.step,
+                    "val_loss": ckpt.val_loss,
+                }
+            self.finish(coord)
+            return
+        self.log(
+            f"credentials: PRIME_API_KEY present, PRIME_TEAM_ID {creds['prime_team_id']} "
+            f"({creds['prime_team_id_source']})"
+        )
         self.write_status()
         prep = threading.Thread(target=self.prepare_harness, name="harness-prep", daemon=True)
         prep.start()
@@ -261,7 +284,8 @@ class Driver:
             for i, assignment in enumerate(plan.rounds):
                 now = time.time()
                 end = round_deadline(now, plan.deadline, reserve, len(plan.rounds) - i)
-                self.log(f"round {i}: {assignment}, harness until {time.ctime(end)}")
+                until = "no cap: until the flow runs finish" if end is None else f"capped at {time.ctime(end)}"
+                self.log(f"round {i}: {assignment}, harness {until}")
                 by_node = {str(node): name for name, nodes in assignment.items() for node in nodes}
                 coord.set(f"round/{i}", {"assign": by_node})
                 ready: dict[str, dict] = {}
@@ -280,7 +304,7 @@ class Driver:
                 )
                 for n in others:
                     ready[n] = found.get(f"ready/{i}/{n}") or {"ok": False, "error": "no answer"}
-                prep.join(timeout=max(0.0, end - time.time()))
+                prep.join(timeout=HARNESS_PREP if end is None else max(0.0, end - time.time()))
                 if not prep.is_alive() and self.henv is None:
                     # No harness: every checkpoint left fails the same way; stop serving instead of reloading.
                     for later in plan.rounds[i:]:
@@ -309,7 +333,9 @@ class Driver:
             server.stop()
             self.finish(coord)
 
-    def evaluate(self, ckpt: Checkpoint, slot: int, urls: list[str], failed_nodes: dict, deadline: float) -> None:
+    def evaluate(
+        self, ckpt: Checkpoint, slot: int, urls: list[str], failed_nodes: dict, deadline: float | None
+    ) -> None:
         """One checkpoint: router, harness, scoring, results. Records failures in the status."""
         entry = self.status["checkpoints"].setdefault(ckpt.name, {})
         entry.update(status="running", step=ckpt.step, val_loss=ckpt.val_loss, engines=len(urls))
@@ -350,7 +376,7 @@ class Driver:
                 serving.stop([router], grace=30)
             self.write_status()
 
-    def run_harness(self, ckpt: Checkpoint, base_url: str, engines: int, deadline: float) -> dict:
+    def run_harness(self, ckpt: Checkpoint, base_url: str, engines: int, deadline: float | None) -> dict:
         cfg, h = self.cfg, self.cfg.harness
         out = self.eval_dir / ckpt.name
         (out / "configs").mkdir(parents=True, exist_ok=True)
@@ -363,7 +389,7 @@ class Driver:
             raise RuntimeError(f"{total} tasks selected, expected {h.expected_tasks}: {counts}")
         gate_max = h.max_concurrent_rollouts or engines * h.rollouts_per_engine
         root = self.work / "runs" / ckpt.name
-        env = harness.run_env(h, self.henv, dict(os.environ))
+        env = harness.run_env(h, self.henv, dict(os.environ), self.plan.prime_team_id)
         procs, changed, stores, ks = {}, {}, {}, {}
         import tomli_w
 
@@ -385,6 +411,8 @@ class Driver:
                 k=h.k,
                 include_names=names if restrict is not None else None,
                 path_rewrites=self.kernel_rewrites,
+                d5_exclude_newer=h.d5_exclude_newer,
+                in_box_uv_version=h.in_box_uv_version if h.d5_exclude_newer is not None else None,
             )
             path = self.work / "configs" / f"{ckpt.name}-{label}.toml"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -412,7 +440,8 @@ class Driver:
         by_name = {row.name: row for row in table}
         for label, names in selection.items():
             rows = [by_name[name] for name in names]
-            label_scores, diag = scoring.score_store(stores[label], rows, label, ks[label], cfg.pass_threshold)
+            cut = bool(runs.get(label, {}).get("stopped"))
+            label_scores, diag = scoring.score_store(stores[label], rows, label, ks[label], cfg.pass_threshold, cut=cut)
             scores += label_scores
             diagnostics[label] = diag
         summary = scoring.summary_by_group(scores)
@@ -436,6 +465,15 @@ class Driver:
             "summary": summary,
             "flow_runs": runs,
             "complete": not any(r.get("stopped") for r in runs.values()) and summary["overall"].get("missing", 0) == 0,
+            "coverage": summary["overall"].get("coverage"),
+            "cap": {
+                "budget_hours": cfg.budget_hours,
+                "round_deadline": deadline,
+                "stopped_sources": sorted(label for label, r in runs.items() if r.get("stopped")),
+            },
+            "d5": {"exclude_newer": h.d5_exclude_newer, "in_box_uv_version": h.in_box_uv_version}
+            if h.d5_exclude_newer is not None
+            else None,
             "diagnostics": diagnostics,
             "changed_config_keys": changed,
             "harness": self.status.get("harness"),
@@ -447,7 +485,7 @@ class Driver:
         headline = {
             key: overall.get(key)
             for key in overall
-            if key.startswith("pass@") or key in ("tasks", "errored", "missing")
+            if (key.startswith("pass@") and not key.endswith("_tasks")) or key in ("tasks", "errored", "missing", "cut")
         }
         self.log(f"{ckpt.name}: {json.dumps(headline)} -> {out}")
         if cfg.archive_stores:
@@ -458,6 +496,7 @@ class Driver:
             "val": summary["split"].get("val"),
             "train": summary["split"].get("train"),
             "complete": result["complete"],
+            "coverage": result["coverage"],
         }
 
     def inference_config_record(self) -> dict:
@@ -473,9 +512,11 @@ class Driver:
         (out / "stores").mkdir(exist_ok=True)
         zstd = shutil.which("zstd")
         for label, store in stores.items():
-            left = self.plan.deadline - time.time() - 600
-            if left <= 0 or not store.is_dir():
-                self.log(f"{ckpt.name}/{label}: store not archived ({'no time left' if left <= 0 else 'missing'})")
+            left = None if self.plan.deadline is None else self.plan.deadline - time.time() - 600
+            if (left is not None and left <= 0) or not store.is_dir():
+                self.log(
+                    f"{ckpt.name}/{label}: store not archived ({'missing' if not store.is_dir() else 'no time left'})"
+                )
                 continue
             target = out / "stores" / f"{label}.tar.{'zst' if zstd else 'gz'}"
             cmd = ["tar", "-C", str(store.parent), "-cf", str(target), store.name]
@@ -501,7 +542,19 @@ class Driver:
         self.status["finished"] = time.time()
         self.write_status()
         try:
-            keys = ("status", "step", "val_loss", "overall", "val", "train", "complete", "error", "same_as", "reason")
+            keys = (
+                "status",
+                "step",
+                "val_loss",
+                "overall",
+                "val",
+                "train",
+                "complete",
+                "coverage",
+                "error",
+                "same_as",
+                "reason",
+            )
             summary = {
                 name: {k: v for k, v in entry.items() if k in keys}
                 for name, entry in self.status["checkpoints"].items()
@@ -560,7 +613,8 @@ def main() -> None:
     def log(message: str) -> None:
         logger.info(f"[in-run eval, node {plan.node}] {message}")
 
-    log(f"started (pid {os.getpid()}), deadline {time.ctime(plan.deadline)}")
+    cap = "no cap" if plan.deadline is None else f"safety cap {time.ctime(plan.deadline)}"
+    log(f"started (pid {os.getpid()}), {cap}")
     try:
         if plan.node == 0:
             driver = Driver(plan, cfg, log)

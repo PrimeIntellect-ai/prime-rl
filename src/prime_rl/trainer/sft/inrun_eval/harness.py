@@ -11,6 +11,8 @@ Bundle layout (``[inrun_eval.harness] bundle_dir``, staged on the volume; see PR
                                      ``.complete`` marker every requirement is there and nothing is downloaded
     harness/python/*.tar.gz          optional: python-build-standalone 3.13 (no Python download)
     harness/frpc/                    optional: prime_tunnel's frpc binary and .frpc_version (no GitHub download)
+    harness/host-uv/<ver>/<target>/uv optional: verifiers' host uv (``runtimes/host_uv``) for boxes that cannot
+                                     install uv themselves, as its cache holds it (no GitHub download)
     harbor-cache/<cache name>/       the Harbor dataset exports, as verifiers caches them (tasks.harbor_cache_name)
     kernels/<landlock bundle>.tgz    the kernel bundle the 2 landlock tasks' configs name
 """
@@ -34,12 +36,17 @@ REQUIREMENTS = "harness/requirements.txt"
 WHEELS = "harness/wheels"
 PYTHONS = "harness/python"
 FRPC = "harness/frpc"
+HOST_UV = "harness/host-uv"
 SFT_GEN = "sft-gen"
 HARBOR_CACHE = "harbor-cache"
 KERNELS = "kernels"
 FLOW_POLL = 30.0
+PLUGINS = Path(__file__).resolve().parent / "plugins"
+"""Harness plugins of the eval (the D5 mini_swe_agent harness), put on the flow runs' PYTHONPATH."""
+D5_MODULE = "tb4_mini_swe_agent_d5"
+PRIME_API_KEY = "PRIME_API_KEY"
 
-# Never handed to the harness (it gets PRIME_API_KEY / PRIME_TEAM_ID and its own vLLM key only).
+# Never handed to the harness (it gets the platform's PRIME_API_KEY, PRIME_TEAM_ID and its own vLLM key only).
 SECRET_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "WANDB_API_KEY", "GITHUB_TOKEN", "GH_TOKEN")
 UV_PROJECT_VARS = (
     "UV_PROJECT_ENVIRONMENT",
@@ -63,6 +70,11 @@ root = pathlib.Path(verifiers.__file__).resolve().parent.parent
 for rel in json.loads(sys.argv[1]):
     p = root / rel
     out["files"][rel] = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+if len(sys.argv) > 2:
+    sys.path.insert(0, sys.argv[2])
+    from verifiers.v1.utils.loaders import harness_class, harness_config_type
+    cls = harness_class(sys.argv[3])
+    out["plugin"] = {"harness": cls.__name__, "config": harness_config_type(sys.argv[3]).__name__}
 print(json.dumps(out))
 """
 
@@ -182,15 +194,20 @@ def build_env(harness, bundle: Path, work: Path, log=print, run=subprocess.run) 
         done = run(cmd, env=env, capture_output=True, text=True)
         if done.returncode != 0:
             raise RuntimeError(f"{' '.join(cmd[:3])} failed ({done.returncode}): {(done.stderr or '')[-2000:]}")
-    done = run(
-        [str(venv / "bin" / "python"), "-I", "-c", VERIFY_SCRIPT, json.dumps(sorted(harness.pinned_files_sha256))],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    plugins = work / "plugins"
+    if plugins.exists():
+        shutil.rmtree(plugins)
+    shutil.copytree(PLUGINS, plugins, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    verify = [str(venv / "bin" / "python"), "-I", "-c", VERIFY_SCRIPT, json.dumps(sorted(harness.pinned_files_sha256))]
+    if harness.d5_exclude_newer is not None:
+        from prime_rl.trainer.sft.inrun_eval.flowcfg import D5_HARNESS
+
+        verify += [str(plugins), D5_HARNESS]
+    done = run(verify, env=env, capture_output=True, text=True)
     if done.returncode != 0:
         raise RuntimeError(f"harness check failed: {(done.stderr or '')[-2000:]}")
     info = json.loads(done.stdout.strip().splitlines()[-1])
+    info["plugins_sha256"] = {path.name: sha256_file(path) for path in sorted(plugins.glob("*.py"))}
     problems = check_versions(harness, info)
     if problems:
         raise RuntimeError(f"harness pins: {problems}")
@@ -202,7 +219,20 @@ def build_env(harness, bundle: Path, work: Path, log=print, run=subprocess.run) 
     frpc = bundle / FRPC
     if frpc.is_dir():
         shutil.copytree(frpc, work / "home" / ".prime" / "bin", dirs_exist_ok=True)
-    return HarnessEnv(venv=venv, cwd=cwd, env=env, info=info)
+    stage_host_uv(bundle, env)
+    hen = HarnessEnv(venv=venv, cwd=cwd, env=env, info=info)
+    hen.info["plugins_dir"] = str(plugins)
+    return hen
+
+
+def stage_host_uv(bundle: Path, env: dict[str, str]) -> Path | None:
+    """Put the bundle's host uv where verifiers' ``host_uv.cache_dir()`` looks for it under the harness env."""
+    src = bundle / HOST_UV
+    if not src.is_dir():
+        return None
+    cache = Path(env.get("XDG_CACHE_HOME") or Path(env["HOME"]) / ".cache") / "verifiers" / "uv"
+    shutil.copytree(src, cache, dirs_exist_ok=True)
+    return cache
 
 
 def check_versions(harness, info: dict) -> list[str]:
@@ -219,20 +249,48 @@ def check_versions(harness, info: dict) -> list[str]:
     return problems
 
 
-def run_env(harness, hen: HarnessEnv, base: dict[str, str]) -> dict[str, str]:
-    """The flow runs' environment: the install env plus the venv, the sft-gen modules, the Prime credentials and a
-    fresh vLLM key. Raises when no Prime API key / team id is set."""
+def team_id(harness, base: dict[str, str], fallback: str | None = None) -> tuple[str | None, str]:
+    """The Prime team id and where it came from: the config, the environment, the trainer's view (its [env_vars])."""
+    if harness.prime_team_id:
+        return harness.prime_team_id, "inrun_eval.harness.prime_team_id"
+    if base.get("PRIME_TEAM_ID"):
+        return base["PRIME_TEAM_ID"], "environment"
+    if fallback:
+        return fallback, "run config [env_vars]"
+    return None, "unset"
+
+
+def credentials(harness, base: dict[str, str], fallback_team: str | None = None) -> dict:
+    """What the eval has for Prime (sandboxes, tunnels, the team's private images): the platform's per-run
+    ``PRIME_API_KEY`` (only its presence is recorded) and the team id. ``problem`` is None when both are there."""
+    team, source = team_id(harness, base, fallback_team)
+    present = bool(base.get(PRIME_API_KEY))
+    problem = None
+    if not present:
+        problem = (
+            "PRIME_API_KEY is not set in the trainer pod: the platform did not provide its per-run Prime credential "
+            "(prime train -e cannot pass it), so no sandbox can start"
+        )
+    elif not team:
+        problem = "PRIME_TEAM_ID is not set (run config [env_vars] or inrun_eval.harness.prime_team_id)"
+    return {"prime_api_key_present": present, "prime_team_id": team, "prime_team_id_source": source, "problem": problem}
+
+
+def run_env(harness, hen: HarnessEnv, base: dict[str, str], fallback_team: str | None = None) -> dict[str, str]:
+    """The flow runs' environment: the install env plus the venv, the sft-gen modules and the eval's plugins, the
+    platform's Prime credential and team, and a fresh vLLM key. Raises when the credentials are missing."""
     env = dict(hen.env)
     env["PATH"] = f"{hen.venv / 'bin'}:{base.get('PATH', '/usr/bin:/bin')}"
     env["VIRTUAL_ENV"] = str(hen.venv)
-    env["PYTHONPATH"] = f"{hen.cwd}:{hen.cwd / 'plugins'}"
-    key = next((base[var] for var in harness.prime_api_key_vars if base.get(var)), None)
-    if key is None:
-        raise RuntimeError(f"no Prime API key in {harness.prime_api_key_vars} (sandboxes and tunnels need it)")
-    env["PRIME_API_KEY"] = key
-    if not base.get("PRIME_TEAM_ID"):
-        raise RuntimeError("PRIME_TEAM_ID is not set (the task images are private to the team)")
-    env["PRIME_TEAM_ID"] = base["PRIME_TEAM_ID"]
+    path = [str(hen.cwd), str(hen.cwd / "plugins")]
+    if hen.info.get("plugins_dir"):
+        path.append(hen.info["plugins_dir"])
+    env["PYTHONPATH"] = ":".join(path)
+    creds = credentials(harness, base, fallback_team)
+    if creds["problem"]:
+        raise RuntimeError(creds["problem"])
+    env[PRIME_API_KEY] = base[PRIME_API_KEY]
+    env["PRIME_TEAM_ID"] = creds["prime_team_id"]
     env[harness.api_key_var] = secrets.token_hex(16)
     for var in ("UV_PYTHON_PREFERENCE", "UV_PYTHON_DOWNLOADS"):
         env.pop(var, None)
@@ -289,10 +347,11 @@ def flow_cmd(harness, venv: Path, config: Path) -> list[str]:
 
 
 def wait_flow_runs(
-    procs: dict, deadline: float, log=print, poll: float | None = None, grace: float = 300.0
+    procs: dict, deadline: float | None, log=print, poll: float | None = None, grace: float = 300.0
 ) -> dict[str, dict]:
-    """Wait for the flow runs (label -> ``serving.Proc``) until ``deadline`` (wall clock), then stop the rest (a
-    flow's first SIGTERM stops it now; what landed stays in its store). Returns each run's exit code and timing."""
+    """Wait for the flow runs (label -> ``serving.Proc``) to exit; with a ``deadline`` (the optional cap, wall clock)
+    stop the rest then (a flow's first SIGTERM stops it now; what landed stays in its store, and the scoring reports
+    the draws it cut as ``cut``). Returns each run's exit code, timing and whether the cap stopped it."""
     from prime_rl.trainer.sft.inrun_eval import serving
 
     poll = FLOW_POLL if poll is None else poll
@@ -307,8 +366,8 @@ def wait_flow_runs(
                 log(f"flow run {label} exited with {proc.popen.returncode} after {status[label]['seconds']:.0f}s")
         if not running:
             return status
-        if time.time() >= deadline:
-            log(f"eval budget reached: stopping the flow runs {running}")
+        if deadline is not None and time.time() >= deadline:
+            log(f"eval safety cap reached: stopping the flow runs {running} (their unfinished draws are 'cut')")
             serving.stop([procs[label] for label in running], grace=grace)
             for label in running:
                 status[label] = {
@@ -319,5 +378,6 @@ def wait_flow_runs(
             return status
         if time.time() - last_note > 1800:
             last_note = time.time()
-            log(f"flow runs still running: {running} ({(deadline - time.time()) / 3600:.1f} h of budget left)")
+            left = "no cap" if deadline is None else f"{(deadline - time.time()) / 3600:.1f} h to the cap"
+            log(f"flow runs still running: {running} ({(time.time() - start) / 3600:.1f} h in, {left})")
         time.sleep(poll)

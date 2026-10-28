@@ -1,50 +1,141 @@
-# SMOKE TEST of the in-run TB4 eval ([inrun_eval], PREREQS.md) on hardware, before the real run depends on it.
-# No training: the trainer goes straight to the hand-off (eval_only), serves the GA text backbone with vLLM and runs
-# the collection harness on the 3 tasks of /volume/datasets/tb4-eval/smoke-tasks.txt, 1 rollout each.
-# prime train configs/advanced/nemotron-3-super/tb4-inrun-eval-smoke.toml --volume nemotron-sft-tb4-v2 \
-#     -e ~/.config/prime-export/tb4-eval.env -y
-# Then read runs/<id>/eval/base/summary.json and status.json (after the run's sync), and the run's log for the
-# hand-off ("hands over to its eval process"), the vLLM start-up time, "harness ready", the probe and the flow runs.
+# SMOKE of the production path of sft-hosted-tb4-v2.toml, end to end, on 2 nodes (cross-node included) with a short
+# real training: 3 optimizer steps at 64k tokens on a tiny dataset, validation after every step with keep_best (best
+# capped at step 2, so 'best' is a snapshot older than 'last' and its export reloads it), then exactly what the real
+# run does after training: the full_per_node HF export of best and last (no HF push: no token, no repos), the node-copy
+# check, cleanup_staging (the best snapshot), the GPU hand-off from the trained FSDP model, vLLM on both nodes
+# (TP2 x DP4 each), node 0's router over 8 engines, two rounds (best, then last: a vLLM stop/restart in between), the
+# pinned harness with D5 on 3 tasks x 1 rollout per checkpoint, scoring, the export dedupe and the work-dir cleanup.
 #
-# What it answers (PREREQS.md "unknowns"): the pod outlives "SFT trainer finished"-less trainer exits; Prime
-# credentials, frps/GitHub/PyPI egress and the sandboxes work from the pod; GPUs are free after the hand-off; vLLM
-# fits 1M context at TP2 with the float32 Mamba cache and its start-up time; the harness venv builds with the pins;
-# results under runs/<id>/eval/ reach the volume; the deleted work dir does not.
-# With num_train_nodes = 2 it also tests the cross-node part (coordination store, node 1's engines behind node 0's
-# router).
+# prime train configs/advanced/nemotron-3-super/tb4-inrun-eval-smoke.toml --volume nemotron-sft-tb4-v2 -y
+# (no -e: nothing is pushed to HF. The Prime credential is the platform's per-run PRIME_API_KEY; the team is
+# [env_vars] PRIME_TEAM_ID.) Announce the launch and its cost first: 16 H200 for ~3-5 h.
+#
+# Needs on the volume (PREREQS.md): models/nemotron-3.5-super-text, datasets/tb4-eval (the eval bundle, with
+# smoke-tasks.txt) and datasets/nemotron-distill-sft-tb4-smoke, made from the v2 build with
+#     python scripts/tb4_inrun_eval/make_smoke_dataset.py --src <nemotron-distill-sft-tb4-1m-v2> \
+#         --out <dir>/nemotron-distill-sft-tb4-smoke        (24 train / 4 val whole rows of <= 65536 tokens)
+# Leaves on the volume: runs/<id>/hf-export/{best,last} (2 x ~0.25 TB, one copy of each file) and runs/<id>/eval/.
+# No full checkpoint is written (no [ckpt]), the best snapshot and the per-node duplicate copies are deleted before
+# the sync: their absence on the volume is part of the check (PREREQS.md section 4).
 
 image_tag = "v0.10.1.dev74"
 source_ref = "exp/nemotron-sft-tb4-v2"
 gpu_type = "H200_141GB"
 
-max_steps = 1   # unused (eval_only: no training step runs)
+max_steps = 3
+dist_timeout_seconds = 7200   # first step compiles
+
+[scheduler]
+type = "cosine"
+warmup_steps = 1
+min_lr = 1e-6
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+PRIME_TEAM_ID = "cmlr3u2er002zhr01tj8f48ts"
 
 [deployment]
 type = "multi_node"
 gpus_per_node = 8
-num_train_nodes = 1
+num_train_nodes = 2
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "tb4-inrun-eval-smoke"
+
+# No [ckpt]: no full checkpoint (1.45 TB) is written, not even the final one; nothing to resume.
 
 [model]
 name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+# The run's sharding (cp 16 x ep 16) on 16 GPUs: 1 data rank, 4096 tokens per rank at seq_len 65536. Host RAM per
+# node holds twice the run's share of the offloaded optimizer state (2 nodes instead of 4); if a node OOMs, run the
+# smoke on num_train_nodes = 4 (the run's exact topology).
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
 
-[renderer]   # never used (eval_only); SFTConfig requires the typed renderer
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
 name = "nemotron-3.5"
 truncate_history_thinking = false
 
 [data]
 type = "sft"
-name = "/volume/datasets/nemotron-distill-sft-tb4-1m-v2"   # never loaded (eval_only)
-seq_len = 1048576
-batch_size = 1
+name = "/volume/datasets/nemotron-distill-sft-tb4-smoke"
+seq_len = 65536
+batch_size = 2
 micro_batch_size = 1
+num_workers = 1
+stopping_strategy = "all_exhausted"
+shuffle = true
+seed = 42
+subsets = [
+    "tb4",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+[val]
+interval = 1
+eval_on_start = false
+after_optimizer_step = true
+keep_best = true
+keep_best_max_step = 2   # 'best' is step 1 or 2, 'last' is step 3: the best export reloads the snapshot
+
+[val.data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-tb4-smoke"
+subsets = [
+    "tb4",
+]
+splits = [
+    "validation",
+]
+seq_len = 65536
+batch_size = 2
+micro_batch_size = 1
+num_workers = 1
+shuffle = false
+
+[val.data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# As the run, without repos: nothing is pushed (and no HF_TOKEN is passed), the exports stay in the run dir.
+[hf_export]
+checkpoints = ["best", "last"]
+
+[hf_export.cleanup]
+best_snapshot = true
 
 [inrun_eval]
-eval_only = true
-model_dir = "/volume/models/nemotron-3.5-super-text"
-model_name = "base"
-budget_hours = 8      # 3 rollouts; the collection timeouts allow a rollout up to 24 h, pick fast smoke tasks
+checkpoints = ["best", "last"]
+schedule = "sequential"
+evaluate_aliases = true   # should 'best' still be the final step, evaluate it in its own round anyway
+# Optional safety cap for the smoke only (the real run has none): draws it cuts are reported as 'cut', not failures.
+budget_hours = 10
 reserve_minutes = 30
-keep_work_dir = false
 
 [inrun_eval.harness]
 tasks_file = "/volume/datasets/tb4-eval/smoke-tasks.txt"

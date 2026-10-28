@@ -4,7 +4,13 @@ A store's trace index (``<store>/traces/index.jsonl``, one ``TraceRow`` per land
 ``labels.flow.job`` (``<task slug>-<key>-qc``), ``labels.flow.call`` (``solver/draw<n>-<version>``), ``ok``,
 ``error``, ``stop_condition`` and ``reward``. Per task and draw the last *finished* row counts (ok and not stopped by
 an error; HarnessError reruns land rows of their own); a draw without one is an error, a draw without any row is
-missing. Errors and missing draws count as failures with ``n`` = the configured k, and are reported separately.
+missing. Errors and missing draws count as failures, and are reported separately.
+
+The one exception is a source whose flow run the optional safety cap (``[inrun_eval] budget_hours``) stopped: its
+unfinished draws (error or missing) are ``cut``. A cut draw is not an outcome: it is excluded from pass@k, which is
+then computed per task over its n = k - cut remaining draws, for every reported k <= n (a task left with fewer than
+k draws is not in pass@k's average; ``pass@<k>_tasks`` says how many are). The summary's ``coverage`` states the
+share of planned draws that are not cut. Without a cap nothing is cut.
 
 pass@k = 1 - C(n - c, k) / C(n, k) per task (c = draws with reward >= the pass threshold), averaged over tasks; with
 n = k = 8, pass@1 is the mean of c / 8 and pass@8 the share of tasks solved at least once.
@@ -110,7 +116,7 @@ def task_names_from_traces(traces_path: Path, trace_ids: set[str]) -> dict[str, 
 @dataclass
 class Draw:
     draw: int
-    status: str  # passed | failed | error | missing
+    status: str  # passed | failed | error | missing | cut
     reward: float | None = None
     stop_condition: str | None = None
     error: str | None = None
@@ -124,8 +130,16 @@ class TaskScore:
     source: str
     split: str
     n: int
+    """Planned draws (the configured k)."""
     c: int = 0
+    cut: int = 0
+    """Draws the safety cap cut (excluded from pass@k)."""
     draws: list[Draw] = field(default_factory=list)
+
+    @property
+    def graded(self) -> int:
+        """The draws that count: the planned ones minus the cut ones."""
+        return self.n - self.cut
 
     def to_dict(self) -> dict:
         return {**{k: v for k, v in asdict(self).items() if k != "draws"}, "draws": [asdict(d) for d in self.draws]}
@@ -138,9 +152,11 @@ def score_rows(
     k: int,
     pass_threshold: float,
     traces_path: Path | None = None,
+    cut: bool = False,
 ) -> tuple[list[TaskScore], dict]:
     """Score one source's index rows against its expected tasks. Returns the per-task scores (every expected task,
-    plus unexpected ones the store holds) and diagnostics (unmapped jobs, draws beyond k)."""
+    plus unexpected ones the store holds) and diagnostics (unmapped jobs, draws beyond k). ``cut``: the safety cap
+    stopped this source's run, so its unfinished draws are ``cut`` instead of error / missing."""
     names = [row.name for row in tasks]
     by_name = {row.name: row for row in tasks}
     slugs, ambiguous = slug_index(names)
@@ -203,14 +219,15 @@ def score_rows(
                 row = landed[-1]
                 draw = Draw(
                     draw=n,
-                    status="error",
+                    status="cut" if cut else "error",
                     stop_condition=row.get("stop_condition"),
                     error=row.get("error"),
                     trace_id=row.get("id"),
                     rows=len(landed),
                 )
             else:
-                draw = Draw(draw=n, status="missing")
+                draw = Draw(draw=n, status="cut" if cut else "missing")
+            score.cut += draw.status == "cut"
             score.draws.append(draw)
         scores.append(score)
     diagnostics = {
@@ -220,35 +237,59 @@ def score_rows(
         "draw_rows_beyond_k": beyond_k,
         "unexpected_tasks": sorted({t for (t, _) in per_task_draw} - set(names)),
         "row_errors": dict(Counter(str(row.get("error")) for _, _, row in draws if row.get("error"))),
+        "cut_by_cap": cut,
     }
     return scores, diagnostics
 
 
 def summarize(scores: list[TaskScore]) -> dict:
-    """pass@k and counts over a group of tasks (all with the same n)."""
+    """pass@k and counts over a group of tasks (all with the same planned n). Cut draws are excluded: each task's
+    pass@k uses its remaining draws, and only tasks with at least k of them enter pass@k's average."""
     if not scores:
         return {"tasks": 0}
     n = scores[0].n
     if any(score.n != n for score in scores):
-        raise ValueError("tasks with different numbers of draws in one group")
+        raise ValueError("tasks with different numbers of planned draws in one group")
     statuses = Counter(draw.status for score in scores for draw in score.draws)
     rewards = [draw.reward for score in scores for draw in score.draws if draw.reward is not None]
-    stops = Counter(draw.stop_condition or "-" for score in scores for draw in score.draws if draw.status != "missing")
+    stops = Counter(
+        draw.stop_condition or "-" for score in scores for draw in score.draws if draw.status not in ("missing", "cut")
+    )
     graded = statuses["passed"] + statuses["failed"]
-    return {
+    planned = len(scores) * n
+    passk: dict[str, float | int | None] = {}
+    for k in report_ks(n):
+        eligible = [s for s in scores if s.graded >= k]
+        passk[f"pass@{k}"] = sum(pass_at_k(s.graded, s.c, k) for s in eligible) / len(eligible) if eligible else None
+        if statuses["cut"]:
+            passk[f"pass@{k}_tasks"] = len(eligible)
+    out = {
         "tasks": len(scores),
         "draws_per_task": n,
-        "rollouts": len(scores) * n,
+        "rollouts": planned,
         "passed": statuses["passed"],
         "failed": statuses["failed"],
         "errored": statuses["error"],
         "missing": statuses["missing"],
-        **{f"pass@{k}": sum(pass_at_k(n, s.c, k) for s in scores) / len(scores) for k in report_ks(n)},
+        "cut": statuses["cut"],
+        **passk,
         "tasks_solved": sum(score.c > 0 for score in scores),
         "pass@1_graded_only": statuses["passed"] / graded if graded else None,
         "mean_reward_graded": sum(rewards) / len(rewards) if rewards else None,
         "stop_conditions": dict(sorted(stops.items())),
+        "coverage": {
+            "draws_counted": planned - statuses["cut"],
+            "draws_planned": planned,
+            "fraction": (planned - statuses["cut"]) / planned if planned else None,
+            "tasks_with_all_draws": sum(s.cut == 0 for s in scores),
+            "tasks_without_draws": sum(s.graded == 0 for s in scores),
+            "note": "complete: every planned draw counts"
+            if not statuses["cut"]
+            else "the safety cap cut some draws: they are excluded from pass@k, which is over the remaining draws "
+            "(pass@<k>_tasks tasks per k); not comparable to a complete run",
+        },
     }
+    return out
 
 
 def summary_by_group(scores: list[TaskScore]) -> dict:
@@ -262,8 +303,9 @@ def summary_by_group(scores: list[TaskScore]) -> dict:
 
 
 def score_store(
-    store: Path, tasks: list[TaskRow], source: str, k: int, pass_threshold: float
+    store: Path, tasks: list[TaskRow], source: str, k: int, pass_threshold: float, cut: bool = False
 ) -> tuple[list[TaskScore], dict]:
-    """Score a flow store (``<store>/traces/index.jsonl``, task names of unmapped jobs from ``<store>/traces.jsonl``)."""
+    """Score a flow store (``<store>/traces/index.jsonl``, task names of unmapped jobs from ``<store>/traces.jsonl``).
+    ``cut``: the safety cap stopped its run."""
     rows = read_jsonl(store / "traces" / "index.jsonl")
-    return score_rows(rows, tasks, source, k, pass_threshold, traces_path=store / "traces.jsonl")
+    return score_rows(rows, tasks, source, k, pass_threshold, traces_path=store / "traces.jsonl", cut=cut)

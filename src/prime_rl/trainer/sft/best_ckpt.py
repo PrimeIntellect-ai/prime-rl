@@ -99,8 +99,10 @@ def _barrier(group) -> None:
 class BestCheckpoint:
     """Tracks the best validation loss and keeps its weights on disk. Every method is called by all ranks."""
 
-    def __init__(self, root: Path, group=None):
+    def __init__(self, root: Path, group=None, max_step: int | None = None):
         self.root = root
+        self.max_step = max_step
+        """Only validations after at most this many steps are candidates (``[val] keep_best_max_step``)."""
         self.world = get_world()
         self.logger = get_logger()
         # Object collectives (broadcast_object_list, all_gather_object) need a CPU-capable group.
@@ -142,6 +144,13 @@ class BestCheckpoint:
             )
             return False
         self.history[step] = val_loss
+        if self.max_step is not None and step > self.max_step:
+            self.logger.info(
+                f"Best checkpoint: val loss {val_loss:.4f} after step {step} is recorded, not a candidate "
+                f"(keep_best_max_step {self.max_step})"
+            )
+            self._write_json()
+            return False
         if not is_improvement(val_loss, self.best_loss):
             self.logger.info(
                 f"Best checkpoint: val loss {val_loss:.4f} after step {step} is not below the best "

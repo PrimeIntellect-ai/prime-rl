@@ -47,14 +47,21 @@ FLOW = textwrap.dedent(
     assert flow["solver"]["client"]["base_url"].endswith("/v1"), flow["solver"]["client"]
     names = flow["select"]["include"]["names"]
     k = flow["pieces"]["rollouts"]["k"]
+    assert flow["solver"]["harness"]["id"] == "tb4-mini-swe-agent-d5", flow["solver"]["harness"]
+    assert flow["solver"]["harness"]["prepare_exclude_newer"] == "2026-10-24T07:23:00Z"
     with open(store / "traces" / "index.jsonl", "w") as f:
         for i, name in enumerate(names):
+            if name.endswith("/slow"):
+                continue
             slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48]
             for n in range(k):
                 row = {"id": f"t{i}{n}", "labels": {"flow": {"job": f"{slug}-0123456789ab-qc",
                        "call": f"solver/draw{n}-abc", "seat": "solver"}}, "agent": "solver", "ok": True,
                        "error": None, "stop_condition": "agent_completed", "reward": 1.0 if i == 0 else 0.0}
                 f.write(json.dumps(row) + "\\n")
+    if any(name.endswith("/slow") for name in names):
+        import time
+        time.sleep(600)
     """
 )
 
@@ -133,9 +140,8 @@ def setup_fakes(tmp_path, monkeypatch) -> tuple[Path, MemoryStore]:
     (venv / "bin").mkdir(parents=True)
     executable(venv / "bin" / "flow", FLOW)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    monkeypatch.setenv("TB4_EVAL_PRIME_API_KEY", "key")
+    monkeypatch.setenv("PRIME_API_KEY", "key")
     monkeypatch.setenv("PRIME_TEAM_ID", "team")
-    monkeypatch.delenv("PRIME_API_KEY", raising=False)
 
     def fake_build_env(h, bundle_dir, work, log=print, run=None):
         work.mkdir(parents=True, exist_ok=True)
@@ -172,8 +178,6 @@ def test_driver_end_to_end(tmp_path, monkeypatch):
     cfg = SFTInRunEvalConfig(
         eval_only=True,
         model_dir=tmp_path / "model",
-        budget_hours=1,
-        reserve_minutes=5,
         archive_stores=True,
         serving={"router_port": 18431},
         harness=harness_cfg(bundle),
@@ -194,8 +198,16 @@ def test_driver_end_to_end(tmp_path, monkeypatch):
     assert overall["tasks"] == 2 and overall["rollouts"] == 4 and overall["pass@1"] == 0.5 and overall["pass@2"] == 0.5
     assert summary["summary"]["split"]["val"]["pass@1"] == 1.0 and summary["summary"]["split"]["train"]["pass@1"] == 0
     assert summary["complete"] and summary["rollout_gate"] == 24 and summary["tasks"] == {"tb-sci": 2}
+    assert summary["cap"]["budget_hours"] is None and summary["coverage"]["fraction"] == 1.0
+    assert status["credentials"] == {
+        "prime_api_key_present": True,
+        "prime_team_id": "team",
+        "prime_team_id_source": "environment",
+    }
+    assert "key" not in json.dumps(status["credentials"]).replace("prime_api_key_present", "")
     changed = summary["changed_config_keys"]["tb-sci"]
     assert "flow.taskset.dataset" in changed and "flow.pieces.rollouts.k" in changed
+    assert "flow.solver.harness.id" in changed and summary["d5"]["exclude_newer"] == "2026-10-24T07:23:00Z"
     config = (run_dir / "eval" / "base" / "configs" / "tb-sci.toml").read_text()
     assert 'base_url = "http://127.0.0.1:18431/v1"' in config and "command_timeout = 1800" in config
     per_task = [json.loads(line) for line in (run_dir / "eval" / "base" / "per_task.jsonl").read_text().splitlines()]
@@ -280,3 +292,61 @@ def test_no_harness_fails_cleanly(tmp_path, monkeypatch):
     assert status["harness"]["ok"] is False and "tasks.tsv" in status["harness"]["error"]
     assert status["checkpoints"]["base"]["status"] == "failed"
     assert json.loads(store.get("done")) == {"ok": False}
+
+
+def test_no_platform_credential_fails_the_eval_before_serving(tmp_path, monkeypatch):
+    """Without the platform's PRIME_API_KEY nothing can run: the eval records it and never loads vLLM."""
+    bundle, store = setup_fakes(tmp_path, monkeypatch)
+    monkeypatch.delenv("PRIME_API_KEY")
+    monkeypatch.setenv("TB4_EVAL_PRIME_API_KEY", "not used")
+    served = []
+    monkeypatch.setattr(node.NodeServer, "serve", lambda self, ckpt, deadline: served.append(ckpt) or [])
+    cfg = SFTInRunEvalConfig(eval_only=True, model_dir=tmp_path / "m", harness=harness_cfg(bundle))
+    p = plan.build_plan(
+        cfg, run_dir=tmp_path / "run", exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x"
+    )
+    node.Driver(p, cfg, lambda m: None).run()
+    status = json.loads((tmp_path / "run" / "eval" / "status.json").read_text())
+    assert status["eval"]["status"] == "no_credentials" and "PRIME_API_KEY is not set" in status["eval"]["error"]
+    assert status["credentials"]["prime_api_key_present"] is False
+    assert status["checkpoints"]["base"]["status"] == "failed"
+    assert status["checkpoints"]["base"]["reason"] == "no_credentials"
+    assert served == [] and json.loads(store.get("done")) == {"ok": False}
+    top = json.loads((tmp_path / "run" / "eval" / "summary.json").read_text())
+    assert top["base"]["reason"] == "no_credentials"
+
+
+def test_safety_cap_reports_cut_draws_apart(tmp_path, monkeypatch):
+    """A configured cap that fires: the unfinished task's draws are 'cut' (not failures) and the coverage says so."""
+    bundle, store = setup_fakes(tmp_path, monkeypatch)
+    (bundle / "smoke-tasks.txt").write_text("terminal-bench/a\nterminal-bench/slow\n")
+    tsv = (bundle / "tasks.tsv").read_text() + "terminal-bench/slow\ttb-sci\ttrain\n"
+    (bundle / "tasks.tsv").write_text(tsv)
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    for rel in ("smoke-tasks.txt", "tasks.tsv"):
+        manifest["files"][rel] = hashlib.sha256((bundle / rel).read_bytes()).hexdigest()
+    (bundle / "manifest.json").write_text(json.dumps(manifest))
+    cfg = SFTInRunEvalConfig(
+        eval_only=True,
+        model_dir=tmp_path / "m",
+        budget_hours=0.01,  # 36 s
+        reserve_minutes=0.1,
+        archive_stores=False,
+        serving={"router_port": 18451},
+        harness=harness_cfg(bundle),
+    )
+    p = plan.build_plan(
+        cfg, run_dir=tmp_path / "run", exports={}, node=0, num_nodes=1, gpus_per_node=8, master_addr="x"
+    )
+    monkeypatch.setattr(harness, "FLOW_POLL", 0.2)
+    import prime_rl.trainer.sft.inrun_eval.serving as serving_mod
+
+    stop = serving_mod.stop
+    monkeypatch.setattr(serving_mod, "stop", lambda procs, grace=300.0: stop(procs, grace=2.0))
+    node.Driver(p, cfg, lambda m: None).run()
+    summary = json.loads((tmp_path / "run" / "eval" / "base" / "summary.json").read_text())
+    overall = summary["summary"]["overall"]
+    assert summary["flow_runs"]["tb-sci"]["stopped"] and summary["cap"]["stopped_sources"] == ["tb-sci"]
+    assert overall["cut"] == 2 and overall["missing"] == 0 and overall["errored"] == 0
+    assert overall["pass@1"] == 1.0 and overall["pass@1_tasks"] == 1  # only 'a' has draws: both passed
+    assert overall["coverage"]["fraction"] == 0.5 and not summary["complete"]

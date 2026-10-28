@@ -11,11 +11,13 @@ lives).
         --flow-config tb-sci=<.../tb-science-glm-measure-20261023/configs/attempt_2/flow.toml> \\
         --tasks-tsv <tasks.tsv> | (--collection-traces <traces.jsonl> --val-tasks <tb4-val-tasks.txt>
                                    --train-dataset <dataset dir> | --train-tasks <file>  [--extra-task name=source]) \\
-        --harbor-cache <~/.cache/harbor/<name>> [...] \\
+        --harbor-cache <~/.cache/harbor/<name>> [...]  (every one the configs need; extra ones, e.g. tb-sci's
+                                                        collection pin 85df9700aaf4, are staged too) \\
         --kernel <landlock-6.12.113-deb13.tgz> \\
         --requirements <requirements.txt> [--wheels <dir> [--wheels-complete]] \\
         [--python-tarball <python-build-standalone .tar.gz>] \\
-        [--frpc <dir with frpc and .frpc_version>] [--smoke-tasks <file>] [--tb-sci-dataset tb-science-vendor@71124a84e6f3]
+        [--frpc <dir with frpc and .frpc_version>] [--host-uv <dir: 0.13.1/x86_64-unknown-linux-musl/uv>] \\
+        [--smoke-tasks <file>] [--tb-sci-dataset tb-science-vendor@71124a84e6f3]
 
 ``--collection-traces`` is a JSON-lines extract of the collection's solver traces with ``run`` (the collection run
 name) and ``task.name`` per line (scratchpad replica-inv/collection-config/traces.jsonl has that shape).
@@ -115,6 +117,7 @@ def main() -> None:
     p.add_argument("--wheels-complete", action="store_true", help="every requirement has a wheel: install offline")
     p.add_argument("--python-tarball", type=Path)
     p.add_argument("--frpc", type=Path)
+    p.add_argument("--host-uv", type=Path, help="verifiers' host-uv cache dir (<version>/<target>/uv)")
     p.add_argument("--smoke-tasks", type=Path)
     p.add_argument("--tb-sci-dataset", default="tb-science-vendor@71124a84e6f3")
     args = p.parse_args()
@@ -181,11 +184,17 @@ def main() -> None:
         shutil.copyfile(args.python_tarball, out / "harness" / "python" / args.python_tarball.name)
     if args.frpc:
         shutil.copytree(args.frpc, out / "harness" / "frpc")
+    if args.host_uv:
+        shutil.copytree(args.host_uv, out / "harness" / "host-uv")
 
     # Harbor caches (named as verifiers names them) and the kernel bundle.
     given = {path.name: path for path in args.harbor_cache}
-    if set(given) != caches:
-        raise SystemExit(f"--harbor-cache must be exactly {sorted(caches)}, got {sorted(given)}")
+    if not caches <= set(given):
+        raise SystemExit(f"--harbor-cache must include {sorted(caches)}, got {sorted(given)}")
+    if set(given) - caches:
+        print(
+            f"also staging the caches {sorted(set(given) - caches)} (not used with --tb-sci-dataset {args.tb_sci_dataset})"
+        )
     for name, path in given.items():
         shutil.copytree(path, out / "harbor-cache" / name, symlinks=False)
     (out / "kernels").mkdir()
@@ -193,7 +202,8 @@ def main() -> None:
 
     files = {str(path.relative_to(out)): sha256(path) for path in sorted(out.rglob("*")) if path.is_file()}
     (out / "manifest.json").write_text(json.dumps({"version": 1, "files": files}, indent=1) + "\n")
-    print(f"bundle at {out}: {len(files)} files, caches {sorted(caches)}")
+    size = sum((out / rel).stat().st_size for rel in files)
+    print(f"bundle at {out}: {len(files)} files, {size / 2**30:.2f} GiB, caches {sorted(given)}")
 
 
 if __name__ == "__main__":

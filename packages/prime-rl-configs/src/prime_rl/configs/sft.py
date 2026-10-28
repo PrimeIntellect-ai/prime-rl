@@ -175,6 +175,11 @@ class SFTValConfig(BaseConfig):
     writes and reads only its own shard file, so the snapshot only reloads into the same world size and sharding.
     The ``eval_on_start`` validation is not a candidate. A new best replaces the previous snapshot."""
 
+    keep_best_max_step: int | None = Field(None, ge=1)
+    """Only validations after at most this many steps are ``keep_best`` candidates (later losses are still
+    recorded). For smoke tests: forces 'best' to be an earlier step than 'last', so its export loads the snapshot.
+    None: every validation is a candidate."""
+
     data: SFTDataConfig
 
 
@@ -380,9 +385,10 @@ class SFTInRunEvalHarnessConfig(BaseConfig):
     api_key_var: str = "TB4_EVAL_VLLM_KEY"
     """Environment variable the harness client reads the (unchecked) vLLM key from; set to a random value."""
 
-    prime_api_key_vars: list[str] = ["PRIME_API_KEY", "TB4_EVAL_PRIME_API_KEY"]
-    """Where to find the Prime API key for sandboxes and tunnels (the first one set); it reaches the harness as
-    ``PRIME_API_KEY``."""
+    prime_team_id: str | None = None
+    """The Prime team that owns the private task images. None: ``PRIME_TEAM_ID`` from the environment (the run
+    config's ``[env_vars]``). The Prime API key is always the platform's per-run ``PRIME_API_KEY`` (``prime train -e``
+    forwards only HF_TOKEN / WANDB_API_KEY): without it the eval records ``no_credentials`` and serves nothing."""
 
     python: str = "3.13"
     """Python of the harness virtualenv (sft-gen runs on 3.13; the image only has 3.12)."""
@@ -398,8 +404,22 @@ class SFTInRunEvalHarnessConfig(BaseConfig):
         "verifiers/v1/harnesses/mini_swe_agent/program.py": "1467b440577f1a2fee1f628abdb3bd60b8375a2116b2e193ab97c752c14d0297",
         "verifiers/v1/runtimes/runtime.py": "4842d302967a4149d73f1f2d5756f9c3274f5568c4d36cbe1dc117dbab5c689d",
         "verifiers/v1/runtimes/base.py": "6af2b4776bdc718c2b24c83ce094e2e3bfe0314b69bac1bedf4ac16a4d799fca",
+        "verifiers/v1/runtimes/host_uv.py": "8f3ab8a846ace1dcb09d4e600074fe4dc9c70520b0f5be4c7718c993cf4c8be9",
     }
-    """sha256 of the installed agent-facing verifiers files (relative to site-packages), as at 24107a4ea."""
+    """sha256 of the installed agent-facing verifiers files (relative to site-packages), as at 24107a4ea (program.py
+    sets the leaked venv path ``.../2cc22997...-fd57668a0b15dabf``: it is never modified)."""
+
+    d5_exclude_newer: str | None = "2026-10-24T07:23:00Z"
+    """Spec decision D5: the in-sandbox ``uv sync --script`` that builds mini-swe-agent's venv resolves its (unlocked)
+    dependencies as of this time, the attempt_2 launch, so the agent sees the packages of collection time instead of
+    today's PyPI. Applied through the ``tb4-mini-swe-agent-d5`` harness (``inrun_eval/plugins``): it passes
+    ``UV_EXCLUDE_NEWER`` only to the preparation step; the agent's command environment, ``program.py`` and the venv
+    path are unchanged. None: run the collection's ``mini_swe_agent`` harness as is (dependencies float)."""
+
+    in_box_uv_version: str | None = "0.13.5"
+    """With ``d5_exclude_newer``: when a task image has no script-capable uv, install this uv version (collection
+    boxes reported 0.13.5) the way verifiers' bootstrap would (``pip install --user``, else the installer script)
+    instead of the latest. None: the bootstrap's own unpinned install."""
 
     flow_command: list[str] = ["{venv}/bin/flow", "run", "@", "{config}"]
     """How one source's flow run is started (``{venv}`` and ``{config}`` are filled in)."""
@@ -414,6 +434,15 @@ class SFTInRunEvalHarnessConfig(BaseConfig):
         missing = [label for label in self.sources if label not in self.source_config_sha256]
         if missing:
             raise ValueError(f"inrun_eval.harness.source_config_sha256 lacks {missing}")
+        if self.d5_exclude_newer is not None:
+            from datetime import datetime
+
+            try:
+                stamp = datetime.fromisoformat(self.d5_exclude_newer.replace("Z", "+00:00"))
+            except ValueError:
+                stamp = None
+            if stamp is None or stamp.tzinfo is None:
+                raise ValueError("inrun_eval.harness.d5_exclude_newer must be an RFC 3339 time with a zone (…Z)")
         return self
 
 
@@ -440,12 +469,19 @@ class SFTInRunEvalConfig(BaseConfig):
     nodes are split in two and both checkpoints are evaluated at the same time (one load, the same sandbox
     conditions); needs at least 2 nodes."""
 
-    budget_hours: float = Field(48.0, gt=0)
-    """Hard wall-clock budget of the eval phase, from the hand-off to the exit. Each round of checkpoints gets an equal
-    share of what is left; at its end the harness is stopped and what landed is scored."""
+    budget_hours: float | None = Field(None, gt=0)
+    """Optional safety cap on the eval phase, from the hand-off. None (the default): no cap beyond the collection
+    configs' own timeouts (rollout 86400 s, scoring up to 21600 s per task, stage 1209600 s), so every draw runs to
+    its end as in collection. When set, each round gets an equal share of what is left (minus ``reserve_minutes``);
+    at its end the harness is stopped, and the draws it cut are reported as ``cut``, excluded from pass@k (the
+    summary states the coverage), never scored as failures."""
 
     reserve_minutes: float = Field(60.0, ge=0)
-    """Kept from the budget for scoring, archiving and the shutdown."""
+    """With ``budget_hours``: kept from the cap for scoring, archiving and the shutdown."""
+
+    evaluate_aliases: bool = False
+    """Evaluate an export that is a copy of another ('best' at the final step) in a round of its own instead of
+    once. Only for the smoke test (it exercises the vLLM restart between rounds)."""
 
     hf_fallback: bool = True
     """When a node's local copy of an export is incomplete, download it from its Hugging Face repo (needs HF_TOKEN)."""
@@ -478,7 +514,7 @@ class SFTInRunEvalConfig(BaseConfig):
             raise ValueError("inrun_eval.checkpoints must be a non-empty list without duplicates")
         if self.eval_only and self.model_dir is None:
             raise ValueError("inrun_eval.eval_only needs inrun_eval.model_dir (there are no exports to evaluate)")
-        if self.reserve_minutes >= self.budget_hours * 60:
+        if self.budget_hours is not None and self.reserve_minutes >= self.budget_hours * 60:
             raise ValueError("inrun_eval.reserve_minutes must be less than the budget")
         return self
 

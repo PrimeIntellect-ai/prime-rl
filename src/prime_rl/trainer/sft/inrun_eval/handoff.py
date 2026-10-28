@@ -91,6 +91,16 @@ def master_addr() -> str:
     return os.environ.get("MASTER_ADDR") or socket.gethostname()
 
 
+def credential_check(config) -> tuple[str | None, dict]:
+    """The Prime team id the eval uses and what the trainer pod has: only whether the platform's per-run
+    ``PRIME_API_KEY`` is set (never its value), and where the team id comes from."""
+    from prime_rl.trainer.sft.inrun_eval.harness import credentials
+
+    fallback = (getattr(config, "env_vars", None) or {}).get("PRIME_TEAM_ID")
+    creds = credentials(config.inrun_eval.harness, dict(os.environ), fallback)
+    return creds["prime_team_id"], creds
+
+
 def start(config, result) -> None:
     """Never returns on a rank of a node (they exit 0 or exec into the node's eval process)."""
     logger = get_logger()
@@ -105,6 +115,12 @@ def start(config, result) -> None:
 
     plan = None
     try:
+        team, creds = credential_check(config)
+        logger.info(
+            f"in-run eval: node {node}: PRIME_API_KEY present: {'yes' if creds['prime_api_key_present'] else 'NO'}; "
+            f"PRIME_TEAM_ID: {creds['prime_team_id'] or 'unset'} ({creds['prime_team_id_source']})"
+            + (f"; the eval will fail: {creds['problem']}" if creds["problem"] else "")
+        )
         keep, master_only = node_files(config) if cfg.model_dir is None else (None, [])
         cleanup = config.hf_export.cleanup if config.hf_export is not None else None
         plan = build_plan(
@@ -118,6 +134,8 @@ def start(config, result) -> None:
             node_files=keep,
             master_files=master_only,
             delete_pushed_exports=bool(cleanup and cleanup.pushed_exports),
+            prime_team_id=team,
+            credentials={k: v for k, v in creds.items() if k != "problem"},
         )
         work = Path(plan.work_dir)
         work.mkdir(parents=True, exist_ok=True)
@@ -131,7 +149,8 @@ def start(config, result) -> None:
     logger.info(
         f"in-run eval: node {node} hands over to its eval process ({len(plan.checkpoints)} checkpoint(s): "
         f"{[c.name for c in plan.checkpoints]}, aliases {plan.aliases}, skipped {plan.skipped}; "
-        f"rounds {plan.rounds}; budget {cfg.budget_hours} h)"
+        f"rounds {plan.rounds}; "
+        f"{'no cap' if cfg.budget_hours is None else f'safety cap {cfg.budget_hours} h'})"
     )
     argv = [sys.executable, "-m", NODE_MODULE, str(plan_path)]
     _flush(logger)

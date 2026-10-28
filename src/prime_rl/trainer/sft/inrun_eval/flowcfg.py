@@ -1,8 +1,10 @@
 """The eval's flow configs: the collection runs' own ``configs/attempt_2/flow.toml``, with only the model, its
 endpoint and the bookkeeping changed.
 
-Everything that shapes a rollout (harness and its command timeout, runtime, timeouts, retries, sampling, taskset,
-network notice, task selection, pieces) is kept byte for byte. ``derive`` refuses a source whose sha256 is not the
+Everything that shapes a rollout (harness config and its command timeout, runtime, timeouts, retries, sampling,
+taskset, network notice, task selection, pieces) is kept byte for byte. The one exception is spec decision D5: the
+solver's harness id becomes ``tb4-mini-swe-agent-d5`` (the same mini_swe_agent harness, plus the exclude-newer / uv
+pin of its in-box bootstrap, ``plugins/tb4_mini_swe_agent_d5.py``) with its two settings. ``derive`` refuses a source whose sha256 is not the
 pinned one and returns the changed keys, which must all be in ``ALLOWED_CHANGES`` (the eval records them).
 """
 
@@ -26,7 +28,15 @@ ALLOWED_CHANGES = (
     "flow.pieces.rollouts.k",
     "flow.select.include.names",
     "flow.taskset.task.prime_kernels",
+    # D5 (only with [inrun_eval.harness] d5_exclude_newer set).
+    "flow.solver.harness.id",
+    "flow.solver.harness.prepare_exclude_newer",
+    "flow.solver.harness.prepare_uv_version",
 )
+
+COLLECTION_HARNESS = "mini_swe_agent"
+D5_HARNESS = "tb4-mini-swe-agent-d5"
+"""Its module (``tb4_mini_swe_agent_d5``) is put on the flow runs' PYTHONPATH by the harness setup."""
 
 
 def flat(value: Any, prefix: str = "") -> dict[str, Any]:
@@ -70,6 +80,8 @@ def derive(
     k: int | None = None,
     include_names: list[str] | None = None,
     path_rewrites: dict[str, str] | None = None,
+    d5_exclude_newer: str | None = None,
+    in_box_uv_version: str | None = None,
 ) -> tuple[dict, list[str]]:
     """The eval config for one source and checkpoint, and the keys it changed."""
     digest = hashlib.sha256(source).hexdigest()
@@ -99,6 +111,14 @@ def derive(
         if not include_names:
             raise ValueError(f"{label}: an empty include list would select every task")
         flow["select"]["include"]["names"] = sorted(include_names)
+    if d5_exclude_newer is not None:
+        harness = solver["harness"]
+        if harness.get("id") != COLLECTION_HARNESS:
+            raise ValueError(f"{label}: solver harness {harness.get('id')!r}, expected {COLLECTION_HARNESS!r}")
+        harness["id"] = D5_HARNESS
+        harness["prepare_exclude_newer"] = d5_exclude_newer
+        if in_box_uv_version is not None:
+            harness["prepare_uv_version"] = in_box_uv_version
     for old, new in (path_rewrites or {}).items():
         kernels = flow.get("taskset", {}).get("task", {}).get("prime_kernels", {})
         for spec in kernels.values():

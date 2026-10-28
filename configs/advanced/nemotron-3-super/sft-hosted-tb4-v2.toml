@@ -3,9 +3,11 @@
 # warmup 4, cosine to 1e-6) on the updated export, plus best/last checkpoint retention, an HF export at the end and
 # the in-run pass@8 eval of both exports ([inrun_eval], PREREQS.md).
 # prime train configs/advanced/nemotron-3-super/sft-hosted-tb4-v2.toml --volume nemotron-sft-tb4-v2 \
-#     -e ~/.config/prime-export/hf.env -e ~/.config/prime-export/tb4-eval.env -y
-# hf.env: HF_TOKEN for the end-of-run push (without it the exports stay on the volume and the eval has no download
-# fallback). tb4-eval.env: the eval's Prime API key (TB4_EVAL_PRIME_API_KEY) and PRIME_TEAM_ID (PREREQS.md).
+#     -e ~/.config/prime-export/hf.env -y
+# hf.env holds HF_TOKEN only: the end-of-run push (without it the exports stay on the volume and the eval has no
+# download fallback). `prime train -e` forwards only HF_TOKEN / WANDB_API_KEY for SFT runs. The eval's Prime
+# credential is the platform's per-run PRIME_API_KEY in the pods (its presence is logged at the hand-off; without it
+# the eval phase records no_credentials and ends); the team is [env_vars] PRIME_TEAM_ID (not a secret).
 #
 # Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
 # trained as its text-only language model (/volume/models/nemotron-3.5-super-text). Check before every
@@ -41,6 +43,7 @@ min_lr = 1e-6      # then cosine decay to 1e-6 at max_steps
 
 [env_vars]
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+PRIME_TEAM_ID = "cmlr3u2er002zhr01tj8f48ts"   # owns the private TB4 task images (in-run eval)
 
 [deployment]
 type = "multi_node"
@@ -172,7 +175,9 @@ pushed_exports = false
 # attempt_2 configs): 500 tasks x 8 rollouts per checkpoint, best then last ('best' at the final step is evaluated
 # once). Results: runs/<id>/eval/<best|last>/summary.json (pass@k overall / val / train / per source), per_task.jsonl,
 # the flow configs and logs, stores/*.tar.zst. Needs the eval bundle at /volume/datasets/tb4-eval (PREREQS.md).
+# No wall-clock cap (budget_hours unset): every draw runs under the collection's own timeouts (rollout 86400 s,
+# scoring up to 21600 s), so a checkpoint's round lasts until its slowest draw ends. Spec D5 is on (harness
+# d5_exclude_newer = 2026-10-24T07:23Z, in-box uv 0.13.5: the defaults).
 [inrun_eval]
 checkpoints = ["best", "last"]
 schedule = "sequential"
-budget_hours = 48    # hard cap from the hand-off; each checkpoint gets half, then the harness is stopped and scored

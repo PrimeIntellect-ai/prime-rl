@@ -158,6 +158,34 @@ def test_score_rows():
     assert math.isclose(overall["pass@2"], (scoring.pass_at_k(8, 4, 2) + 0) / 2)
     assert set(summary["split"]) == {"val", "train"} and summary["split"]["val"]["pass@1"] == 0.5
     assert summary["source"]["tb-sci"]["tasks"] == 2
+    assert overall["cut"] == 0 and overall["coverage"]["fraction"] == 1.0 and "pass@1_tasks" not in overall
+
+
+def test_cut_draws_are_excluded_from_pass_at_k():
+    """A source the safety cap stopped: its unfinished draws are 'cut', not failures; pass@k is over what is left."""
+    table = tasks.parse_task_table(TABLE)
+    sci = [r for r in table if r.source == "tb-sci"]
+    a = f"{tasks.slug(sci[0].name)}-0123456789ab-qc"
+    b = f"{tasks.slug(sci[1].name)}-ba9876543210-qc"
+    rows = [row(a, 0, reward=1.0), row(a, 1, reward=0.0), row(a, 2, ok=False, reward=None, stop="error", error="H")]
+    rows += [row(b, n, reward=1.0) for n in range(8)]
+    scores, diag = scoring.score_rows(rows, sci, "tb-sci", k=8, pass_threshold=1.0, cut=True)
+    by_task = {s.task: s for s in scores}
+    first = by_task[sci[0].name]
+    assert [d.status for d in first.draws] == ["passed", "failed"] + ["cut"] * 6
+    assert first.cut == 6 and first.graded == 2 and first.c == 1 and diag["cut_by_cap"] is True
+    overall = scoring.summarize(scores)
+    assert overall["cut"] == 6 and overall["errored"] == 0 and overall["missing"] == 0 and overall["failed"] == 1
+    # pass@1 over both tasks (each has >= 1 draw): (1/2 + 8/8) / 2; pass@2 too; pass@4 / pass@8 only the full task.
+    assert math.isclose(overall["pass@1"], (0.5 + 1.0) / 2) and overall["pass@1_tasks"] == 2
+    assert math.isclose(overall["pass@2"], (scoring.pass_at_k(2, 1, 2) + 1.0) / 2) and overall["pass@2_tasks"] == 2
+    assert overall["pass@8"] == 1.0 and overall["pass@8_tasks"] == 1
+    cov = overall["coverage"]
+    assert cov["draws_counted"] == 10 and cov["draws_planned"] == 16 and cov["tasks_with_all_draws"] == 1
+    assert "not comparable" in cov["note"]
+    # The same rows without the cap: the unfinished draws are failures (error / missing).
+    scores, _ = scoring.score_rows(rows, sci, "tb-sci", k=8, pass_threshold=1.0)
+    assert scoring.summarize(scores)["pass@1"] == (1 / 8 + 1.0) / 2
 
 
 def test_unmapped_jobs_resolve_from_traces(tmp_path):
@@ -297,6 +325,23 @@ def test_flow_config_options_and_guards():
         derive(include_names=[])
     with pytest.raises(ValueError, match="sha256"):
         flowcfg.derive(SOURCE.encode(), "0" * 64, **{k: v for k, v in derive_kwargs().items()})
+    # D5: the solver's harness becomes the plugin (same config otherwise), recorded as changed keys.
+    config, changed = derive(d5_exclude_newer="2026-10-24T07:23:00Z", in_box_uv_version="0.13.5")
+    assert config["flow"]["solver"]["harness"] == {
+        "id": "tb4-mini-swe-agent-d5",
+        "command_timeout": 1800,
+        "prepare_exclude_newer": "2026-10-24T07:23:00Z",
+        "prepare_uv_version": "0.13.5",
+    }
+    assert {"flow.solver.harness.id", "flow.solver.harness.prepare_exclude_newer"} <= set(changed)
+    assert all(key.startswith(flowcfg.ALLOWED_CHANGES) for key in changed)
+    with pytest.raises(ValueError, match="expected 'mini_swe_agent'"):
+        flowcfg.derive(
+            SOURCE.replace('id = "mini_swe_agent"', 'id = "bash"').encode(),
+            hashlib.sha256(SOURCE.replace('id = "mini_swe_agent"', 'id = "bash"').encode()).hexdigest(),
+            d5_exclude_newer="2026-10-24T07:23:00Z",
+            **derive_kwargs(),
+        )
     assert flowcfg.rollouts_k(SOURCE.encode()) == 8
     assert flowcfg.kernel_bundles(SOURCE.encode()) == ["/data/sft-gen/kernels/landlock.tgz"]
     assert flowcfg.taskset_fields(SOURCE.encode())["registry_path"] == "registries/tb-science.json"
@@ -346,6 +391,11 @@ def test_checkpoints_and_rounds():
     assert plan.make_rounds([], 4, "sequential") == []
     assert plan.round_deadline(0, 100, 10, 2) == 45 and plan.round_deadline(50, 100, 10, 1) == 90
     assert plan.round_deadline(95, 100, 10, 1) == 95
+    assert plan.round_deadline(95, None, 10, 1) is None
+    # The smoke's evaluate_aliases: 'best' at the final step gets a round of its own.
+    exports["last"]["ok"] = True
+    ckpts, aliases, _ = plan.checkpoints_to_eval(["best", "last"], exports, evaluate_aliases=True)
+    assert [c.name for c in ckpts] == ["best", "last"] and aliases == {}
 
 
 def test_build_plan_round_trips(tmp_path):
@@ -364,6 +414,18 @@ def test_build_plan_round_trips(tmp_path):
         now=100.0,
     )
     assert p.deadline == 100.0 + 7200 and p.work_dir == str(tmp_path / ".inrun-eval-work" / "node1")
+    assert (
+        plan.build_plan(
+            SFTInRunEvalConfig(),
+            run_dir=tmp_path,
+            exports=exports,
+            node=0,
+            num_nodes=1,
+            gpus_per_node=8,
+            master_addr="x",
+        ).deadline
+        is None
+    )  # no cap by default
     assert p.eval_dir == str(tmp_path / "eval") and p.dedupe_exports
     assert [c.name for c in p.checkpoints] == ["last"] and p.skipped == {"best": "the export failed its checks"}
     again = plan.Plan.from_json(p.to_json())
@@ -497,15 +559,36 @@ def test_harness_install_env_and_pins(tmp_path):
     env = harness.uv_env(base, tmp_path)
     assert "HF_TOKEN" not in env and "RANK" not in env and "UV_PROJECT_ENVIRONMENT" not in env
     assert env["HOME"] == str(tmp_path / "home")
-    henv = harness.HarnessEnv(venv=tmp_path / "venv", cwd=tmp_path / "sft-gen", env=env)
-    with pytest.raises(RuntimeError, match="Prime API key"):
-        harness.run_env(h, henv, base)
+    henv = harness.HarnessEnv(
+        venv=tmp_path / "venv", cwd=tmp_path / "sft-gen", env=env, info={"plugins_dir": str(tmp_path / "plugins")}
+    )
+    # Only the platform's PRIME_API_KEY counts (a custom name is not forwarded by `prime train -e` anyway).
+    with pytest.raises(RuntimeError, match="PRIME_API_KEY is not set"):
+        harness.run_env(h, henv, {**base, "TB4_EVAL_PRIME_API_KEY": "k", "PRIME_TEAM_ID": "team"})
     with pytest.raises(RuntimeError, match="PRIME_TEAM_ID"):
-        harness.run_env(h, henv, {**base, "TB4_EVAL_PRIME_API_KEY": "k"})
-    run = harness.run_env(h, henv, {**base, "TB4_EVAL_PRIME_API_KEY": "k", "PRIME_TEAM_ID": "team"})
+        harness.run_env(h, henv, {**base, "PRIME_API_KEY": "k"})
+    run = harness.run_env(h, henv, {**base, "PRIME_API_KEY": "k"}, "team-from-config")
+    assert run["PRIME_TEAM_ID"] == "team-from-config"
+    run = harness.run_env(h, henv, {**base, "PRIME_API_KEY": "k", "PRIME_TEAM_ID": "team"})
     assert run["PRIME_API_KEY"] == "k" and run["PRIME_TEAM_ID"] == "team" and len(run["TB4_EVAL_VLLM_KEY"]) == 32
     assert run["PATH"].startswith(str(tmp_path / "venv" / "bin")) and "HF_TOKEN" not in run
-    assert run["PYTHONPATH"] == f"{tmp_path / 'sft-gen'}:{tmp_path / 'sft-gen' / 'plugins'}"
+    assert run["PYTHONPATH"] == f"{tmp_path / 'sft-gen'}:{tmp_path / 'sft-gen' / 'plugins'}:{tmp_path / 'plugins'}"
+    creds = harness.credentials(h, {"PRIME_API_KEY": "secret-value"}, "t")
+    assert creds == {
+        "prime_api_key_present": True,
+        "prime_team_id": "t",
+        "prime_team_id_source": "run config [env_vars]",
+        "problem": None,
+    }
+    assert "secret-value" not in json.dumps(creds)
+    assert (harness.PLUGINS / f"{harness.D5_MODULE}.py").is_file()
+    bundle = tmp_path / "hb"
+    (bundle / harness.HOST_UV / "0.13.1" / "x86_64-unknown-linux-musl").mkdir(parents=True)
+    (bundle / harness.HOST_UV / "0.13.1" / "x86_64-unknown-linux-musl" / "uv").write_bytes(b"uv")
+    assert harness.stage_host_uv(tmp_path / "none", env) is None
+    cache = harness.stage_host_uv(bundle, env)
+    assert (cache / "0.13.1" / "x86_64-unknown-linux-musl" / "uv").read_bytes() == b"uv"
+    assert cache == tmp_path / "home" / ".cache" / "verifiers" / "uv"
     assert harness.flow_cmd(h, Path("/v"), Path("/c.toml")) == ["/v/bin/flow", "run", "@", "/c.toml"]
 
 
