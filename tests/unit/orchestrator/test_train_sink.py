@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import pickle
 import weakref
 from types import SimpleNamespace
 
@@ -295,6 +296,24 @@ def test_resume_restores_queued_traces_and_open_groups():
             await r.add(episode([t], group="open", version=9))
         assert "open" not in r.pending_groups
         assert set(r.pending_batch) == {t.id for t in fresh}
+
+    asyncio.run(run())
+
+
+def test_resume_counts_saved_failures_toward_their_group():
+    async def run():
+        s = sink()
+        s.train_envs.get("test").config.group_size = 3
+        await s.add(episode([trace()], group="open"))
+        failure = DispatchFailure("train", "test", "open", 1, 0, "Task", "key", "hash", vf.Error(type="E", message="x"))
+        await s.fail(failure)
+        state = pickle.loads(pickle.dumps(s.state_dict({"open": ("test", vf.Task(vf.TaskData(idx=0, prompt="t")))})))
+
+        r = sink()
+        r.train_envs.get("test").config.group_size = 3
+        assert [request.rollouts for request in r.load_state_dict(state)] == [1]
+        await r.add(episode([trace()], group="open"))
+        assert "open" not in r.pending_groups and not r.pending_group_failures
 
     asyncio.run(run())
 

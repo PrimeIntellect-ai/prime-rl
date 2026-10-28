@@ -167,14 +167,19 @@ class TrainSink(Reconfigurable):
         """Work a resume would otherwise regenerate: the accepted traces waiting
         for a batch (samples and episode), and every train group still open in the
         dispatcher (``open_groups``: group id -> env and task) with its finished
-        episodes. Copies are shallow: queued samples and finished episodes are not
+        episodes and failed requests. Copies are shallow: queued samples and finished episodes are not
         mutated before they ship. Parametrized pydantic episode classes do not
         pickle, so episodes are saved as dumps."""
         return {
             "pending_batch": dict(self.pending_batch),
             "queued_episodes": {trace_id: _dump(ep) for trace_id, ep in self.episode_by_trace.items()},
             "open_groups": {
-                group_id: (env_name, task, [_dump(ep) for ep in self.pending_groups.get(group_id, [])])
+                group_id: (
+                    env_name,
+                    task,
+                    [_dump(ep) for ep in self.pending_groups.get(group_id, [])],
+                    list(self.pending_group_failures.get(group_id, [])),
+                )
                 for group_id, (env_name, task) in open_groups.items()
             },
         }
@@ -182,8 +187,9 @@ class TrainSink(Reconfigurable):
     def load_state_dict(self, state_dict: dict[str, Any]) -> list[TaskRequest]:
         """Re-queue saved traces and finished group members. Like any queued
         trace, their tokens past ``max_staleness`` are masked by the staleness
-        sweep. Returns one request per saved group for its missing members (same
-        task, same group id), which the train source hands out before any new task.
+        sweep. Saved failed requests still count toward their group. Returns one
+        request per saved group for its missing members (same task, same group
+        id), which the train source hands out before any new task.
         Env servers keep training arrays only while they run, so saved work whose arrays
         they kept is dropped: queued traces are lost and group members are rerun."""
         self.pending_batch = {
@@ -199,12 +205,13 @@ class TrainSink(Reconfigurable):
         dropped = len(state_dict["pending_batch"]) - len(self.pending_batch)
         requests = []
         kept = 0
-        for group_id, (env_name, task, dumps) in state_dict["open_groups"].items():
+        for group_id, (env_name, task, dumps, failures) in state_dict["open_groups"].items():
             group_size = self.group_size_for(env_name)
-            if len(dumps) >= group_size:
+            if len(dumps) + len(failures) >= group_size:
                 raise ValueError(
-                    f"Checkpoint has an open group for env {env_name!r} with {len(dumps)} finished episodes, "
-                    f"but its group_size is now {group_size}. Lowering group_size across a resume is not supported."
+                    f"Checkpoint has an open group for env {env_name!r} with {len(dumps)} finished episodes and "
+                    f"{len(failures)} failed requests, but its group_size is now {group_size}. "
+                    "Lowering group_size across a resume is not supported."
                 )
             episodes = [vf.WireEpisode.model_validate(ep) for ep in dumps]
             episodes = [ep for ep in episodes if not any(trace_payload_urls(trace) for trace in ep.traces)]
@@ -212,7 +219,9 @@ class TrainSink(Reconfigurable):
             if episodes:
                 self.pending_groups[group_id] = episodes
                 kept += len(episodes)
-            rollouts = group_size - len(episodes)
+            if failures:
+                self.pending_group_failures[group_id] = failures
+            rollouts = group_size - len(episodes) - len(failures)
             requests.append(
                 TaskRequest(env_name=env_name, task=task, step=self.progress.step, rollouts=rollouts, group_id=group_id)
             )
