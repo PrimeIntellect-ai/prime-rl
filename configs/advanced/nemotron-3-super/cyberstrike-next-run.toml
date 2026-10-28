@@ -65,6 +65,7 @@ timeout = 43200
 [ckpt]
 interval = 20
 keep_last = 1
+export = true
 
 
 [model]
@@ -200,7 +201,7 @@ labels = [
 ]
 
 [orchestrator.train.source.env.agent.timeout]
-# Set to 14400 (4h): measured on vnt6/fjg2/j2x8mw the real rollout tail maxes at ~138 min
+# Set to 28800 (8h): measured on vnt6/fjg2/j2x8mw the real rollout tail maxes at ~138 min
 # across ~2550 rollouts and NONE hit the original 28800 (8h) cap. 5400 (90 min) truncated the
 # ~5-14% long tail (biasing the held-out curve); 14400 gives ~3x margin over the 138-min max
 # for training to lengthen rollouts, and the off-policy staleness sweep drops stuck stragglers.
@@ -765,7 +766,7 @@ labels = [
 ]
 
 [orchestrator.eval.source.env.agent.timeout]
-# Set to 14400 (4h): measured on vnt6/fjg2/j2x8mw the real rollout tail maxes at ~138 min
+# Set to 28800 (8h): measured on vnt6/fjg2/j2x8mw the real rollout tail maxes at ~138 min
 # across ~2550 rollouts and NONE hit the original 28800 (8h) cap. 5400 (90 min) truncated the
 # ~5-14% long tail (biasing the held-out curve); 14400 gives ~3x margin over the 138-min max
 # for training to lengthen rollouts, and the off-policy staleness sweep drops stuck stragglers.
