@@ -556,9 +556,9 @@ class RLConfig(BaseConfig):
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             update: dict = {"logprobs": max(sampling.logprobs or 0, k)}
             if not sampling.truncates_distribution() and loss.score_centering_estimator == "sampled":
-                extra_args = {**sampling.extra_body.get("extra_args", {}), "prl_sampler_draws": k}
-                update["extra_body"] = {**sampling.extra_body, "extra_args": extra_args}
-            return sampling.model_copy(update=update)
+                update["sampler_draws"] = k
+            # Validated, not copied: the sampling config derives extra_body from sampler_draws.
+            return TrainSamplingConfig.model_validate({**sampling.model_dump(), **update})
 
         self.orchestrator.update_policy_samplings(request_support)
         return self
