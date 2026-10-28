@@ -5,8 +5,7 @@ launcher sets it to an id minted on the run dir's first launch and kept in
 ``launcher/run_id``, so every resume and requeue of the run shares it and a restarted run
 finds what its predecessor leaked (a SIGKILL skips every teardown path). Deletion goes
 through ``verifiers.v1.runtimes.sweep``, which only deletes this user's resources created
-before a cutoff and never what the calling process holds. Sandboxes of a launcher-managed
-env server also carry ``prl-env:<source name>``."""
+before a cutoff and never what the calling process holds."""
 
 from __future__ import annotations
 
@@ -23,7 +22,6 @@ from verifiers.v1.runtimes.sweep import sweep
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import get_logger
 
-ENV_LABEL_PREFIX = "prl-env:"
 METRICS_INTERVAL_S = 60
 
 
@@ -56,9 +54,9 @@ def _client():
 
 
 async def sweep_run(run_id: str, before: datetime) -> None:
-    """Delete the run's sandboxes and tunnels created before ``before``. The id is minted
-    for one run dir, so no one else's resources carry it. Best effort: a failed sweep must
-    not fail the run."""
+    """Delete the run's sandboxes and tunnels created before ``before``. The id is unique to
+    the run, so no one else's resources carry it. Best effort: a failed sweep must not fail
+    the run."""
     if not _has_prime_key():
         return
     try:
@@ -89,7 +87,7 @@ def sweep_on_exit(run_id: str) -> Iterator[None]:
 
 class SandboxMetrics:
     """Polls the platform for the run's live sandboxes and logs them on wall time:
-    ``sandboxes/live`` (and per env) and their age in minutes."""
+    ``sandboxes/live`` and their age in minutes."""
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
@@ -113,11 +111,6 @@ class SandboxMetrics:
                 "sandboxes/age_min/p90": ages[int(len(ages) * 0.9)],
                 "sandboxes/age_min/max": ages[-1],
             }
-        for sandbox in sandboxes:
-            for sandbox_label in sandbox.labels:
-                if sandbox_label.startswith(ENV_LABEL_PREFIX):
-                    key = f"sandboxes/live/{sandbox_label.removeprefix(ENV_LABEL_PREFIX)}"
-                    metrics[key] = metrics.get(key, 0.0) + 1
         return metrics
 
     async def run(self) -> None:

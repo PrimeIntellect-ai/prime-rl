@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 
 from verifiers.v1 import pool_serve_kwargs
-from verifiers.v1.runtimes import set_base_sandbox_labels, set_default_sandbox_lifetime
+from verifiers.v1.runtimes import set_base_sandbox_labels
 from verifiers.v1.serve import env_config_data, serve_env, set_episode_hook
 
 from prime_rl.configs.env_server import EnvServerConfig
@@ -18,15 +18,10 @@ from prime_rl.utils.utils import clean_exit
 
 
 def setup_worker(
-    log_level: str | None,
-    json_logging: bool,
-    sandbox_labels: list[str],
-    sandbox_lifetime: float | None,
-    bind_address: str | None,
+    log_level: str | None, json_logging: bool, sandbox_labels: list[str], bind_address: str | None
 ) -> None:
     setup_env_server_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
-    set_default_sandbox_lifetime(sandbox_lifetime)
     # Episode streams never carry training arrays; the hook keeps them for the trainer.
     set_episode_hook(PayloadHook(bind_address))
 
@@ -44,7 +39,7 @@ def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
 @clean_exit
 def run_server(config: EnvServerConfig):
     run_name = os.environ.get("PRL_RUN_NAME")
-    sandbox_labels = ([run_name] if run_name else []) + config.sandbox_labels
+    sandbox_labels = [run_name] if run_name else []
     addresses: queue.SimpleQueue | None = None
     if config.address_file is not None:
         addresses = queue.SimpleQueue()
@@ -60,7 +55,6 @@ def run_server(config: EnvServerConfig):
             config.log.level,
             config.log.json_logging,
             sandbox_labels,
-            config.sandbox_lifetime,
             config.serve.address,
         ),
         config_data=env_config_data(config.env),

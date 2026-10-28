@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
 from pydantic import ValidationError
-from verifiers.v1.runtimes import set_base_sandbox_labels, set_default_sandbox_lifetime
+from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
@@ -246,14 +246,13 @@ class Orchestrator:
         self.run_name = os.environ.get("PRL_RUN_NAME")
         if self.run_name:
             set_base_sandbox_labels([self.run_name])
-        set_default_sandbox_lifetime(config.sandbox_lifetime)
-        # The launcher-set run scope, shared by every launch of the run dir.
-        self.vf_run_id = os.environ.get("VF_RUN_ID")
-        if self.vf_run_id:
-            # Nothing of this launch is in flight yet: what the sweep finds was leaked by
-            # an earlier launch of the run.
-            await sweep_run(self.vf_run_id, datetime.now(UTC))
-            self.sandbox_metrics = SandboxMetrics(self.vf_run_id)
+        # The run scope: the rl launcher sets it per run dir; without it (e.g. hosted
+        # training) it falls back to $PRL_RUN_ID, as in the env servers.
+        self.vf_run_id = os.environ.setdefault("VF_RUN_ID", self.run_id)
+        # Nothing of this launch is in flight yet: what the sweep finds was leaked by an
+        # earlier launch of the run.
+        await sweep_run(self.vf_run_id, datetime.now(UTC))
+        self.sandbox_metrics = SandboxMetrics(self.vf_run_id)
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat)
@@ -509,8 +508,7 @@ class Orchestrator:
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop(clean_exit)
-            if self.vf_run_id:
-                await sweep_run(self.vf_run_id, datetime.now(UTC))
+            await sweep_run(self.vf_run_id, datetime.now(UTC))
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:

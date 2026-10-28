@@ -534,9 +534,6 @@ class OrchestratorConfig(BaseConfig):
     dispatch_per_minute: int | None = Field(None, ge=1, frozen=True)
     """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
-    sandbox_lifetime: float | None = Field(86400, gt=0)
-    """Seconds after which a Prime sandbox of this run is deleted, busy or not, unless its runtime config sets ``lifetime``. Bounds what a killed run leaks; keep it above the longest episode. None removes the limit."""
-
     batch_size: int = Field(128, ge=1)
     """Samples to train on per step."""
 
