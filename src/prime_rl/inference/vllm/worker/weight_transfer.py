@@ -9,12 +9,28 @@ from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, i
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
 
+def check_weight_update_supported(quant_config) -> None:
+    """Refuse weight updates into an engine serving a pre-quantized FP8 checkpoint.
+
+    The trainer sends bf16 weights without block scales, and vLLM would copy them
+    into the fp8 params as-is, silently corrupting every quantized layer.
+    """
+    from vllm.model_executor.layers.quantization.fp8 import Fp8Config
+
+    if isinstance(quant_config, Fp8Config):
+        raise ValueError(
+            "Weight updates are not supported for a pre-quantized FP8 checkpoint: the trainer sends bf16 "
+            'weights. Serve the BF16 checkpoint with `quantization = "fp8_per_block"` instead.'
+        )
+
+
 def load_weights_checkpoint_layerwise(
     model: Module,
     state_iter: Iterable[tuple[str, torch.Tensor]],
     model_config,
     vllm_config,
 ) -> None:
+    check_weight_update_supported(vllm_config.quant_config)
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
