@@ -7,14 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import prime_runs as pr
-from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.record import read_record, update_record, write_record
 from prime_rl.utils.utils import sanitize
@@ -62,18 +60,8 @@ OFF_HINT = "turn the monitor off with --no-monitors.prime"
 
 
 def prime_mode() -> str:
-    """$PRIME_RUNS_MODE when set, else online. An online run without a Prime API key
-    logs a warning and runs disabled, unless it attaches to a platform run or evaluation
-    that a launcher created: that one fails at init."""
-    mode = os.getenv(pr.MODE_ENV) or "online"
-    attached = os.getenv("RUN_ID") or os.getenv(EVAL_ID_VAR)
-    if mode == "online" and not attached and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
-        get_logger().warning(
-            "No Prime API key found - the run is not logged to Prime. Authenticate with "
-            f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
-        )
-        return "disabled"
-    return mode
+    """$PRIME_RUNS_MODE when set, else online."""
+    return os.getenv(pr.MODE_ENV) or "online"
 
 
 def _base_url() -> str | None:
@@ -147,20 +135,26 @@ class PrimeTrainMonitor(Monitor):
             # pre-SDK register sent for a config-less init.
             init_kwargs = {"name": self.config.name, "model": "unknown"}
 
-        mode = prime_mode()
+        def init_run(mode: str) -> pr.Run:
+            return pr.init(kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs)
+
         try:
-            self.run = await asyncio.to_thread(
-                pr.init, kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs
-            )
+            self.run = await asyncio.to_thread(init_run, prime_mode())
         except (pr.ConfigurationError, pr.APIError) as e:
-            # Registering fails without a team, or for a team outside the external-runs
-            # allowlist. An attached run's error is the launcher's to explain.
+            # An attached run's error is the launcher's to explain.
             if "id" in init_kwargs:
                 raise
-            raise RuntimeError(
-                f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
-                f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
-            ) from e
+            if "needs an API key" not in str(e):
+                # Registering fails without a team, or for a team outside the external-runs allowlist.
+                raise RuntimeError(
+                    f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
+                    f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
+                ) from e
+            self.logger.warning(
+                "No Prime API key found - the run is not logged to Prime. Authenticate with "
+                f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
+            )
+            self.run = await asyncio.to_thread(init_run, "disabled")
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to Prime run {self.run.id} ({self.run.url}){attached}")

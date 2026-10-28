@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import prime_rl.monitors.prime as prime_module
 from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.monitors.prime import PrimeTrainMonitor
 from prime_rl.utils.links import ATTEMPT_VAR, publish_link, register_links, wait_for_links
@@ -55,8 +54,8 @@ def test_prime_monitor_without_credentials_runs_disabled(tmp_path, attempt, monk
     if prime_mode is not None:
         monkeypatch.setenv("PRIME_RUNS_MODE", prime_mode)
     warnings: list[str] = []
-    monkeypatch.setattr(prime_module, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    monitor.logger = SimpleNamespace(warning=warnings.append, info=print)
     asyncio.run(monitor.init(config=None, output_dir=tmp_path))
     asyncio.run(monitor.finalize())
     assert monitor.run.url is None
