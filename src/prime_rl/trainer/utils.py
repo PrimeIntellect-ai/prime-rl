@@ -243,6 +243,11 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     rich_print(text)
 
 
+# Log2 bins over token staleness: bucketizing by the edges (``right=True``) gives each token's bin
+STALENESS_BIN_EDGES = [1, 2, 4, 8, 16, 32, 64]
+STALENESS_BINS = ["0", "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64+"]
+
+
 class TensorStats:
     """Accumulates a step's tensor metrics on the GPU and reduces them across ranks once per step.
 
@@ -262,9 +267,11 @@ class TensorStats:
         mask: Tensor | None = None,
         env_ids: Tensor | None = None,
         env_names: list[str] | None = None,
+        fold_all: bool = True,
     ) -> None:
         """Fold ``values`` (where ``mask`` is set) into ``key``. With ``env_ids`` (each value's index into
-        ``env_names``), fold them into ``{key}/{env}`` per env and into ``{key}/all`` instead.
+        ``env_names``), fold them into ``{key}/{env}`` per env and, with ``fold_all``, into ``{key}/all``
+        instead.
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
         # A custom loss may emit a metric on the CPU
@@ -280,7 +287,8 @@ class TensorStats:
         rows = _moments(values, members)
         for env_name, row in zip(env_names, rows):
             self._fold(f"{key}/{env_name}", row)
-        self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
+        if fold_all:
+            self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
 
     def _fold(self, key: str, row: Tensor) -> None:
         if (moments := self.moments.get(key)) is None:
@@ -346,6 +354,7 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
     mean_max_only_prefixes = (
         "is_masked/",
         "mismatch_kl/",
+        "mismatch_kl_by_staleness/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",

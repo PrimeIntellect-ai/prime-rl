@@ -157,6 +157,8 @@ override-dependencies = [
     "nvidia-cutlass-dsl==4.8.0",
     "torch>=2.13.0",
     "openenv-core",
+    # TODO: PyPI release of prime-traces with PrimeIntellect-ai/prime#1109 (orjson records) asap.
+    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#subdirectory=packages/prime-traces",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new
@@ -277,6 +279,9 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
+# TODO: replace with the prime-runs PyPI release that has PrimeIntellect-ai/prime#1109 asap, and raise the
+# prime-runs minimum to it (prime-traces is pinned in override-dependencies until then).
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-runs", rev = "adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
