@@ -1013,7 +1013,11 @@ class SparseFileSystemWeightSender(WeightSender):
         self.config = config
         self.encoder: SparseDeltaEncoder | None = None
         self.last_step: int | None = None
+        # The anchor the master keeps every broadcast since (``_clean``), and the latest complete anchor as of the
+        # current broadcast and as of now
         self.anchor_step: int | None = None
+        self.seen_anchor: int | None = None
+        self.complete_anchor: int | None = None
         # Each in order: encodes, delta writes and commits, anchor writes
         self.encodes = ThreadPoolExecutor(1)
         self.writes = ThreadPoolExecutor(1)
@@ -1086,9 +1090,16 @@ class SparseFileSystemWeightSender(WeightSender):
     def _set_fp8_layout(self) -> None:
         if self.encoder.fp8_layout is None:
             # Every engine worker reports which tensors it holds in fp8 at its first update
-            broadcast_dir = self.step_dir(0).parent
-            layout = [self._wait_for_engine_layout(broadcast_dir) if self.world.is_master else None]
+            layout = [None]
+            if self.world.is_master:
+                try:
+                    layout[0] = self._wait_for_engine_layout(self.step_dir(0).parent)
+                except Exception as error:
+                    # Every rank joins the broadcast and fails with the master
+                    layout[0] = error
             dist.broadcast_object_list(layout, src=0)
+            if isinstance(layout[0], Exception):
+                raise layout[0]
             self.encoder.set_fp8_layout(self.model, layout[0], self.world.is_master)
 
     def close(self) -> None:
@@ -1116,6 +1127,11 @@ class SparseFileSystemWeightSender(WeightSender):
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         self._wait_for_encode()
+        # Old chains are dropped only for an anchor that was complete one broadcast ago: by this broadcast's
+        # handshake, every engine update that may have started replaying an older chain before it was complete is done
+        if self.seen_anchor is not None:
+            self.anchor_step = max(self.anchor_step, self.seen_anchor)
+        self.seen_anchor = self.complete_anchor
         if self.world.is_master:
             (step_dir / DELTA_DIR).mkdir(exist_ok=True)
         if self.encoder is None:
@@ -1152,7 +1168,8 @@ class SparseFileSystemWeightSender(WeightSender):
             self.encoder.write_full_checkpoint(
                 model, self.world.is_master, step_dir, self.world.rank, self.world.world_size
             )
-            self._wait_for_anchor(step, step_dir)
+            self._wait_for_anchor(step_dir)
+            self.anchor_step = step
             if self.world.is_master:
                 WeightSender._finish(self, step, step_dir)
         self.last_step = step
@@ -1260,7 +1277,14 @@ class SparseFileSystemWeightSender(WeightSender):
         if not self.world.is_master:
             return
         markers = [delta_dir / rank_parts_marker(rank) for rank in range(self.world.world_size)]
-        while not all(marker.exists() for marker in markers):
+        # A rank whose encode or writes failed leaves its failure marker (before its parts marker, if any)
+        failures = [delta_dir / rank_failed_marker(rank) for rank in range(self.world.world_size)]
+        while True:
+            done = all(marker.exists() for marker in markers)
+            if any(failure.exists() for failure in failures):
+                raise RuntimeError(f"A trainer rank failed to write sparse weight delta v{step}")
+            if done:
+                break
             time.sleep(0.05)
             revalidate(delta_dir)
         WeightSender._finish(self, step, step_dir)
@@ -1278,13 +1302,13 @@ class SparseFileSystemWeightSender(WeightSender):
 
     def _close_anchor(self, step: int, step_dir: Path, anchor: AnchorWriter) -> None:
         anchor.close(self.world.world_size)
-        self._wait_for_anchor(step, step_dir)
+        self._wait_for_anchor(step_dir)
+        self.complete_anchor = step
 
-    def _wait_for_anchor(self, step: int, step_dir: Path) -> None:
+    def _wait_for_anchor(self, step_dir: Path) -> None:
         if self.world.is_master:
             while not anchor_complete(step_dir):
                 time.sleep(0.1)
-            self.anchor_step = max(self.anchor_step or 0, step)
 
     def _finish(self, step: int, step_dir: Path) -> None:
         """Committed in ``_broadcast_full`` or in the background (``_finish_delta``)."""
