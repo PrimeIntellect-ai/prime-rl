@@ -436,6 +436,9 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep jointly complete checkpoints at every N steps permanently."""
 
+    export: bool = False
+    """Opt into final HF BEST/LATEST export for runs that require it."""
+
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the

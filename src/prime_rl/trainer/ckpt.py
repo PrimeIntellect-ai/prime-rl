@@ -36,6 +36,7 @@ from prime_rl.utils.pathing import (
     invalidate_joint_ckpt_step,
     preflight_checkpoint_storage,
     prune_joint_ckpts,
+    read_checkpoint_generation,
 )
 
 
@@ -169,6 +170,7 @@ class CheckpointManager:
         self.prune_failures: set[int] = set()
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
+        self.generation = read_checkpoint_generation(self.ckpt_dir)["generation"] if joint else None
         self.logger = get_logger()
         self.world = get_world()
 
@@ -301,7 +303,7 @@ class CheckpointManager:
             )
             preflight_checkpoint_storage(self.ckpt_dir, required_bytes=required_bytes)
             if self.joint:
-                invalidate_joint_ckpt_step(self.ckpt_dir, step)
+                invalidate_joint_ckpt_step(self.ckpt_dir, step, component="trainer")
                 (ckpt_path / ".metadata").unlink(missing_ok=True)
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier(group=get_dcp_group())
@@ -309,7 +311,7 @@ class CheckpointManager:
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
         if self.joint and self.world.is_master:
-            complete_joint_ckpt_step(self.ckpt_dir, step)
+            complete_joint_ckpt_step(self.ckpt_dir, step, component="trainer", generation=self.generation)
 
     def maybe_clean(self) -> None:
         """Prune RL jointly; retain the legacy trainer-only policy for SFT."""
@@ -319,6 +321,7 @@ class CheckpointManager:
                     self.ckpt_dir,
                     keep_last=self.config.keep_last,
                     keep_interval=self.config.keep_interval,
+                    generation=self.generation,
                     failed_steps=self.prune_failures,
                 )
             self.ckpt_steps = get_all_ckpt_steps(self.ckpt_dir)

@@ -110,6 +110,9 @@ class ResumeConfig(BaseConfig):
     step: int | None = Field(None, ge=1)
     """Checkpoint step to resume from. None resumes from the latest checkpoint."""
 
+    legacy: bool = False
+    """Explicitly resume a pre-manifest checkpoint; requires resume.step or resume.dir and validates both components."""
+
     dir: Path | None = None
     """External checkpoint step directory to resume from (e.g. ``other/run/checkpoints/step_50``) — forks another run's checkpoint into this run. Mutually exclusive with ``step``."""
 
@@ -118,6 +121,10 @@ class ResumeConfig(BaseConfig):
         if self.step is not None and self.dir is not None:
             raise ValueError(
                 "resume.step and resume.dir are mutually exclusive — the step is taken from the directory name"
+            )
+        if self.legacy and self.step is None and self.dir is None:
+            raise ValueError(
+                "legacy resume requires an explicit resume.step or resume.dir; automatic legacy discovery is unsafe"
             )
         if self.dir is not None and not re.fullmatch(r"step_\d+", self.dir.name):
             raise ValueError(f"resume.dir must point at a checkpoint step directory (`.../step_<N>`), got '{self.dir}'")

@@ -42,7 +42,13 @@ from prime_rl.control.server import ControlServer
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
-from prime_rl.orchestrator.ckpt import CheckpointRetention, build_state, eval_epoch_score, setup_ckpt_manager
+from prime_rl.orchestrator.ckpt import (
+    CheckpointRetention,
+    build_state,
+    eval_epoch_score,
+    eval_plan_fingerprint,
+    setup_ckpt_manager,
+)
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
@@ -250,9 +256,13 @@ class Orchestrator:
 
         if config.resume is not None:
             if config.resume.dir is not None:
-                self.resume_step = require_joint_resume_step(config.resume.dir.parent, config.resume.dir_step)
+                self.resume_step = require_joint_resume_step(
+                    config.resume.dir.parent, config.resume.dir_step, allow_legacy=config.resume.legacy
+                )
             else:
-                self.resume_step = require_joint_resume_step(self.ckpt_manager.ckpt_dir, config.resume.step)
+                self.resume_step = require_joint_resume_step(
+                    self.ckpt_manager.ckpt_dir, config.resume.step, allow_legacy=config.resume.legacy
+                )
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
@@ -285,6 +295,9 @@ class Orchestrator:
             t0 = time.perf_counter()
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
+        self.retention.configure_eval(
+            {env.name: eval_plan_fingerprint(env) for env in self.eval_envs} if self.eval_envs is not None else {}
+        )
 
         self.train_source = TrainSource(self.train_envs)
         if self.resume_step is not None:
@@ -481,7 +494,7 @@ class Orchestrator:
                     await self.periodic_logger.stop()
                 # Export before completion. False or an exception leaves DCP sources intact
                 # and marks this attempt unsuccessful instead of finalizing its monitors.
-                if final_step is not None:
+                if final_step is not None and self.config.ckpt is not None and self.config.ckpt.export:
                     try:
                         await self.finalize_exports(final_step)
                     except Exception as exc:
@@ -507,14 +520,16 @@ class Orchestrator:
         """Wait for the trainer's final DCP commit, then export only validated BEST and LATEST."""
         manifest = get_joint_manifest_path(self.ckpt_manager.ckpt_dir, latest_step)
         deadline = time.monotonic() + self.config.weight_broadcast.timeout
-        while not is_joint_ckpt_step(self.ckpt_manager.ckpt_dir, latest_step):
+        while not is_joint_ckpt_step(self.ckpt_manager.ckpt_dir, latest_step, generation=self.ckpt_manager.generation):
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Timed out waiting for jointly complete final checkpoint: {manifest}")
             await asyncio.sleep(0.5)
         self.retention.reconcile()
         self.ckpt_manager.maybe_clean()
         best_step = self.retention.best_step
-        if best_step is not None and not is_joint_ckpt_step(self.ckpt_manager.ckpt_dir, best_step):
+        if best_step is not None and not is_joint_ckpt_step(
+            self.ckpt_manager.ckpt_dir, best_step, generation=self.ckpt_manager.generation
+        ):
             raise RuntimeError(f"BEST checkpoint step {best_step} is not jointly complete")
         from prime_rl.orchestrator.hf_export import export_best_and_latest
 

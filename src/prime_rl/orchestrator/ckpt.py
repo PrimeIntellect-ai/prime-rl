@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import math
 import os
@@ -23,6 +24,7 @@ from prime_rl.orchestrator.types import EvalBatch, Progress
 from prime_rl.orchestrator.utils import eval_work
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import (
+    checkpoint_lifecycle_lock,
     complete_joint_ckpt_step,
     get_ckpt_dir,
     get_joint_ckpt_steps,
@@ -32,6 +34,7 @@ from prime_rl.utils.pathing import (
     is_joint_ckpt_step,
     preflight_checkpoint_storage,
     prune_joint_ckpts,
+    read_checkpoint_generation,
 )
 
 
@@ -39,6 +42,7 @@ class CheckpointManager:
     def __init__(self, output_dir: Path, config: CheckpointConfig) -> None:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
+        self.generation = read_checkpoint_generation(self.ckpt_dir)["generation"]
         self.prune_failures: set[int] = set()
 
     def get_ckpt_path(self, step: int) -> Path:
@@ -51,7 +55,7 @@ class CheckpointManager:
         """Save a ``build_state`` snapshot as the checkpoint of ``step``."""
         ckpt_path = self.get_ckpt_path(step)
         preflight_checkpoint_storage(self.ckpt_dir)
-        invalidate_joint_ckpt_step(self.ckpt_dir, step)
+        invalidate_joint_ckpt_step(self.ckpt_dir, step, component="orchestrator")
         (ckpt_path / "progress.pt").unlink(missing_ok=True)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -69,13 +73,14 @@ class CheckpointManager:
         get_logger().debug(
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
-        complete_joint_ckpt_step(self.ckpt_dir, step)
+        complete_joint_ckpt_step(self.ckpt_dir, step, component="orchestrator", generation=self.generation)
 
     def maybe_clean(self) -> None:
         prune_joint_ckpts(
             self.ckpt_dir,
             keep_last=self.config.keep_last,
             keep_interval=self.config.keep_interval,
+            generation=self.generation,
             failed_steps=self.prune_failures,
         )
 
@@ -153,19 +158,30 @@ def select_best_eval(
     return step, score
 
 
+def eval_plan_fingerprint(eval_env) -> str:
+    """Version dedupe/BEST by resolved eval behavior and the exact ordered task population."""
+    payload = {
+        "config": eval_env.config.model_dump(mode="json"),
+        "tasks": [(task.key, task.hash) for task in eval_env.examples],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class CheckpointRetention:
-    """Small atomic journal for eval dedupe and the BEST/pending-eval checkpoint pins."""
+    """Atomic generation/plan-versioned eval journal and BEST/pending pins."""
 
     def __init__(self, ckpt_dir: Path, *, eval_envs: Iterable[str]) -> None:
         self.ckpt_dir = ckpt_dir
         self.eval_envs = frozenset(eval_envs)
+        self.generation = read_checkpoint_generation(ckpt_dir)["generation"]
+        self.fingerprints: dict[str, str] = {}
         self.path = get_retention_path(ckpt_dir)
         self.state = self._load()
-        self.reconcile()
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return {"version": 1, "best_step": None, "best_score": None, "pending_eval": {}, "valid_eval": {}}
+            return {"version": 2, "best_step": None, "best_score": None, "pending_eval": {}, "valid_eval": {}}
         state = json.loads(self.path.read_text())
         if not isinstance(state.get("pending_eval"), dict) or not isinstance(state.get("valid_eval"), dict):
             raise ValueError(f"Invalid checkpoint retention journal at {self.path}")
@@ -189,42 +205,72 @@ class CheckpointRetention:
     def best_step(self) -> int | None:
         return self.state.get("best_step")
 
+    def configure_eval(self, fingerprints: dict[str, str]) -> None:
+        self.fingerprints = fingerprints
+        self.reconcile()
+
+    def _matches_context(self, env_name: str, record) -> bool:
+        return (
+            isinstance(record, dict)
+            and record.get("generation") == self.generation
+            and record.get("fingerprint") == self.fingerprints.get(env_name)
+            and isinstance(record.get("score"), (int, float))
+            and math.isfinite(record["score"])
+        )
+
     def valid_eval_envs(self, step: int) -> set[str]:
-        return set(self.state["valid_eval"].get(str(step), {}))
+        return {
+            name
+            for name, record in self.state["valid_eval"].get(str(step), {}).items()
+            if self._matches_context(name, record)
+        }
 
     def mark_eval_pending(self, step: int, env_names: Iterable[str]) -> None:
-        pending = self.state["pending_eval"].setdefault(str(step), [])
-        pending.extend(name for name in env_names if name not in pending)
-        self._write()
-
-    def complete_eval_epoch(self, batch: EvalBatch, *, score: float | None) -> None:
-        step_key = str(batch.step)
-        if score is not None:
-            self.state["valid_eval"].setdefault(step_key, {})[batch.env_name] = score
-        pending = self.state["pending_eval"].get(step_key, [])
-        if batch.env_name in pending and (score is None or is_joint_ckpt_step(self.ckpt_dir, batch.step)):
-            pending.remove(batch.env_name)
-            if not pending:
-                self.state["pending_eval"].pop(step_key, None)
-        self._reconcile_state()
-        self._write()
-
-    def reconcile(self) -> None:
-        """Resolve BEST after a manifest or eval lands; preserve pins until both are available."""
-        before = json.dumps(self.state, sort_keys=True)
-        self._reconcile_state()
-        if json.dumps(self.state, sort_keys=True) != before:
+        with checkpoint_lifecycle_lock(self.ckpt_dir):
+            self.state = self._load()
+            pending = self.state["pending_eval"].setdefault(str(step), [])
+            pending.extend(name for name in env_names if name not in pending)
             self._write()
 
+    def complete_eval_epoch(self, batch: EvalBatch, *, score: float | None) -> None:
+        with checkpoint_lifecycle_lock(self.ckpt_dir):
+            self.state = self._load()
+            step_key = str(batch.step)
+            if score is not None:
+                if batch.env_name not in self.fingerprints:
+                    raise RuntimeError(f"Eval plan fingerprint is not configured for {batch.env_name}")
+                self.state["valid_eval"].setdefault(step_key, {})[batch.env_name] = {
+                    "fingerprint": self.fingerprints[batch.env_name],
+                    "generation": self.generation,
+                    "score": score,
+                }
+            pending = self.state["pending_eval"].get(step_key, [])
+            joint = is_joint_ckpt_step(self.ckpt_dir, batch.step, generation=self.generation)
+            if batch.env_name in pending and (score is None or joint):
+                pending.remove(batch.env_name)
+                if not pending:
+                    self.state["pending_eval"].pop(step_key, None)
+            self._reconcile_state()
+            self._write()
+
+    def reconcile(self) -> None:
+        with checkpoint_lifecycle_lock(self.ckpt_dir):
+            self.state = self._load()
+            before = json.dumps(self.state, sort_keys=True)
+            self._reconcile_state()
+            if json.dumps(self.state, sort_keys=True) != before:
+                self._write()
+
     def _reconcile_state(self) -> None:
-        joint_steps = set(get_joint_ckpt_steps(self.ckpt_dir))
+        joint_steps = set(get_joint_ckpt_steps(self.ckpt_dir, generation=self.generation))
         valid_scores: dict[tuple[str, int], float] = {}
         for step_key, epochs in self.state["valid_eval"].items():
             step = int(step_key)
-            for env_name, score in epochs.items():
-                valid_scores[(env_name, step)] = float(score)
-                if step in joint_steps and env_name in self.state["pending_eval"].get(step_key, []):
-                    self.state["pending_eval"][step_key].remove(env_name)
+            for env_name, record in epochs.items():
+                if self._matches_context(env_name, record):
+                    valid_scores[(env_name, step)] = float(record["score"])
+                    if step in joint_steps and env_name in self.state["pending_eval"].get(step_key, []):
+                        self.state["pending_eval"][step_key].remove(env_name)
             if not self.state["pending_eval"].get(step_key):
                 self.state["pending_eval"].pop(step_key, None)
         best = select_best_eval(valid_scores, joint_steps=joint_steps, required_envs=self.eval_envs)

@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import json
 import os
 import shlex
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -319,6 +321,35 @@ def get_step_path(path: Path, step: int) -> Path:
 
 JOINT_CKPT_MANIFEST = "manifest.json"
 CKPT_RETENTION_FILE = "retention.json"
+CKPT_GENERATION_FILE = "generation.json"
+COMPONENT_GENERATION_FILE = "generation.json"
+CKPT_LOCK_FILE = ".lifecycle.lock"
+
+
+@contextmanager
+def checkpoint_lifecycle_lock(ckpt_dir: Path):
+    """Serialize manifest, retention, and deletion mutations across components."""
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    with (ckpt_dir / CKPT_LOCK_FILE).open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _atomic_json(path: Path, payload: dict) -> None:
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
 
 
 def get_joint_manifest_path(ckpt_dir: Path, step: int) -> Path:
@@ -329,60 +360,153 @@ def get_retention_path(ckpt_dir: Path) -> Path:
     return ckpt_dir / CKPT_RETENTION_FILE
 
 
-def is_joint_ckpt_step(ckpt_dir: Path, step: int) -> bool:
-    """A resume point exists only when both components and their commit record do."""
+def get_generation_path(ckpt_dir: Path) -> Path:
+    return ckpt_dir / CKPT_GENERATION_FILE
+
+
+def read_checkpoint_generation(ckpt_dir: Path) -> dict:
+    path = get_generation_path(ckpt_dir)
+    if not path.exists():
+        return {"generation": os.environ.get("PRL_RUN_ID", "legacy"), "ceiling": None}
+    state = json.loads(path.read_text())
+    if not isinstance(state.get("generation"), str) or not state["generation"]:
+        raise ValueError(f"Invalid checkpoint generation at {path}")
+    ceiling = state.get("ceiling")
+    if ceiling is not None and (not isinstance(ceiling, int) or ceiling < 0):
+        raise ValueError(f"Invalid checkpoint resume ceiling at {path}")
+    return {"generation": state["generation"], "ceiling": ceiling}
+
+
+def start_checkpoint_generation(ckpt_dir: Path, *, generation: str, resume_step: int | None) -> None:
+    """Start a writer generation in the current run root only; resume sources stay read-only."""
+    if not generation:
+        raise ValueError("Checkpoint generation must be non-empty")
+    with checkpoint_lifecycle_lock(ckpt_dir):
+        _atomic_json(get_generation_path(ckpt_dir), {"generation": generation, "ceiling": resume_step or 0})
+
+
+def _component_generation_path(ckpt_dir: Path, step: int, component: str) -> Path:
+    return get_step_path(ckpt_dir, step) / component / COMPONENT_GENERATION_FILE
+
+
+def _read_generation(path: Path) -> str | None:
+    try:
+        value = json.loads(path.read_text()).get("generation")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _joint_generation(ckpt_dir: Path, step: int) -> str | None:
     step_path = get_step_path(ckpt_dir, step)
     if not (step_path / "trainer" / ".metadata").is_file():
-        return False
+        return None
     if not (step_path / "orchestrator" / "progress.pt").is_file():
-        return False
+        return None
     try:
         manifest = json.loads(get_joint_manifest_path(ckpt_dir, step).read_text())
     except (OSError, json.JSONDecodeError):
-        return False
-    return isinstance(manifest, dict) and manifest.get("complete") is True and manifest.get("step") == step
+        return None
+    if not isinstance(manifest, dict) or manifest.get("complete") is not True or manifest.get("step") != step:
+        return None
+    generation = manifest.get("generation")
+    if not isinstance(generation, str) or not generation:
+        return None
+    if any(
+        _read_generation(_component_generation_path(ckpt_dir, step, component)) != generation
+        for component in ("trainer", "orchestrator")
+    ):
+        return None
+    return generation
 
 
-def invalidate_joint_ckpt_step(ckpt_dir: Path, step: int) -> None:
-    """Prevent an old commit record from certifying a component rewrite."""
-    get_joint_manifest_path(ckpt_dir, step).unlink(missing_ok=True)
+def is_joint_ckpt_step(ckpt_dir: Path, step: int, *, generation: str | None = None) -> bool:
+    """A resume point requires both current component receipts and their joint commit."""
+    joint_generation = _joint_generation(ckpt_dir, step)
+    return joint_generation is not None and (generation is None or joint_generation == generation)
 
 
-def complete_joint_ckpt_step(ckpt_dir: Path, step: int) -> bool:
-    """Commit a joint checkpoint after either component finishes; the later writer wins the race."""
+def invalidate_joint_ckpt_step(ckpt_dir: Path, step: int, *, component: str) -> None:
+    """Prevent old receipts or manifests from certifying a component rewrite."""
+    with checkpoint_lifecycle_lock(ckpt_dir):
+        get_joint_manifest_path(ckpt_dir, step).unlink(missing_ok=True)
+        _component_generation_path(ckpt_dir, step, component).unlink(missing_ok=True)
+
+
+def complete_joint_ckpt_step(ckpt_dir: Path, step: int, *, component: str, generation: str) -> bool:
+    """Publish one component receipt, then commit only if both receipts match its generation."""
+    if component not in ("trainer", "orchestrator"):
+        raise ValueError(f"Unknown checkpoint component: {component}")
     step_path = get_step_path(ckpt_dir, step)
-    if not (step_path / "trainer" / ".metadata").is_file():
-        return False
-    if not (step_path / "orchestrator" / "progress.pt").is_file():
-        return False
+    _atomic_json(_component_generation_path(ckpt_dir, step, component), {"generation": generation})
+    with checkpoint_lifecycle_lock(ckpt_dir):
+        if not (step_path / "trainer" / ".metadata").is_file():
+            return False
+        if not (step_path / "orchestrator" / "progress.pt").is_file():
+            return False
+        if any(
+            _read_generation(_component_generation_path(ckpt_dir, step, name)) != generation
+            for name in ("trainer", "orchestrator")
+        ):
+            return False
+        _atomic_json(
+            get_joint_manifest_path(ckpt_dir, step), {"complete": True, "generation": generation, "step": step}
+        )
+        return True
+
+
+def get_joint_ckpt_steps(ckpt_dir: Path, *, generation: str | None = None) -> list[int]:
+    return [step for step in get_all_ckpt_steps(ckpt_dir) if is_joint_ckpt_step(ckpt_dir, step, generation=generation)]
+
+
+def get_resume_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """Current-generation saves plus ancestors at/below the persisted rewind ceiling."""
+    state = read_checkpoint_generation(ckpt_dir)
+    ceiling = state["ceiling"]
+    steps = []
+    for step in get_all_ckpt_steps(ckpt_dir):
+        generation = _joint_generation(ckpt_dir, step)
+        if generation is not None and (generation == state["generation"] or (ceiling is not None and step <= ceiling)):
+            steps.append(step)
+    return steps
+
+
+def require_legacy_resume_step(ckpt_dir: Path, step: int | None) -> int:
+    """Explicit migration for pre-manifest checkpoints; never an automatic fallback."""
+    if step is None:
+        raise ValueError("Legacy resume requires an explicit checkpoint step")
     manifest_path = get_joint_manifest_path(ckpt_dir, step)
-    payload = {"complete": True, "step": step}
-    fd, tmp_name = tempfile.mkstemp(dir=step_path, prefix=f".{JOINT_CKPT_MANIFEST}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_name, manifest_path)
-    except BaseException:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-        raise
-    return True
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Legacy checkpoint step {step} has a corrupt manifest") from exc
+        legacy_manifest = (
+            isinstance(manifest, dict)
+            and manifest.get("complete") is True
+            and manifest.get("step") == step
+            and "generation" not in manifest
+        )
+        if not legacy_manifest:
+            raise ValueError(f"Checkpoint step {step} has an invalid or generation-bearing manifest; refusing legacy fallback")
+    step_path = get_step_path(ckpt_dir, step)
+    if (
+        not (step_path / "trainer" / ".metadata").is_file()
+        or not (step_path / "orchestrator" / "progress.pt").is_file()
+    ):
+        raise FileNotFoundError(f"Legacy checkpoint step {step} lacks trainer or orchestrator state in {ckpt_dir}")
+    return step
 
 
-def get_joint_ckpt_steps(ckpt_dir: Path) -> list[int]:
-    """All jointly committed checkpoints, never directory-only or partial saves."""
-    return [step for step in get_all_ckpt_steps(ckpt_dir) if is_joint_ckpt_step(ckpt_dir, step)]
-
-
-def require_joint_resume_step(ckpt_dir: Path, step: int | None = None) -> int:
-    """Resolve one explicit or latest-valid resume point, with no directory-only fallback."""
+def require_joint_resume_step(ckpt_dir: Path, step: int | None = None, *, allow_legacy: bool = False) -> int:
+    """Resolve latest generation-safe resume or one explicit checkpoint, with no silent fallback."""
+    if allow_legacy:
+        return require_legacy_resume_step(ckpt_dir, step)
     if step is not None:
         if not is_joint_ckpt_step(ckpt_dir, step):
             raise FileNotFoundError(f"Checkpoint step {step} is not jointly complete in {ckpt_dir}")
         return step
-    steps = get_joint_ckpt_steps(ckpt_dir)
+    steps = get_resume_ckpt_steps(ckpt_dir)
     if not steps:
         raise FileNotFoundError(f"No jointly complete checkpoints found in {ckpt_dir}; cannot resume")
     latest = steps[-1]
@@ -414,33 +538,39 @@ def prune_joint_ckpts(
     *,
     keep_last: int | None,
     keep_interval: int | None,
+    generation: str,
     failed_steps: set[int] | None = None,
 ) -> list[int]:
-    """Prune committed, unpinned checkpoints and retry partially failed prior deletions."""
+    """Prune active-generation checkpoints under the retention lock; never prune abandoned futures."""
     if keep_last is None and keep_interval is None:
         return []
     failures = failed_steps if failed_steps is not None else set()
-    joint_steps = get_joint_ckpt_steps(ckpt_dir)
-    keep = set(joint_steps[-keep_last:]) if keep_last is not None else set()
-    if keep_interval is not None:
-        keep.update(step for step in joint_steps if step % keep_interval == 0)
-    keep.update(get_protected_ckpt_steps(ckpt_dir))
-    deleted: list[int] = []
-    for step in sorted(set(joint_steps) | failures):
-        if step in keep or step in get_protected_ckpt_steps(ckpt_dir):
-            continue
-        path = get_step_path(ckpt_dir, step)
-        try:
-            shutil.rmtree(path)
-        except FileNotFoundError:
-            failures.discard(step)
-        except OSError as exc:
-            failures.add(step)
-            get_logger().warning(f"Failed to remove {path}: {exc}, skipping cleanup")
-        else:
-            failures.discard(step)
-            deleted.append(step)
-    return deleted
+    with checkpoint_lifecycle_lock(ckpt_dir):
+        if read_checkpoint_generation(ckpt_dir)["generation"] != generation:
+            return []
+        joint_steps = get_joint_ckpt_steps(ckpt_dir, generation=generation)
+        keep = set(joint_steps[-keep_last:]) if keep_last is not None else set()
+        if joint_steps:
+            keep.add(joint_steps[-1])  # LATEST is pinned independently of keep_last/keep_interval.
+        if keep_interval is not None:
+            keep.update(step for step in joint_steps if step % keep_interval == 0)
+        keep.update(get_protected_ckpt_steps(ckpt_dir))
+        deleted: list[int] = []
+        for step in sorted(set(joint_steps) | failures):
+            if step in keep or step in get_protected_ckpt_steps(ckpt_dir):
+                continue
+            path = get_step_path(ckpt_dir, step)
+            try:
+                shutil.rmtree(path)
+            except FileNotFoundError:
+                failures.discard(step)
+            except OSError as exc:
+                failures.add(step)
+                get_logger().warning(f"Failed to remove {path}: {exc}, skipping cleanup")
+            else:
+                failures.discard(step)
+                deleted.append(step)
+        return deleted
 
 
 def preflight_checkpoint_storage(ckpt_dir: Path, *, required_bytes: int = 0) -> None:

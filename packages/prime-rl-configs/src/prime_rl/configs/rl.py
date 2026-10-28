@@ -95,6 +95,9 @@ class SharedCheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    export: bool = False
+    """Opt into final HF export. Propagated to the orchestrator only; disabled for legacy/other runs."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
@@ -400,6 +403,11 @@ class RLConfig(BaseConfig):
                 "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
             )
         if trainer.ckpt and orchestrator.ckpt:
+            if trainer.ckpt.output_dir is not None:
+                raise ValueError(
+                    "ckpt.output_dir is not supported for joint RL checkpoints; use run.output_dir/run.name "
+                    "so trainer, orchestrator, retention, and export share one checkpoint root"
+                )
             require_equal(
                 "ckpt.interval",
                 {

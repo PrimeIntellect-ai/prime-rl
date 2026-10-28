@@ -24,6 +24,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     prepare_run,
     require_joint_resume_step,
+    start_checkpoint_generation,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -488,12 +489,20 @@ def rl(config: RLConfig):
     # from a previous run and the orchestrator would see a negative async level.
     get_logger().info("Starting RL run")
     resume_step: int | None = None
+    ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
     if config.resume is not None:
         if config.resume.dir is not None:
-            resume_step = require_joint_resume_step(config.resume.dir.parent, config.resume.dir_step)
+            resume_step = require_joint_resume_step(
+                config.resume.dir.parent, config.resume.dir_step, allow_legacy=config.resume.legacy
+            )
         else:
-            ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-            resume_step = require_joint_resume_step(get_ckpt_dir(ckpt_base), config.resume.step)
+            resume_step = require_joint_resume_step(
+                get_ckpt_dir(ckpt_base), config.resume.step, allow_legacy=config.resume.legacy
+            )
+    if config.ckpt is not None or config.resume is not None:
+        start_checkpoint_generation(
+            get_ckpt_dir(ckpt_base), generation=os.environ["PRL_RUN_ID"], resume_step=resume_step
+        )
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

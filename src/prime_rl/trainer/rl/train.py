@@ -143,9 +143,13 @@ def train(config: TrainerConfig):
 
     if config.resume is not None:
         if config.resume.dir is not None:
-            checkpoint_step = require_joint_resume_step(config.resume.dir.parent, config.resume.dir_step)
+            checkpoint_step = require_joint_resume_step(
+                config.resume.dir.parent, config.resume.dir_step, allow_legacy=config.resume.legacy
+            )
         else:
-            checkpoint_step = require_joint_resume_step(ckpt_manager.ckpt_dir, config.resume.step)
+            checkpoint_step = require_joint_resume_step(
+                ckpt_manager.ckpt_dir, config.resume.step, allow_legacy=config.resume.legacy
+            )
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
