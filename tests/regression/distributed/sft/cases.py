@@ -35,6 +35,7 @@ unit's launch count, and tests outside the matrix run in shard 1.
 import json
 import math
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import permutations
 from pathlib import Path
@@ -143,10 +144,10 @@ def cases_for(arch: Arch) -> list[Case]:
 
 def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], int]:
     """Map each shard unit (an arch's base cases, or its feature cases) to a shard, balancing estimated launch time."""
-    costs: dict[tuple[str, bool], int] = {}
+    costs: defaultdict[tuple[str, bool], int] = defaultdict(int)
     for case in cases:
         launches = 0 if case.skip_reason else 2 if case.resume else 1
-        costs[case.shard_unit] = costs.get(case.shard_unit, 0) + launches * case.arch.launch_s
+        costs[case.shard_unit] += launches * case.arch.launch_s
     loads = [0] * num_shards
     shards = {}
     for unit, cost in sorted(costs.items(), key=lambda item: (-item[1], item[0])):
