@@ -48,6 +48,8 @@ def test_parse_best_is_last_and_whitespace():
         ({"roles": "best,best"}, "given to several steps"),
         ({"roles": "best+last,last"}, "given to several steps"),
         ({"roles": "last,best"}, "after the last step"),
+        ({"steps": "120", "roles": "best"}, "last checkpoint must be exported"),
+        ({"roles": "best,best+last"}, "given to several steps"),
         (
             {
                 "repos": "PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step200,"
@@ -68,6 +70,25 @@ def test_parse_rejects(overrides, message):
         plan.parse_export_env(env(**kwargs))
 
 
+def test_resolve_export_env_sources():
+    full = env()
+    values, sources = plan.resolve_export_env({}, full)
+    assert values == full and set(sources.values()) == {"config env_vars"}
+    values, sources = plan.resolve_export_env(full, None)
+    assert values == full and set(sources.values()) == {"environment"}
+    # Split across both, and equal values in both, are fine; the environment is reported as the source.
+    half = {k: full[k] for k in ("GB_EXPORT_RUN_ID", "GB_EXPORT_STEPS")}
+    rest = {k: v for k, v in full.items() if k not in half}
+    values, sources = plan.resolve_export_env(dict(half, PATH="/bin"), dict(rest, GB_EXPORT_STEPS=" 120,200 "))
+    assert values == full and sources["GB_EXPORT_ROLES"] == "config env_vars"
+    assert plan.parse_export_env(values)[1].role == "last"
+    with pytest.raises(plan.ExportSpecError, match="differs between"):
+        plan.resolve_export_env(full, dict(full, GB_EXPORT_STEPS="80,200"))
+    # Nothing anywhere: the parser names the missing variable.
+    with pytest.raises(plan.ExportSpecError, match="GB_EXPORT_RUN_ID is not set"):
+        plan.parse_export_env(plan.resolve_export_env({}, {})[0])
+
+
 def make_ckpts(root: Path, complete: list[int], partial: list[int] = ()) -> None:
     for step in complete:
         trainer = root / RUN / "checkpoints" / f"step_{step}" / "trainer"
@@ -75,6 +96,34 @@ def make_ckpts(root: Path, complete: list[int], partial: list[int] = ()) -> None
         (trainer / ".metadata").write_bytes(b"x")
     for step in partial:
         (root / RUN / "checkpoints" / f"step_{step}" / "trainer").mkdir(parents=True)
+
+
+def test_storage_problems(tmp_path):
+    (tmp_path / "__0_0.distcp").write_bytes(b"x" * 10)
+    (tmp_path / "__1_0.distcp").write_bytes(b"x" * 4)
+    assert plan.storage_problems(tmp_path, {"__0_0.distcp": 10}) == []
+    problems = plan.storage_problems(tmp_path, {"__0_0.distcp": 10, "__1_0.distcp": 8, "__2_0.distcp": 1})
+    assert len(problems) == 2 and "has 4 bytes, .metadata needs 8" in problems[0] and "missing" in problems[1]
+    assert "no data files" in plan.storage_problems(tmp_path, {})[0]
+
+
+def test_check_checkpoints_uses_completeness_predicate(tmp_path):
+    # Step 200's .metadata is there, but its data files are still being written: 160 is the newest complete one.
+    make_ckpts(tmp_path, [40, 80, 120, 160, 200])
+    still_syncing = lambda dcp_dir: dcp_dir.parent.name != "step_200"  # noqa: E731
+    assert plan.complete_checkpoint_steps(tmp_path / RUN / "checkpoints", still_syncing) == [40, 80, 120, 160]
+    with pytest.raises(plan.ExportSpecError, match=r"no complete trainer checkpoint.*step_200"):
+        plan.check_checkpoints(plan.parse_export_env(env()), tmp_path, still_syncing)
+    specs = plan.parse_export_env(env(steps="120,160"))
+    assert plan.check_checkpoints(specs, tmp_path, still_syncing)[-1] == 160
+
+
+def test_check_checkpoints_best_on_newest_needs_best_plus_last(tmp_path):
+    make_ckpts(tmp_path, [40, 80, 120])
+    specs = [plan.ExportSpec(RUN, 120, plan.expected_repo_id(120), "best")]  # bypasses the parser's last check
+    with pytest.raises(plan.ExportSpecError, match="use the role 'best\\+last'"):
+        plan.check_checkpoints(specs, tmp_path)
+    assert plan.check_checkpoints(plan.parse_export_env(env(steps="120", roles="best+last")), tmp_path) == [40, 80, 120]
 
 
 def test_check_checkpoints(tmp_path):
@@ -111,11 +160,15 @@ def test_heldout_evals_and_best(tmp_path):
         {"step": 160.0, pre + "metrics/train_reward/mean": 0.40, pre + "solved_some": 0.3},
         {"step": 160.0, "train/loss": 1.0},  # a train row at the same step does not replace the eval
         {"step": 200.0, pre + "metrics/train_reward/mean": float("nan")},
+        # One eval split over two rows: the later partial row does not erase train_reward.
+        {"step": 240.0, pre + "metrics/train_reward/mean": 0.1, pre + "solved_some": 0.1},
+        {"step": 240.0, pre + "rewards/pass/mean": 0.05, pre + "metrics/train_reward/mean": None},
     ]
     path = tmp_path / "metrics.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
     evals = plan.heldout_evals(path)
-    assert sorted(evals) == [40, 80, 120, 160, 200]
+    assert sorted(evals) == [40, 80, 120, 160, 200, 240]
+    assert evals[240] == {"train_reward": 0.1, "hurdle_frac": None, "pass": 0.05, "pass_at_6": 0.1}
     assert evals[80]["train_reward"] == 0.40 and evals[40]["pass"] == 0.1 and evals[200]["train_reward"] is None
     # 80, 120 and 160 tie on train_reward; 80 and 160 tie on pass@6; the later step wins.
     assert plan.best_step(evals, [40, 80, 120, 160, 200]) == 160
@@ -178,6 +231,69 @@ def test_report_entry_done_line_and_card(tmp_path):
     assert f"run `{RUN}`, step 200" in card and "which also has its best held-out eval" in card
     assert "mean train_reward 0.410" in card and "pass@6 0.300" in card
     assert "not found" in plan.model_card(spec, None, "base/repo", "fb0ee0bc6b3f")
+    assert "one BF16 rounding step" in card
+
+
+class FakeHTTPError(OSError):
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.response = type("R", (), {"status_code": status})()
+
+
+class ConnectError(Exception):  # stands in for httpx.ConnectError (not an OSError)
+    pass
+
+
+@pytest.mark.parametrize(
+    "exc, transient",
+    [
+        (FakeHTTPError(503), True),
+        (FakeHTTPError(429), True),
+        (FakeHTTPError(401), False),
+        (FakeHTTPError(404), False),
+        (ConnectionResetError("reset"), True),
+        (TimeoutError(), True),
+        (ConnectError("dns"), True),
+        (RuntimeError("xet upload failed"), True),
+        (FileNotFoundError("x"), False),
+        (ValueError("bad"), False),
+    ],
+)
+def test_is_transient(exc, transient):
+    assert plan.is_transient(exc) is transient
+
+
+def test_retry_backoff_and_give_up():
+    calls, sleeps, logs = [], [], []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise FakeHTTPError(502)
+        return "ok"
+
+    assert plan.retry(flaky, "commit", attempts=5, base_delay=1, log=logs.append, sleep=sleeps.append) == "ok"
+    assert len(calls) == 3 and sleeps == [1, 2] and "retry 1/4" in logs[0]
+
+    calls.clear()
+
+    def always():
+        calls.append(1)
+        raise FakeHTTPError(503)
+
+    with pytest.raises(FakeHTTPError):
+        plan.retry(always, "commit", attempts=3, base_delay=1, sleep=lambda _: None)
+    assert len(calls) == 3
+
+    calls.clear()
+
+    def forbidden():
+        calls.append(1)
+        raise FakeHTTPError(403)
+
+    with pytest.raises(FakeHTTPError):
+        plan.retry(forbidden, "commit", attempts=5, base_delay=1, sleep=lambda _: None)
+    assert len(calls) == 1
 
 
 def test_write_file_swaps_casts_and_copies(tmp_path):

@@ -1,16 +1,26 @@
 # Nemotron 3.5 Super GeneBench RL -> Hugging Face export job (no training). Text-only NemotronHForCausalLM repos.
 #
-#   prime train configs/advanced/nemotron-3-super/rl-hosted-hf-export.toml --volume nemotron-genebench-base \
-#     -e ~/.config/prime-export/hf.env \
-#     -e GB_EXPORT_RUN_ID=<rl run id> -e GB_EXPORT_STEPS=<steps, e.g. 120,200> \
-#     -e GB_EXPORT_REPOS=<PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step<N>, same order> \
-#     -e GB_EXPORT_ROLES=<best | last | best+last, same order> -y
+# `prime train -e` forwards only HF_TOKEN and WANDB_API_KEY to a hosted run (any other key is refused), so the
+# request goes into the [env_vars] table of a per-launch copy of this file (scripts/auto_export.py in genebench-env
+# renders it), next to PYTORCH_CUDA_ALLOC_CONF:
+#
+#   [env_vars]
+#   GB_EXPORT_RUN_ID = "<rl run id>"
+#   GB_EXPORT_STEPS = "<steps, e.g. 120,200>"
+#   GB_EXPORT_REPOS = "<PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step<N>, same order>"
+#   GB_EXPORT_ROLES = "<best,last | best+last, same order; the last checkpoint is always exported>"
+#
+#   prime train <rendered copy of configs/advanced/nemotron-3-super/rl-hosted-hf-export.toml> --volume nemotron-genebench-base \
+#     -e ~/.config/prime-export/hf.env -y
+#
+# hf.env provides HF_TOKEN only. The export reads GB_EXPORT_* from the process environment or, failing that, from
+# this config's env_vars, so it works whether or not the hosted launcher exports [env_vars] to the trainer.
 #
 # On source_ref (branch exp/genebench-rl-hf-export) the SFT trainer runs src/prime_rl/trainer/sft/hf_export.py
 # and exits. rl_export_plan.py checks the GB_EXPORT_* request strictly before anything is built:
-#   * every step has a complete trainer checkpoint (.metadata);
+#   * every step has a complete trainer checkpoint (.metadata and every data file it references, at full size);
 #   * repo i is PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step<step i>;
-#   * 'last' is the newest complete checkpoint;
+#   * 'last' is the newest complete checkpoint, and is always requested ('best+last' when best is last);
 #   * HF_TOKEN is set (from hf.env), and every repo exists or can be created, and is private.
 # Then, for each step, in order:
 #   1. Load the model weights only from /volume/runs/$GB_EXPORT_RUN_ID/checkpoints/step_N/trainer.

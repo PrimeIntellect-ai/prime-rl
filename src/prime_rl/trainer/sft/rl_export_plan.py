@@ -3,22 +3,30 @@
 It holds the interface with the watcher that launches the export run, plus the report, log lines and model card.
 It only uses the standard library, so it can be tested without the GPU stack.
 
-The watcher launches the export run as:
+The request is four variables: GB_EXPORT_RUN_ID, and GB_EXPORT_STEPS, GB_EXPORT_REPOS and GB_EXPORT_ROLES, which
+are comma-separated lists given in the same order. Each step gets its own repo. The last checkpoint is always
+exported; when the best step is also the last one, there is a single entry with the role ``best+last``.
 
-    prime train configs/advanced/nemotron-3-super/rl-hosted-hf-export.toml --volume nemotron-genebench-base \\
-      -e ~/.config/prime-export/hf.env -e GB_EXPORT_RUN_ID=<rl run id> -e GB_EXPORT_STEPS=120,200 \\
-      -e GB_EXPORT_REPOS=PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step120,PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step200 \\
-      -e GB_EXPORT_ROLES=best,last -y
+`prime train -e` only forwards HF_TOKEN and WANDB_API_KEY to a dedicated (hosted) run and refuses any other key,
+so the watcher writes the four values into the top-level [env_vars] table of a per-launch copy of the config:
 
-The steps, repos and roles are comma-separated lists given in the same order. Each step gets its own repo. When
-the best step is also the last one, there is a single entry with the role ``best+last``.
+    [env_vars]
+    GB_EXPORT_RUN_ID = "<rl run id>"
+    GB_EXPORT_STEPS = "120,200"
+    GB_EXPORT_REPOS = "PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step120,PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step200"
+    GB_EXPORT_ROLES = "best,last"
+
+and launches it with `prime train <rendered.toml> --volume nemotron-genebench-base -e ~/.config/prime-export/hf.env -y`.
+The export reads each variable from the process environment and, when it is not there, from the trainer
+config's env_vars (see resolve_export_env), so it does not depend on the hosted launcher exporting [env_vars].
 """
 
 import json
 import math
 import os
 import re
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +37,7 @@ ENV_RUN_ID = "GB_EXPORT_RUN_ID"
 ENV_STEPS = "GB_EXPORT_STEPS"
 ENV_REPOS = "GB_EXPORT_REPOS"
 ENV_ROLES = "GB_EXPORT_ROLES"
+ENV_KEYS = (ENV_RUN_ID, ENV_STEPS, ENV_REPOS, ENV_ROLES)
 ROLES = ("best", "last", "best+last")
 DONE_MARKER = "GB_EXPORT_DONE"
 ALL_DONE_MARKER = "GB_EXPORT_ALL_DONE"
@@ -70,6 +79,27 @@ class ExportSpec:
 
 def expected_repo_id(step: int) -> str:
     return f"{HF_ORG}/{REPO_PREFIX}{step}"
+
+
+def resolve_export_env(
+    environ: Mapping[str, str], config_env_vars: Mapping[str, str] | None
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The GB_EXPORT_* values and where each came from ("environment" or "config env_vars"). The process
+    environment wins; a key set in both with different values is an error, since that means two requests."""
+    config_env_vars = config_env_vars or {}
+    values: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    for key in ENV_KEYS:
+        from_env, from_config = environ.get(key), config_env_vars.get(key)
+        if from_env is not None and from_config is not None and from_env.strip() != str(from_config).strip():
+            raise ExportSpecError(
+                f"{key} differs between the environment ({from_env!r}) and env_vars ({from_config!r})"
+            )
+        if from_env is not None:
+            values[key], sources[key] = from_env, "environment"
+        elif from_config is not None:
+            values[key], sources[key] = str(from_config), "config env_vars"
+    return values, sources
 
 
 def _split(env: Mapping[str, str], key: str) -> list[str]:
@@ -120,38 +150,69 @@ def parse_export_env(env: Mapping[str, str] | None = None) -> list[ExportSpec]:
             raise ExportSpecError(f"{ENV_ROLES}: role {tag!r} is given to several steps {holders}")
     best = [step for step, role in zip(steps, roles) if "best" in role.split("+")]
     last = [step for step, role in zip(steps, roles) if "last" in role.split("+")]
-    if best and last and best[0] > last[0]:
+    if not last:
+        raise ExportSpecError(
+            f"{ENV_ROLES}={','.join(roles)!r}: the last checkpoint must be exported (role 'last' or 'best+last')"
+        )
+    if best and best[0] > last[0]:
         raise ExportSpecError(f"best step {best[0]} is after the last step {last[0]}")
     return [ExportSpec(run_id, step, repo, role) for step, repo, role in zip(steps, repos, roles)]
 
 
-def complete_checkpoint_steps(ckpt_root: Path) -> list[int]:
-    """Steps under ``ckpt_root`` (runs/<id>/checkpoints) whose trainer checkpoint is complete (has .metadata)."""
+def storage_problems(dcp_dir: Path, file_ends: Mapping[str, int]) -> list[str]:
+    """Why the DCP checkpoint in ``dcp_dir`` is not fully written, given its .metadata's storage map (relative
+    file -> largest offset + length it references): a missing or short data file. The small .metadata lands on
+    storage long before the large .distcp files, so .metadata alone does not make a checkpoint complete."""
+    if not file_ends:
+        return [f"{dcp_dir}/.metadata references no data files"]
+    problems = []
+    for name, end in sorted(file_ends.items()):
+        path = dcp_dir / name
+        try:
+            size = path.stat().st_size
+        except OSError:
+            problems.append(f"{path} is missing")
+            continue
+        if size < end:
+            problems.append(f"{path} has {size} bytes, .metadata needs {end}")
+    return problems
+
+
+def has_metadata(dcp_dir: Path) -> bool:
+    return (dcp_dir / ".metadata").is_file()
+
+
+def complete_checkpoint_steps(ckpt_root: Path, is_complete: Callable[[Path], bool] = has_metadata) -> list[int]:
+    """Steps under ``ckpt_root`` (runs/<id>/checkpoints) whose trainer checkpoint is complete: it has .metadata
+    and passes ``is_complete`` (the export checks every data file .metadata references, see storage_problems)."""
     if not ckpt_root.is_dir():
         return []
     steps = []
     for path in ckpt_root.iterdir():
         match = re.fullmatch(r"step_([0-9]+)", path.name)
-        if match and (path / "trainer" / ".metadata").is_file():
+        if match and has_metadata(path / "trainer") and is_complete(path / "trainer"):
             steps.append(int(match.group(1)))
     return sorted(steps)
 
 
-def check_checkpoints(specs: list[ExportSpec], runs_root: Path | None = None) -> list[int]:
-    """Every requested step has a complete trainer checkpoint, and the 'last' one is the newest complete step."""
+def check_checkpoints(
+    specs: list[ExportSpec], runs_root: Path | None = None, is_complete: Callable[[Path], bool] = has_metadata
+) -> list[int]:
+    """Every requested step has a complete trainer checkpoint, the 'last' one is the newest complete step, and a
+    'best' that is the newest step is requested as 'best+last' (one repo per step)."""
     run_id = specs[0].run_id
     ckpt_root = (runs_root or RUNS_ROOT) / run_id / "checkpoints"
-    complete = complete_checkpoint_steps(ckpt_root)
+    complete = complete_checkpoint_steps(ckpt_root, is_complete)
     missing = [str(spec.dcp_dir(runs_root)) for spec in specs if spec.step not in complete]
     if missing:
-        raise ExportSpecError(
-            f"no complete trainer checkpoint (with .metadata) at {missing}; complete steps: {complete}"
-        )
+        raise ExportSpecError(f"no complete trainer checkpoint at {missing}; complete steps: {complete}")
     for spec in specs:
         if "last" in spec.role.split("+") and spec.step != complete[-1]:
             raise ExportSpecError(
                 f"step {spec.step} has role {spec.role!r}, but the newest complete checkpoint is step {complete[-1]}"
             )
+        if spec.role == "best" and spec.step == complete[-1]:
+            raise ExportSpecError(f"step {spec.step} is the newest complete checkpoint: use the role 'best+last'")
     return complete
 
 
@@ -164,8 +225,9 @@ def _finite(value) -> float | None:
 
 
 def heldout_evals(metrics_path: Path) -> dict[int, dict[str, float | None]]:
-    """step -> held-out eval metrics, from the RL run's metrics.jsonl (the last row per step wins, since a
-    restart re-runs the eval of the step it resumes from). Missing file -> {}."""
+    """step -> held-out eval metrics, from the RL run's metrics.jsonl. Rows of one step are merged per metric,
+    later non-null values winning (a restart re-runs the eval of the step it resumes from, and a step may log its
+    eval over several rows). Missing file -> {}."""
     evals: dict[int, dict[str, float | None]] = {}
     if not metrics_path.is_file():
         return evals
@@ -178,7 +240,11 @@ def heldout_evals(metrics_path: Path) -> dict[int, dict[str, float | None]]:
             step = _finite(row.get("step")) if isinstance(row, dict) else None
             if step is None or not any(key.startswith(HELDOUT_PREFIX) for key in row):
                 continue
-            evals[int(step)] = {name: _finite(row.get(HELDOUT_PREFIX + key)) for name, key in HELDOUT_KEYS.items()}
+            merged = evals.setdefault(int(step), {name: None for name in HELDOUT_KEYS})
+            for name, key in HELDOUT_KEYS.items():
+                value = _finite(row.get(HELDOUT_PREFIX + key))
+                if value is not None:
+                    merged[name] = value
     return evals
 
 
@@ -304,6 +370,64 @@ def done_line(entry: Mapping) -> str:
     return f"{DONE_MARKER} {json.dumps(summary, separators=(',', ':'), sort_keys=True)}"
 
 
+TRANSIENT_HTTP_STATUS = frozenset({408, 423, 425, 429, 500, 502, 503, 504})
+RETRY_ATTEMPTS = 5
+RETRY_BASE_DELAY = 10.0
+
+
+# Errors that a repeat cannot fix: bad arguments or local files. Everything else without an HTTP status (network
+# errors of requests or httpx, an hf_xet upload error, a timeout) is retried, since every retried call is safe to
+# repeat and a needless retry only costs a few minutes before the run fails anyway.
+FINAL_ERRORS = (
+    FileNotFoundError,
+    PermissionError,
+    IsADirectoryError,
+    NotADirectoryError,
+    ValueError,
+    TypeError,
+    KeyError,
+    AttributeError,
+    AssertionError,
+    NotImplementedError,
+)
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Worth retrying a Hugging Face call: an HTTP 408/429/5xx-style status, or an error with no HTTP status that
+    is not in FINAL_ERRORS. Other HTTP statuses (401, 403, 404, ...) are final."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status in TRANSIENT_HTTP_STATUS
+    return not isinstance(exc, FINAL_ERRORS)
+
+
+def retry(
+    fn: Callable,
+    what: str,
+    *,
+    attempts: int | None = None,
+    base_delay: float | None = None,
+    log: Callable[[str], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+):
+    """Call ``fn()`` until it succeeds, retrying transient errors with exponential backoff (10 s, 20 s, 40 s, ...).
+    Only for calls that are safe to repeat: every Hugging Face call of the export is (create_repo with
+    exist_ok, uploads of content-addressed files, commits of the same files, reads)."""
+    attempts = RETRY_ATTEMPTS if attempts is None else attempts
+    delay = RETRY_BASE_DELAY if base_delay is None else base_delay
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt == attempts or not is_transient(exc):
+                raise
+            if log is not None:
+                log(f"{what}: {type(exc).__name__}: {str(exc)[:300]}; retry {attempt}/{attempts - 1} in {delay:.0f}s")
+            sleep(delay)
+            delay *= 2
+
+
 def write_json(path: Path, obj) -> None:
     """Write ``obj`` as JSON atomically (temp file + rename), so a reader never sees a partial report."""
     tmp = path.with_name(path.name + ".tmp")
@@ -350,6 +474,9 @@ after reinforcement learning on GeneBench-Pro genomics data-analysis tasks with 
   (bash, edit, ipython), held-out split of 20 of the 121 tasks.
 - Same tensor names, dtypes and shapes, config, tokenizer and chat template as the base text model. The
   multi-token-prediction head (`mtp.*`) was not trained and is the base model's.
+- The trainer keeps fp32 weights; each tensor is rounded once to the base file's dtype (BF16, except the F32
+  `e_score_correction_bias`). During RL, `A_log` and `D` reached the inference engine in fp32, so here they can
+  differ from the evaluated policy by one BF16 rounding step.
 
 Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
 `chat_template_kwargs={{"truncate_history_thinking": false}}`.

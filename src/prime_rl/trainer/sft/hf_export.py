@@ -1,8 +1,9 @@
 """Export GeneBench RL checkpoints of Nemotron 3.5 Super to text-only Hugging Face repos (no training).
 
 On this branch the SFT entrypoint runs this export instead of training, because a hosted run can only start the
-trainer. The watcher picks the steps and passes them in GB_EXPORT_* variables (see rl_export_plan.py). For each
-step, the export:
+trainer. The watcher picks the steps and passes them in GB_EXPORT_* variables, written into the config's
+[env_vars] table (see rl_export_plan.py; `prime train -e` only forwards HF_TOKEN). A step's checkpoint counts as
+complete only when every data file its .metadata references is fully on the volume. For each step, the export:
 1. loads the model weights (not the optimizer) from the RL trainer's DCP checkpoint,
    /volume/runs/$GB_EXPORT_RUN_ID/checkpoints/step_N/trainer. Its app.model entries are the same 763 fp32
    tensors under the same canonical names as an SFT checkpoint, so the same AppState template loads them;
@@ -29,6 +30,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from torch import Tensor
+from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.tensor import DTensor
 
@@ -110,16 +112,41 @@ def collect_hf_tensors(model: torch.nn.Module, wanted: set[str]) -> dict[str, Te
     return kept
 
 
+def hub(what: str, fn, *args, **kwargs):
+    """A Hugging Face call, retried on transient errors (all of the export's calls are safe to repeat)."""
+    return plan.retry(lambda: fn(*args, **kwargs), what, log=get_logger().warning)
+
+
+def dcp_file_ends(dcp_dir: Path) -> dict[str, int]:
+    """Data file -> largest offset + length that the checkpoint's .metadata references in it."""
+    metadata = FileSystemReader(dcp_dir).read_metadata()
+    ends: dict[str, int] = {}
+    for info in (metadata.storage_data or {}).values():
+        ends[info.relative_path] = max(ends.get(info.relative_path, 0), info.offset + info.length)
+    return ends
+
+
+def dcp_is_complete(dcp_dir: Path) -> bool:
+    """Every data file the checkpoint's .metadata references exists at its full size."""
+    try:
+        problems = plan.storage_problems(dcp_dir, dcp_file_ends(dcp_dir))
+    except Exception as error:
+        problems = [f"cannot read {dcp_dir}/.metadata: {type(error).__name__}: {error}"]
+    if problems:
+        get_logger().warning(f"{dcp_dir} is not a complete checkpoint: {problems[:3]} ({len(problems)} problems)")
+    return not problems
+
+
 def preflight_repos(specs: list[plan.ExportSpec]) -> None:
     """Master only: the token works, and every repo exists (created if missing) and is private."""
     from huggingface_hub import HfApi
 
     api = HfApi()
-    user = api.whoami().get("name")
+    user = hub("whoami", api.whoami).get("name")
     get_logger().info(f"Hugging Face token of {user}")
     for spec in specs:
-        api.create_repo(spec.repo_id, private=True, exist_ok=True)
-        if not api.repo_info(spec.repo_id).private:
+        hub(f"create_repo {spec.repo_id}", api.create_repo, spec.repo_id, private=True, exist_ok=True)
+        if not hub(f"repo_info {spec.repo_id}", api.repo_info, spec.repo_id).private:
             raise ValueError(f"{spec.repo_id} exists and is PUBLIC; refusing to upload")
 
 
@@ -136,7 +163,9 @@ def upload(spec: plan.ExportSpec, out_dir: Path, files_by_host: dict[str, list[s
     def push_small() -> None:
         if world.is_master:
             small = [p.name for p in sorted(out_dir.iterdir()) if not p.name.endswith(".safetensors")]
-            api.create_commit(
+            hub(
+                f"small-file commit to {spec.repo_id}",
+                api.create_commit,
                 spec.repo_id,
                 operations=[CommitOperationAdd(name, out_dir / name) for name in small],
                 commit_message=f"Model card, config, tokenizer and export report ({spec.name}, {spec.role})",
@@ -150,14 +179,16 @@ def upload(spec: plan.ExportSpec, out_dir: Path, files_by_host: dict[str, list[s
     def preupload() -> None:
         if is_host_leader:
             operations.extend(CommitOperationAdd(name, out_dir / name) for name in files_by_host[host])
-            api.preupload_lfs_files(spec.repo_id, additions=operations)
+            hub(f"shard upload to {spec.repo_id}", api.preupload_lfs_files, spec.repo_id, additions=operations)
 
     run_guarded(f"[{spec.name}] shard upload", group, preupload)
     for turn in sorted(files_by_host):
 
         def commit() -> None:
             if is_host_leader and turn == host:
-                api.create_commit(
+                hub(
+                    f"shard commit to {spec.repo_id}",
+                    api.create_commit,
                     spec.repo_id,
                     operations=operations,
                     commit_message=f"Weights: {len(operations)} shards ({spec.name}, {host})",
@@ -172,7 +203,7 @@ def upload(spec: plan.ExportSpec, out_dir: Path, files_by_host: dict[str, list[s
             return
         expected = json.loads((out_dir / "export_report.json").read_text())["sha256"]
         local_small = {p.name for p in out_dir.iterdir() if not p.name.endswith(".safetensors")}
-        info = api.repo_info(spec.repo_id, files_metadata=False)
+        info = hub(f"repo_info {spec.repo_id}", api.repo_info, spec.repo_id, files_metadata=False)
         remote_files = {s.rfilename for s in info.siblings or []}
         missing_files = sorted((set(expected) | local_small) - remote_files)
         extra_files = sorted(remote_files - set(expected) - local_small - ALLOWED_EXTRA_REPO_FILES)
@@ -180,7 +211,9 @@ def upload(spec: plan.ExportSpec, out_dir: Path, files_by_host: dict[str, list[s
             raise ValueError(f"{spec.repo_id}: files missing {missing_files[:5]}, unexpected {extra_files[:5]}")
         remote = {
             path_info.path: path_info.lfs.sha256
-            for path_info in api.get_paths_info(spec.repo_id, list(expected), expand=True)
+            for path_info in hub(
+                f"get_paths_info {spec.repo_id}", api.get_paths_info, spec.repo_id, list(expected), expand=True
+            )
             if getattr(path_info, "lfs", None) is not None
         }
         wrong = sorted(name for name, digest in expected.items() if remote.get(name) != digest)
@@ -200,7 +233,13 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
     group = dist.new_group(backend="gloo", timeout=GLOO_TIMEOUT)
 
     # Fail before building anything: the request, the checkpoints, the token, the repos and the base model.
-    specs = run_guarded("GB_EXPORT_* check", group, plan.parse_export_env)
+    def read_request() -> list[plan.ExportSpec]:
+        values, sources = plan.resolve_export_env(os.environ, getattr(config, "env_vars", None))
+        if world.is_master:
+            logger.info(f"GB_EXPORT_* request: {values} (from {sources})")
+        return plan.parse_export_env(values)
+
+    specs = run_guarded("GB_EXPORT_* check", group, read_request)
     if config.ckpt is None or config.ckpt.output_dir is None:
         raise ValueError("The export writes under [ckpt] output_dir (the run's directory), which is unset")
 
@@ -211,7 +250,16 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
     run_guarded("HF_TOKEN check", group, check_token)
     run_id = specs[0].run_id
     logger.info(f"Exporting run {run_id}: {[(s.step, s.role, s.repo_id) for s in specs]}")
-    complete = run_guarded("checkpoint check", group, plan.check_checkpoints, specs)
+    # Master only (each check reads a ~13 MB .metadata from the volume); the result goes to every rank.
+    complete_box = [
+        run_guarded(
+            "checkpoint check",
+            group,
+            lambda: plan.check_checkpoints(specs, is_complete=dcp_is_complete) if world.is_master else None,
+        )
+    ]
+    dist.broadcast_object_list(complete_box, src=0, group=group)
+    complete = complete_box[0]
     logger.info(f"Complete checkpoints of {run_id}: {complete}")
 
     def check_base() -> dict[str, str]:
@@ -359,6 +407,8 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
                 report["exports"].append(entry)
                 plan.write_json(report_path, report)
                 logger.success(plan.done_line(entry))
+                # The same line without the logger's prefix and color codes, for whoever parses the log.
+                print(plan.done_line(entry), flush=True)
 
         run_guarded(f"[{spec.name}] report", group, record)
 
@@ -367,5 +417,6 @@ def run(config: SFTConfig, parallel_dims: ParallelDims) -> None:
             report["all_done"] = True
             plan.write_json(report_path, report)
             logger.success(plan.ALL_DONE_MARKER)
+            print(plan.ALL_DONE_MARKER, flush=True)
 
     run_guarded("final report", group, finish)
