@@ -623,6 +623,8 @@ class RLConfig(BaseConfig):
             self.orchestrator.num_train_workers = (
                 self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             )
+            if self.deployment.total_infer_nodes > 0:
+                self.orchestrator.env_server_replicas = self.deployment.total_infer_nodes
 
             if (
                 self.inference is not None

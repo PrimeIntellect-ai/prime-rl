@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
@@ -18,6 +20,8 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
+from prime_rl.transports.payload import delete_payloads, resolve_payloads
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class TensorMicroBatch(TypedDict):
@@ -65,6 +69,9 @@ class TensorMicroBatch(TypedDict):
     rl_weights: Float[Tensor, "batch seq"] | None
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
+
+    # Per-token staleness, -1 on tokens the policy did not sample
+    staleness: Int[Tensor, "batch seq"] | None
 
 
 class FakeDataLoader:
@@ -148,6 +155,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -182,6 +190,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
 
@@ -202,6 +211,17 @@ def prepare_micro_batch(
     return micro_batch
 
 
+def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]) -> None:
+    """Keep micro batches out of every loss component (they still run forward/backward,
+    so all ranks issue the same collectives)."""
+    for index in indices:
+        micro_batch = micro_batches[index]
+        micro_batch["loss_mask"] = torch.zeros_like(micro_batch["loss_mask"])
+        for name in ("rl_weights", "ce_weights", "ref_kl_weights"):
+            if micro_batch[name] is not None:
+                micro_batch[name] = torch.zeros_like(micro_batch[name])
+
+
 class DataLoader:
     """Receives packed micro batches from the orchestrator, one stream per DP rank."""
 
@@ -216,6 +236,13 @@ class DataLoader:
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
+        self.dp_rank = dp_rank
+        self.dp_world_size = dp_world_size
+        self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload")
+        self.failed_micro_batches: list[int] = []
+        """Micro batches of the last batch whose arrays could not be fetched on this rank."""
+        self.payload_urls: list[str] = []
+        """The last batch's fetched arrays, for `release_payloads`."""
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -231,7 +258,18 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        start = time.perf_counter()
+        self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+        get_logger().debug(
+            f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+        )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def release_payloads(self) -> None:
+        """Free the last batch's arrays on the env servers. Call once every rank that may
+        read them has fetched them."""
+        delete_payloads(self.payload_urls)
+        self.payload_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
@@ -308,39 +346,87 @@ class DataLoader:
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
+            staleness=stream("staleness", np.int16),
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
-    """Validate sampler evidence on the CPU before the LM head consumes it."""
-    mask = batch["loss_mask"]
-    if batch["rl_weights"] is not None:
-        mask = mask & (batch["rl_weights"] != 0)
-    if not mask.any():
+SCORE_CENTERING_DATA_ERRORS = (
+    "Missing or out-of-vocabulary sampler top logprobs",
+    "Sampler top logprobs must be finite and nonpositive",
+    "Duplicate sampler head ids",
+    "Sampler head mass exceeds one",
+    "Sampler probabilities must normalize over the recorded support",
+    "Sampled token is missing from the recorded support",
+)
+
+
+def score_centering_data_errors(
+    input_ids: Int[Tensor, "batch seq"],
+    loss_mask: Bool[Tensor, "batch seq"],
+    rl_weights: Float[Tensor, "batch seq"] | None,
+    top_ids: Int[Tensor, "batch seq head"],
+    top_values: Float[Tensor, "batch seq head"],
+    sampling_mask: Int[Tensor, "batch seq mask"] | None,
+    *,
+    vocab_size: int,
+) -> Bool[Tensor, " checks"]:
+    """Flag each check in ``SCORE_CENTERING_DATA_ERRORS`` that the sampler evidence on RL tokens
+    fails. Runs on the tensors' device without a host sync, so the trainer can validate on the GPU
+    and check the flags once per step with ``raise_score_centering_data_errors``."""
+    rl_mask = loss_mask if rl_weights is None else loss_mask & (rl_weights != 0)
+    valid = top_ids >= 0
+    ordered = top_ids.sort(-1).values
+    head_mass = top_values.exp().masked_fill(~valid, 0.0).sum(-1)
+    if sampling_mask is None:
+        unnormalized = unsampled = torch.zeros_like(rl_mask)
+    else:
+        replay = (sampling_mask >= 0).any(-1)
+        unnormalized = replay & ~torch.isclose(head_mass, torch.ones_like(head_mass), atol=1e-4, rtol=0)
+        unsampled = replay & ~(sampling_mask == input_ids.unsqueeze(-1)).any(-1)
+    errors = torch.stack(
+        [
+            ~valid.any(-1) | (top_ids >= vocab_size).any(-1),
+            (valid & (~top_values.isfinite() | (top_values > 1e-6))).any(-1),
+            ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(-1),
+            head_mass > 1.0001,
+            unnormalized,
+            unsampled,
+        ],
+        dim=-1,
+    )
+    return (errors & rl_mask.unsqueeze(-1)).flatten(0, -2).any(0)
+
+
+def raise_score_centering_data_errors(errors: list[Bool[Tensor, " checks"]]) -> None:
+    """Raise the first failed check of the first failing micro batch, given each micro batch's
+    ``score_centering_data_errors`` in order. Syncs once."""
+    if not errors:
         return
+    failed = torch.stack(errors).flatten().cpu().nonzero()
+    if failed.numel():
+        raise ValueError(SCORE_CENTERING_DATA_ERRORS[int(failed[0]) % len(SCORE_CENTERING_DATA_ERRORS)])
+
+
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
+    """Validate sampler evidence before the LM head consumes it."""
     ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]
     if ids is None or values is None:
-        raise ValueError("Score centering requires top logprobs on every RL token")
-    ids, values = ids[mask], values[mask]
-    valid = ids >= 0
-    if not valid.any(-1).all() or (ids >= vocab_size).any():
-        raise ValueError("Missing or out-of-vocabulary sampler top logprobs")
-    if not torch.isfinite(values[valid]).all() or (values[valid] > 1e-6).any():
-        raise ValueError("Sampler top logprobs must be finite and nonpositive")
-    ordered = ids.sort(-1).values
-    if ((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)).any():
-        raise ValueError("Duplicate sampler head ids")
-    q = values.exp().masked_fill(~valid, 0.0)
-    if (q.sum(-1) > 1.0001).any():
-        raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None:
-        support = batch["sampling_mask"][mask]
-        replay = (support >= 0).any(-1)
-        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
-            raise ValueError("Sampler probabilities must normalize over the recorded support")
-        sampled = batch["input_ids"][mask]
-        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
-            raise ValueError("Sampled token is missing from the recorded support")
+        mask = batch["loss_mask"]
+        if batch["rl_weights"] is not None:
+            mask = mask & (batch["rl_weights"] != 0)
+        if mask.any():
+            raise ValueError("Score centering requires top logprobs on every RL token")
+        return
+    errors = score_centering_data_errors(
+        batch["input_ids"],
+        batch["loss_mask"],
+        batch["rl_weights"],
+        ids,
+        values,
+        batch["sampling_mask"],
+        vocab_size=vocab_size,
+    )
+    raise_score_centering_data_errors([errors])
 
 
 def _torch_dtype(name: str) -> torch.dtype:
