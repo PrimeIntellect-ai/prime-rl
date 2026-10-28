@@ -79,15 +79,12 @@ class Feature:
     layout: Layout = FSDP4_EP4
 
 
-AC_OFF = Feature("ac_off", {"model.ac": None})
 AC_SELECTIVE = Feature("ac_selective", {"model.ac.mode": "selective"})
 ACT_OFFLOAD_OFF = Feature("act_offload_off", {"model.ac_offloading": None})
 OPTIM_OFFLOAD_OFF = Feature("optim_offload_off", {"model.offload": "none"})
 FULL_OFFLOAD = Feature("full_offload", {"model.offload": "full"})
-EAGER = Feature("eager", {"model.compile": None})
-UNFUSED = Feature("unfused", {"model.fusions.enabled": []})
 FULLGRAPH = Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP4_EP4)
-FEATURES = (AC_OFF, AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, EAGER, UNFUSED, FULLGRAPH)
+FEATURES = (AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, FULLGRAPH)
 
 
 @dataclass(frozen=True, eq=False)
