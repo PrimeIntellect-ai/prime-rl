@@ -28,7 +28,6 @@ import traceback
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Literal
@@ -163,8 +162,6 @@ class Dispatcher:
         # bound ``out_q``
         self.max_inflight = initial_max_inflight
         self.current_inflight = 0
-        self.payload_pool = ThreadPoolExecutor(2, thread_name_prefix="payload")
-        """Deletes the training arrays of episodes that returned but are never emitted."""
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(dispatch_per_minute, time_period=60) if dispatch_per_minute else None
         )
@@ -579,14 +576,16 @@ class Dispatcher:
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
         """Delete the training arrays env servers kept for episodes no sink will see."""
-        urls = [url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace)]
-        delete_payloads(urls, self.payload_pool)
+        delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
 
     async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:
         """Cancel claimed episode tasks. A task that had already returned its episode
         before the claim is never emitted, so its arrays are deleted here."""
         await safe_cancel_all(tasks)
-        self._release_episodes(task.result() for task in tasks if not task.cancelled() and task.exception() is None)
+        # A task can still be pending here: `safe_cancel` also swallows a cancel aimed at us.
+        self._release_episodes(
+            task.result() for task in tasks if task.done() and not task.cancelled() and task.exception() is None
+        )
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck

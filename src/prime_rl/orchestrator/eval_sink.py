@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -24,11 +23,10 @@ class EvalSink:
         self.pending_batches: dict[tuple[str, int], list[vf.Episode]] = defaultdict(list)
         self.pending_batch_failures: dict[tuple[str, int], list[DispatchFailure]] = defaultdict(list)
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
-        self.payload_pool = ThreadPoolExecutor(2, thread_name_prefix="payload")
-        """Deletes the training arrays env servers kept for eval episodes: eval never trains."""
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
-        delete_payloads([url for trace in episode.traces for url in trace_payload_urls(trace)], self.payload_pool)
+        # Env servers keep every episode's training arrays; eval never trains on them.
+        delete_payloads(url for trace in episode.traces for url in trace_payload_urls(trace))
         key = (episode_env_name(episode), eval_work(episode).step)
         self.pending_batches[key].append(episode)
         return self._complete(key)

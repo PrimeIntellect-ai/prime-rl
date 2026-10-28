@@ -325,9 +325,17 @@ def train(config: TrainerConfig):
             # all-reduce).
             if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
                 dataloader.release_payloads()
+            # A step where no micro batch's arrays could be fetched anywhere is not a
+            # transient failure (unreachable or mismatched env servers): stop instead of
+            # training on nothing.
+            if failed.numel() and bool(failed.all()):
+                raise RuntimeError(
+                    "Could not fetch the training arrays of any micro batch this step; check that "
+                    "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
+                )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
-            dropped_micro_batches = len(dropped)
+            dropped_micro_batches = int(failed.sum().item())
             if dropped:
                 logger.warning(f"Dropped {len(dropped)} micro batches whose payloads could not be fetched")
         load_data_time = time.perf_counter() - load_data_start_time
