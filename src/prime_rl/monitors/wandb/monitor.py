@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import netrc
 import os
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urlparse
 
 import wandb
 from wandb.errors import CommError, UsageError
@@ -29,30 +27,6 @@ class WandbMonitor(Monitor):
     """Logs metrics to Weights and Biases."""
 
     config: WandbMonitorConfig
-    links = WANDB_LINKS
-
-    @classmethod
-    def missing_credentials(cls, config: WandbMonitorConfig) -> str | None:
-        """Why ``wandb.init`` cannot authenticate, or None when it can: the API key or
-        identity token variables, else the netrc entry for the W&B host. An offline run
-        needs none; shared mode ignores ``offline``, since it needs the server."""
-        if config.offline and os.environ.get("WANDB_SHARED_MODE") != "1":
-            return None
-        if os.environ.get("WANDB_MODE") in ("offline", "disabled"):
-            return None
-        if os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_IDENTITY_TOKEN_FILE"):
-            return None
-        host = urlparse(os.environ.get("WANDB_BASE_URL", "https://api.wandb.ai")).hostname
-        path = Path(os.environ.get("NETRC", Path.home() / ".netrc")).expanduser()
-        try:
-            if host and netrc.netrc(path).authenticators(host):
-                return None
-        except (OSError, netrc.NetrcParseError):
-            pass
-        return (
-            "No W&B API key found - the run is not logged to W&B. Authenticate with `wandb login` "
-            "(or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
-        )
 
     async def init(
         self,
@@ -143,10 +117,12 @@ class WandbMonitor(Monitor):
         try:
             self.wandb = init_wandb(max_retries)
         except UsageError as e:
-            raise RuntimeError(
-                f"The W&B monitor could not start ({e}). Authenticate with `wandb login` (or set WANDB_API_KEY), "
-                "or turn the monitor off with --no-monitors.wandb"
-            ) from e
+            self.logger.warning(
+                f"The W&B monitor could not start ({e}) - the run is not logged to W&B. Authenticate with "
+                "`wandb login` (or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
+            )
+            self.wandb = wandb.init(dir=output_dir, settings=wandb.Settings(mode="disabled"))
+            is_online = False
 
         wandb.define_metric("*", step_metric="step")
         # key prefixes that arrived via step=None (wall-time rows); their time axis

@@ -150,8 +150,7 @@ def run_links(
     """The ``links`` argument of ``log_run_links``: waits for every configured monitor
     in ``monitors`` (links-record key -> its config, None when off) that can open a
     page. A monitor turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline
-    or disabled ``$WANDB_MODE``) opens none. One without credentials registers no
-    links, which ends the wait for it."""
+    or disabled ``$WANDB_MODE``) opens none, and so does one without credentials."""
     from prime_rl.utils.links import wait_for_links
 
     def opens_pages(key: str) -> bool:

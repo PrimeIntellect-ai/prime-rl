@@ -14,6 +14,7 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.record import read_record, update_record, write_record
 from prime_rl.utils.utils import sanitize
@@ -61,18 +62,16 @@ OFF_HINT = "turn the monitor off with --no-monitors.prime"
 
 
 def prime_mode() -> str:
-    """$PRIME_RUNS_MODE when set, else online."""
-    return os.getenv(pr.MODE_ENV) or "online"
-
-
-def missing_credentials() -> str | None:
-    """Why an online run cannot authenticate, or None when it can or runs offline."""
-    if prime_mode() != "online" or os.getenv("PRIME_API_KEY") or PrimeConfig().api_key:
-        return None
-    return (
-        "No Prime API key found - the run is not logged to Prime. Authenticate with "
-        f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
-    )
+    """$PRIME_RUNS_MODE when set, else online. An online run without a Prime API key
+    logs a warning and runs disabled."""
+    mode = os.getenv(pr.MODE_ENV) or "online"
+    if mode == "online" and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
+        get_logger().warning(
+            "No Prime API key found - the run is not logged to Prime. Authenticate with "
+            f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
+        )
+        return "disabled"
+    return mode
 
 
 def _base_url() -> str | None:
@@ -100,12 +99,6 @@ class PrimeTrainMonitor(Monitor):
     """
 
     config: PrimeTrainMonitorConfig
-    links = PRIME_LINKS
-
-    @classmethod
-    def missing_credentials(cls, config: PrimeTrainMonitorConfig) -> str | None:
-        return missing_credentials()
-
     run: pr.Run
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
@@ -224,11 +217,6 @@ class PrimeEvalMonitor(Monitor):
     this the run shows every metric group except the one its evals produced."""
 
     config: PrimeEvalMonitorConfig
-    links = PRIME_EVAL_LINKS
-
-    @classmethod
-    def missing_credentials(cls, config: PrimeEvalMonitorConfig) -> str | None:
-        return missing_credentials()
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         self.mode = prime_mode()

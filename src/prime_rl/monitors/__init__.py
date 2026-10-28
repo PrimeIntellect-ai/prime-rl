@@ -8,7 +8,6 @@ down training.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from pathlib import Path
@@ -25,7 +24,6 @@ from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import PrimeEvalMonitor, PrimeTrainMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.links import register_links
 from prime_rl.utils.logger import format_time, get_logger
 
 if TYPE_CHECKING:
@@ -62,38 +60,35 @@ async def setup(
     """Construct, initialize, and register one monitor per non-None config.
 
     Only rank 0 registers monitors — on other ranks the fan-out functions are
-    no-ops. A monitor without credentials is skipped with a warning; one whose
-    ``init`` raises crashes the run.
+    no-ops. A monitor whose ``init`` raises crashes the run: a configured
+    monitor must work.
     """
     assert not MONITORS, "Monitors already set up. Call `setup` only once per process."
     rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
     if rank != 0:
         return
 
-    prime_cls = PrimeTrainMonitor if isinstance(prime, PrimeTrainMonitorConfig) else PrimeEvalMonitor
-    wandb_kwargs = dict(
-        output_dir=output_dir,
-        config=run_config,
-        train_env_names=train_env_names,
-        eval_env_names=eval_env_names,
-        overview_flavor=overview_flavor,
-    )
-    configured: list[tuple[str, type[Monitor], BaseConfig | None, dict[str, Any]]] = [
-        ("prime", prime_cls, prime, dict(config=run_config, output_dir=output_dir)),
-        ("wandb", WandbMonitor, wandb, wandb_kwargs),
-        ("file", FileMonitor, file, dict(output_dir=output_dir, producer=producer)),
-    ]
     monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
-    for name, cls, config, init_kwargs in configured:
-        if config is None:
-            continue
-        if reason := cls.missing_credentials(config):
-            get_logger().warning(reason)
-            if cls.links is not None:
-                # The launcher waits for every configured monitor's links: this one opens none.
-                await asyncio.to_thread(register_links, output_dir, cls.links, 0)
-            continue
-        monitors.append((name, cls(config), init_kwargs))
+    if isinstance(prime, PrimeTrainMonitorConfig):
+        monitors.append(("prime", PrimeTrainMonitor(prime), dict(config=run_config, output_dir=output_dir)))
+    elif isinstance(prime, PrimeEvalMonitorConfig):
+        monitors.append(("prime", PrimeEvalMonitor(prime), dict(config=run_config, output_dir=output_dir)))
+    if wandb is not None:
+        monitors.append(
+            (
+                "wandb",
+                WandbMonitor(wandb),
+                dict(
+                    output_dir=output_dir,
+                    config=run_config,
+                    train_env_names=train_env_names,
+                    eval_env_names=eval_env_names,
+                    overview_flavor=overview_flavor,
+                ),
+            )
+        )
+    if file is not None:
+        monitors.append(("file", FileMonitor(file), dict(output_dir=output_dir, producer=producer)))
     if not monitors:
         return
 
