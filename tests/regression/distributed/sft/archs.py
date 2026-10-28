@@ -60,6 +60,7 @@ FEATURES = (
     Feature("optim_offload_off", {"model.offload": "none"}),
     Feature("full_offload", {"model.offload": "full"}),
     Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP4_EP4),
+    Feature("deepep_full_ac", {"model.moe.dispatch.type": "deepep"}),
 )
 
 
