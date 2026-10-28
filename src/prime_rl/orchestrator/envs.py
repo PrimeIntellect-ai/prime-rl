@@ -176,10 +176,14 @@ class TrainEnv(Env):
 
     def reconfigure(self, config: TrainSourceConfig, step: int) -> None:
         """Adopt this source's new config. Its sampling applies to work dispatched from
-        ``step`` on; earlier groups keep sampling, and train, with the old settings."""
+        ``step`` on; earlier groups keep sampling, and train, with the old settings. Its
+        algorithm's length penalty applies to every group scored from now on, including
+        groups that started before the update."""
         if config.sampling != self.config.sampling:
             self.sampling = self.build_sampling(config)
             self.sampling_by_step[step] = self.sampling
+        if config.algo != self.config.algo:
+            self.algorithm.reconfigure(config.algo)
         self.config = config
 
     async def setup(self) -> None:

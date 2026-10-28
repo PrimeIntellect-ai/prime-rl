@@ -13,6 +13,7 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
+from prime_rl.configs.diff import LIVE_INSIDE
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -238,11 +239,11 @@ class TrainSourceConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages. Overrides the
     train group's ``group_size`` for this env, so envs can use different sizes."""
 
-    algo: AlgoConfig = Field(GRPOAlgoConfig(), frozen=True)
+    algo: AlgoConfig = Field(GRPOAlgoConfig(), frozen=True, json_schema_extra=LIVE_INSIDE)
     """Training algorithm for this env: sampling plus the per-token training signal
     (credit assignment and loss routing, fused — its ``type`` names the algorithm).
     Setting only some params keeps the group's algorithm; a different ``type`` is
-    this env's own algorithm."""
+    this env's own algorithm. Frozen except its live fields (the GRPO ``length_penalty``)."""
 
     curriculum: CurriculumConfig | None = Field(None, frozen=True)
     """User-authored task sampler and admission gates. The default cycles

@@ -69,6 +69,27 @@ def test_example_config_frozen_changes_are_rejected(example):
     ]
 
 
+def test_example_config_length_penalty_is_live(example):
+    raw = dump_resolved_config(example)
+    raw["train"]["source"][0]["algo"]["length_penalty"] = {"num_output_tokens_weight": 0.2}
+
+    config, changes = validate_update(example, raw)
+
+    assert [change.path for change in changes] == ["train.source[0].algo.length_penalty"]
+    assert config.train.source[0].algo.length_penalty.num_output_tokens_weight == 0.2
+
+
+def test_example_config_rest_of_algo_is_frozen(example):
+    raw = dump_resolved_config(example)
+    raw["train"]["source"][0]["algo"]["length_weighted_baseline"] = True
+    raw["train"]["algo"]["length_penalty"] = {"num_output_tokens_weight": 0.2}
+
+    with pytest.raises(InvalidConfigError) as error:
+        validate_update(example, raw)
+
+    assert error.value.detail["frozen"] == ["train.source[0].algo", "train.algo"]
+
+
 def test_example_config_frozen_change_that_fails_validation_is_reported_frozen(example):
     raw = dump_resolved_config(example)
     raw["train"]["source"][0]["sampling"]["top_p"] = 0.9
