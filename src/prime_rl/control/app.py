@@ -5,8 +5,11 @@ from prime_rl.control.types import (
     Action,
     ActionNotFoundError,
     ActionRequest,
+    ConfigSnapshot,
     ControlConflictError,
     InvalidActionError,
+    InvalidConfigError,
+    PauseRequest,
 )
 
 
@@ -23,10 +26,21 @@ def create_app(controller: Controller) -> FastAPI:
     @app.post("/v1/actions", status_code=status.HTTP_202_ACCEPTED)
     async def submit_action(request: ActionRequest) -> Action:
         try:
-            return controller.submit(request.type, request.step)
+            if isinstance(request, PauseRequest):
+                return controller.submit(request.type, request.step)
+            return controller.submit_config(request)
         except ControlConflictError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+        except InvalidConfigError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, error.detail) from error
         except InvalidActionError as error:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+
+    @app.get("/v1/config")
+    async def get_config() -> ConfigSnapshot:
+        try:
+            return controller.get_config()
+        except InvalidActionError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
 
     return app

@@ -12,6 +12,7 @@ dependencies = [
     "jaxtyping>=0.3.2",
     "loguru>=0.7.3",
     "numpy>=2.2.6",
+    "sympy>=1.13.3",
     "transformers==5.19.0",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
@@ -377,6 +378,8 @@ select = ["F", "I"]
 # jaxtyping writes shapes as string annotations (`Int[Tensor, "batch seq"]`), which ruff reads as
 # forward references and reports as syntax errors / undefined names.
 [tool.ruff.lint.per-file-ignores]
+"src/prime_rl/trainer/distributed/ngram_lookup.py" = ["F722", "F821"]
+"src/prime_rl/trainer/models/layers/ngram.py" = ["F722", "F821"]
 "src/prime_rl/trainer/model.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/data.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/loss.py" = ["F722", "F821"]
