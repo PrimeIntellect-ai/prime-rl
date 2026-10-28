@@ -106,7 +106,13 @@ class SparseDeltaEncoder:
         self.wire_dtypes: dict[str, torch.dtype] = {}
         self.key_fqn: dict[str, str] = {}
         meta: dict[str, torch.Tensor] = {}
+        # A tied weight's other names: its deltas go out once, under the first name, and anchors carry every name
+        self.aliases: dict[str, list[str]] = defaultdict(list)
+        first_key: dict[int, str] = {}
         for key, value in trainer_tensors(model).items():
+            if id(value) in first_key:
+                self.aliases[first_key[id(value)]].append(key)
+            first_key.setdefault(id(value), key)
             dtype = resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16) if isinstance(value, DTensor) else value.dtype
             self.wire_dtypes[key] = dtype
             self.key_fqn[key] = resolve_fqn(model, key)
@@ -230,18 +236,19 @@ class SparseDeltaEncoder:
         return {key for key, flag in zip(keys, flags.tolist()) if flag}
 
     @torch.no_grad()
-    def local_shards(self, model: nn.Module, is_master: bool, gather: bool = False) -> list[tuple]:
+    def local_shards(
+        self, model: nn.Module, is_master: bool, gather: bool = False, aliases: bool = False
+    ) -> list[tuple]:
         """This rank's ``(key, fqn, shard, global flat offset, gathered)``, taken on the training thread (FSDP swaps
         module parameters during forward, but the sharded storage stays put). With ``gather``, ``gathered`` is
         ``(previous, current)`` full bf16 tensors of fp8 tensors whose blocks straddle ranks, all-gathered here
-        because ``encode`` runs no collectives."""
-        shards, seen = [], set()
+        because ``encode`` runs no collectives. A tied weight's other names only with ``aliases``."""
+        shards = []
+        alias_keys = {alias for names in self.aliases.values() for alias in names}
         for key, value in trainer_tensors(model).items():
             fqn = self.key_fqn[key]
-            # A tied weight's other names (e.g. a tied lm_head) carry nothing: engines hold it once
-            if fqn not in self.segments or id(value) in seen:
+            if fqn not in self.segments or (key in alias_keys and not aliases):
                 continue
-            seen.add(id(value))
             shard = self._local_shard(key, value, is_master)
             empty = shard is None or shard[0].numel() == 0
             gathered = None
@@ -292,7 +299,7 @@ class SparseDeltaEncoder:
         """Write this rank's slices of a full HF checkpoint of the live weights, one tensor at a time."""
         shards = [
             (key, shard, offset, self._slices(fqn, shard.numel(), offset))
-            for key, fqn, shard, offset, _ in self.local_shards(model, is_master)
+            for key, fqn, shard, offset, _ in self.local_shards(model, is_master, aliases=True)
         ]
         writer = AnchorWriter(
             [
@@ -344,7 +351,7 @@ class SparseDeltaEncoder:
             if key in self.residual or (key in self.stepped and not self.full_offload):
                 continue
             values = shard.reshape(-1).to(self.wire_dtypes[key])
-            self._write_anchor_slices(key, fqn, len(values), offset, values)
+            self._write_anchor_slices(key, len(values), offset, values)
 
     def wait_for_diffs(self) -> None:
         for diff in self.diffs:
@@ -734,6 +741,8 @@ class SparseDeltaEncoder:
             key: (fqn, numel, offset) for entries in self.param_keys.values() for key, fqn, numel, offset, _ in entries
         }
         shards.update({key: (self.key_fqn[key], numel, offset) for key, (numel, offset) in self.shards.items()})
+        for key, (_, numel, offset) in list(shards.items()):
+            shards.update({alias: (self.key_fqn[alias], numel, offset) for alias in self.aliases[key]})
         return [
             (name, shape, start, end - begin, self.wire_dtypes[key])
             for key, (fqn, numel, offset) in shards.items()
@@ -843,7 +852,7 @@ class SparseDeltaEncoder:
                 with torch.cuda.stream(self.diff_stream):
                     for key, fqn, numel, offset, view in written:
                         values = view.reshape(-1).to(self.wire_dtypes[key])
-                        self._write_anchor_slices(key, fqn, numel, offset, values)
+                        self._write_anchor_slices(key, numel, offset, values)
                     self.diff_stream.synchronize()
             self.stepped.update(keys)
         finally:
@@ -961,7 +970,7 @@ class SparseDeltaEncoder:
                         self.step_parts += self._diff_shard(key, fqn, current, offset, None, old, None, chunk)
                         self.checksums[key] = self._checksum(key, offset, as_bits(current))
                         if self.anchor is not None and on_gpu:
-                            self._write_anchor_slices(key, fqn, numel, offset, current)
+                            self._write_anchor_slices(key, numel, offset, current)
                         self.stepped.add(key)
                 self.diff_stream.synchronize()
         finally:
@@ -972,15 +981,17 @@ class SparseDeltaEncoder:
                 self.emit(self._host_part(self.step_parts, self.diff_staging))
             self.step_parts = []
 
-    def _write_anchor_slices(self, key: str, fqn: str, numel: int, offset: int, values: torch.Tensor) -> None:
+    def _write_anchor_slices(self, key: str, numel: int, offset: int, values: torch.Tensor) -> None:
         """Write a GPU shard's anchor slices, and their checksums, through the pinned staging buffer: the slices in
-        each staged window in parallel, in pieces of up to 32 MiB."""
-        self.anchor.add_sums(*self._value_sums(key, offset, as_bits(values)))
+        each staged window in parallel, in pieces of up to 32 MiB. Also under the names of a tied weight."""
         data, itemsize = values.view(torch.uint8), values.element_size()
-        slices = [
-            (name, start, begin * itemsize, end * itemsize)
-            for name, _, start, begin, end in self._slices(fqn, numel, offset)
-        ]
+        slices = []
+        for name_key in (key, *self.aliases[key]):
+            self.anchor.add_sums(*self._value_sums(name_key, offset, as_bits(values)))
+            slices += [
+                (name, start, begin * itemsize, end * itemsize)
+                for name, _, start, begin, end in self._slices(self.key_fqn[name_key], numel, offset)
+            ]
         window, piece = self.diff_staging.numel(), 1 << 25
         for at in range(0, data.numel(), window):
             count = min(window, data.numel() - at)
@@ -1235,6 +1246,7 @@ class SparseFileSystemWeightSender(WeightSender):
         if anchor is not None:
             # The residual's previous bits hold v{step} until the next encode, which runs on this thread
             source = {key: (self.encoder.shards[key][1], bits) for key, bits in encoder.previous.items()}
+            source.update({alias: source[key] for key in list(source) for alias in encoder.aliases[key]})
             for key, (offset, bits) in source.items():
                 anchor.add_sums(*encoder._value_sums(key, offset, bits))
             anchor.write_parts(encoder.anchor_parts(source), encoder.stream_to_host)
