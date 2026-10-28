@@ -16,7 +16,12 @@ def load_weights_checkpoint_layerwise(
     vllm_config,
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
-    device = next(model.parameters()).device
+    # The current CUDA device, not next(model.parameters()).device: on resume that parameter can still be
+    # on meta, which would make this default-device context create the NCCL receive buffers on meta.
+    device = torch.device("cuda", torch.cuda.current_device())
+    num_meta = sum(param.is_meta for param in model.parameters())
+    if num_meta:
+        logger.warning(f"{num_meta} model parameters are on meta before layerwise reload")
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
