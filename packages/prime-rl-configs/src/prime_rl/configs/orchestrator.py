@@ -18,6 +18,7 @@ from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    GCConfig,
     HeartbeatConfig,
     LogConfig,
     PolicyClientConfig,
@@ -518,6 +519,13 @@ class OrchestratorConfig(BaseConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
+    env_server_replicas: int | None = Field(None, ge=1)
+    """Replicas of each launcher-managed env server, each publishing its address to
+    ``<name>.<replica>.address``; the orchestrator spreads each source's episodes over them,
+    least loaded first. None means one server publishing to ``<name>.address``. Set by the
+    ``rl`` launcher: multi-node runs start one replica per inference node, so env-server
+    memory spreads over all of them."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
@@ -532,6 +540,9 @@ class OrchestratorConfig(BaseConfig):
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
+
+    gc: GCConfig | None = GCConfig()
+    """Garbage collection config. Freezes the startup heap, turns off automatic full collections (each one holds the GIL and stalls the event loop for as long as it takes to walk every held episode) and runs one every N steps instead. Young collections still run. Set to null to use Python's default GC behavior."""
 
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
@@ -548,8 +559,8 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
+    max_staleness: int = Field(8, ge=0)
+    """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""

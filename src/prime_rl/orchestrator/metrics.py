@@ -31,7 +31,7 @@ def dispatch_failure_metrics(failures: list[DispatchFailure], *, prefix: str, to
 @dataclass(frozen=True)
 class TraceRecord:
     """A trace joined with its episode and training selection state.
-    ``cancelled`` marks episodes the pipeline voided (stale drop) — a
+    ``cancelled`` marks episodes the pipeline voided (stale or shutdown) — a
     selection verdict disjoint from trace errors."""
 
     episode: vf.Episode
@@ -316,15 +316,6 @@ class TraceMetrics(StatGroup):
                 out.count(f"{prefix}/dropped/{reason}", float(value))
             num_groups = len({episode_group_id(record.episode) for record in self.records})
             out.rate(prefix, {key: value * num_groups for key, value in self.solve_rates().items()}, num_groups)
-        for trace in self.traces:
-            for node in trace.nodes:
-                if node.sampling_mask is None:
-                    continue
-                counts = node.sampling_mask.counts
-                counts = counts[counts > 0]
-                if not len(counts):
-                    continue
-                out.rate(f"{prefix}/sampling_support/size", {"mean": int(counts.sum())}, len(counts))
         # Truncation uses all traces; named stop conditions use only recorded conditions.
         out.rate(
             f"{prefix}/stop_condition/generation_truncated",
@@ -635,7 +626,7 @@ class RolloutWindow:
         self.attempts += attempts
         discarded = [episode for episode in episodes if not any(t.id in queued_trace_ids for t in episode.traces)]
         self.discarded += len(discarded) + len(failures) + cancelled
-        if cancellation is not None and cancellation.reason != "stale":
+        if cancellation is not None:
             self.cancelled += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
         else:
             self.stale += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled

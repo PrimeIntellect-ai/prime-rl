@@ -51,6 +51,6 @@ class FileSystemWeightReceiver(WeightReceiver):
         self._ack(step)
         await wait_for_path(weights_dir / FINISHED_MARKER)
         if (weights_dir / "adapter_config.json").exists():
-            await load_lora_adapter(self.admin_plane, self.model_name, weights_dir)
+            await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
             await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)

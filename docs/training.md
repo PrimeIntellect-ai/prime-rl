@@ -64,7 +64,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.constant_trainer_batch_size` | Keep trainer batches constant when samples have no training signal, such as zero advantage on all tokens. Enabled by default. Disable it for faster collection with variable trainer batch sizes. |
 | `orchestrator.train.group_size` | Rollouts generated per task. |
-| `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.max_staleness` | Maximum token staleness (default 8): the version a batch trains on minus the policy version that sampled the token, queue time included. Staler tokens are masked out of the loss; the rest of the sample still trains. Tokens without a policy label (Dynamo engines) take their rollout's dispatch version. A sample is dropped only when nothing is left to train, and rollouts are never cancelled for staleness. The main staleness dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `staleness/token/masked`, `staleness/rollout/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
@@ -131,6 +131,7 @@ Pulled from the console logs and mirrored to W&B.
 **Stability** (trainer):
 
 - `mismatch_kl/{all,env}/{mean,std,max}` — KL between trainer's current policy and the (older) inference policy that generated the rollouts. A sustained, growing mean is the early-warning sign for off-policy collapse.
+- `mismatch_kl_by_staleness/{bin}/{mean,std,max}` — the same KL per log2 bin of token staleness (`0`, `1`, `2-3`, `4-7`, …, `64+`). Bin `0` is the numerical trainer–inference mismatch alone; the rise across bins is the policy drift that staleness adds.
 - `entropy/{all,env}/mean` — too low means mode-collapse; too high means the model isn't committing.
 - `is_masked/mean` — fraction of tokens masked by the IPO trust region.
 - `optim/grad_norm` — spikes precede divergence; check the loss config or lower the LR.
@@ -141,6 +142,12 @@ Pulled from the console logs and mirrored to W&B.
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
 | orchestrator | `time/wait_for_policy` | **high → trainer bottleneck** |
+| orchestrator | `staleness/token/mean`, `staleness/token/masked` | mean token staleness of the shipped batch, and the share of its tokens masked past `max_staleness` |
+| orchestrator | `staleness/rollout/{mean,max}` | rollout staleness (max token staleness) of the shipped batch |
+| orchestrator | `staleness/rollout/{in_flight,in_queue}/{mean,max}` | in-flight and in-queue split of rollout staleness |
+| orchestrator | `staleness/rollout/dropped` | queued rollouts dropped because every token passed `max_staleness` |
+
+See [Async Training & Staleness](algorithms.md#async-training--staleness) for the token and rollout staleness definitions.
 
 The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window. This warning reports stale, errored, and no-signal counts.
 
@@ -198,9 +205,9 @@ clear_thinking = true
 
 The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
 
-**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
+**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
 
-**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class (currently Qwen3.5 dense and MoE).
+**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class: Qwen3.5 dense and MoE, and Qwen3.8 Flash Next (`qwen4_exp`, text and images). See the [multimodal examples](../examples/extra/vlm/README.md) for SFT and multi-node image RL configurations.
 
 See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 
@@ -360,7 +367,7 @@ Once paused, both keep serving the API until the run is stopped, so its owner ca
 
 ### Exporting Checkpoints
 
-Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected. LoRA SFT runs write the final PEFT adapter to `<run_dir>/adapter` instead.
 
 ```bash
 # single process (1 GPU)
