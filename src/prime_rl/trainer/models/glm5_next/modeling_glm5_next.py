@@ -146,7 +146,6 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["Glm5NextDecoderLayer"]
-    _can_compile_fullgraph = False
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:

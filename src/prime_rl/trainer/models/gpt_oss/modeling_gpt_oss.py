@@ -89,7 +89,6 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["GptOssDecoderLayer"]
     _supports_flash_attn = True
     _supports_sdpa = False
-    _can_compile_fullgraph = False
     _supports_attention_backend = True
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 

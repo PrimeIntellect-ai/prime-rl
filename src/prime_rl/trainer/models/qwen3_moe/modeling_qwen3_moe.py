@@ -125,7 +125,6 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
     _supports_flash_attn = True
     _supports_sdpa = False
     _supports_flex_attn = True
-    _can_compile_fullgraph = False  # MoE models don't work with torch.compile (`torch.where(condition)` not supported)
     _supports_attention_backend = True
     _can_record_outputs = {
         "hidden_states": Qwen3MoeDecoderLayer,

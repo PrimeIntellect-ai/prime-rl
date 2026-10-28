@@ -117,7 +117,6 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen3_8FlashNextDecoderLayer"]
-    _can_compile_fullgraph = False
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

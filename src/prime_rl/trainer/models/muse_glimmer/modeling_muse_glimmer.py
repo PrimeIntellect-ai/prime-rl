@@ -141,7 +141,6 @@ class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["MuseGlimmerDecoderLayer"]
     _supports_flash_attn = True
     _supports_sdpa = False
-    _can_compile_fullgraph = True
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

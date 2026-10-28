@@ -102,7 +102,6 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     _supports_flash_attn = False
     _supports_sdpa = False
     _supports_flex_attn = False
-    _can_compile_fullgraph = False
     _supports_attention_backend = True
     _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
     _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]

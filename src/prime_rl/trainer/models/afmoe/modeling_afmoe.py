@@ -294,7 +294,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     _supports_flash_attn = True
     _supports_flex_attn = False
     _supports_attention_backend = True
-    _can_compile_fullgraph = False
     _can_record_outputs = {
         "hidden_states": AfmoeDecoderLayer,
     }
