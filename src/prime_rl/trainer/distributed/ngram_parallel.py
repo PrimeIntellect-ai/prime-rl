@@ -1,0 +1,11 @@
+import torch.nn as nn
+from torch.distributed.tensor import DeviceMesh, Shard, distribute_tensor
+from torch.distributed.tensor.parallel import ParallelStyle
+
+
+class NGramRowParallel(ParallelStyle):
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        for parameter_name, parameter in module.named_parameters(recurse=False):
+            sharded = distribute_tensor(parameter, device_mesh, [Shard(0)])
+            module.register_parameter(parameter_name, nn.Parameter(sharded, requires_grad=parameter.requires_grad))
+        return module
