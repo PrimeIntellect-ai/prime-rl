@@ -21,12 +21,15 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
+from pydantic import ValidationError
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
@@ -36,9 +39,11 @@ if TYPE_CHECKING:
     from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401
 from prime_rl import monitors
+from prime_rl.configs.diff import ConfigChange, diff_config, merge_resumed_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.control.controller import Controller
+from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
@@ -77,9 +82,15 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
+from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import (
+    get_broadcast_dir,
+    get_config_dir,
+    resolve_latest_ckpt_step,
+    write_resolved_config,
+)
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -122,6 +133,8 @@ class Orchestrator:
     lag_monitor: EventLoopLagMonitor
     gc: GarbageCollector | None
     periodic_logger: PeriodicLogger
+    reconfigurables: list[Reconfigurable]
+    """Components that apply live config updates."""
 
     # Set by ``setup()`` only when relevant config is present
     heart: Heartbeat | None
@@ -134,7 +147,6 @@ class Orchestrator:
     lag_task: asyncio.Task | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
-        self.config = config
         write_resolved_config(config.output_dir, config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         # Route the in-process v1 library logging through our handler. The
@@ -144,6 +156,12 @@ class Orchestrator:
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+        # The launch config, before live updates, which checkpoints record as the merge base.
+        self.launch_config = dump_resolved_config(config)
+        self.config_revision = 0
+        self.resume_step = resolve_resume_step(config, self.ckpt_manager)
+        # Components read the config when built, so a resumed run restores live updates first.
+        self.config = self.restore_live_config(config) if self.resume_step is not None else config
         self.controller = None
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
@@ -177,7 +195,6 @@ class Orchestrator:
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
-        self.resume_step = None
         self.lag_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -243,14 +260,6 @@ class Orchestrator:
                 config.eval.source, config.env_addresses, config_dir, replicas=config.env_server_replicas
             )
 
-        if config.resume is not None:
-            if config.resume.dir is not None:
-                self.resume_step = config.resume.dir_step
-            else:
-                self.resume_step = config.resume.step
-                if self.resume_step is None:
-                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
-
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
 
@@ -285,9 +294,9 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
         if self.resume_step is not None:
-            resume = self.config.resume
-            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            self.ckpt_manager.load(
+                self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
+            )
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -391,6 +400,10 @@ class Orchestrator:
             interval=log_interval,
         )
 
+        self.reconfigurables = [self.concurrency, self.train_envs, self.train_source, self.train_sink]
+        if self.eval_source is not None:
+            self.reconfigurables.append(self.eval_source)
+
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
         await self.watcher.sync_startup(sync_version, timeout=config.weight_broadcast.timeout)
@@ -421,6 +434,8 @@ class Orchestrator:
             self.controller = Controller(
                 requires_step=True,
                 on_submit=lambda: loop.call_soon_threadsafe(self.control_requested.set),
+                read_config=lambda: (self.config_revision, self.config),
+                check_config=lambda raw: validate_update(self.config, raw),
             )
             ControlServer(self.controller, config.control).start()
             self.component_tasks.append(asyncio.create_task(self.serve_control(), name="control"))
@@ -463,7 +478,7 @@ class Orchestrator:
             if loop_done and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -705,7 +720,8 @@ class Orchestrator:
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
-            self.shipped_state = (step, build_state(self.progress, self.train_source))
+            self.apply_config_update()
+            self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
             self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
@@ -997,7 +1013,7 @@ class Orchestrator:
         t = time.perf_counter()
         # Synchronous on purpose: the payload is tiny, and snapshotting on the
         # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step)
         return time.perf_counter() - t
 
     def apply_control(self) -> None:
@@ -1010,6 +1026,71 @@ class Orchestrator:
             self.ckpt_manager.save_state(state, step)
             self.controller.mark_saved(step)
             get_logger().info(f"Paused at step {step}, saved its state")
+
+    def apply_config_update(self) -> None:
+        """Apply a queued config update from the step about to be collected. Runs right after
+        shipping, before anything is dispatched for that step; running episodes keep their
+        settings and nothing is cancelled."""
+        self.controller.apply_update(self.progress.step, self.apply_config)
+
+    def apply_config(self, config: OrchestratorConfig, changes: list[ConfigChange]) -> None:
+        self.config_revision += 1
+        update = ConfigUpdate(
+            revision=self.config_revision, step=self.progress.step, config=config, changes=tuple(changes)
+        )
+        self.config = config
+        for component in self.reconfigurables:
+            component.reconfigure(update)
+        logged = ", ".join(f"{change.path}: {change.old!r} -> {change.new!r}" for change in changes) or "no changes"
+        get_logger().info(f"Applied config revision {update.revision} from step {update.step}: {logged}")
+        self.write_config_record(update.step, changes)
+
+    def restore_live_config(self, launch: OrchestratorConfig) -> OrchestratorConfig:
+        """Resume the live updates checkpointed at the resume step: each value the launch config
+        left as the checkpointed run was launched with resumes from the checkpoint, and every
+        value it changed wins. Checkpoints without configs resume with the launch config."""
+        state = self.ckpt_manager.read_config_state(self.resume_step, resume_path(launch))
+        if state is None:
+            return launch
+        merged = merge_resumed_config(state["base"], state["applied"], self.launch_config)
+        try:
+            config = OrchestratorConfig.model_validate(merged)
+        except ValidationError as error:
+            raise ValueError(
+                f"The launch config merged with the live updates checkpointed at step {self.resume_step} "
+                f"is invalid; change the launch config to resolve it:\n{error}"
+            ) from error
+        self.config_revision = state["revision"]
+        changes = diff_config(launch, config).changes
+        if changes:
+            restored = ", ".join(f"{change.path}: {change.old!r} -> {change.new!r}" for change in changes)
+            get_logger().info(f"Restored live config updates (revision {self.config_revision}): {restored}")
+            self.write_config_record(self.resume_step + 1, changes, config)
+        return config
+
+    def write_config_record(
+        self, step: int, changes: list[ConfigChange], config: OrchestratorConfig | None = None
+    ) -> None:
+        """Record the config in effect from ``step`` and how it differs from the one before."""
+        config = config or self.config
+        updates_dir = get_config_dir(config.output_dir) / "updates"
+        updates_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "revision": self.config_revision,
+            "step": step,
+            "changes": [change.model_dump(mode="json") for change in changes],
+            "config": dump_resolved_config(config),
+        }
+        (updates_dir / f"rev_{self.config_revision}.json").write_text(json.dumps(record, indent=2))
+
+    def config_state(self) -> dict:
+        """The configs a checkpoint records. Saved after shipping step S, it holds the config
+        that applies from S + 1, the step a resume from S continues at."""
+        return {
+            "base": self.launch_config,
+            "applied": dump_resolved_config(self.config),
+            "revision": self.config_revision,
+        }
 
     async def serve_control(self) -> None:
         """Apply each submitted pause on the event loop, also while a send blocks on the trainer."""
@@ -1093,6 +1174,24 @@ class Orchestrator:
             os._exit(0 if clean_exit else 1)
         await task
         get_logger().debug(f"Stopped orchestrator components in {format_time(time.perf_counter() - t0)}")
+
+
+def resolve_resume_step(config: OrchestratorConfig, ckpt_manager: CheckpointManager) -> int | None:
+    """The checkpoint step a run resumes from, None to start from scratch."""
+    if config.resume is None:
+        return None
+    if config.resume.dir is not None:
+        return config.resume.dir_step
+    if config.resume.step is not None:
+        return config.resume.step
+    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+
+
+def resume_path(config: OrchestratorConfig) -> Path | None:
+    """An external checkpoint's orchestrator directory when forking another run, else None."""
+    if config.resume is None or config.resume.dir is None:
+        return None
+    return config.resume.dir / "orchestrator"
 
 
 @clean_exit
