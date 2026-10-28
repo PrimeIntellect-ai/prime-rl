@@ -217,6 +217,15 @@ class CompressionLayout:
             starts[entry_doc_idx, None] + entry_pos[:, None] + torch.arange(compress_rate, device=device)[None, :]
         )
 
+        # These sizes follow the document lengths, which change from one micro batch to the next.
+        # Marked dynamic up front, the compiled layers trace them symbolically on their first
+        # compile instead of recompiling once per field as each size first changes.
+        for tensor in (entry_tok_idx, entry_doc_idx, entry_local_idx):
+            torch._dynamo.maybe_mark_dynamic(tensor, 0)
+        # Unbacked, unlike the others: a backed dynamic size is assumed to be at least 2, so a row
+        # holding a single document would still compile a graph of its own.
+        torch._dynamo.decorators.mark_unbacked(first_entry_of_doc, 0)
+
         return cls(
             entry_tok_idx=entry_tok_idx,
             entry_doc_idx=entry_doc_idx,
@@ -301,6 +310,12 @@ class PackedContext:
         window_base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
         slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
         window_indices = torch.where(slots <= tok_idx[:, None], slots, IGNORE_SLOT).to(torch.int32)
+
+        # `n_queries` follows this rank's row length. `position_ids` is a view, and dynamo guards its base too.
+        torch._dynamo.maybe_mark_dynamic(position_ids, 1)
+        torch._dynamo.maybe_mark_dynamic(position_ids._base, 0)
+        torch._dynamo.maybe_mark_dynamic(tok_doc_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(window_indices, 0)
 
         return cls(
             position_ids=position_ids,
