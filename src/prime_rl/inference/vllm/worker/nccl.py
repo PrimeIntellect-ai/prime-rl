@@ -8,6 +8,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -21,14 +22,16 @@ else:
 logger = init_logger("vllm.inference.vllm.worker_nccl")
 
 
-def receive_integer(communicator: PyNcclCommunicator) -> int:
+def receive_integer(communicator: PyNcclCommunicator | WeightBroadcastCommunicator) -> int:
     """Receive an integer from the trainer master rank using NCCL communicator."""
     integer_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
     communicator.broadcast(integer_tensor, src=0)
     return cast(int, integer_tensor.item())
 
 
-def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str, torch.Tensor], None, None]:
+def receive_state_dict(
+    communicator: PyNcclCommunicator | WeightBroadcastCommunicator,
+) -> Generator[tuple[str, torch.Tensor], None, None]:
     """Stream tensors in a state dict broadcasted over NCCL."""
     size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
     communicator.broadcast(size_tensor, src=0)
@@ -68,12 +71,17 @@ class NCCLWeightBroadcastReceiver:
         world_size: int,
         device: int | str | torch.device,
         timeout: int,
+        recoverable: bool = False,
     ):
         logger.info(f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size})")
         disable_nccl_p2p_if_unavailable()
 
         pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
-        self.communicator = PyNcclCommunicator(pg, device=device)
+        self.communicator = (
+            WeightBroadcastCommunicator(pg, device=device, timeout=timeout)
+            if recoverable
+            else PyNcclCommunicator(pg, device=device)
+        )
 
     @torch.no_grad()
     def receive_state_dict(self):
@@ -98,6 +106,7 @@ class NCCLWeightUpdateWorker(Worker):
         inference_world_size: int,
         timeout: int,
         session_id: str = "default",
+        recoverable: bool = False,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
@@ -106,6 +115,10 @@ class NCCLWeightUpdateWorker(Worker):
             inference_world_size: Total number of inference GPUs across all servers.
         """
         del session_id
+        if receiver := getattr(self, "nccl_broadcast_receiver", None):
+            if not isinstance(receiver.communicator, WeightBroadcastCommunicator):
+                raise RuntimeError("In-place NCCL reconnection requires weight_broadcast.recoverable=true")
+            receiver.communicator.close()
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess
         # DP mode where each worker is a separate process with a singleton
@@ -125,6 +138,7 @@ class NCCLWeightUpdateWorker(Worker):
             world_size=inference_world_size + 1,  # +1 as the trainer broadcaster is on rank 0
             device=self.device,
             timeout=timeout,
+            recoverable=recoverable,
         )
 
     def liveness_probe(self) -> None:

@@ -15,6 +15,7 @@ from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.vlm import get_layer_prefix
@@ -67,14 +68,16 @@ def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.
     return max_num + 1
 
 
-def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
+def broadcast_integer(integer: int, communicator: PyNcclCommunicator | WeightBroadcastCommunicator) -> None:
     """Broadcast an integer to a process group using NCCL communicator."""
     integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
     communicator.broadcast(integer_tensor, src=0)
 
 
-def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclCommunicator) -> None:
-    """Broadcast a state dict to NCCL process group using the PyNcclCommunicator."""
+def broadcast_state_dict(
+    state_dict: dict[str, Tensor], communicator: PyNcclCommunicator | WeightBroadcastCommunicator
+) -> None:
+    """Broadcast a state dict to the inference NCCL process group."""
     # Group tensors by dtype
     dtype_groups: dict[torch.dtype, list[tuple[str, Tensor]]] = {}
     for key, value in state_dict.items():
@@ -169,6 +172,7 @@ class NCCLBroadcaster:
         world_size: int,
         device: int | str | torch.device,
         timeout: int,
+        recoverable: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
@@ -180,7 +184,11 @@ class NCCLBroadcaster:
             pg = StatelessProcessGroup.create(
                 host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
             )
-            self.communicator = PyNcclCommunicator(pg, device=device)
+            self.communicator = (
+                WeightBroadcastCommunicator(pg, device=device, timeout=timeout)
+                if recoverable
+                else PyNcclCommunicator(pg, device=device)
+            )
             self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
@@ -234,6 +242,7 @@ class NCCLWeightSender(WeightSender):
             config.inference_world_size + 1,
             device,
             config.timeout,
+            config.recoverable,
         )
 
     @torch.no_grad()
@@ -253,6 +262,7 @@ class NCCLWeightReceiver(WeightReceiver):
             port=self.config.port,
             timeout=self.config.timeout,
             inference_world_size=self.config.inference_world_size,
+            recoverable=self.config.recoverable,
         )
 
     async def receive(self, step: int) -> None:

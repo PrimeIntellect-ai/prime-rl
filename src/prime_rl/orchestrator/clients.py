@@ -151,6 +151,7 @@ class AdminPlane:
         port: int,
         timeout: int,
         inference_world_size: int,
+        recoverable: bool = False,
     ) -> None:
         gpus_per_server = inference_world_size // len(self.clients)
         get_logger().info(
@@ -168,14 +169,17 @@ class AdminPlane:
                         "rank_offset": rank_offset,
                         "inference_world_size": inference_world_size,
                         "timeout": timeout,
+                        **({"recoverable": True} if recoverable else {}),
                     },
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
+                if error.response.status_code == 404 and not recoverable:
                     get_logger().warning(
                         "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
                     )
+                else:
+                    raise
 
         await asyncio.gather(
             *(
@@ -196,17 +200,18 @@ class AdminPlane:
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
         pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
-        try:
-            if on_paused is not None:
-                on_paused()
-            transfer_times = await _post_all(
-                self.clients,
-                "/update_weights",
-                json={"weight_dir": weight_dir_posix, "weight_version": step},
-                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            )
-        finally:
-            resume_times = await _resume_engines(self.clients)
+        if on_paused is not None:
+            on_paused()
+        transfer_times = await _post_all(
+            self.clients,
+            "/update_weights",
+            json={"weight_dir": weight_dir_posix, "weight_version": step},
+            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+            retry=False,
+        )
+        # A failed transfer may have overwritten only part of the model. Keep all
+        # engines paused until a complete replacement has succeeded everywhere.
+        resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def aclose(self) -> None:
@@ -387,13 +392,15 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry: bool = True, **kwargs
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
+        retry=retry_if_exception(lambda error: retry and _is_retryable_admin_error(error)),
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
