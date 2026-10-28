@@ -100,14 +100,14 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         if self.ple is not None:
             hidden_states = hidden_states + self.ple(hidden_states, ngram_embedding, cu_seqlens)
 
-        block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
+        block_input, (hidden_states, injection_weights) = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
             block_output = self.linear_attn(block_input, cu_seqlens)
         else:
             block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
-        hidden_states = self.attn_hyper_connection.combine(block_output, residual_state)
 
-        block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states)
+        # The MLP's mix applies the attention's combine in the same pass.
+        block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states, (block_output, injection_weights))
         block_output = self.mlp(block_input, routed_experts=routed_experts)
         return self.mlp_hyper_connection.combine(block_output, residual_state)
 
