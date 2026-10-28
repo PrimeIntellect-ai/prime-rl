@@ -20,23 +20,40 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", f"distributed: needs {NUM_GPUS} GPUs on one node")
 
 
-def in_shard(item: pytest.Item, shard: int, shards: dict[tuple[str, bool], int]) -> bool:
-    case = item.callspec.params.get("case") if hasattr(item, "callspec") else None
-    return shards[case.shard_unit] == shard if case is not None else shard == 0
-
-
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keep only the tests in this run's `--shard`, and skip distributed tests on a node with too few GPUs."""
     if shard_option := config.getoption("--shard"):
-        index, num_shards = map(int, shard_option.split("/"))
-        if not 1 <= index <= num_shards:
-            raise pytest.UsageError(f"--shard {shard_option}: need 1 <= I <= N")
-        shards = assign_shards(CASES, num_shards)
-        deselected = [item for item in items if not in_shard(item, index - 1, shards)]
-        items[:] = [item for item in items if in_shard(item, index - 1, shards)]
-        config.hook.pytest_deselected(items=deselected)
-    if torch.cuda.device_count() >= NUM_GPUS:
+        keep_only_shard(config, items, shard_option)
+    skip_distributed_without_enough_gpus(items)
+
+
+def keep_only_shard(config: pytest.Config, items: list[pytest.Item], shard_option: str) -> None:
+    shard, num_shards = parse_shard_option(shard_option)
+    shard_of_unit = assign_shards(CASES, num_shards)
+    deselected = [item for item in items if shard_of(item, shard_of_unit) != shard]
+    items[:] = [item for item in items if shard_of(item, shard_of_unit) == shard]
+    config.hook.pytest_deselected(items=deselected)
+
+
+def parse_shard_option(shard_option: str) -> tuple[int, int]:
+    """Parse `I/N`, with I counted from 1, into a 0-based shard index and the shard count."""
+    index, num_shards = map(int, shard_option.split("/"))
+    if not 1 <= index <= num_shards:
+        raise pytest.UsageError(f"--shard {shard_option}: need 1 <= I <= N")
+    return index - 1, num_shards
+
+
+def shard_of(item: pytest.Item, shard_of_unit: dict[tuple[str, bool], int]) -> int:
+    """The shard of the item's case unit, or the first shard for a test outside the matrix."""
+    case = item.callspec.params.get("case") if hasattr(item, "callspec") else None
+    return shard_of_unit[case.shard_unit] if case is not None else 0
+
+
+def skip_distributed_without_enough_gpus(items: list[pytest.Item]) -> None:
+    num_gpus = torch.cuda.device_count()
+    if num_gpus >= NUM_GPUS:
         return
-    skip = pytest.mark.skip(reason=f"needs {NUM_GPUS} GPUs, found {torch.cuda.device_count()}")
+    skip = pytest.mark.skip(reason=f"needs {NUM_GPUS} GPUs, found {num_gpus}")
     for item in items:
         if item.get_closest_marker("distributed"):
             item.add_marker(skip)
