@@ -459,16 +459,21 @@ def get_joint_ckpt_steps(ckpt_dir: Path, *, generation: str | None = None) -> li
     return [step for step in get_all_ckpt_steps(ckpt_dir) if is_joint_ckpt_step(ckpt_dir, step, generation=generation)]
 
 
-def get_resume_ckpt_steps(ckpt_dir: Path) -> list[int]:
-    """Current-generation saves plus ancestors at/below the persisted rewind ceiling."""
+def get_resume_ckpt_generations(ckpt_dir: Path) -> dict[int, str]:
+    """Generation of each current save or ancestor at/below the persisted rewind ceiling."""
     state = read_checkpoint_generation(ckpt_dir)
     ceiling = state["ceiling"]
-    steps = []
+    checkpoints = {}
     for step in get_all_ckpt_steps(ckpt_dir):
         generation = _joint_generation(ckpt_dir, step)
         if generation is not None and (generation == state["generation"] or (ceiling is not None and step <= ceiling)):
-            steps.append(step)
-    return steps
+            checkpoints[step] = generation
+    return checkpoints
+
+
+def get_resume_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """Current-generation saves plus ancestors at/below the persisted rewind ceiling."""
+    return list(get_resume_ckpt_generations(ckpt_dir))
 
 
 def require_legacy_resume_step(ckpt_dir: Path, step: int | None) -> int:
@@ -543,19 +548,20 @@ def prune_joint_ckpts(
     generation: str,
     failed_steps: set[int] | None = None,
 ) -> list[int]:
-    """Prune active-generation checkpoints under the retention lock; never prune abandoned futures."""
+    """Prune run-wide joint checkpoints under the active writer's retention lock."""
     if keep_last is None and keep_interval is None:
         return []
     failures = failed_steps if failed_steps is not None else set()
     with checkpoint_lifecycle_lock(ckpt_dir):
         if read_checkpoint_generation(ckpt_dir)["generation"] != generation:
             return []
-        joint_steps = get_joint_ckpt_steps(ckpt_dir, generation=generation)
-        keep = set(joint_steps[-keep_last:]) if keep_last is not None else set()
-        if joint_steps:
-            keep.add(joint_steps[-1])  # LATEST is pinned independently of keep_last/keep_interval.
+        joint_steps = get_joint_ckpt_steps(ckpt_dir)
+        resume_steps = get_resume_ckpt_steps(ckpt_dir)
+        keep = set(resume_steps[-keep_last:]) if keep_last is not None else set()
+        if resume_steps:
+            keep.add(resume_steps[-1])  # LATEST is the latest-valid resume point, not an abandoned future.
         if keep_interval is not None:
-            keep.update(step for step in joint_steps if step % keep_interval == 0)
+            keep.update(step for step in resume_steps if step % keep_interval == 0)
         keep.update(get_protected_ckpt_steps(ckpt_dir))
         deleted: list[int] = []
         for step in sorted(set(joint_steps) | failures):

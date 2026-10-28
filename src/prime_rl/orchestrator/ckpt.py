@@ -27,11 +27,10 @@ from prime_rl.utils.pathing import (
     checkpoint_lifecycle_lock,
     complete_joint_ckpt_step,
     get_ckpt_dir,
-    get_joint_ckpt_steps,
+    get_resume_ckpt_generations,
     get_retention_path,
     get_step_path,
     invalidate_joint_ckpt_step,
-    is_joint_ckpt_step,
     preflight_checkpoint_storage,
     prune_joint_ckpts,
     read_checkpoint_generation,
@@ -212,17 +211,22 @@ class CheckpointRetention:
     def _matches_context(self, env_name: str, record) -> bool:
         return (
             isinstance(record, dict)
-            and record.get("generation") == self.generation
+            and isinstance(record.get("generation"), str)
+            and bool(record["generation"])
             and record.get("fingerprint") == self.fingerprints.get(env_name)
             and isinstance(record.get("score"), (int, float))
             and math.isfinite(record["score"])
         )
 
+    def _matches_checkpoint(self, env_name: str, step: int, record, joint_generations: dict[int, str]) -> bool:
+        return self._matches_context(env_name, record) and joint_generations.get(step) == record.get("generation")
+
     def valid_eval_envs(self, step: int) -> set[str]:
+        joint_generations = get_resume_ckpt_generations(self.ckpt_dir)
         return {
             name
             for name, record in self.state["valid_eval"].get(str(step), {}).items()
-            if self._matches_context(name, record)
+            if self._matches_checkpoint(name, step, record, joint_generations)
         }
 
     def mark_eval_pending(self, step: int, env_names: Iterable[str]) -> None:
@@ -236,16 +240,18 @@ class CheckpointRetention:
         with checkpoint_lifecycle_lock(self.ckpt_dir):
             self.state = self._load()
             step_key = str(batch.step)
+            joint_generations = get_resume_ckpt_generations(self.ckpt_dir)
             if score is not None:
                 if batch.env_name not in self.fingerprints:
                     raise RuntimeError(f"Eval plan fingerprint is not configured for {batch.env_name}")
                 self.state["valid_eval"].setdefault(step_key, {})[batch.env_name] = {
                     "fingerprint": self.fingerprints[batch.env_name],
-                    "generation": self.generation,
+                    # An eval of a resume ancestor belongs to that checkpoint's generation.
+                    "generation": joint_generations.get(batch.step, self.generation),
                     "score": score,
                 }
             pending = self.state["pending_eval"].get(step_key, [])
-            joint = is_joint_ckpt_step(self.ckpt_dir, batch.step, generation=self.generation)
+            joint = batch.step in joint_generations
             if batch.env_name in pending and (score is None or joint):
                 pending.remove(batch.env_name)
                 if not pending:
@@ -262,14 +268,15 @@ class CheckpointRetention:
                 self._write()
 
     def _reconcile_state(self) -> None:
-        joint_steps = set(get_joint_ckpt_steps(self.ckpt_dir, generation=self.generation))
+        joint_generations = get_resume_ckpt_generations(self.ckpt_dir)
+        joint_steps = set(joint_generations)
         valid_scores: dict[tuple[str, int], float] = {}
         for step_key, epochs in self.state["valid_eval"].items():
             step = int(step_key)
             for env_name, record in epochs.items():
-                if self._matches_context(env_name, record):
+                if self._matches_checkpoint(env_name, step, record, joint_generations):
                     valid_scores[(env_name, step)] = float(record["score"])
-                    if step in joint_steps and env_name in self.state["pending_eval"].get(step_key, []):
+                    if env_name in self.state["pending_eval"].get(step_key, []):
                         self.state["pending_eval"][step_key].remove(env_name)
             if not self.state["pending_eval"].get(step_key):
                 self.state["pending_eval"].pop(step_key, None)

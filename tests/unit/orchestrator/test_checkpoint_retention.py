@@ -78,6 +78,24 @@ def test_pruning_keeps_latest_best_pending_and_partial(tmp_path):
     assert get_step_path(ckpt_dir, 100).exists()
 
 
+def test_pruning_spans_generations_and_leaves_partial_checkpoints(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    for step in (20, 40, 60, 80):
+        _joint(ckpt_dir, step, generation="gen-a")
+    _components(ckpt_dir, 100)  # No joint manifest: not safe to treat as a cleanup candidate.
+    start_checkpoint_generation(ckpt_dir, generation="gen-b", resume_step=80)
+    for step in (120, 140):
+        _joint(ckpt_dir, step, generation="gen-b")
+    get_retention_path(ckpt_dir).write_text(
+        json.dumps({"best_step": 20, "pending_eval": {"40": ["heldout"]}, "valid_eval": {}})
+    )
+
+    assert prune_joint_ckpts(ckpt_dir, generation="gen-b", keep_last=1, keep_interval=None) == [60, 80, 120]
+    assert get_joint_ckpt_steps(ckpt_dir) == [20, 40, 140]
+    assert get_resume_ckpt_steps(ckpt_dir) == [20, 40, 140]
+    assert get_step_path(ckpt_dir, 100).exists()
+
+
 def test_failed_rmtree_stays_in_the_next_cleanup_plan(tmp_path, monkeypatch):
     ckpt_dir = tmp_path / "checkpoints"
     for step in (20, 60):
@@ -260,12 +278,13 @@ def test_rewind_ceiling_excludes_abandoned_futures_and_mixed_generations(tmp_pat
     assert complete_joint_ckpt_step(ckpt_dir, 40, component="orchestrator", generation="gen-b")
     assert get_resume_ckpt_steps(ckpt_dir) == [20, 40]
 
-    # Neither the active nor a stale generation may prune A's abandoned future.
+    # A stale writer cannot prune. The active writer prunes run-wide, including A's abandoned future.
     assert prune_joint_ckpts(ckpt_dir, generation="gen-a", keep_last=1, keep_interval=None) == []
-    assert prune_joint_ckpts(ckpt_dir, generation="gen-b", keep_last=1, keep_interval=None) == []
-    assert get_step_path(ckpt_dir, 60).exists()
-    start_checkpoint_generation(ckpt_dir, generation="gen-c", resume_step=20)
-    assert require_joint_resume_step(ckpt_dir) == 20
+    assert prune_joint_ckpts(ckpt_dir, generation="gen-b", keep_last=1, keep_interval=None) == [20, 60]
+    assert not get_step_path(ckpt_dir, 60).exists()
+    assert get_resume_ckpt_steps(ckpt_dir) == [40]
+    start_checkpoint_generation(ckpt_dir, generation="gen-c", resume_step=40)
+    assert require_joint_resume_step(ckpt_dir) == 40
 
 
 def test_external_resume_source_is_never_mutated(tmp_path):
@@ -274,7 +293,11 @@ def test_external_resume_source_is_never_mutated(tmp_path):
     before = {path.relative_to(external): path.read_bytes() for path in external.rglob("*") if path.is_file()}
 
     assert require_joint_resume_step(external, 60) == 60
-    start_checkpoint_generation(tmp_path / "current" / "checkpoints", generation="gen-b", resume_step=60)
+    current = tmp_path / "current" / "checkpoints"
+    start_checkpoint_generation(current, generation="gen-b", resume_step=60)
+    for step in (80, 100):
+        _joint(current, step, generation="gen-b")
+    assert prune_joint_ckpts(current, generation="gen-b", keep_last=1, keep_interval=None) == [80]
 
     after = {path.relative_to(external): path.read_bytes() for path in external.rglob("*") if path.is_file()}
     assert after == before
@@ -292,7 +315,7 @@ def test_final_best_and_latest_survive_interval_only_pruning(tmp_path):
     assert get_joint_ckpt_steps(ckpt_dir) == [40, 60]
 
 
-def test_eval_dedupe_and_best_require_generation_and_plan_fingerprint(tmp_path):
+def test_eval_dedupe_and_best_require_plan_fingerprint_and_resume_lineage(tmp_path):
     ckpt_dir = tmp_path / "checkpoints"
     _joint(ckpt_dir, 40)
     retention = CheckpointRetention(ckpt_dir, eval_envs=["heldout"])
@@ -311,8 +334,39 @@ def test_eval_dedupe_and_best_require_generation_and_plan_fingerprint(tmp_path):
     start_checkpoint_generation(ckpt_dir, generation="gen-b", resume_step=40)
     next_generation = CheckpointRetention(ckpt_dir, eval_envs=["heldout"])
     next_generation.configure_eval({"heldout": "plan-6"})
-    assert next_generation.valid_eval_envs(40) == set()
-    assert next_generation.best_step is None
+    assert next_generation.valid_eval_envs(40) == {"heldout"}
+    assert next_generation.best_step == 40
+
+
+def test_latest_resume_preserves_best_and_accepts_resume_checkpoint_reevaluation(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    for step in (40, 80):
+        _joint(ckpt_dir, step, generation="gen-a")
+    retention = CheckpointRetention(ckpt_dir, eval_envs=["heldout"])
+    retention.configure_eval({"heldout": "same-plan"})
+    retention.complete_eval_epoch(_batch(step=40), score=0.9)
+    retention.complete_eval_epoch(_batch(step=80), score=0.8)
+    assert retention.best_step == 40
+
+    start_checkpoint_generation(ckpt_dir, generation="gen-b", resume_step=80)
+    resumed = CheckpointRetention(ckpt_dir, eval_envs=["heldout"])
+    resumed.configure_eval({"heldout": "same-plan"})
+    assert resumed.valid_eval_envs(40) == {"heldout"}
+    assert resumed.valid_eval_envs(80) == {"heldout"}
+    assert resumed.best_step == 40
+
+    resumed.mark_eval_pending(80, ["heldout"])
+    resumed.complete_eval_epoch(_batch(step=80), score=0.95)
+    assert resumed.state["valid_eval"]["80"]["heldout"]["generation"] == "gen-a"
+    assert resumed.state["pending_eval"] == {}
+    assert resumed.best_step == 80
+    assert resumed.state["best_score"] == pytest.approx(0.95)
+
+    _joint(ckpt_dir, 120, generation="gen-b")
+    resumed.mark_eval_pending(120, ["heldout"])
+    resumed.complete_eval_epoch(_batch(step=120), score=0.1)
+    assert resumed.best_step == 80
+    assert resumed.state["best_score"] == pytest.approx(0.95)
 
 
 def test_eval_fingerprint_covers_group_size_task_identity_and_resolved_config():

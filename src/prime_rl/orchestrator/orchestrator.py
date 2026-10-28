@@ -88,6 +88,7 @@ from prime_rl.utils.pathing import (
     get_broadcast_dir,
     get_config_dir,
     get_joint_manifest_path,
+    get_resume_ckpt_steps,
     is_joint_ckpt_step,
     require_joint_resume_step,
     write_resolved_config,
@@ -528,10 +529,8 @@ class Orchestrator:
         self.retention.reconcile()
         self.ckpt_manager.maybe_clean()
         best_step = self.retention.best_step
-        if best_step is not None and not is_joint_ckpt_step(
-            self.ckpt_manager.ckpt_dir, best_step, generation=self.ckpt_manager.generation
-        ):
-            raise RuntimeError(f"BEST checkpoint step {best_step} is not jointly complete")
+        if best_step is not None and best_step not in get_resume_ckpt_steps(self.ckpt_manager.ckpt_dir):
+            raise RuntimeError(f"BEST checkpoint step {best_step} is not a latest-valid joint checkpoint")
         from prime_rl.orchestrator.hf_export import export_best_and_latest
 
         valid = await asyncio.to_thread(
