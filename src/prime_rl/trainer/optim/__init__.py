@@ -7,6 +7,7 @@ from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -141,6 +142,12 @@ def _create_muon_optimizer(
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
+    ngram_table_params = set()
+    if model is not None:
+        ngram_table_params = {
+            p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()
+        }
+
     def muon_enabled(n, p):
         if p.ndim < 2:
             return False
@@ -148,7 +155,7 @@ def _create_muon_optimizer(
             return False
         if "embed_tokens" in n:
             return False
-        if "ngram_embedding" in n:
+        if p in ngram_table_params:
             return False
         # Expert biases should not go to Muon (and would also raise under EP).
         if "mlp.experts" in n and n.endswith("_bias"):
