@@ -6,6 +6,7 @@ from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.attn import head_partitions
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
@@ -230,6 +231,18 @@ class SparseMlaAttention(nn.Module):
         )
 
         self.cp_context = CPContext()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        # As in GLM-5: the down-projections are latent, and o_proj holds its heads along the columns
+        return {
+            self.q_b_proj.weight: head_partitions(self.num_heads, (self.qk_head_dim,), heads_per_block),
+            self.kv_b_proj.weight: head_partitions(
+                self.num_heads, (self.qk_head_dim, self.v_head_dim), heads_per_block
+            ),
+            self.q_a_proj.weight: None,
+            self.kv_a_proj_with_mqa.weight: None,
+            self.o_proj.weight: None,
+        }
 
     def forward(self, hidden_states: torch.Tensor, layout: PoolLayout) -> torch.Tensor:
         batch_size, local_tokens, _ = hidden_states.shape
