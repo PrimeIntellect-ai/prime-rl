@@ -84,12 +84,13 @@ class Feature:
     layout: Layout = FSDP4_EP4
 
 
-AC_SELECTIVE = Feature("ac_selective", {"model.ac.mode": "selective"})
-ACT_OFFLOAD_OFF = Feature("act_offload_off", {"model.ac_offloading": None})
-OPTIM_OFFLOAD_OFF = Feature("optim_offload_off", {"model.offload": "none"})
-FULL_OFFLOAD = Feature("full_offload", {"model.offload": "full"})
-FULLGRAPH = Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP4_EP4)
-FEATURES = (AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, FULLGRAPH)
+FEATURES = (
+    Feature("ac_selective", {"model.ac.mode": "selective"}),
+    Feature("act_offload_off", {"model.ac_offloading": None}),
+    Feature("optim_offload_off", {"model.offload": "none"}),
+    Feature("full_offload", {"model.offload": "full"}),
+    Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP4_EP4),
+)
 
 
 @dataclass(frozen=True, eq=False)
@@ -120,8 +121,12 @@ class Case:
     feature: Feature | None = None
 
     @property
+    def id_parts(self) -> tuple[str, str, str]:
+        return self.arch.name, self.layout.name, self.feature.name if self.feature else "base"
+
+    @property
     def id(self) -> str:
-        return f"{self.arch.name}-{self.layout.name}-{self.feature.name if self.feature else 'base'}"
+        return "-".join(self.id_parts)
 
     @property
     def resume(self) -> bool:
@@ -161,54 +166,34 @@ def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], 
     return shards
 
 
-def check_k_selectable(names: list[str]) -> None:
-    for name, other in permutations(names, 2):
+def check_k_selectable(names: set[str]) -> None:
+    for name, other in permutations(sorted(names), 2):
         if name in other:
             raise ValueError(f"-k {name} would also select {other}")
 
 
-# The only arch with feature rows and resume, as the module docstring explains.
-QWEN3_MOE = Arch("qwen3_moe", features=FEATURES, resume_layout=FSDP4_EP4)
-GLM_MOE_DSA = Arch("glm_moe_dsa")
-DEEPSEEK_V4 = Arch("deepseek_v4", launch_s=350)
-LLAMA = Arch("llama", layouts=DENSE_LAYOUTS, overrides={"renderer.name": "llama-3"})
-QWEN3_DENSE = Arch("qwen3_dense", layouts=DENSE_LAYOUTS)
-QWEN3_5_DENSE = Arch("qwen3_5_dense", layouts=DENSE_LAYOUTS)
-GLM4_MOE = Arch("glm4_moe")
-GPT_OSS = Arch("gpt_oss")
-LAGUNA = Arch("laguna")
-MINIMAX_M2 = Arch("minimax_m2")
-NEMOTRON_H = Arch("nemotron_h")
-QWEN3_5_MOE = Arch("qwen3_5_moe")
-QWEN4_EXP = Arch("qwen4_exp")
-AFMOE = Arch(
-    "afmoe", skip={layout: "SFT needs a typed renderer and none is registered for afmoe" for layout in MOE_LAYOUTS}
-)
 ARCHS = (
-    QWEN3_MOE,
-    GLM_MOE_DSA,
-    DEEPSEEK_V4,
-    LLAMA,
-    QWEN3_DENSE,
-    QWEN3_5_DENSE,
-    GLM4_MOE,
-    GPT_OSS,
-    LAGUNA,
-    MINIMAX_M2,
-    NEMOTRON_H,
-    QWEN3_5_MOE,
-    QWEN4_EXP,
-    AFMOE,
+    # The only arch with feature rows and resume, as the module docstring explains.
+    Arch("qwen3_moe", features=FEATURES, resume_layout=FSDP4_EP4),
+    Arch("glm_moe_dsa"),
+    Arch("deepseek_v4", launch_s=350),
+    Arch("llama", layouts=DENSE_LAYOUTS, overrides={"renderer.name": "llama-3"}),
+    Arch("qwen3_dense", layouts=DENSE_LAYOUTS),
+    Arch("qwen3_5_dense", layouts=DENSE_LAYOUTS),
+    Arch("glm4_moe"),
+    Arch("gpt_oss"),
+    Arch("laguna"),
+    Arch("minimax_m2"),
+    Arch("nemotron_h"),
+    Arch("qwen3_5_moe"),
+    Arch("qwen4_exp"),
+    Arch(
+        "afmoe",
+        skip={layout: "SFT needs a typed renderer and none is registered for afmoe" for layout in MOE_LAYOUTS},
+    ),
 )
 CASES = [case for arch in ARCHS for case in arch.cases()]
-check_k_selectable(
-    [
-        "base",
-        *(a.name for a in ARCHS),
-        *(l.name for l in (*MOE_LAYOUTS, *DENSE_LAYOUTS)),
-        *(f.name for f in FEATURES),
-    ]
-)
+check_k_selectable({part for case in CASES for part in case.id_parts})
 
 
 def sft_args(case: Case, model_name: str) -> list[str]:
