@@ -190,6 +190,8 @@ def test_partially_stale_trace_ships_fresh_tokens():
         ]
         batch = await s.add(episode([t], version=1))
         assert batch.samples[0].mask.tolist() == [False, False, False, True]
+        # Batch 4 trains on v3: the unlabelled token took dispatch version v1.
+        assert batch.samples[0].staleness.tolist() == [-1, -1, 2, 0]
         assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
 
     asyncio.run(run())
