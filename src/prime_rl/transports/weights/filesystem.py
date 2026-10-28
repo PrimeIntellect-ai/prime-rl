@@ -70,7 +70,8 @@ class FileSystemWeightReceiver(WeightReceiver):
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
-        data_dir = get_step_path(storage_path(self.config.storage), step) if self.config.storage else weights_dir
+        storage = self.config.storage if self.config.type == "sparse_filesystem" else None
+        data_dir = get_step_path(storage_path(storage), step) if storage else weights_dir
         manifest, finished = data_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
         self._ack(step)
         # A sparse delta's manifest comes first and its part files as the trainer encodes: the engines
