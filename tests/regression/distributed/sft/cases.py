@@ -3,9 +3,13 @@
 Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each arch
 contributes two kinds of case:
 
-- A base case on every layout in its `layouts`. It trains 5 steps. The base case on the arch's `resume_layout`, if
-  set, also saves a checkpoint and resumes in a fresh process.
+- A base case on every layout in its `layouts`. It trains `TRAIN_STEPS` steps (see `test_matrix.py`). The base case
+  on the arch's `resume_layout`, if set, also saves a checkpoint and resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
+
+To save launches, only qwen3_moe sets `features` and `resume_layout`. It is the plainest MoE arch, with standard
+attention and routing, so its features and resume exercise only shared code and stand in for every arch. Every other
+arch runs just its base cases.
 
 Base cases on the CP4 layouts (CP and, for MoE archs, EP, with default `fullgraph=False`) also launch with
 `TORCH_LOGS=graph_breaks,dynamo`. A second test, `test_no_graph_breaks`, reads the same launch's rank logs and fails on
@@ -162,6 +166,7 @@ def check_k_selectable(names: list[str]) -> None:
             raise ValueError(f"-k {name} would also select {other}")
 
 
+# The only arch with feature rows and resume, as the module docstring explains.
 QWEN3_MOE = Arch("qwen3_moe", features=FEATURES, resume_layout=FSDP4_EP4)
 GLM_MOE_DSA = Arch("glm_moe_dsa")
 DEEPSEEK_V4 = Arch("deepseek_v4", launch_s=350)
