@@ -7,9 +7,7 @@ in `ARCHS` (in `archs.py`, with its tiny config and tokenizer) contributes two k
   on the arch's `resume_layout`, if set, also saves a checkpoint and resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
 
-To save launches, only qwen3_moe sets `features` and `resume_layout`. It is the plainest MoE arch, with standard
-attention and routing, so its features and resume exercise only shared code and stand in for every arch. Every other
-arch runs just its base cases.
+README.md explains why only qwen3_moe sets `features` and `resume_layout`.
 
 Base cases on the CP4 layouts (CP and, for MoE archs, EP, with default `fullgraph=False`) also launch with
 `TORCH_LOGS=graph_breaks,dynamo`. A second test, `test_no_graph_breaks`, reads the same launch's rank logs and fails on
