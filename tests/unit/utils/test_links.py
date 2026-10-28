@@ -5,9 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 import prime_rl.monitors.prime as prime_module
-from prime_rl.configs.monitors import PrimeTrainMonitorConfig, WandbMonitorConfig
+from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.monitors.prime import PrimeTrainMonitor
-from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.links import ATTEMPT_VAR, publish_link, register_links, wait_for_links
 
 
@@ -43,32 +42,29 @@ def test_previous_attempt_links_never_count(tmp_path, attempt, monkeypatch):
     assert wait_for_links(tmp_path, attempt, ["prime"], lambda: True) == {}
 
 
-@pytest.mark.parametrize("prime_mode", [None, "online"])
-def test_monitors_without_credentials_run_disabled(tmp_path, attempt, monkeypatch, prime_mode):
-    """No Prime or W&B credentials: both monitors warn, run disabled, and open no links,
-    so the launcher's banner does not wait on them."""
-    for var in ("PRIME_API_KEY", "PRIME_RUNS_MODE", "RUN_ID", "WANDB_API_KEY", "WANDB_MODE"):
+@pytest.fixture
+def no_prime_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for var in ("PRIME_API_KEY", "PRIME_RUNS_MODE", "RUN_ID"):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.mark.parametrize("prime_mode", [None, "online"])
+def test_prime_monitor_without_credentials_runs_disabled(tmp_path, attempt, monkeypatch, no_prime_key, prime_mode):
+    """It warns and opens no links, so the launcher's banner does not wait on it."""
     if prime_mode is not None:
         monkeypatch.setenv("PRIME_RUNS_MODE", prime_mode)
-    monkeypatch.setenv("NETRC", str(tmp_path / "missing-netrc"))
-    monkeypatch.setenv("WANDB_CONFIG_DIR", str(tmp_path / "wandb-config"))
-    monkeypatch.setattr(prime_module, "PrimeConfig", lambda: SimpleNamespace(api_key=None))
     warnings: list[str] = []
-    logger = SimpleNamespace(warning=warnings.append, info=print, debug=print)
-    monkeypatch.setattr(prime_module, "get_logger", lambda: logger)
-    prime = PrimeTrainMonitor(PrimeTrainMonitorConfig())
-    wandb = WandbMonitor(WandbMonitorConfig())
-    wandb.logger = logger
+    monkeypatch.setattr(prime_module, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=None, output_dir=tmp_path))
+    asyncio.run(monitor.finalize())
+    assert monitor.run.url is None
+    assert len(warnings) == 1 and "prime login" in warnings[0] and "--no-monitors.prime" in warnings[0]
+    assert wait_for_links(tmp_path, attempt, ["prime"], lambda: False, timeout=0.0) == {"prime": {}}
 
-    asyncio.run(prime.init(config=None, output_dir=tmp_path))
-    asyncio.run(wandb.init(output_dir=tmp_path))
 
-    asyncio.run(prime.finalize())
-    asyncio.run(wandb.finalize())
-    assert prime.run.url is None
-    assert [("prime login" in w, "wandb login" in w) for w in warnings] == [(True, False), (False, True)]
-    assert wait_for_links(tmp_path, attempt, ["prime", "wandb"], lambda: False, timeout=0.0) == {
-        "prime": {},
-        "wandb": {},
-    }
+def test_attached_prime_monitor_without_credentials_fails(tmp_path, monkeypatch, no_prime_key):
+    monkeypatch.setenv("RUN_ID", "launcher-run")
+    with pytest.raises(Exception, match="API key"):
+        asyncio.run(PrimeTrainMonitor(PrimeTrainMonitorConfig()).init(config=None, output_dir=tmp_path))

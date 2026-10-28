@@ -117,10 +117,10 @@ class WandbMonitor(Monitor):
         try:
             self.wandb = init_wandb(max_retries)
         except UsageError as e:
-            self.logger.warning(
-                f"The W&B monitor could not start ({e}) - the run is not logged to W&B. Authenticate with "
-                "`wandb login` (or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
-            )
+            hint = "Authenticate with `wandb login` (or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
+            if "No API key" not in str(e):
+                raise RuntimeError(f"The W&B monitor could not start ({e}). {hint}") from e
+            self.logger.warning(f"No W&B API key found - the run is not logged to W&B. {hint}")
             self.wandb = wandb.init(dir=output_dir, settings=wandb.Settings(mode="disabled"))
             is_online = False
 

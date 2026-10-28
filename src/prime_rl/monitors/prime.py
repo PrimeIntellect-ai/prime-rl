@@ -63,9 +63,11 @@ OFF_HINT = "turn the monitor off with --no-monitors.prime"
 
 def prime_mode() -> str:
     """$PRIME_RUNS_MODE when set, else online. An online run without a Prime API key
-    logs a warning and runs disabled."""
+    logs a warning and runs disabled, unless it attaches to a platform run or evaluation
+    that a launcher created: that one fails at init."""
     mode = os.getenv(pr.MODE_ENV) or "online"
-    if mode == "online" and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
+    attached = os.getenv("RUN_ID") or os.getenv(EVAL_ID_VAR)
+    if mode == "online" and not attached and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
         get_logger().warning(
             "No Prime API key found - the run is not logged to Prime. Authenticate with "
             f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
