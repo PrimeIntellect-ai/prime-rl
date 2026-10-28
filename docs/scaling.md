@@ -311,4 +311,14 @@ uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml
 
 With `--data.fake.generate-samples`, fake RL data packs random-length samples into each row; add `--data.fake.doc-len N` to make every sample N tokens instead (the last one cut to fill the row), e.g. two 262k-token rollouts in a 524k-token row.
 
+Fake data has synthetic token ids and document lengths. To benchmark the RL trainer on the batches of a real run instead (its document-length mix, packing, and token ids, which drive MoE routing), convert the run's recorded episodes into packed micro batches and replay them with `trainer.data.replay`:
+
+```bash
+uv run python tools/convert_traces_to_replay_batches.py <model> <replay_dir> <run_output_dir>/monitors/file/traces/stream/*.jsonl.zst \
+    --seq-len 262144 --rollouts-per-step 1024 --num-train-workers 8 --pad-to-multiple-of 256 --num-steps 10
+uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.replay <replay_dir> --max-steps 10
+```
+
+The converter packs each step the way the orchestrator does, so `--seq-len`, `--num-train-workers` (the trainer's data parallel size) and `--pad-to-multiple-of` must match the trainer; the trainer checks the first two at startup. Episodes are recorded before scoring, so advantages are synthetic, and the arrays env servers keep for the trainer (routing replay, sampling masks, top logprobs) are not recorded, so replay requires `loss.score_centering = false`. The trainer cycles through the converted steps.
+
 Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup.
