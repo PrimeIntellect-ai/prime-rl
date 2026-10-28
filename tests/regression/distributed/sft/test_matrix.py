@@ -1,3 +1,4 @@
+import shutil
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -55,6 +56,8 @@ def run_case(tiny_checkpoint, tokenizer_files, run_process, output_dir) -> Calla
         model_name = tiny_checkpoint(case.arch.model).as_posix()
         tokenizer_files(case.arch.model)
         run_dir = output_dir / case.id
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
         env = {"HF_HUB_OFFLINE": "1"}
         if case.check_graph_breaks:
             env["TORCH_LOGS"] = "graph_breaks,dynamo"
@@ -67,7 +70,7 @@ def run_case(tiny_checkpoint, tokenizer_files, run_process, output_dir) -> Calla
             log_dir = latest_log_dir.resolve() if latest_log_dir.exists() else None
             return SFTRun(label, result.returncode, result.timed_out, log_dir)
 
-        train = sft("train", "--max-steps", str(TRAIN_STEPS), "--clean", *(["--ckpt"] if case.resume else []))
+        train = sft("train", "--max-steps", str(TRAIN_STEPS), *(["--ckpt"] if case.resume else []))
         runs = [train]
         if case.resume and train.ok:
             runs.append(
