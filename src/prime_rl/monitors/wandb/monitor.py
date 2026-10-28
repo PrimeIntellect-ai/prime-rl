@@ -16,7 +16,7 @@ from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.links import WANDB_LINKS, publish_link, register_links
+from prime_rl.utils.links import publish_link, register_links
 from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
@@ -149,9 +149,9 @@ class WandbMonitor(Monitor):
 
     @staticmethod
     def _record(output_dir: Path, url: str | None) -> None:
-        register_links(output_dir, WANDB_LINKS, 1 if url else 0)
+        register_links(output_dir, "wandb", 1 if url else 0)
         if url:
-            publish_link(output_dir, WANDB_LINKS, "run", url)
+            publish_link(output_dir, "wandb", "run", url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # every log carries the monitor's own wall-time stamp

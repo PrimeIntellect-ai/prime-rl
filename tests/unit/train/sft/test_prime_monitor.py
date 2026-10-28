@@ -211,13 +211,11 @@ def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
     a lost merge. The lock file must persist with the SAME inode across
     acquisitions, and the locked update helper must merge two sequential
     writers into one record. (Interprocess contention is exercised by the
-    two-process update_platform_record probe; here the writers are
-    sequential.)"""
+    two-process update_record probe; here the writers are sequential.)"""
     import os
 
-    from prime_rl.monitors.prime import update_platform_record
     from prime_rl.utils.pathing import get_platform_run_path
-    from prime_rl.utils.record import record_lock
+    from prime_rl.utils.record import read_record, record_lock, update_record
 
     lock_path = get_platform_run_path(tmp_path).with_suffix(".json.lock")
     inodes = []
@@ -232,11 +230,11 @@ def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
     assert len(set(inodes)) == 1
 
     # Two sequential locked updates merge instead of clobbering.
-    update_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
-    update_platform_record(tmp_path, {"evaluations": {"rev": {"step": 5, "id": "ev-1", "url": "https://x/ev-1"}}})
-    from prime_rl.monitors.prime import read_platform_record
+    path = get_platform_run_path(tmp_path)
+    update_record(path, lambda record: {**record, "kind": "train", "id": "run-1", "url": "https://x/run-1"})
+    update_record(path, lambda record: {**record, "evaluations": {"rev": {"step": 5, "id": "ev-1"}}})
 
-    record = read_platform_record(tmp_path)
+    record = read_record(path)
     assert record["kind"] == "train"
     assert record["id"] == "run-1"
     assert record["evaluations"]["rev"]["id"] == "ev-1"
@@ -252,13 +250,13 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
     import prime_rl.monitors.prime as prime_module
 
     seen_threads = []
-    real_merge = prime_module._merge_platform_record
+    real_update = prime_module.update_record
 
-    def spy(output_dir, merge):
+    def spy(path, merge):
         seen_threads.append(threading.get_ident())
-        return real_merge(output_dir, merge)
+        return real_update(path, merge)
 
-    monkeypatch.setattr(prime_module, "_merge_platform_record", spy)
+    monkeypatch.setattr(prime_module, "update_record", spy)
 
     config = _sft_config({"monitors": {"prime": {}}})
     asyncio.run(PrimeMonitor(config.monitors.prime).init(config=config, output_dir=tmp_path))
@@ -275,9 +273,10 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
     src = Path(prime_rl.__path__[0], "monitors", "prime.py").read_text()
     assert len(re.findall(r"asyncio\.to_thread\(\s*self\._record", src)) == 2
 
-    from prime_rl.monitors.prime import read_platform_record
+    from prime_rl.utils.pathing import get_platform_run_path
+    from prime_rl.utils.record import read_record
 
-    record = read_platform_record(tmp_path)
+    record = read_record(get_platform_run_path(tmp_path))
     assert record["kind"] == "train"
     assert record["id"] == "run-123"
 
@@ -309,13 +308,14 @@ def test_platform_record_persistence_is_best_effort(tmp_path, monkeypatch):
     skipped with a warning, and no record is left behind."""
     import errno
 
-    import prime_rl.monitors.prime as prime_module
     import prime_rl.utils.record as record_module
+    from prime_rl.utils.pathing import get_platform_run_path
 
     def enolck(fd, op):
         raise OSError(errno.ENOLCK, "No locks available")
 
     monkeypatch.setattr(record_module.fcntl, "flock", enolck)
+    path = get_platform_run_path(tmp_path)
     # Must not raise: the platform record is best-effort.
-    prime_module.update_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
-    assert prime_module.read_platform_record(tmp_path) is None
+    record_module.update_record(path, lambda _: {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
+    assert record_module.read_record(path) is None

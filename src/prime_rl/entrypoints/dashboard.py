@@ -26,11 +26,13 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from prime_rl.utils.links import PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import CACHE_DIR
+
+if TYPE_CHECKING:
+    from prime_rl.configs.monitors import MonitorsConfig
 
 STATE_DIR = CACHE_DIR / "dashboard"
 DAEMON_FILE = STATE_DIR / "daemon.json"
@@ -118,7 +120,7 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     return None
 
 
-LINK_NAMES = {PRIME_LINKS: "Prime", WANDB_LINKS: "W&B"}
+LINK_NAMES = {"prime": "Prime", "wandb": "W&B"}
 
 
 def log_run_links(dashboard_url: str | None, links: Callable[[], dict[str, dict[str, str]]] | None = None) -> None:
@@ -145,21 +147,19 @@ def log_run_links(dashboard_url: str | None, links: Callable[[], dict[str, dict[
 
 
 def run_links(
-    run_dir: Path, attempt_log_dir: Path, monitors: dict[str, object | None], stop: Callable[[], bool]
+    run_dir: Path, attempt_log_dir: Path, monitors: "MonitorsConfig", stop: Callable[[], bool]
 ) -> Callable[[], dict[str, dict[str, str]]] | None:
-    """The ``links`` argument of ``log_run_links``: waits for every configured monitor
-    in ``monitors`` (links-record key -> its config, None when off) that can open a
-    page. A monitor turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline
+    """The ``links`` argument of ``log_run_links``: waits for every monitor in
+    ``monitors`` that is on and can open a page, keyed by its config field. A monitor turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline
     or disabled ``$WANDB_MODE``) opens none; one without credentials fails its
     component, which ends the wait through ``stop``."""
     from prime_rl.utils.links import wait_for_links
 
-    def opens_pages(key: str) -> bool:
-        if key == WANDB_LINKS:
-            return os.environ.get("WANDB_MODE") not in ("offline", "disabled")
-        return os.environ.get("PRIME_RUNS_MODE", "online") == "online"
-
-    waited = [key for key, config in monitors.items() if config is not None and opens_pages(key)]
+    opens_pages = {
+        "prime": monitors.prime is not None and (os.environ.get("PRIME_RUNS_MODE") or "online") == "online",
+        "wandb": monitors.wandb is not None and os.environ.get("WANDB_MODE") not in ("offline", "disabled"),
+    }
+    waited = [key for key, opens in opens_pages.items() if opens]
     if not waited:
         return None
     return functools.partial(wait_for_links, run_dir, attempt_log_dir, waited, stop)
