@@ -5,9 +5,8 @@ from typing import Callable
 
 import pytest
 
-from tests.regression.distributed.sft.archs import CASES
-from tests.regression.distributed.sft.cases import (
-    Case,
+from tests.regression.distributed.sft.archs import CASES, Case
+from tests.regression.distributed.sft.harness import (
     assert_training_rows,
     completed_step,
     failure_report,
