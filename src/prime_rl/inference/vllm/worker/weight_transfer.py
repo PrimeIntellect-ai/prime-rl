@@ -5,23 +5,42 @@ from torch.nn import Module
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
 
-def check_weight_update_supported(quant_config) -> None:
-    """Refuse weight updates into an engine serving a pre-quantized FP8 checkpoint.
+FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e4m3fnuz)
 
-    The trainer sends bf16 weights without block scales, and vLLM would copy them
-    into the fp8 params as-is, silently corrupting every quantized layer.
-    """
-    from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
-    if isinstance(quant_config, Fp8Config):
+def check_fp8_source(name: str, param_dtype: torch.dtype, source_dtype: torch.dtype) -> None:
+    """A pre-quantized (fp8) param only takes fp8 checkpoint tensors. Loading a bf16/fp32 tensor would cast
+    it into the fp8 param without its scale, which silently corrupts the layer."""
+    if param_dtype in FP8_DTYPES and source_dtype not in FP8_DTYPES:
         raise ValueError(
-            "Weight updates are not supported for a pre-quantized FP8 checkpoint: the trainer sends bf16 "
-            'weights. Serve the BF16 checkpoint with `quantization = "fp8_per_block"` instead.'
+            f"Cannot load a {source_dtype} tensor into the fp8 param {name} of a pre-quantized checkpoint. "
+            'The trainer sends bf16 weights: serve the BF16 checkpoint with `quantization = "fp8_per_block"`.'
         )
+
+
+def _guard_fp8_params(model: Module) -> None:
+    """Wrap the loaders of the fp8 params of pre-quantized layers with ``check_fp8_source``. The wrapper keeps the
+    layerwise loader's name and ``__wrapped__`` so vLLM's reload unwraps it like its own."""
+    for module_name, module in model.named_modules():
+        for param_name, param in module.named_parameters(recurse=False):
+            if param.dtype not in FP8_DTYPES:
+                continue
+            loader = getattr(param, "weight_loader", default_weight_loader)
+            name = f"{module_name}.{param_name}"
+
+            def guarded(*args, loader=loader, name=name, param_dtype=param.dtype, **kwargs):
+                source = kwargs["loaded_weight"] if "loaded_weight" in kwargs else args[1]
+                check_fp8_source(name, param_dtype, source.dtype)
+                return loader(*args, **kwargs)
+
+            guarded.__name__ = loader.__name__
+            guarded.__wrapped__ = loader
+            param.weight_loader = guarded
 
 
 def load_weights_checkpoint_layerwise(
@@ -30,11 +49,11 @@ def load_weights_checkpoint_layerwise(
     model_config,
     vllm_config,
 ) -> None:
-    check_weight_update_supported(vllm_config.quant_config)
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
+        _guard_fp8_params(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
 

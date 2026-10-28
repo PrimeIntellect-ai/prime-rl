@@ -1,10 +1,11 @@
 import pytest
-from vllm.model_executor.layers.quantization.fp8 import Fp8Config
+import torch
 
-from prime_rl.inference.vllm.worker.weight_transfer import check_weight_update_supported
+from prime_rl.inference.vllm.worker.weight_transfer import check_fp8_source
 
 
-def test_weight_updates_refuse_fp8_checkpoints():
-    check_weight_update_supported(None)
+def test_fp8_params_only_take_fp8_tensors():
+    check_fp8_source("w", torch.float8_e4m3fn, torch.float8_e4m3fn)
+    check_fp8_source("w", torch.bfloat16, torch.bfloat16)
     with pytest.raises(ValueError, match="fp8_per_block"):
-        check_weight_update_supported(Fp8Config(weight_block_size=[128, 128]))
+        check_fp8_source("w", torch.float8_e4m3fn, torch.bfloat16)
