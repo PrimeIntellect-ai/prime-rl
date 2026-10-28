@@ -20,3 +20,4 @@ Notes:
 - The MoE config declares `[deployment]` with `num_train_gpus = 8`; keep its `ep` in sync with the GPU count.
 - `micro_batch_size = 1` is required for VLM SFT — do not raise it.
 - Checkpoints land in `<run_dir>/checkpoints/step_<N>`; export HF-format weights with `tools/convert_dcp_to_bf16.py` (see [Training](../../../docs/training.md)).
+- With `[model.lora]`, the final PEFT adapter is written to `<run_dir>/adapter`. `tools/convert_dcp_to_bf16.py` does not support LoRA checkpoints.

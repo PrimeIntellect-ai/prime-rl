@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -66,8 +67,11 @@ def sft_lora_resume_process(
     wandb_project: str,
     wandb_name: str,
     output_dir: Path,
+    run_dir: Path,
 ) -> ProcessResult:
     """Fixture for resuming SFT LoRA CI integration test"""
+    # Remove the first run's adapter so the resume checks only pass if resume exports its own.
+    shutil.rmtree(run_dir / "adapter")
     wandb_name += "-resume"
     cmd = [
         "uv",
