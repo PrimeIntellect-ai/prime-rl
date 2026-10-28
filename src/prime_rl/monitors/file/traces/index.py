@@ -51,6 +51,9 @@ def terminal_errors(rec: dict) -> list[dict]:
     is terminal only when its owning trace or episode did not finish successfully.
     The last error describes that terminal failure; ``error_count`` retains the
     full error-history size without copying tracebacks or task/runtime payloads.
+    When a trace is terminal, episode errors may be retry history from an earlier
+    attempt, so only the trace failure is projected; the record has no marker that
+    can reliably distinguish a simultaneous terminal episode error from that history.
     """
 
     def projection(source: dict, *, trace: dict | None = None) -> dict:
@@ -61,6 +64,7 @@ def terminal_errors(rec: dict) -> list[dict]:
         return {
             "run": (rec.get("run") or {}).get("id"),
             "group": (rec.get("group") or {}).get("id"),
+            "episode": rec.get("id"),
             "trace": (trace or {}).get("id"),
             "task": task.get("key"),
             "stop_condition": source.get("stop_condition"),
@@ -76,7 +80,7 @@ def terminal_errors(rec: dict) -> list[dict]:
         for trace in rec.get("traces") or []
         if not trace.get("ok") and trace.get("errors")
     ]
-    if not rec.get("ok") and rec.get("errors"):
+    if not rec.get("ok") and rec.get("errors") and not errors:
         errors.append(projection(rec))
     return errors
 
@@ -147,7 +151,10 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "env": (rec.get("env") or {}).get("name") or (rec.get("env") or {}).get("id"),
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
-        "num_errors": len(rec.get("errors") or []),
+        # All retained error history, including trace-only retries. Consumers use
+        # this to label successful episodes as recovered and failed ones as errored.
+        "num_errors": len(rec.get("errors") or [])
+        + sum(len(trace.get("errors") or []) for trace in rec.get("traces") or []),
         "terminal_errors": terminal_errors(rec),
         "reward": sum(rewards) / len(rewards) if rewards else None,
         "advantage": sum(advantages) / len(advantages) if advantages else None,

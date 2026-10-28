@@ -8,6 +8,7 @@ down training.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -43,6 +44,9 @@ __all__ = [
 
 # All monitors registered for the current run.
 MONITORS: list[Monitor] = []
+# Episode writes serialize records in worker threads. Keep their stream appends and
+# index numbers ordered even when the dispatcher and orchestrator land concurrently.
+_EPISODE_LOG_LOCK = asyncio.Lock()
 
 
 async def setup(
@@ -141,11 +145,18 @@ async def log(
 ) -> None:
     """Log to all registered monitors: a dict of scalar metrics, or episodes
     with their cohort coordinates (train/eval x all/effective)."""
-    for monitor in MONITORS:
-        try:
-            await monitor.log(data, step=step, kind=kind, subset=subset)
-        except Exception as e:
-            _log_monitor_exception(monitor, "log", e)
+    episode_log = not isinstance(data, dict)
+    if episode_log:
+        await _EPISODE_LOG_LOCK.acquire()
+    try:
+        for monitor in MONITORS:
+            try:
+                await monitor.log(data, step=step, kind=kind, subset=subset)
+            except Exception as e:
+                _log_monitor_exception(monitor, "log", e)
+    finally:
+        if episode_log:
+            _EPISODE_LOG_LOCK.release()
 
 
 async def log_annotations(updates: list[dict[str, Any]]) -> None:

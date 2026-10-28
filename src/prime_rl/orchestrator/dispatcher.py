@@ -646,9 +646,30 @@ class Dispatcher:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            error = vf.Error(
+                type=type(exc).__name__,
+                message=str(exc),
+                status_code=getattr(exc, "status_code", None),
+                traceback="".join(traceback.format_exception(exc)),
+            )
             policy_version = self.complete_group_member(meta, group)
+            episode = vf.WireEpisode(
+                task=vf.TraceTask(
+                    type=type(meta.task).__name__,
+                    data=meta.task.data,
+                    key=meta.task.key,
+                    hash=meta.task.hash,
+                ),
+                ok=False,
+                errors=[vf.Error(type=error.type, message=error.message, status_code=error.status_code)],
+            )
+            self.stamp_episode(meta, policy_version, episode)
+            get_logger().warning(
+                f"Environment request failed in episode {episode.id} (group {meta.group_id}, {meta.env_name}): {exc!r}"
+            )
+            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            # Preserve the internal accounting event: the monitor-only episode must
+            # not enter either sink or count as a second dispatched result.
             await self.out_q.put(
                 DispatchFailure(
                     kind=meta.kind,
@@ -659,13 +680,11 @@ class Dispatcher:
                     task_type=type(meta.task).__name__,
                     task_key=meta.task.key,
                     task_hash=meta.task.hash,
-                    error=vf.Error(
-                        type=type(exc).__name__,
-                        message=str(exc),
-                        traceback="".join(traceback.format_exception(exc)),
-                    ),
+                    error=error,
                 )
             )
+            step = meta.step if meta.kind == "eval" or self.progress is None else self.progress.step
+            await monitors.log([episode], step, meta.kind, "all")
             return
 
         for trace in episode.traces:
@@ -679,7 +698,8 @@ class Dispatcher:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if trace.last_error is not None:
                     get_logger().warning(
-                        f"Trace {trace.id} failed in group {meta.group_id} ({meta.env_name}) — "
+                        f"Trace {trace.id} failed in episode {episode.id} "
+                        f"(group {meta.group_id}, {meta.env_name}) — "
                         f"{trace.last_error.type}: {trace.last_error.message}"
                     )
         if not episode.ok:
@@ -704,16 +724,9 @@ class Dispatcher:
                 self.groups.pop(meta.group_id, None)
         return policy_version
 
-    async def emit_episode(
-        self,
-        meta: InflightEpisode,
-        group: GroupState | None,
-        episode: vf.WireEpisode,
-    ) -> None:
-        """Stamp one completed episode with its dispatch provenance and emit it."""
+    def stamp_episode(self, meta: InflightEpisode, policy_version: int, episode: vf.WireEpisode) -> None:
+        """Stamp dispatch provenance without changing group or sink accounting."""
         _validate_episode_task(episode, meta.task)
-        policy_version = self.complete_group_member(meta, group)
-
         episode.env.name = meta.env_name
         episode.group = vf.GroupInfo(id=str(meta.group_id))
         live_policy = meta.kind == "eval"
@@ -726,8 +739,17 @@ class Dispatcher:
             if meta.kind == "eval"
             else vf.TrainWorkInfo(step=meta.step, policy=policy)
         )
-        run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
-        episode.record_run(run)
+        episode.record_run(vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work))
+
+    async def emit_episode(
+        self,
+        meta: InflightEpisode,
+        group: GroupState | None,
+        episode: vf.WireEpisode,
+    ) -> None:
+        """Stamp one completed episode with its dispatch provenance and emit it."""
+        policy_version = self.complete_group_member(meta, group)
+        self.stamp_episode(meta, policy_version, episode)
         await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
