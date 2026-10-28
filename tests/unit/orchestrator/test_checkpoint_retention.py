@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import verifiers.v1 as vf
 
+from prime_rl.configs.shared import ResumeConfig
 from prime_rl.orchestrator.ckpt import (
     CheckpointRetention,
     eval_epoch_score,
@@ -25,6 +26,7 @@ from prime_rl.utils.pathing import (
     preflight_checkpoint_storage,
     prune_joint_ckpts,
     require_joint_resume_step,
+    resolve_joint_resume_step,
     start_checkpoint_generation,
 )
 
@@ -57,11 +59,27 @@ def test_joint_discovery_and_resume_skip_partial_and_directory_only(tmp_path):
 
     assert get_joint_ckpt_steps(ckpt_dir) == [60]
     assert require_joint_resume_step(ckpt_dir) == 60
+    assert resolve_joint_resume_step(ckpt_dir, ResumeConfig.model_validate({})) == 60
     assert require_joint_resume_step(ckpt_dir, 60) == 60
     with pytest.raises(FileNotFoundError, match="not jointly complete"):
         require_joint_resume_step(ckpt_dir, 40)
     with pytest.raises(FileNotFoundError, match="No jointly complete"):
         require_joint_resume_step(tmp_path / "empty")
+
+
+def test_hosted_empty_resume_starts_fresh_only_in_empty_checkpoint_dir(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    resume = ResumeConfig.model_validate({})
+
+    assert resolve_joint_resume_step(ckpt_dir, resume) is None
+    ckpt_dir.mkdir()
+    assert resolve_joint_resume_step(ckpt_dir, resume) is None
+
+    get_step_path(ckpt_dir, 1).mkdir()
+    with pytest.raises(FileNotFoundError, match="No jointly complete"):
+        resolve_joint_resume_step(ckpt_dir, resume)
+    with pytest.raises(FileNotFoundError, match="not jointly complete"):
+        resolve_joint_resume_step(ckpt_dir, ResumeConfig(step=1))
 
 
 def test_pruning_keeps_latest_best_pending_and_partial(tmp_path):
@@ -294,6 +312,7 @@ def test_external_resume_source_is_never_mutated(tmp_path):
 
     assert require_joint_resume_step(external, 60) == 60
     current = tmp_path / "current" / "checkpoints"
+    assert resolve_joint_resume_step(current, ResumeConfig(dir=external / "step_60")) == 60
     start_checkpoint_generation(current, generation="gen-b", resume_step=60)
     for step in (80, 100):
         _joint(current, step, generation="gen-b")
@@ -442,6 +461,7 @@ def test_legacy_resume_is_explicit_and_validates_both_components(tmp_path):
     with pytest.raises(ValueError, match="explicit checkpoint step"):
         require_joint_resume_step(ckpt_dir, allow_legacy=True)
     assert require_joint_resume_step(ckpt_dir, 40, allow_legacy=True) == 40
+    assert resolve_joint_resume_step(ckpt_dir, ResumeConfig(step=40, legacy=True)) == 40
 
     (ckpt_dir / "step_40" / "manifest.json").write_text(json.dumps({"complete": True, "step": 40}))
     assert require_joint_resume_step(ckpt_dir, 40, allow_legacy=True) == 40

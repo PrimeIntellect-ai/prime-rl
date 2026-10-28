@@ -1095,6 +1095,35 @@ def test_run_dir_propagates_through_cli(tmp_path):
     assert config.orchestrator.monitors.wandb is not None and config.orchestrator.monitors.wandb.name == "my-exp"
 
 
+def test_hosted_empty_resume_dry_run_writes_fresh_component_configs(tmp_path):
+    import json
+
+    from prime_rl.entrypoints.rl import rl
+
+    config = RLConfig.model_validate(
+        {
+            "output_dir": tmp_path,
+            "run": {"name": "hosted-fresh"},
+            "resume": {},
+            "ckpt": {"interval": 1},
+            "dry_run": True,
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    (config.run_dir / "checkpoints").mkdir(parents=True)
+
+    rl(config)
+
+    assert config.resume is None
+    assert config.trainer.resume is None
+    assert config.orchestrator.resume is None
+    resolved_dir = config.run_dir / "configs" / "attempt_1" / "resolved"
+    for component in ("trainer", "orchestrator"):
+        resolved = json.loads((resolved_dir / f"{component}.json").read_text())
+        assert resolved["resume"] is None
+
+
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
     """Default ``renderer`` (AutoRendererConfig) must reject models not in MODEL_RENDERER_MAP."""
     with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):

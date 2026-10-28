@@ -82,7 +82,7 @@ from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import require_joint_resume_step, write_resolved_config
+from prime_rl.utils.pathing import resolve_joint_resume_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -142,14 +142,7 @@ def train(config: TrainerConfig):
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume, joint=True)
 
     if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = require_joint_resume_step(
-                config.resume.dir.parent, config.resume.dir_step, allow_legacy=config.resume.legacy
-            )
-        else:
-            checkpoint_step = require_joint_resume_step(
-                ckpt_manager.ckpt_dir, config.resume.step, allow_legacy=config.resume.legacy
-            )
+        checkpoint_step = resolve_joint_resume_step(ckpt_manager.ckpt_dir, config.resume)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

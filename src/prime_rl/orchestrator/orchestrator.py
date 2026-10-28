@@ -90,7 +90,7 @@ from prime_rl.utils.pathing import (
     get_joint_manifest_path,
     get_resume_ckpt_steps,
     is_joint_ckpt_step,
-    require_joint_resume_step,
+    resolve_joint_resume_step,
     write_resolved_config,
 )
 from prime_rl.utils.utils import clean_exit
@@ -257,14 +257,7 @@ class Orchestrator:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
 
         if config.resume is not None:
-            if config.resume.dir is not None:
-                self.resume_step = require_joint_resume_step(
-                    config.resume.dir.parent, config.resume.dir_step, allow_legacy=config.resume.legacy
-                )
-            else:
-                self.resume_step = require_joint_resume_step(
-                    self.ckpt_manager.ckpt_dir, config.resume.step, allow_legacy=config.resume.legacy
-                )
+            self.resume_step = resolve_joint_resume_step(self.ckpt_manager.ckpt_dir, config.resume)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name

@@ -14,7 +14,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import LogConfig, ResumeConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
@@ -519,6 +519,15 @@ def require_joint_resume_step(ckpt_dir: Path, step: int | None = None, *, allow_
     latest = steps[-1]
     get_logger().info(f"Found latest jointly complete checkpoint in {ckpt_dir}: {latest}")
     return latest
+
+
+def resolve_joint_resume_step(ckpt_dir: Path, resume: ResumeConfig) -> int | None:
+    """Resolve a resume, treating only an empty automatic resume of an empty directory as a fresh start."""
+    if resume.dir is not None:
+        return require_joint_resume_step(resume.dir.parent, resume.dir_step, allow_legacy=resume.legacy)
+    if resume.step is None and not resume.legacy and (not ckpt_dir.exists() or not any(ckpt_dir.iterdir())):
+        return None
+    return require_joint_resume_step(ckpt_dir, resume.step, allow_legacy=resume.legacy)
 
 
 def get_protected_ckpt_steps(ckpt_dir: Path) -> set[int]:

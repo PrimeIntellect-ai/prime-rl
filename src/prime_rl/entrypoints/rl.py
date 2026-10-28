@@ -23,7 +23,7 @@ from prime_rl.utils.pathing import (
     launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
-    require_joint_resume_step,
+    resolve_joint_resume_step,
     start_checkpoint_generation,
     write_env_server_config,
     write_launch_artifacts,
@@ -491,14 +491,11 @@ def rl(config: RLConfig):
     resume_step: int | None = None
     ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
     if config.resume is not None:
-        if config.resume.dir is not None:
-            resume_step = require_joint_resume_step(
-                config.resume.dir.parent, config.resume.dir_step, allow_legacy=config.resume.legacy
-            )
-        else:
-            resume_step = require_joint_resume_step(
-                get_ckpt_dir(ckpt_base), config.resume.step, allow_legacy=config.resume.legacy
-            )
+        resume_step = resolve_joint_resume_step(get_ckpt_dir(ckpt_base), config.resume)
+        if resume_step is None:
+            config.resume = None
+            config.trainer.resume = None
+            config.orchestrator.resume = None
     if config.ckpt is not None or config.resume is not None:
         start_checkpoint_generation(
             get_ckpt_dir(ckpt_base), generation=os.environ["PRL_RUN_ID"], resume_step=resume_step
