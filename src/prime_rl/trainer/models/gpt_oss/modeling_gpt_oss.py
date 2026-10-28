@@ -85,11 +85,6 @@ class GptOssDecoderLayer(nn.Module):
 class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     config: GptOssConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["GptOssDecoderLayer"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_attention_backend = True
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 
     @classmethod
@@ -160,8 +155,6 @@ class GptOssModel(GptOssPreTrainedModel):
 
 class GptOssForCausalLM(GptOssPreTrainedModel):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: GptOssConfig) -> None:
         super().__init__(config)

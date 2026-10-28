@@ -115,8 +115,6 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_8FlashNextConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["Qwen3_8FlashNextDecoderLayer"]
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -327,9 +325,6 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
 
 
 class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
     def __init__(self, config: Qwen3_8FlashNextConfig) -> None:
         super().__init__(config)
         self.is_vlm = hasattr(config, "vision_config")
