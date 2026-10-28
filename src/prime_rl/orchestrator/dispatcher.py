@@ -819,7 +819,9 @@ class Dispatcher:
                 breaker = self.breakers.get(env.name) if kind == "train" else None
                 if result is True:
                     if replica in env.down:
-                        get_logger().info(f"Env server of {kind} env {env.name} at {address} answers health checks again")
+                        get_logger().info(
+                            f"Env server of {kind} env {env.name} at {address} answers health checks again"
+                        )
                         env.down.discard(replica)
                     misses[key] = 0
                     if breaker is not None:
