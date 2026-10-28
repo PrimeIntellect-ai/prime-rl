@@ -19,7 +19,8 @@ class OffloadActivations(saved_tensors_hooks):
     to CPU run. In the backward pass, the next ``max_inflight`` activations are copied back
     ahead of use. Copies are ordered against the stream that saves or unpacks a tensor, which is
     not always the compute stream: autograd runs a backward node on the stream of its forward op.
-    GPU memory is always allocated on the compute stream.
+    Prefetched GPU memory is allocated on the compute stream. A saved tensor can come from any
+    stream, so a repeated save and every unpack record the current stream on it.
 
     Tensors that share storage with a parameter of ``model`` stay on the GPU. A compiled block saves
     the local tensors of unsharded DTensor parameters (e.g. EP experts), and FSDP frees and refills
@@ -69,6 +70,7 @@ class OffloadActivations(saved_tensors_hooks):
             key = (tensor.untyped_storage()._cdata, tensor.storage_offset(), tensor.numel(), tensor.dtype)
             match = self.copies.get(key)
             if match is not None and not match[0].expired() and match[1] in self.refs:
+                tensor.record_stream(torch.cuda.current_stream())
                 self.refs[match[1]] += 1
                 self.aliases[tensor_id] = (match[1], tensor.shape)
                 return tensor_id
@@ -123,8 +125,7 @@ class OffloadActivations(saved_tensors_hooks):
 
         stream = torch.cuda.current_stream()
         stream.wait_event(event)
-        if stream != self.compute_stream:
-            tensor.record_stream(stream)
+        tensor.record_stream(stream)
         return tensor if shape is None else tensor.view(shape)
 
     def prefetch(self, tensor_id: int) -> None:
