@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors import SafetensorError
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
@@ -207,17 +206,97 @@ def test_invalid_latest_fails_closed_and_dcp_remains_retryable(fake_run: tuple[P
     assert os.readlink(exports / "latest") == "step_40"
 
 
-def test_failed_rerun_invalidates_stale_complete_marker(fake_run: tuple[Path, LlamaForCausalLM]):
+def test_early_rerun_failure_preserves_previous_complete(
+    fake_run: tuple[Path, LlamaForCausalLM], monkeypatch: pytest.MonkeyPatch
+):
     run_dir, model = fake_run
     _write_dcp(run_dir, 20, model)
     assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
     exports = run_dir / "exports"
-    shard = next((exports / "step_20").glob("*.safetensors"))
-    shard.write_bytes(shard.read_bytes() + b"corruption")
+    previous_complete = (exports / "COMPLETE.json").read_bytes()
+    _write_dcp(run_dir, 40, model)
+    conversion_attempts = []
 
-    with pytest.raises((RuntimeError, SafetensorError)):
+    def transient_conversion_failure(**kwargs):
+        conversion_attempts.append(kwargs["step"])
+        raise RuntimeError("transient conversion failure")
+
+    monkeypatch.setattr(hf_export, "_convert_checkpoint", transient_conversion_failure)
+
+    with pytest.raises(RuntimeError, match="transient conversion failure"):
+        export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=40)
+
+    assert conversion_attempts == [40]
+    assert (exports / "COMPLETE.json").read_bytes() == previous_complete
+    assert os.readlink(exports / "best") == "step_20"
+    assert os.readlink(exports / "latest") == "step_20"
+
+
+def test_preflight_failure_preserves_complete_and_counts_only_missing_unique_exports(
+    fake_run: tuple[Path, LlamaForCausalLM], monkeypatch: pytest.MonkeyPatch
+):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
+    exports = run_dir / "exports"
+    previous_complete = (exports / "COMPLETE.json").read_bytes()
+    for step in (40, 60):
+        _write_dcp(run_dir, step, model)
+    source_sizes = {
+        step: sum(
+            path.stat().st_size for path in (run_dir / "checkpoints" / f"step_{step}").rglob("*") if path.is_file()
+        )
+        for step in (20, 40, 60)
+    }
+    preflight_calls = []
+
+    def fail_preflight(path, *, required_bytes):
+        preflight_calls.append((path, required_bytes))
+        raise OSError("insufficient export staging space")
+
+    def unexpected_conversion(**kwargs):
+        raise AssertionError("conversion ran after a failed storage preflight")
+
+    monkeypatch.setattr(hf_export, "preflight_checkpoint_storage", fail_preflight)
+    monkeypatch.setattr(hf_export, "_convert_checkpoint", unexpected_conversion)
+
+    cases = [
+        (20, 40, source_sizes[40]),  # existing immutable step 20 needs no staging
+        (40, 60, source_sizes[40] + source_sizes[60]),
+        (40, 40, source_sizes[40]),  # equal BEST/LATEST is one unique export
+    ]
+    for best_step, latest_step, expected_bytes in cases:
+        with pytest.raises(OSError, match="insufficient export staging space"):
+            export_best_and_latest(output_dir=run_dir, best_step=best_step, latest_step=latest_step)
+        assert (exports / "COMPLETE.json").read_bytes() == previous_complete
+        assert os.readlink(exports / "best") == "step_20"
+        assert os.readlink(exports / "latest") == "step_20"
+
+    assert preflight_calls == [(exports, expected_bytes) for _, _, expected_bytes in cases]
+
+
+def test_pointer_phase_failure_removes_previous_complete(
+    fake_run: tuple[Path, LlamaForCausalLM], monkeypatch: pytest.MonkeyPatch
+):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
+    exports = run_dir / "exports"
+    atomic_symlink = hf_export._atomic_symlink
+    pointer_attempts = []
+
+    def fail_second_pointer(target, pointer, parent):
+        pointer_attempts.append(pointer.name)
+        if pointer.name == "latest":
+            raise OSError("pointer write failed")
+        atomic_symlink(target, pointer, parent)
+
+    monkeypatch.setattr(hf_export, "_atomic_symlink", fail_second_pointer)
+
+    with pytest.raises(OSError, match="pointer write failed"):
         export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20)
 
+    assert pointer_attempts == ["best", "latest"]
     assert not (exports / "COMPLETE.json").exists()
 
 

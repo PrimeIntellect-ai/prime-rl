@@ -82,7 +82,6 @@ from prime_rl.utils.pathing import (
     get_config_dir,
     get_joint_manifest_path,
     is_joint_ckpt_step,
-    preflight_checkpoint_storage,
     require_joint_resume_step,
     write_resolved_config,
 )
@@ -519,14 +518,6 @@ class Orchestrator:
             raise RuntimeError(f"BEST checkpoint step {best_step} is not jointly complete")
         from prime_rl.orchestrator.hf_export import export_best_and_latest
 
-        export_dir = self.config.output_dir / "exports"
-        required_bytes = 0
-        for step in dict.fromkeys((best_step, latest_step)):
-            if step is None or (export_dir / f"step_{step}").exists():
-                continue
-            source = self.ckpt_manager.ckpt_dir / f"step_{step}"
-            required_bytes += sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
-        preflight_checkpoint_storage(export_dir, required_bytes=required_bytes)
         valid = await asyncio.to_thread(
             export_best_and_latest,
             output_dir=self.config.output_dir,

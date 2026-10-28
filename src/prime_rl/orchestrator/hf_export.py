@@ -24,7 +24,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
-from prime_rl.utils.pathing import get_config_dir
+from prime_rl.utils.pathing import get_config_dir, preflight_checkpoint_storage
 
 _EXPORT_MANIFEST = "EXPORT.json"
 _COMPLETE = "COMPLETE.json"
@@ -38,8 +38,8 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
 
     DCP input is read from ``output_dir/checkpoints/step_N/trainer``.  Valid HF
     artifacts are published under ``output_dir/exports``.  ``best_step=None``
-    requests only LATEST.  Any prior COMPLETE marker is invalidated before
-    work starts; conversion and validation errors raise before pointer updates.
+    requests only LATEST.  Any prior COMPLETE marker is preserved through
+    conversion and validation, then invalidated immediately before pointer updates.
     """
     output_dir = Path(output_dir)
     steps = [latest_step] if best_step is None else [best_step, latest_step]
@@ -48,14 +48,18 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
 
     export_dir = output_dir / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
-    # A failed rerun must not leave an old success marker for invalid artifacts.
-    (export_dir / _COMPLETE).unlink(missing_ok=True)
+    checkpoints_dir = output_dir / "checkpoints"
+    required_bytes = 0
+    for step in dict.fromkeys(steps):
+        if (export_dir / f"step_{step}").exists():
+            continue
+        source = checkpoints_dir / f"step_{step}"
+        required_bytes += sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+    preflight_checkpoint_storage(export_dir, required_bytes=required_bytes)
 
     model_config, tokenizer_config, config_path, config_sha256 = _resolve_run_config(output_dir)
     if model_config.lora is not None:
         raise ValueError("LoRA checkpoints cannot be exported as full HF models")
-
-    checkpoints_dir = output_dir / "checkpoints"
 
     # Do not publish either pointer until every requested conversion has passed.
     manifests: dict[int, dict[str, Any]] = {}
@@ -71,6 +75,9 @@ def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_st
             provenance=provenance,
         )
 
+    # Preserve the prior committed pair until all replacements are valid. From
+    # this point onward, a failure must leave no marker for a partially swapped pair.
+    (export_dir / _COMPLETE).unlink(missing_ok=True)
     if best_step is not None:
         _atomic_symlink(f"step_{best_step}", export_dir / "best", export_dir)
     _atomic_symlink(f"step_{latest_step}", export_dir / "latest", export_dir)
