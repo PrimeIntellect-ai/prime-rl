@@ -7,21 +7,28 @@ from pathlib import Path
 
 from verifiers.v1 import pool_serve_kwargs
 from verifiers.v1.runtimes import set_base_sandbox_labels, set_default_sandbox_lifetime
-from verifiers.v1.serve import env_config_data, serve_env
+from verifiers.v1.serve import env_config_data, serve_env, set_episode_hook
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import setup_env_server_logging
+from prime_rl.transports.payload import PayloadHook
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 
 
 def setup_worker(
-    log_level: str | None, json_logging: bool, sandbox_labels: list[str], sandbox_lifetime: float | None
+    log_level: str | None,
+    json_logging: bool,
+    sandbox_labels: list[str],
+    sandbox_lifetime: float | None,
+    bind_address: str | None,
 ) -> None:
     setup_env_server_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
     set_default_sandbox_lifetime(sandbox_lifetime)
+    # Episode streams never carry training arrays; the hook keeps them for the trainer.
+    set_episode_hook(PayloadHook(bind_address))
 
 
 def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
@@ -49,7 +56,12 @@ def run_server(config: EnvServerConfig):
         address=config.serve.address or "tcp://127.0.0.1:0",
         address_queue=addresses,
         log_setup=partial(
-            setup_worker, config.log.level, config.log.json_logging, sandbox_labels, config.sandbox_lifetime
+            setup_worker,
+            config.log.level,
+            config.log.json_logging,
+            sandbox_labels,
+            config.sandbox_lifetime,
+            config.serve.address,
         ),
         config_data=env_config_data(config.env),
         max_concurrent=config.serve.max_concurrent,

@@ -293,7 +293,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         else {}
     )
 
-    # Env servers launch next to the orchestrator, one per launcher-managed train/eval source.
+    # Env servers launch on every inference node, one replica per launcher-managed train/eval source.
     train_env_names = env_server_names(config, "train")
     eval_env_names = env_server_names(config, "eval")
 
