@@ -7,6 +7,7 @@ from prime_rl.transports.batch.filesystem import (
     FileSystemBatchSender,
 )
 from prime_rl.transports.batch.journal import BatchJournal
+from prime_rl.transports.batch.recovery import TrainerGroup
 from prime_rl.transports.batch.types import (
     MicroBatch,
     MMImageRef,
@@ -36,12 +37,20 @@ def setup_batch_sender(
 
 
 def setup_batch_receiver(
-    output_dir: Path, data_rank: int, rank: int, world_size: int, current_step: int, transport: TransportConfig
+    output_dir: Path,
+    data_rank: int,
+    rank: int,
+    world_size: int,
+    current_step: int,
+    transport: TransportConfig,
+    trainer_group: TrainerGroup | None = None,
 ) -> BatchReceiver:
     if transport.type == "filesystem":
         return FileSystemBatchReceiver(output_dir, data_rank, rank, world_size, current_step)
     elif transport.type == "zmq":
-        return ZMQBatchReceiver(output_dir, data_rank, rank, world_size, current_step, transport)
+        if trainer_group is None:
+            raise ValueError("ZMQ batch transport requires a shared trainer group identity")
+        return ZMQBatchReceiver(output_dir, data_rank, rank, world_size, current_step, transport, trainer_group)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 

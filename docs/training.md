@@ -350,6 +350,12 @@ There is no journal disk-size cap. Without trainer checkpoints, entries accumula
 
 The journal records delivered batches and their checkpoint boundary; it does not automatically replay them or restart the trainer.
 
+With ZMQ, trainer ranks first announce a shared attempt UUID, their rank and data rank, their starting step, and the batch record from the checkpoint they successfully restored. The orchestrator accepts a startup group only after all distinct ranks agree and its starting step matches the pending batch. Requests and responses carry the accepted attempt and step; a different connection cannot impersonate an accepted rank. Orchestrator and trainer must use the same protocol revision.
+
+A replacement group is not automatically accepted. When journaling is enabled, the orchestrator validates a replay plan from the restored checkpoint through the prepared batch awaiting delivery. This requires a matching producer session and checkpoint record, continuous retained batches, matching data-world size, and valid payload hashes. Hash verification runs in a worker thread and streams one file at a time. A replacement cannot change the active trainer world's size.
+
+Successful validation returns `recovery_required` with the ordered batch records; the trainer raises `RecoveryRequired` and logs the replay boundary. Invalid recovery attempts receive a rejection. Neither response delivers the pending live batch or replaces the accepted trainer group. Checkpoints without `batch.json` still support coordinated restart at a matching step, but cannot establish a journal replay plan. Automatic replay, trainer replacement, weight-channel reconnection and policy identity after rollback are separate capabilities.
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:

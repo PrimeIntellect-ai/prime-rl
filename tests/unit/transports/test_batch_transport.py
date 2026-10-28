@@ -3,14 +3,18 @@ import socket
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from uuid import uuid4
 
+import msgspec
 import numpy as np
 import pytest
+import zmq
 
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.filesystem import FileSystemBatchReceiver, FileSystemBatchSender
-from prime_rl.transports.batch.journal import BatchJournal
+from prime_rl.transports.batch.journal import BatchCheckpoint, BatchJournal
+from prime_rl.transports.batch.recovery import RecoveryRequired, TrainerGroup
 from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 
@@ -52,6 +56,7 @@ def _filesystem(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
 def _zmq(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
     transport = ZMQTransportConfig(host="127.0.0.1", port=_free_port())
     sender = ZMQBatchSender(output_dir, data_world_size=2, current_step=0, transport=transport)
+    group = TrainerGroup(uuid4().hex, len(RANK_TO_DATA_RANK), 0)
     receivers = [
         ZMQBatchReceiver(
             output_dir,
@@ -60,6 +65,7 @@ def _zmq(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
             world_size=len(RANK_TO_DATA_RANK),
             current_step=0,
             transport=transport,
+            trainer_group=group,
         )
         for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
     ]
@@ -151,4 +157,52 @@ def test_journal_disk_io_does_not_block_event_loop(tmp_path, setup_transport, mo
         asyncio.run(run())
     finally:
         for transport in [sender, *receivers]:
+            transport.close()
+
+
+def test_replacement_gets_replay_plan_without_receiving_live_batch(tmp_path):
+    sender, receivers = _zmq(tmp_path)
+    sender.journal = BatchJournal(tmp_path)
+    replacements = []
+
+    async def run():
+        await _send_while_ranks_request(sender, receivers)
+        checkpoint_path = tmp_path / "checkpoints" / "step_0" / "trainer"
+        checkpoint_path.mkdir(parents=True)
+        sender.journal.commit_checkpoint(checkpoint_path, 0, f"{sender.journal_session}:0")
+        checkpoint = msgspec.json.decode((checkpoint_path / "batch.json").read_bytes(), type=BatchCheckpoint)
+        await _send_while_ranks_request(sender, receivers)
+        active = sender.handshake.active
+        group = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
+        for rank, data_rank in enumerate(RANK_TO_DATA_RANK):
+            receiver = ZMQBatchReceiver(
+                tmp_path, data_rank, rank, len(receivers), 1, ZMQTransportConfig(host="127.0.0.1", port=port), group
+            )
+            receiver.socket.setsockopt(zmq.RCVTIMEO, 5000)
+            replacements.append(receiver)
+        sending = asyncio.create_task(sender.send(MICRO_BATCH_GRID))
+        try:
+            results = await asyncio.gather(
+                *(asyncio.to_thread(receiver.wait) for receiver in replacements), return_exceptions=True
+            )
+            assert all(isinstance(result, RecoveryRequired) for result in results)
+            expected = [f"{sender.journal_session}:{step}" for step in (1, 2)]
+            assert all([record.batch_id for record in result.plan.batches] == expected for result in results)
+            assert sender.handshake.active == active and not sending.done()
+            # The candidate has not taken over; the accepted group can still request its batch.
+            await asyncio.wait_for(
+                asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in receivers)), 5
+            )
+            for receiver in receivers:
+                assert receiver.receive()[0].journal_batch_id == expected[-1]
+        finally:
+            if not sending.done():
+                sending.cancel()
+                await asyncio.gather(sending, return_exceptions=True)
+
+    try:
+        asyncio.run(run())
+    finally:
+        for transport in [sender, *receivers, *replacements]:
             transport.close()

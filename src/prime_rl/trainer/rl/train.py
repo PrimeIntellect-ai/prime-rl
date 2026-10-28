@@ -253,6 +253,7 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            restored=ckpt_manager.restored_batch,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
