@@ -1,0 +1,5 @@
+[data]
+name = "tests/regression/configs/distributed/sft/data"
+batch_size = 16
+micro_batch_size = 1
+seq_len = 4096
