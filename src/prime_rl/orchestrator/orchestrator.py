@@ -1013,6 +1013,9 @@ class Orchestrator:
         the resumed work drains."""
         self.train_sink.load_state_dict(work["sink"])
         self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
+        # A resumed group finalizes at the size it opened with, not today's ``group_size``.
+        for group in self.dispatcher.groups.values():
+            self.train_sink.group_targets[str(group.group_id)] = group.target_episodes
         names = set(self.train_envs.names)
         for result in work["results"]:
             if result_env_name(result) in names:

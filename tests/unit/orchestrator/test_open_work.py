@@ -141,10 +141,10 @@ def test_open_work_holds_each_open_groups_inflight_and_unscheduled_members():
     assert [g.env_name for g in resumed.groups.values()] == ["a"]
 
 
-def sink(names: list[str]) -> TrainSink:
+def sink(names: list[str], group_size: int = 2) -> TrainSink:
     config = OrchestratorConfig(batch_size=100, max_staleness=8)
     env = SimpleNamespace(
-        config=SimpleNamespace(group_size=2, sampling=SimpleNamespace(temperature=1.0)),
+        config=SimpleNamespace(group_size=group_size, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
         requires_top_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
@@ -231,3 +231,19 @@ def test_open_work_survives_the_checkpoint_file(tmp_path):
     assert resumed.restores[0].point == {"checkpoint": {"id": "ck-t1"}}
     assert set(state["open_work"]["sink"]["pending_groups"]) == {"ga"}
     assert state["open_work"]["results"][0].group.id == "gb"
+
+
+def test_a_resumed_group_finalizes_at_the_size_it_opened_with():
+    s = sink(["a"], group_size=2)
+    asyncio.run(s.add(member("a", "ga")))
+    state = s.state_dict()
+    assert state["group_targets"] == {"ga": 2}
+
+    resumed = sink(["a"], group_size=3)
+    resumed.load_state_dict(state)
+    asyncio.run(resumed.add(member("a", "ga")))
+    assert "ga" not in resumed.pending_groups
+    # A group opened after the resume takes the new size.
+    asyncio.run(resumed.add(member("a", "gb")))
+    asyncio.run(resumed.add(member("a", "gb")))
+    assert len(resumed.pending_groups["gb"]) == 2
