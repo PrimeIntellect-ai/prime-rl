@@ -102,6 +102,16 @@ class Arch:
     resume_layout: Layout | None = None
     launch_s: int = 160
 
+    def cases(self) -> list["Case"]:
+        for feature in self.features:
+            if feature.layout not in self.layouts:
+                raise ValueError(
+                    f"{self.name}: feature {feature.name} runs on {feature.layout.name}, outside its layouts"
+                )
+        return [Case(self, layout) for layout in self.layouts] + [
+            Case(self, feature.layout, feature) for feature in self.features
+        ]
+
 
 @dataclass(frozen=True, eq=False)
 class Case:
@@ -135,15 +145,6 @@ class Case:
     def param(self):
         reason = self.skip_reason
         return pytest.param(self, id=self.id, marks=[pytest.mark.skip(reason=reason)] if reason else [])
-
-
-def cases_for(arch: Arch) -> list[Case]:
-    for feature in arch.features:
-        if feature.layout not in arch.layouts:
-            raise ValueError(f"{arch.name}: feature {feature.name} runs on {feature.layout.name}, outside its layouts")
-    return [Case(arch, layout) for layout in arch.layouts] + [
-        Case(arch, feature.layout, feature) for feature in arch.features
-    ]
 
 
 def assign_shards(cases: list[Case], num_shards: int) -> dict[tuple[str, bool], int]:
@@ -199,7 +200,7 @@ ARCHS = (
     QWEN4_EXP,
     AFMOE,
 )
-CASES = [case for arch in ARCHS for case in cases_for(arch)]
+CASES = [case for arch in ARCHS for case in arch.cases()]
 check_k_selectable(
     [
         "base",
