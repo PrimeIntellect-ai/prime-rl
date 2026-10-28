@@ -1,0 +1,165 @@
+# Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 nl2repo trajectories (OpenCode harness).
+# Same recipe as sft-hosted-tb4-v2.toml (1M context, cp16/ep16, lr 1e-5, warmup 10% of epoch 1, cosine to 1e-6, val
+# every 20 steps, best/last retention, text-only HF export at the end) for 4 epochs.
+# prime train configs/advanced/nemotron-3-super/sft-hosted-nl2repo-1m.toml --volume nemotron-sft-nl2repo \
+#     -e ~/.config/prime-export/hf.env -y          # forwards HF_TOKEN for the end-of-run push; without it the
+#                                                  # exports stay on the volume
+#
+# Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
+# trained as its text-only language model (/volume/models/nemotron-3.5-super-text). Check before every
+# launch: data-prep/verify_checkpoint.py --revision fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe (exit 0).
+#
+# Data: datasets/nemotron-distill-sft-nl2repo-1m, subset nl2repo, from export nl2repo-glm53-measure-sft-20261027
+# (sha256 be4fb51a...3351; 1,744 rows = 200 tasks x 8 main conversations + 144 subagent conversations). Every GLM-5.3
+# rollout is kept: no reward filter (829 reward-0 rows kept), no teacher filter (916 internal / 806 OpenRouter
+# z-ai/glm-5.3, reasoning restored from reasoning_details). Dropped: only the 22 interrupted provider streams.
+# Leaked per-rollout keys are redacted in place (17 rows). Build: handoff/nemotron-3.5-super-sft-v3/data-prep.
+#   train      1,550 rows (131 subagent), 180 tasks, 517.2M tokens, 340.5M loss tokens, longest row 822,094 tokens
+#   validation   172 rows (13 subagent),   20 tasks (frozen data-prep/nl2repo-val-tasks.txt), 58.9M tokens
+# Packed as the trainer packs them (seed 42, 2 data ranks x 2 workers, data-prep/packing.py): 619 packed rows in
+# epoch 1 (103.17 steps at batch_size 6), 2,464 over 4 epochs (410.67 steps), ~5.04M tokens per step.
+#
+# Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
+# only) ~0.48 TB, each HF export ~0.25 TB, models/ + datasets/ ~0.25 TB. Peak ~3.4 TB of run data, ~3.6 TB in all:
+# the previous checkpoint + the one being written + best (no interval save falls on a validation step, and a new
+# best replaces the old one before the step's save starts). End of run: 1.45 + 0.48 + 2 x 0.25 = 2.43 TB of run data
+# (a best at the final step is a copy of the 'last' export). The volume must not hold old run directories.
+
+image_tag = "v0.10.1.dev74"
+# exp/nemotron-sft-v3 = exp/nemotron-sft-tb4-v2 @ 68deedf7c (017c0883549e + [val] after_optimizer_step / keep_best +
+# [hf_export]; without the TB4 in-run eval) + these configs. Don't push other changes to it.
+source_ref = "exp/nemotron-sft-v3"
+gpu_type = "H200_141GB"
+
+# 4 epochs: 2,464 packed rows / 6 = 410.67 steps. 410 is 4 epochs to within 4 packed rows (each of the 4 data
+# streams has consumed 615 packed rows; their 4-epoch lengths are 612 / 614 / 617 / 621).
+max_steps = 410
+dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
+
+[scheduler]
+type = "cosine"
+warmup_steps = 10   # 10% of epoch 1 (103.17 steps); linear 1e-6 (step 1, start = min_lr) -> 1e-5 (step 11)
+min_lr = 1e-6       # then cosine decay to 1e-6 at max_steps
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 4
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "nemotron-3.5-super-distill-sft-nl2repo-1m-4ep"
+
+[ckpt]
+# Resumable checkpoints for crash recovery at 41, 82, ..., 369 (~0.4 epoch, ~2 h apart; a save took ~205 s in
+# eivawxtikvt75p1ietxg4lok). 410 = 10 x 41: the final step is saved once, after the loop.
+interval = 41
+# Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
+# is always saved. The best weights are kept separately ([val] keep_best).
+keep_last = 1
+
+[resume]
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+# seq_len 1048576 (1M, the model's max) at cp=16 / ep=16 on 32 GPUs: proven by eivawxtikvt75p1ietxg4lok
+# (174 s/step, 69.4/140 GiB peak, no host OOM).
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
+
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-nl2repo-1m"
+seq_len = 1048576
+batch_size = 6   # packed rows: ~5.0M tokens per step; 2 data ranks x 3 grad-accum micro-steps
+micro_batch_size = 1
+num_workers = 2
+stopping_strategy = "all_exhausted"
+shuffle = true
+seed = 42
+subsets = [
+    "nl2repo",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# Validation on the held-out tasks: 68 packed rows per pass (34 per data rank), ~2.4x the TB4 pass (one TB4 pass
+# added ~140-175 s to its step in eivawxtikvt75p1ietxg4lok). The rows are stored in an order that packs evenly on
+# the 2 data ranks (world 32 / cp 16 x num_workers 1): built with --val-data-ranks 2, keep shuffle = false and
+# num_workers = 1.
+# after_optimizer_step: val/loss at step N is the loss of the weights after N updates (what a checkpoint of step N
+# holds), and the final step is validated too: base (eval_on_start, before step 1), then after steps 20, 40, ...,
+# 400 and 410 (21 candidates).
+# keep_best: the lowest of those losses keeps a weights-only snapshot in runs/<id>/best-weights/ (best.json: step,
+# loss, every candidate's loss); the eval_on_start pass is not a candidate.
+[val]
+interval = 20
+eval_on_start = true
+after_optimizer_step = true
+keep_best = true
+
+[val.data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-nl2repo-1m"
+subsets = [
+    "nl2repo",
+]
+splits = [
+    "validation",
+]
+seq_len = 1048576
+batch_size = 6
+micro_batch_size = 1
+num_workers = 1
+shuffle = false
+
+[val.data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# After the final step and checkpoint: the best and the last weights as text-only NemotronHForCausalLM models,
+# written into the layout of /volume/models/nemotron-3.5-super-text (63 shards, 42,683 tensors; the untrained
+# mtp.* tensors copied as they are) under runs/<id>/hf-export/{best,last}/, then pushed to private repos.
+[hf_export]
+checkpoints = ["best", "last"]
+best_repo = "PrimeIntellect/Nemotron-3.5-Super-nl2repo-sft-best"
+last_repo = "PrimeIntellect/Nemotron-3.5-Super-nl2repo-sft-last"
+private = true
+model_card = """
+- Base: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision fb0ee0bc), its language model only.
+- Data: every GLM-5.3 nl2repo trajectory in the OpenCode harness (export nl2repo-glm53-measure-sft-20261027; no
+  reward or teacher filter, subagent conversations included, interrupted streams dropped), 180 training tasks,
+  1M-token packed sequences, 4 epochs, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
+- Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
+  `chat_template_kwargs={"truncate_history_thinking": false}`.
+"""
