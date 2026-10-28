@@ -131,6 +131,7 @@ Pulled from the console logs and mirrored to W&B.
 **Stability** (trainer):
 
 - `mismatch_kl/{all,env}/{mean,std,max}` — KL between trainer's current policy and the (older) inference policy that generated the rollouts. A sustained, growing mean is the early-warning sign for off-policy collapse.
+- `mismatch_kl_by_staleness/{bin}/{mean,std,max}` — the same KL per log2 bin of token staleness (`0`, `1`, `2-3`, `4-7`, …, `64+`). Bin `0` is the numerical trainer–inference mismatch alone; the rise across bins is the policy drift that staleness adds.
 - `entropy/{all,env}/mean` — too low means mode-collapse; too high means the model isn't committing.
 - `is_masked/mean` — fraction of tokens masked by the IPO trust region.
 - `optim/grad_norm` — spikes precede divergence; check the loss config or lower the LR.
@@ -204,9 +205,9 @@ clear_thinking = true
 
 The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
 
-**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
+**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
 
-**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class (currently Qwen3.5 dense and MoE).
+**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class: Qwen3.5 dense and MoE, and Qwen3.8 Flash Next (`qwen4_exp`, text and images). See the [multimodal examples](../examples/extra/vlm/README.md) for SFT and multi-node image RL configurations.
 
 See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 

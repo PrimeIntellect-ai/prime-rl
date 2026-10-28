@@ -181,6 +181,8 @@ Long rollouts span several weight updates, and finished rollouts can wait in the
 
 `orchestrator.max_staleness` (default 8) bounds token staleness. The orchestrator masks tokens past the bound out of the loss, and drops a sample only when no token is left to train. Rollouts are never cancelled for staleness.
 
+The orchestrator ships each sample's per-token staleness to the trainer. The trainer logs the mismatch KL per log2 staleness bin (`0`, `1`, `2-3`, `4-7`, …, `64+`) as `mismatch_kl_by_staleness/{bin}/{mean,std,max}`. Use these metrics to separate the drift that staleness causes from the trainer–inference numerical mismatch: bin `0` holds only the numerical mismatch.
+
 ## Loss
 
 ### Loss Components
@@ -607,7 +609,7 @@ tok.apply_chat_template(messages, tokenize=False)
 # (the <think>R1</think> from turn 2 is gone)
 ```
 
-Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm-5`, `glm-4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
+Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `qwen3.8`, `glm-5`, `glm-4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
 
 ```toml
 [orchestrator.renderer]
