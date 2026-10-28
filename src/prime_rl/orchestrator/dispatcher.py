@@ -75,6 +75,13 @@ INFRA_ERRORS = frozenset({"SandboxError", "InterceptionError", "TunnelError", "T
 """Recorded episode error types that count against an env's circuit breaker."""
 
 
+def infra_failure(episode: vf.WireEpisode, infra: frozenset[str]) -> vf.Error | None:
+    """The last infra error behind a failed episode. Successful traces are skipped: retries keep
+    the errors of the attempts they recovered from."""
+    errors = [*episode.errors, *(error for trace in episode.traces if not trace.ok for error in trace.errors)]
+    return next((error for error in reversed(errors) if error.type in infra), None)
+
+
 class DispatcherMode(Enum):
     """Which kind of work the dispatcher schedules next."""
 
@@ -713,12 +720,10 @@ class Dispatcher:
         infra = INFRA_ERRORS
         if meta.kind == "train" and not self.train_envs.get(meta.env_name).uses_live_policy:
             infra = INFRA_ERRORS | {"ProviderError"}
-        errors = [*episode.errors, *(error for trace in episode.traces for error in trace.errors)]
-        failure = next((error for error in reversed(errors) if error.type in infra), None)
-        if failure is not None:
-            await self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
-        elif episode.ok:
+        if episode.ok:
             await self.record_outcome(meta, ok=True)
+        elif (failure := infra_failure(episode, infra)) is not None:
+            await self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
         elif meta.kind == "train" and meta.env_name in self.breakers:
             breaker = self.breakers[meta.env_name]
             if breaker.inconclusive(time.monotonic(), meta.started_at):

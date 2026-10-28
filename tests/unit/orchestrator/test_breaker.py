@@ -1,7 +1,9 @@
 import uuid
+from types import SimpleNamespace
 
 from prime_rl.configs.orchestrator import CircuitBreakerConfig
 from prime_rl.orchestrator.breaker import CircuitBreaker
+from prime_rl.orchestrator.dispatcher import INFRA_ERRORS, infra_failure
 
 
 def test_circuit_breaker_opens_probes_and_recovers():
@@ -43,3 +45,13 @@ def test_inconclusive_probe_waits_another_cooldown():
     assert breaker.state == "open" and breaker.cooldown == 10
     assert not breaker.allows(now=21)
     assert breaker.allows(now=22)
+
+
+def test_infra_failure_skips_recovered_traces():
+    sandbox = SimpleNamespace(type="SandboxError", message="503")
+    task = SimpleNamespace(type="TaskError", message="bad answer")
+    recovered = SimpleNamespace(ok=True, errors=[sandbox])
+    failed = SimpleNamespace(ok=False, errors=[task])
+    assert infra_failure(SimpleNamespace(errors=[], traces=[recovered, failed]), INFRA_ERRORS) is None
+    failed.errors.append(sandbox)
+    assert infra_failure(SimpleNamespace(errors=[], traces=[recovered, failed]), INFRA_ERRORS) is sandbox
