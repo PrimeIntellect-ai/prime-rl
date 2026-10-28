@@ -3,6 +3,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NotRequired, TypedDict
+from uuid import uuid4
 
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -18,6 +20,8 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.batch.journal import BatchCheckpoint
+from prime_rl.transports.batch.recovery import TrainerGroup
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
@@ -234,6 +238,7 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        restored: BatchCheckpoint | None = None,
     ):
         self.world = get_world()
 
@@ -247,6 +252,11 @@ class DataLoader:
         self.payload_urls: list[str] = []
         """The last batch's fetched arrays, for `release_payloads`."""
 
+        group = None
+        if config.type == "zmq":
+            attempt = [uuid4().hex if self.world.is_master else None]
+            torch.distributed.broadcast_object_list(attempt, src=0, group=get_dcp_group())
+            group = TrainerGroup(attempt[0], self.world.world_size, start_step, restored)
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
             data_rank=dp_rank,
@@ -254,6 +264,7 @@ class DataLoader:
             world_size=self.world.world_size,
             current_step=start_step,
             transport=config,
+            trainer_group=group,
         )
 
     def wait_for_batch(self) -> None:
