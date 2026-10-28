@@ -45,15 +45,9 @@ class BaseWeightBroadcastConfig(BaseConfig):
     offered version in time. Raise it for large models on slow shared filesystems."""
 
 
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    """Filesystem broadcast that, between anchors, publishes only the weight elements that changed since the
-    previous broadcast. Engines patch their weights in place and verify every update. Not supported with LoRA."""
-
-    type: Literal["sparse_filesystem"] = "sparse_filesystem"
+class DeltaWeightBroadcastConfig(BaseConfig):
+    """Between anchors, publish only the weight elements that changed since the previous broadcast. Engines patch
+    their weights in place and verify every update. Not supported with LoRA."""
 
     anchor_interval: int = Field(50, ge=1)
     """Publish a full checkpoint every this many steps. Engines that join or fall off the delta chain load
@@ -64,6 +58,13 @@ class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     another dir, or an S3-compatible bucket (``s3://bucket/prefix``) so engines can run in another region.
     Endpoint and credentials come from the standard AWS environment variables (e.g. ``AWS_ENDPOINT_URL``).
     The handshake stays in the broadcast dir."""
+
+
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["filesystem"] = "filesystem"
+
+    delta: DeltaWeightBroadcastConfig | None = None
+    """Publish sparse deltas instead of full checkpoints."""
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -98,10 +99,7 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig
-    | SparseFileSystemWeightBroadcastConfig
-    | NCCLWeightBroadcastConfig
-    | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""

@@ -290,11 +290,13 @@ By default, the trainer and inference worker each allocate one transfer arena. S
 
 ### Sparse filesystem weight broadcast
 
-With `[weight_broadcast] type = "sparse_filesystem"`, the trainer publishes only the weight elements that changed since the previous broadcast, in the engine's weight format (bf16, or fp8 for engines that quantize online to `fp8_per_block`). Engines read and decode each delta while they keep serving, patch their weights in place during the pause, and verify every update against trainer checksums.
+With `[weight_broadcast.delta]` on the filesystem broadcast, the trainer publishes only the weight elements that changed since the previous broadcast, in the engine's weight format (bf16, or fp8 for engines that quantize online to `fp8_per_block`). Engines read and decode each delta while they keep serving, patch their weights in place during the pause, and verify every update against trainer checksums.
 
 ```toml
 [weight_broadcast]
-type = "sparse_filesystem"
+type = "filesystem"
+
+[weight_broadcast.delta]
 anchor_interval = 50  # full checkpoint every N steps
 ```
 

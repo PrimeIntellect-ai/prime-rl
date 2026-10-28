@@ -29,10 +29,10 @@ def setup_weight_sender(
 ) -> WeightSender:
     if config.type == "nccl":
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
+    elif config.type == "filesystem" and config.delta is not None:
+        return SparseFileSystemWeightSender(output_dir, config.timeout, config.delta)
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
-    elif config.type == "sparse_filesystem":
-        return SparseFileSystemWeightSender(output_dir, config)
     elif config.type == "nixl":
         return NIXLWeightSender(output_dir, config, parallel_dims)
     else:
@@ -47,7 +47,7 @@ def setup_weight_receiver(
 ) -> WeightReceiver:
     if config.type == "nccl":
         return NCCLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
-    elif config.type in ("filesystem", "sparse_filesystem"):
+    elif config.type == "filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "nixl":
         return NIXLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
