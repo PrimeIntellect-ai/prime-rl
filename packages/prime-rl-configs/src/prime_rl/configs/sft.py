@@ -488,7 +488,9 @@ class SFTConfig(BaseTrainerConfig):
         if dispatch.type == "mega_moe":
             data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+                dispatch.max_tokens_per_rank,
+                max(data.micro_batch_size * data.seq_len for data in data_configs),
+                self.model.cp,
             )
         return self
 

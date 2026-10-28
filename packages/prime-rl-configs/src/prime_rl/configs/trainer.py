@@ -224,8 +224,9 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
-    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
-    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
+    micro batch under context parallelism (``model.seq_len / model.cp`` for RL,
+    ``data.micro_batch_size * data.seq_len / model.cp`` for SFT) and cannot be smaller."""
 
     num_reserved_sms: int = Field(16, ge=2)
     """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
@@ -234,15 +235,17 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
-def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int, cp: int) -> int:
     """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
-    buffer must hold the full micro batch."""
+    buffer must hold the rank's full share of the micro batch. Context parallelism splits every micro
+    batch evenly over the ``cp`` ranks, so that share is ``micro_batch_tokens / cp``."""
+    rank_tokens = -(-micro_batch_tokens // cp)
     if max_tokens_per_rank is None:
-        return micro_batch_tokens
-    if max_tokens_per_rank < micro_batch_tokens:
+        return rank_tokens
+    if max_tokens_per_rank < rank_tokens:
         raise ValueError(
-            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
-            f"({micro_batch_tokens} tokens)."
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the tokens a rank "
+            f"holds per micro batch ({micro_batch_tokens} tokens over cp={cp}: {rank_tokens})."
         )
     return max_tokens_per_rank
 
@@ -725,10 +728,10 @@ class TrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
-        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        """RL micro batches are one packed sequence of ``model.seq_len`` tokens, split over the CP ranks."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, self.model.seq_len
+                dispatch.max_tokens_per_rank, self.model.seq_len, self.model.cp
             )
         return self
