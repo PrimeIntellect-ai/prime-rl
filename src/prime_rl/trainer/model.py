@@ -23,8 +23,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
-from torch.distributed.tensor.parallel import parallelize_module
+from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -38,7 +37,6 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -59,9 +57,10 @@ from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_bl
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
+from prime_rl.trainer.ngram_runtime import configure_ngram_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
@@ -475,22 +474,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
+    for table in [module for module in model.modules() if isinstance(module, NGramTable)]:
+        if isinstance(table.weight, DTensor):
+            table_mesh = (
+                parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
+                if parallel_dims.dp_replicate_enabled
+                else parallel_dims.get_mesh("dp_shard_mod_head")
+            )
+        else:
+            table_mesh = hsdp_mesh
+        fully_shard(table, mesh=table_mesh, **fsdp_config)
+        table.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+
     language_model = get_language_model(model)
     transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:
-        for module in transformer_block.modules():
-            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
-                embedding = module.ngram_embedding
-                dp_mod_head_mesh = (
-                    parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
-                    if parallel_dims.dp_replicate_enabled
-                    else parallel_dims.get_mesh("dp_shard_mod_head")
-                )
-                parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
-                fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
-                embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
-
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
@@ -901,6 +900,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    configure_ngram_runtime(model, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
