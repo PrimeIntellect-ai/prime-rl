@@ -37,6 +37,17 @@ def test_circuit_breaker_opens_probes_and_recovers():
     assert breaker.allows(now=33) and breaker.cooldown == 10 and not breaker.failed_groups
 
 
+def test_probe_success_does_not_close_while_server_down():
+    breaker = CircuitBreaker(CircuitBreakerConfig(failures=1, cooldown=10))
+    assert breaker.record(False, "SandboxError: 503", 0, uuid.uuid4(), 0) == "open"
+    breaker.on_dispatch()
+    breaker.server_down = True
+    assert breaker.record(True, None, 12, uuid.uuid4(), 11) is None
+    assert breaker.state == "open" and not breaker.allows(now=13)
+    breaker.server_down = False
+    assert breaker.allows(now=13)
+
+
 def test_inconclusive_probe_waits_another_cooldown():
     breaker = CircuitBreaker(CircuitBreakerConfig(failures=1, cooldown=10))
     assert breaker.record(False, "SandboxError: 503", 0, uuid.uuid4(), 0) == "open"

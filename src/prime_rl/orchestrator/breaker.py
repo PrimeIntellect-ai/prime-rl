@@ -54,6 +54,9 @@ class CircuitBreaker:
             self.failed_groups.clear()
             if self.state == "closed":
                 return None
+            if self.server_down:  # a probe that outlived its env server must not resume dispatch
+                self.probing = False
+                return None
             self.state, self.probing, self.cooldown = "closed", False, self.config.cooldown
             return "closed"
         self.failed_groups.add(group_id)
