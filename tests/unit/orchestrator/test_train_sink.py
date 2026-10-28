@@ -179,6 +179,24 @@ def test_mask_stale_tokens_keeps_fresher_tokens():
     assert sample.ref_kl_weights.tolist() == [1.0, 1.0, 0.0, 1.0]
 
 
+def test_partially_stale_trace_ships_fresh_tokens():
+    async def run():
+        s = sink(batch_size=1)
+        s.progress.step = 4
+        t = trace()
+        t.nodes[2].weight_versions = [
+            WeightVersionSpan(version="default", start=0, end=1),
+            WeightVersionSpan(version="3", start=1, end=2),
+        ]
+        batch = await s.add(episode([t], version=1))
+        assert batch.samples[0].mask.tolist() == [False, False, False, True]
+        # Batch 4 trains on v3: the unlabelled token took dispatch version v1.
+        assert batch.samples[0].staleness.tolist() == [-1, -1, 2, 0]
+        assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
+
+    asyncio.run(run())
+
+
 def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
     async def run():
         s = sink(constant=False, batch_size=2)

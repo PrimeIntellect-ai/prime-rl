@@ -49,6 +49,7 @@ from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
@@ -119,6 +120,7 @@ class Orchestrator:
     concurrency: ConcurrencyController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
+    gc: GarbageCollector | None
     periodic_logger: PeriodicLogger
 
     # Set by ``setup()`` only when relevant config is present
@@ -147,6 +149,7 @@ class Orchestrator:
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
         self.policy = Policy(version=0, model_name="")
+        self.gc = GarbageCollector(config.gc.interval) if config.gc else None
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
@@ -233,9 +236,12 @@ class Orchestrator:
             config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
+            replicas=config.env_server_replicas,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
+            self.eval_envs = EvalEnvs(
+                config.eval.source, config.env_addresses, config_dir, replicas=config.env_server_replicas
+            )
 
         if config.resume is not None:
             if config.resume.dir is not None:
@@ -403,6 +409,8 @@ class Orchestrator:
         # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
+        if self.gc is not None:
+            self.gc.start()
         await self.periodic_logger.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
@@ -581,6 +589,7 @@ class Orchestrator:
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+                self.train_sink.release_samples(batch.samples)
             self.train_sink.discard_queued()
 
     def take_rollout_metrics(self) -> dict[str, float]:
@@ -650,6 +659,7 @@ class Orchestrator:
         # step, or a lowered ``max_steps``): never ship beyond the budget.
         if config.max_steps is not None and step > config.max_steps:
             self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+            self.train_sink.release_samples(batch.samples)
             await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
             return
 
@@ -766,6 +776,8 @@ class Orchestrator:
         # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
         if self.release_future is not None:
             await asyncio.shield(self.release_future)
+        if self.gc is not None:
+            self.gc.run(step)
         payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
         self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
@@ -863,6 +875,8 @@ class Orchestrator:
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
         payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
+        if self.gc is not None:
+            payload |= self.gc.gauges()
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean

@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.control.controller import Controller
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -215,6 +216,13 @@ def get_dcp_group() -> dist.ProcessGroup:
     return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
 
 
+def broadcast_pause(controller: Controller, step: int) -> bool:
+    """Whether the master's controller pauses at ``step``, applied by every rank."""
+    paused = torch.tensor(controller.update(step), device="cuda")
+    dist.broadcast(paused, src=0)
+    return bool(paused.item())
+
+
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
     """
     Visualize the loss mask of a tokenized sample using rich.
@@ -224,6 +232,11 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     for token, mask in zip(tokenizer.convert_ids_to_tokens(input_ids), loss_mask):
         text.append(token.replace("Ġ", " ").replace("Ċ", "\n"), style="cyan" if mask else "white")
     rich_print(text)
+
+
+# Log2 bins over token staleness: bucketizing by the edges (``right=True``) gives each token's bin
+STALENESS_BIN_EDGES = [1, 2, 4, 8, 16, 32, 64]
+STALENESS_BINS = ["0", "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64+"]
 
 
 class TensorStats:
@@ -245,9 +258,11 @@ class TensorStats:
         mask: Tensor | None = None,
         env_ids: Tensor | None = None,
         env_names: list[str] | None = None,
+        fold_all: bool = True,
     ) -> None:
         """Fold ``values`` (where ``mask`` is set) into ``key``. With ``env_ids`` (each value's index into
-        ``env_names``), fold them into ``{key}/{env}`` per env and into ``{key}/all`` instead.
+        ``env_names``), fold them into ``{key}/{env}`` per env and, with ``fold_all``, into ``{key}/all``
+        instead.
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
         # A custom loss may emit a metric on the CPU
@@ -263,7 +278,8 @@ class TensorStats:
         rows = _moments(values, members)
         for env_name, row in zip(env_names, rows):
             self._fold(f"{key}/{env_name}", row)
-        self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
+        if fold_all:
+            self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
 
     def _fold(self, key: str, row: Tensor) -> None:
         if (moments := self.moments.get(key)) is None:
@@ -329,6 +345,7 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
     mean_max_only_prefixes = (
         "is_masked/",
         "mismatch_kl/",
+        "mismatch_kl_by_staleness/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",

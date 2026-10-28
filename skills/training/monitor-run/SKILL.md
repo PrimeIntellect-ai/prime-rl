@@ -1,9 +1,11 @@
 ---
 name: monitor-run
-description: Monitor an ongoing prime-rl training run — find the output directory, tail logs, check key metrics, inspect SLURM jobs, and restart safely. Use when asked to check on a run, debug training, or investigate performance.
+description: Monitor a local or SLURM prime-rl training run — find the output directory, tail logs, check key metrics, inspect jobs, and restart safely. Model Factory monitoring uses model-factory.
 ---
 
 # Monitor a run
+
+For a managed Model Factory run ID or dashboard link, use the [model-factory skill](../../model-factory/SKILL.md) for `prime train` status, logs, metrics, and stop commands.
 
 ## Runbook
 
@@ -138,6 +140,7 @@ All metrics print to the console log (and W&B when configured).
 | Metric | Description |
 |--------|-------------|
 | `mismatch_kl/{all,env}/{mean,std,max}` | KL between trainer and (old) inference policy over trainable tokens |
+| `mismatch_kl_by_staleness/{bin}/{mean,std,max}` | the same KL per log2 token-staleness bin (`0`, `1`, `2-3`, `4-7`, …); bin `0` is numerical mismatch alone, the rise across bins is staleness drift |
 | `entropy/{all,env}/{mean,std,max}` | policy entropy over trainable tokens |
 | `is_masked/mean` | fraction of tokens masked by the IPO trust region |
 | `optim/grad_norm` | spikes may precede divergence |

@@ -55,6 +55,7 @@ def test_patch_routes_v2_sampling_and_preserves_mask_probabilities(monkeypatch):
 
     for module in (topk_topp_sampler, sampler, states):
         monkeypatch.setattr(module, "apply_top_k_top_p", module.apply_top_k_top_p)
+    monkeypatch.setattr(sampler.Sampler, "_sample_random", sampler.Sampler._sample_random)
     patch_top_p_then_top_k()
     for module in (topk_topp_sampler, sampler, states):
         assert module.apply_top_k_top_p is apply_top_p_then_top_k
