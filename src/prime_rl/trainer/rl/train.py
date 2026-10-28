@@ -98,7 +98,6 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_conf
 from prime_rl.utils.utils import clean_exit
 
 
-@clean_exit
 def sparse_head_backward(micro_batch: TensorMicroBatch, support: TokenSupport, rl_loss_fn: Loss) -> bool:
     """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
     stream), and each is replayed against a support holding its label or centered by a loss whose softmax terms
@@ -114,6 +113,7 @@ def sparse_head_backward(micro_batch: TensorMicroBatch, support: TokenSupport, r
     return bool(replay[rl_tokens].all())
 
 
+@clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
@@ -412,8 +412,8 @@ def train(config: TrainerConfig):
         step_local_num_tokens = 0
         step_local_flops = 0
         score_centering = config.loss.type != "custom" and config.loss.needs_sampler_support
-        replayed_only = config.loss.score_centering == "auto" and not config.loss.support_kl
-        draws = config.loss.score_centering_estimator == "sampled"
+        replayed_only = score_centering and config.loss.score_centering == "auto" and not config.loss.support_kl
+        draws = score_centering and config.loss.score_centering_estimator == "sampled"
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
