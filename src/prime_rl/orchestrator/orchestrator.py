@@ -408,6 +408,7 @@ class Orchestrator:
         await self.setup()
         config = self.config
         if config.max_steps is not None and self.progress.step > config.max_steps:
+            await monitors.finalize()
             return
         get_logger().info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()

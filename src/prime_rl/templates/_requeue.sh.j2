@@ -23,14 +23,19 @@ job_state() {
 # than any seen before exists (a resume can move newer checkpoints to abandoned/). A job
 # that is already ending (scancel, time limit) is not requeued.
 requeue() {
-    local kind=$1 latest="" last=-1 count=0 excluded
+    local kind=$1 latest="" last=-1 count=0 excluded dir
     shift
     if [ "$(job_state)" != RUNNING ]; then
         return
     fi
     if [ "$kind" = failure ]; then
 {%- if ckpt_dir %}
-        latest=$(ls -d {{ ckpt_dir }}/step_*/trainer/.metadata 2>/dev/null | sort -V | tail -n 1 | sed 's|.*/step_\([0-9]*\)/trainer/.metadata$|\1|')
+        for dir in $(ls -d {{ ckpt_dir }}/step_* 2>/dev/null | sort -rV); do
+            if [ -f "$dir/trainer/.metadata" ]{% if ckpt_with_orchestrator %} && [ -f "$dir/orchestrator/progress.pt" ]{% endif %}; then
+                latest=${dir##*_}
+                break
+            fi
+        done
 {%- endif %}
         latest=${latest:--1}
         [ ! -f {{ launcher_dir }}/requeue_$SLURM_JOB_ID ] || read -r last count < {{ launcher_dir }}/requeue_$SLURM_JOB_ID
