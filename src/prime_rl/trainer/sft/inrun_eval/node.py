@@ -271,6 +271,12 @@ class Driver:
             "interval_seconds": HEARTBEAT,
         }
         self.write_status()
+        # status.json only reaches the volume after the run; the log is visible live.
+        hb = self.status["heartbeat"]
+        self.log(
+            f"heartbeat: phase {hb['phase']}, rollouts {hb['rollouts_done']}/{hb['rollouts_planned']}, "
+            f"rows {hb['rows_landed']}, {hb['seconds_since_progress']} s since progress"
+        )
 
     def heartbeat(self) -> None:
         while not self._beat_stop.wait(HEARTBEAT):

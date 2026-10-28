@@ -61,7 +61,7 @@ def test_smoke_config(tmp_path):
     assert cfg.schedule == "sequential" and cfg.evaluate_aliases and cfg.budget_hours is not None
     assert cfg.harness.k == 1 and cfg.harness.expected_tasks == 3 and cfg.harness.tasks_file is not None
     assert (
-        cfg.harness.model_dump() | {"k": None, "expected_tasks": 500, "tasks_file": None}
+        cfg.harness.model_dump() | {"k": None, "expected_tasks": 500, "tasks_file": None, "credential_probe": False}
         == run.inrun_eval.harness.model_dump()
     )
     assert cfg.serving == run.inrun_eval.serving

@@ -1,6 +1,6 @@
 # Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 tb4 (Terminal-Bench) trajectories, v2 data.
 # The restart of sft-hosted-tb4-1m.toml (run eivawxtikvt75p1ietxg4lok): same recipe (1M context, 7 epochs, lr 1e-5,
-# warmup 4, cosine to 1e-6) on the updated export, plus best/last checkpoint retention, an HF export at the end and
+# warmup over 10% of epoch 1, cosine to 1e-6) on the updated export, plus best/last checkpoint retention, an HF export at the end and
 # the in-run pass@8 eval of both exports ([inrun_eval], PREREQS.md).
 # prime train configs/advanced/nemotron-3-super/sft-hosted-tb4-v2.toml --volume nemotron-sft-tb4-v2 \
 #     -e ~/.config/prime-export/hf.env -y
@@ -13,10 +13,14 @@
 # trained as its text-only language model (/volume/models/nemotron-3.5-super-text). Check before every
 # launch: data-prep/verify_checkpoint.py --revision fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe (exit 0).
 #
-# Data: datasets/nemotron-distill-sft-tb4-1m-v2, subset tb4, from export tb4-glm53-measure-sft-20261027 (the
-# 20261026 export plus additional tasks; same filters as the 1M build: teacher internal/glm-5.3-high-throughput,
-# reward >= 0.95, leaked api_key rows dropped; validation = the frozen data-prep/tb4-val-tasks.txt).
-# TODO(dataset build): fill in rows / tasks / tokens and packed rows per epoch, then max_steps below.
+# Data: datasets/nemotron-distill-sft-tb4-1m-v2, subset tb4, from export tb4-glm53-measure-sft-20261027 (sha256
+# 8bd3e535...; the 20261026 export plus terminal-bench/convolution_filters_english). NO rollout is filtered out:
+# every GLM-5.3 rollout of all three endpoints (internal/glm-5.3-high-throughput 3,965, z-ai/glm-5.3 30, whose
+# reasoning_details text became reasoning_content, internal/glm-5.3-fast 5), every reward (2,232 pass / 1,767 fail /
+# 1 partial); 91 leaked per-rollout api_key values redacted in place in 74 rows. 4,000 rows / 500 tasks:
+# train 3,600 rows / 450 tasks (449.0M tokens, 274.8M loss), validation 10% = 400 rows / 50 tasks
+# (data-prep/tb4-val-tasks-v2.txt: the 44 frozen tasks + 6 zero-pass tasks; worst feature |SMD| 0.045), longest row
+# 557,836 tokens. ~474 packed rows/epoch = ~78.7 steps/epoch at batch_size 6.
 #
 # Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
 # only) ~0.48 TB, each HF export ~0.25 TB. Peak ~3.9 TB of run data (rolling checkpoint + one in flight + best +
@@ -31,14 +35,15 @@ image_tag = "v0.10.1.dev74"
 source_ref = "exp/nemotron-sft-tb4-v2"
 gpu_type = "H200_141GB"
 
-# TODO(dataset build): 7 x steps per epoch of the v2 build (the 1M build had ~41 steps/epoch at batch_size 6,
-# i.e. 287). 287 is a placeholder: the cosine schedule ends at max_steps, so set it before launching.
-max_steps = 287
+# Exactly 7 epochs: 551 is the fewest steps that consume all 7 epochs of train rows (checked row by row against
+# the trainer's SFTDataset/CatDataset packing, seed 42, 2 data ranks x 2 workers); it also trains 294 samples of
+# epoch 8 (~8% of an epoch). The trainer can't stop on epochs and the cosine schedule needs max_steps.
+max_steps = 551
 dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
 
 [scheduler]
 type = "cosine"
-warmup_steps = 4   # 10% of epoch 1; linear 1e-6 -> 1e-5 (start = min_lr)
+warmup_steps = 8   # 10% of epoch 1 (~78.7 steps); linear 1e-6 -> 1e-5 (start = min_lr)
 min_lr = 1e-6      # then cosine decay to 1e-6 at max_steps
 
 [env_vars]
@@ -55,7 +60,7 @@ project = "nemotron-3.5-super-sft"
 name = "nemotron-3.5-super-distill-sft-tb4-1m-v2-7ep"
 
 [ckpt]
-interval = 48   # resumable checkpoints for crash recovery, ~every 1.2 epochs
+interval = 48   # resumable checkpoints for crash recovery, ~every 0.6 epoch
 # Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
 # is always saved. The best weights are kept separately ([val] keep_best).
 keep_last = 1
@@ -110,7 +115,7 @@ user = false
 assistant = true
 tool = false
 
-# Validation on the held-out tasks (one pass took ~4.6 training steps of compute on the 1M build). The rows must
+# Validation on the 50 held-out tasks: 400 rows, 50.3M tokens, 26 packed rows per data rank (~313 s per pass). The rows must
 # be stored in an order that packs evenly on the 2 data ranks (world 32 / cp 16 x num_workers 1): build with
 # --val-data-ranks 2, keep shuffle = false and num_workers = 1.
 # after_optimizer_step: val/loss at step N is the loss of the weights after N updates (what a checkpoint of step N
@@ -181,3 +186,8 @@ pushed_exports = false
 [inrun_eval]
 checkpoints = ["best", "last"]
 schedule = "sequential"
+
+[inrun_eval.harness]
+# Off: the probe was only validated with a user CLI key; if the platform's per-run token may create sandboxes but not
+# list them, the probe would wrongly skip the whole eval. Without it, bad credentials show up as errored rollouts.
+credential_probe = false
