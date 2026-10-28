@@ -60,21 +60,29 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(
-        self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None
-    ) -> dict[str, Any] | None:
+    def read_state(self, step: int, path: Path | None = None) -> dict:
         """``path`` overrides where the checkpoint is read from (an external run's
-        ``step_<N>/orchestrator``). Returns the train sink's saved work for
-        ``TrainSink.load_state_dict`` (the sink is built later in setup); None for
-        checkpoints written before the sink was saved."""
+        ``step_<N>/orchestrator``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
         get_logger().debug(f"Loading checkpoint from {state_file}")
-        start = time.perf_counter()
         with open(state_file, "rb") as f:
-            state = torch.load(f, weights_only=False)
+            return torch.load(f, weights_only=False)
+
+    def read_config_state(self, step: int, path: Path | None = None) -> dict | None:
+        """The checkpoint's ``{base, applied, revision}`` configs, None for checkpoints
+        written before configs were checkpointed."""
+        return self.read_state(step, path).get("config")
+
+    def load(
+        self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None
+    ) -> dict[str, Any] | None:
+        """Returns the train sink's saved work for ``TrainSink.load_state_dict`` (the sink is
+        built later in setup); None for checkpoints written before the sink was saved."""
+        start = time.perf_counter()
+        state = self.read_state(step, path)
         saved: Progress = state["progress"]
         for key, value in asdict(saved).items():
             if hasattr(progress, key):
@@ -87,11 +95,15 @@ class CheckpointManager:
         return state.get("train_sink")
 
 
-def build_state(progress: Progress, train_source: TrainSource, train_sink_state: dict[str, Any]) -> dict:
-    """A snapshot of the orchestrator's checkpointed state, independent of later changes. One
+def build_state(
+    progress: Progress, train_source: TrainSource, config_state: dict, train_sink_state: dict[str, Any]
+) -> dict:
+    """A snapshot of the orchestrator's checkpointed state, independent of later changes.
+    ``config_state`` holds the launch config (``base``), the config that applies from the
+    resume step on (``applied``) and its ``revision``, all dumped to JSON-ready dicts. One
     file, so the queued work (a ``TrainSink.state_dict`` snapshot) and the dataset cursor
     always restore together."""
-    return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict()}) | {
+    return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict(), "config": config_state}) | {
         "train_sink": train_sink_state
     }
 

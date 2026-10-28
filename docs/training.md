@@ -21,6 +21,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
   - [Pausing a Live Run](#pausing-a-live-run)
+  - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
   - [Config Files](#config-files)
@@ -358,14 +359,43 @@ With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the tr
 uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
 
 curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
-# {"id": "3f2a...", "type": "pause", "state": "pending", "step": null}
+# {"id": "3f2a...", "type": "pause", "state": "pending", "step": null, "changes": null}
 curl localhost:8040/v1/actions/3f2a...
-# {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12}
+# {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12, "changes": null}
 curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
-# {"id": "9c41...", "type": "pause", "state": "pending", "step": 12}
+# {"id": "9c41...", "type": "pause", "state": "pending", "step": 12, "changes": null}
 ```
 
 Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
+
+### Updating the Config Live
+
+With `--orchestrator.control`, you can also resubmit the full orchestrator config while the run is going. Read the current config, edit it, and submit it back as an `update_config` action:
+
+```bash
+curl localhost:8041/v1/config > current.json
+# {"revision": 0, "step": 41, "config": {...}}
+jq '{type: "update_config", config: (.config | .max_staleness = 4 | .train.source[0].sampling.temperature = 0.8)}' current.json > update.json
+curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d @update.json
+# {"id": "7b0e...", "type": "update_config", "state": "pending", "step": null, "changes": [{"path": "train.source[0].sampling.temperature", "old": 1.0, "new": 0.8}, {"path": "max_staleness", "old": 8, "new": 4}]}
+curl localhost:8041/v1/actions/7b0e...
+# {"id": "7b0e...", "type": "update_config", "state": "applied", "step": 43, "changes": [...]}
+```
+
+The orchestrator validates the config and compares it with the running one when you submit it. A rejected update returns 422 with the changed fields that are frozen (marked `Field(frozen=True)` in the config) in `frozen`, and any validation `errors`. It returns 409 if another update is queued or the run is pausing. The update applies after the orchestrator ships its next step: rollouts dispatched from then on use the new config, while running rollouts, and groups that already started, keep their old settings. Nothing is cancelled. Each applied update bumps the config revision, is logged, and is written to `configs/attempt_<n>/resolved/updates/rev_<k>.json`. Checkpoints record the live config, so `--resume` continues with the updates that were in effect at the checkpoint. The rule is per field: if the launch config still has the value the checkpointed run was launched with, the live value is restored; if you changed the field in the launch config, your value wins. The orchestrator logs the restored fields and writes them to `updates/rev_<k>.json` of the new attempt.
+
+Only these fields are live; every other field is frozen:
+
+| Field | Effect |
+|---|---|
+| `batch_size`, `max_staleness` | The next batch uses the new size, and queued samples are checked against the new staleness bound. |
+| `concurrency.min_inflight`, `concurrency.max_inflight` | Moves the adaptive concurrency band. A lower limit cancels nothing; new rollouts wait until enough finish. A target set through the concurrency API stays in place. `concurrency.initial_inflight` only seeds the startup cap, so it may change (e.g. to stay below a lower `max_inflight`) without effect. |
+| `train.source[*].ratio` | Changes the env mix weights. |
+| `train.source[*].sampling` | Changes a source's `temperature`, `max_completion_tokens` and `extra_body`. `top_p`, `top_k` and `logprobs` are frozen: they decide sampling replay and top-logprob streams at launch. Set sampling per source: the group-level `train.sampling` is only a default for the sources and is frozen. |
+| `eval.source[*].interval` | Changes eval cadence from the next policy update. |
+| `train.source[*].algo.length_penalty` | Changes a GRPO source's length penalty: its weights, its type, or turning it on (a config) or off (`null`). It applies to every group scored from the next step on, including groups already running, since a group is scored when its last rollout finishes. Set it per source: the group-level `train.algo` is only a default for the sources and is frozen. |
+
+Frozen fields include the model, tokenizer, renderer, transports, monitors, logging, checkpointing, output directory, padding and the trainer topology, which are fixed at launch. `seq_len` and `max_steps` are frozen because the trainer depends on them. Group sizes, algorithms (except the length penalty), curricula, eval sampling and task selection are frozen, as are adding, removing, renaming or reordering sources and turning eval on or off. A field that stays live inside a frozen sub-config is marked `Field(json_schema_extra=LIVE)` (from `prime_rl.configs.diff`).
 
 ### Exporting Checkpoints
 
