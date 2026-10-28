@@ -4,7 +4,8 @@ A nightly functionality suite for the trainer. It runs trainer-only SFT (`uv run
 
 ## Layout
 
-- `archs.py`: the matrix. It defines the classes (`Layout`, `Feature`, `Arch`, `Case`), the parallel layouts and features, and `ARCHS`, one entry per arch with its tiny config, the tokenizer matching its vocab, and how the suite runs it. It expands `ARCHS` into `CASES` and writes the seeded tiny checkpoints.
+- `../tiny_models.py`: one `TinyModel` per arch, with its tiny config, the tokenizer matching its vocab and, where needed, its renderer. It also writes the seeded tiny checkpoints. It holds nothing SFT-specific, so other suites can reuse it.
+- `archs.py`: the matrix. It defines the classes (`Layout`, `Feature`, `Arch`, `Case`), the parallel layouts and features, and `ARCHS`, one entry per arch pairing its `TinyModel` with how the suite runs it. It expands `ARCHS` into `CASES`.
 - `harness.py`: running and checking a case: its `uv run sft` arguments, sharding, and the parsers for metrics and logs.
 - `test_matrix.py`: runs each case once and checks it with `test_sft` and `test_no_graph_breaks`.
 - `../conftest.py`: the session fixtures (tiny checkpoints, tokenizer downloads), the `--shard` option and the GPU-count skip.

@@ -52,8 +52,8 @@ def run_case(tiny_checkpoint, tokenizer_files, run_process, output_dir) -> Calla
 
     @cache
     def _run_case(case: Case) -> CaseResult:
-        model_name = tiny_checkpoint(case.arch).as_posix()
-        tokenizer_files(case.arch)
+        model_name = tiny_checkpoint(case.arch.model).as_posix()
+        tokenizer_files(case.arch.model)
         run_dir = output_dir / case.id
         env = {"HF_HUB_OFFLINE": "1"}
         if case.check_graph_breaks:
