@@ -560,6 +560,15 @@ class FakeDataLoaderConfig(BaseConfig):
     generate_samples: bool = False
     """Generate separate samples and pack them into a single micro-batch instead of using random tensors."""
 
+    doc_len: int | None = Field(None, ge=1)
+    """Length of each generated sample, the last one cut to fill the micro batch. If None, lengths are random up to a micro batch's length / 8. Requires generate_samples."""
+
+    @model_validator(mode="after")
+    def doc_len_requires_generate_samples(self):
+        if self.doc_len is not None and not self.generate_samples:
+            raise ValueError("data.fake.doc_len requires data.fake.generate_samples")
+        return self
+
 
 class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
