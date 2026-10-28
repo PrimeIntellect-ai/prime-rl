@@ -69,6 +69,7 @@ from prime_rl.orchestrator.utils import (
     max_rollout_staleness,
     release_and_trim,
     result_env_name,
+    result_group_id,
     result_kind,
     rollout_staleness,
     set_default_executor,
@@ -998,18 +999,35 @@ class Orchestrator:
         # write off it: the env servers persisting the open work's arrays take a while.
         work = self.open_work()
         state = build_state(self.progress, self.train_source, work)
-        await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
-        self.dispatcher.hold_snapshots(work["groups"])
+        await self.save_state(state, step)
         return time.perf_counter() - t
+
+    async def save_state(self, state: dict, step: int) -> None:
+        """Write a ``build_state`` snapshot off the event loop. Its box snapshots are held
+        from the start: sweeps go on during the write. The last checkpoint's stay held
+        until this one is written."""
+        groups = state["open_work"]["groups"]
+        self.dispatcher.hold_snapshots(groups, release=False)
+        await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
+        self.dispatcher.hold_snapshots(groups)
 
     def open_work(self) -> dict:
         """The train work a resumed run picks up where this one left it: the open groups
         (their in-flight rollouts continue from their newest restore points), the sink's
         buffers, and the train results waiting in ``out_q``."""
+        sink = self.train_sink.state_dict()
+        results = [result for result in self.dispatcher.queued_results() if result_kind(result) == "train"]
+        # A group whose last member waits in ``out_q`` is neither the dispatcher's nor the
+        # sink's anymore; its size goes with the sink's.
+        for result in results:
+            group_id = result_group_id(result)
+            if group_id not in sink["group_targets"]:
+                target = self.train_sink.group_targets.get(group_id)
+                sink["group_targets"][group_id] = target or self.train_sink.group_size_for(result_env_name(result))
         return {
             "groups": self.dispatcher.open_work(),
-            "sink": self.train_sink.state_dict(),
-            "results": [result for result in self.dispatcher.queued_results() if result_kind(result) == "train"],
+            "sink": sink,
+            "results": results,
             "snapshots": dict(self.dispatcher.snapshots),
         }
 
@@ -1034,7 +1052,7 @@ class Orchestrator:
             return
         step, state = self.shipped_state
         if self.controller.update(step):
-            await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
+            await self.save_state(state, step)
             self.controller.mark_saved(step)
             get_logger().info(f"Paused at step {step}, saved its state")
 

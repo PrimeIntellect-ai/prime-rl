@@ -7,6 +7,7 @@ import uuid
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.serve import RestoreRequest
@@ -73,7 +74,7 @@ def _without_arrays(trace: vf.Trace) -> vf.Trace:
 
 
 def test_a_worker_persists_an_inflight_trace_up_to_its_restore_point(tmp_path):
-    hook = PayloadHook()
+    hook = PayloadHook(checkpoint_dirs=[tmp_path])
     trace = _trace(np.random.default_rng(0))
     hook.watch(trace)
     assert trace.info[PAYLOAD_WORKER_KEY] == hook.server.url
@@ -87,7 +88,7 @@ def test_a_worker_persists_an_inflight_trace_up_to_its_restore_point(tmp_path):
 
     restored = _without_arrays(trace)
     restored.info[PAYLOAD_ARRAYS_KEY] = str(tmp_path / trace.id)
-    PayloadHook().restore(restored)
+    PayloadHook(checkpoint_dirs=[tmp_path]).restore(restored)
     assert PAYLOAD_ARRAYS_KEY not in restored.info
     assert _arrays(restored) == _arrays(trace)
 
@@ -138,7 +139,7 @@ def _work(hook: PayloadHook) -> tuple[dict, vf.Trace]:
 
 
 def test_the_checkpoint_holds_the_open_works_arrays_and_a_resume_reads_them(tmp_path):
-    hook = PayloadHook()
+    hook = PayloadHook(checkpoint_dirs=[tmp_path])
     work, inflight = _work(hook)
     blobs = dict(hook.server.blobs)
 
@@ -164,7 +165,7 @@ def test_the_checkpoint_holds_the_open_works_arrays_and_a_resume_reads_them(tmp_
             assert fetched == payload._decoder.decode(blobs[reference["id"]])
     restored = _without_arrays(inflight)
     restored.info |= group.restores[0].trace["info"]
-    PayloadHook().restore(restored)
+    PayloadHook(checkpoint_dirs=[tmp_path]).restore(restored)
     assert _arrays(restored) == _arrays(inflight)
 
     # The resumed run checkpoints again before it dispatched anything: what it still
@@ -174,3 +175,24 @@ def test_the_checkpoint_holds_the_open_works_arrays_and_a_resume_reads_them(tmp_
     assert (tmp_path / "step_6" / "arrays" / sample.payload.id).exists()
     assert [restore.trace["info"][PAYLOAD_ARRAYS_KEY] for restore in group.restores] == [inflight.id]
     assert (tmp_path / "step_6" / "arrays" / inflight.id).exists()
+
+
+def test_a_worker_persists_and_restores_only_inside_the_runs_checkpoints(tmp_path):
+    checkpoints = tmp_path / "run" / "checkpoints"
+    hook = PayloadHook(checkpoint_dirs=[checkpoints])
+    trace = _trace(np.random.default_rng(2))
+    hook.watch(trace)
+    trace.checkpoints.append(vf.Checkpoint(id="ck", node=len(trace.nodes) - 1))
+    hook.server.put("blob", b"x")
+    # Outside the run's checkpoints, or under a name that is not an id: nothing is written.
+    assert persist_payloads(hook.server.url, tmp_path / "elsewhere", ["blob"], {}) == ([], [])
+    assert not (tmp_path / "elsewhere").exists()
+    hook.server.put("../escape", b"x")
+    blobs, _ = persist_payloads(hook.server.url, checkpoints / "step_1", ["../escape", "blob"], {})
+    assert blobs == ["blob"] and not (checkpoints / "escape").exists()
+
+    (tmp_path / trace.id).write_bytes(payload._encode_node_arrays(trace.nodes))
+    restored = _without_arrays(trace)
+    restored.info[PAYLOAD_ARRAYS_KEY] = str(tmp_path / trace.id)
+    with pytest.raises(ValueError, match="outside"):
+        hook.restore(restored)

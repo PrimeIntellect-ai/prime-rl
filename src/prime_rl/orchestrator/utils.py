@@ -54,6 +54,12 @@ def result_env_name(result: DispatchResult) -> str:
     return episode_env_name(result)
 
 
+def result_group_id(result: DispatchResult) -> str:
+    if isinstance(result, DispatchFailure | GroupCancellation):
+        return result.group_id
+    return episode_group_id(result)
+
+
 def min_fresh_version(step: int, max_staleness: int) -> int:
     """Oldest policy version whose tokens may still train in batch ``step`` —
     anything older would ship past ``max_staleness``."""

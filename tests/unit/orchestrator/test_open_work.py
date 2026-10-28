@@ -247,3 +247,33 @@ def test_a_resumed_group_finalizes_at_the_size_it_opened_with():
     asyncio.run(resumed.add(member("a", "gb")))
     asyncio.run(resumed.add(member("a", "gb")))
     assert len(resumed.pending_groups["gb"]) == 2
+
+
+def test_a_group_waiting_in_the_queue_keeps_its_size():
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.train_sink = sink(["a"], group_size=2)
+    orchestrator.dispatcher = SimpleNamespace(
+        open_work=lambda: [], queued_results=lambda: [member("a", "gq")], snapshots={}
+    )
+    work = orchestrator.open_work()
+    assert work["sink"]["group_targets"] == {"gq": 2}
+
+
+def test_a_checkpoint_being_written_holds_its_snapshots_and_the_last_ones():
+    async def run():
+        d = dispatcher(["a"])
+        last, new = group("a", to_schedule=0, emitted=3), group("a", to_schedule=0, emitted=3)
+        last.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "last", "box": True}})]
+        new.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "new", "box": True}})]
+        d.snapshots = {"last": "a", "new": "a"}
+        d.hold_snapshots([last])
+        d.hold_snapshots([new], release=False)
+        await d.sweep
+        assert set(d.snapshots) == {"last", "new"}
+        d.hold_snapshots([new])
+        await d.sweep
+        assert set(d.snapshots) == {"new"}
+
+    asyncio.run(run())

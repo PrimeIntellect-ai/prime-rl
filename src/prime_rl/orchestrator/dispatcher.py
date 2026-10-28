@@ -644,15 +644,17 @@ class Dispatcher:
             + (f", dropped {dropped} of removed envs" if dropped else "")
         )
 
-    def hold_snapshots(self, groups: list[GroupState]) -> None:
+    def hold_snapshots(self, groups: list[GroupState], *, release: bool = True) -> None:
         """A checkpoint resumes from these groups' restore points: keep their snapshots
-        until a newer checkpoint is written, and free the ones the last one held."""
-        self.held_snapshots = {
+        until a newer checkpoint is written, and free the ones the last one held (not
+        with ``release=False``)."""
+        held = {
             restore.point["checkpoint"]["id"]
             for group in groups
             for restore in group.restores
             if restore.point["checkpoint"].get("box")
         }
+        self.held_snapshots = held if release else self.held_snapshots | held
         self.sweep_snapshots()
 
     def sweep_snapshots(self) -> None:

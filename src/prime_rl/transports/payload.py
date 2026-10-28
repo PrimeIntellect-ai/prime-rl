@@ -340,7 +340,15 @@ class PayloadServer:
                     self.end_headers()
                     return
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                body = json.dumps(persist(request)).encode()
+                try:
+                    body = json.dumps(persist(request)).encode()
+                except ValueError as error:
+                    body = str(error).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -425,7 +433,9 @@ def _write(path: Path, data: bytes) -> None:
 class PayloadHook:
     """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
 
-    def __init__(self, bind_address: str | None = None):
+    def __init__(self, bind_address: str | None = None, checkpoint_dirs: Sequence[Path] = ()):
+        # Arrays are persisted under the first only; restored from any (`EnvServerConfig`).
+        self.checkpoint_dirs = [Path(path).resolve() for path in checkpoint_dirs]
         # The worker's traces in flight, for `persist`; a trace goes when its run does.
         self.traces: weakref.WeakValueDictionary[str, vf.Trace] = weakref.WeakValueDictionary()
         self.traces_lock = threading.Lock()
@@ -450,7 +460,10 @@ class PayloadHook:
         path = trace.info.pop(PAYLOAD_ARRAYS_KEY, None)
         if path is None:
             return
-        for node, arrays in zip(trace.nodes, _decode_node_arrays(Path(path).read_bytes())):
+        path = Path(path).resolve()
+        if not any(path.is_relative_to(d) for d in self.checkpoint_dirs):
+            raise ValueError(f"restored arrays {path} are outside the run's checkpoint directories")
+        for node, arrays in zip(trace.nodes, _decode_node_arrays(path.read_bytes())):
             for name, value in arrays.items():
                 setattr(node, name, value)
 
@@ -459,16 +472,25 @@ class PayloadHook:
         `request["traces"]` (`{trace_id: [checkpoint_id, nodes]}`) the arrays of its
         first `nodes` nodes, under `request["dir"]`. A trace is written only while it
         still holds that checkpoint: a retry that rewound past it changed those nodes.
-        Returns the blobs and traces written."""
-        directory = Path(request["dir"])
+        Returns the blobs and traces written; nothing outside `request["dir"]`, which
+        must be inside the run's checkpoint directory."""
+        directory = Path(request["dir"]).resolve()
+        if not self.checkpoint_dirs or not directory.is_relative_to(self.checkpoint_dirs[0]):
+            raise ValueError(f"{directory} is outside the run's checkpoint directory")
         directory.mkdir(parents=True, exist_ok=True)
         blobs = []
         for key in request["blobs"]:
+            path = (directory / key).resolve()
+            if path.parent != directory:
+                continue
             if (blob := self.server.get(key)) is not None:
-                _write(directory / key, blob)
+                _write(path, blob)
                 blobs.append(key)
         traces = []
         for trace_id, (checkpoint, num_nodes) in request["traces"].items():
+            path = (directory / trace_id).resolve()
+            if path.parent != directory:
+                continue
             with self.traces_lock:
                 trace = self.traces.get(trace_id)
             if trace is None or not any(c.id == checkpoint for c in trace.checkpoints):
@@ -476,7 +498,7 @@ class PayloadHook:
             nodes = trace.nodes[:num_nodes]
             if len(nodes) < num_nodes:
                 continue
-            _write(directory / trace_id, _encode_node_arrays(nodes))
+            _write(path, _encode_node_arrays(nodes))
             traces.append(trace_id)
         return {"blobs": blobs, "traces": traces}
 
