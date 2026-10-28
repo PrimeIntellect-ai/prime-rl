@@ -89,6 +89,8 @@ class WeightWatcher:
             # Record the published version before notifying pending observers.
             # ``policy.version`` advances only after inference applies it.
             self.ckpt_step = next_step
+            # Rollouts keep being dispatched while the engines can still serve
+            await self.receiver.prepare(next_step)
 
             # Let observers cancel rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's

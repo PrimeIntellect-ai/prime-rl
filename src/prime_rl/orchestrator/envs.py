@@ -32,6 +32,7 @@ from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
@@ -119,16 +120,15 @@ class Env:
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
-    def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
-        sampling = self.sampling
-        if cache_salt is not None:
-            sampling = sampling.model_copy(update={"cache_salt": cache_salt})
-        return sampling
+    def sampling_at(self, step: int) -> vf.SamplingConfig:
+        """The sampling for work dispatched at ``step``."""
+        return self.sampling
 
     async def run(
         self,
         client: vf.ClientConfig,
         model_name: str,
+        sampling: vf.SamplingConfig,
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
@@ -137,6 +137,8 @@ class Env:
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
         change of one of the episode's traces — as it lands. The run goes to the replica
         with the fewest runs in flight."""
+        if cache_salt is not None:
+            sampling = sampling.model_copy(update={"cache_salt": cache_salt})
         replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
         self._in_flight[replica] += 1
         try:
@@ -144,7 +146,7 @@ class Env:
                 task_data=task_data,
                 client=client,
                 model=model_name,
-                sampling=self._sampling(cache_salt),
+                sampling=sampling,
                 on_delta=on_delta,
             )
         finally:
@@ -171,14 +173,34 @@ class TrainEnv(Env):
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
         self.uses_live_policy = config.algo.sampling.source == "policy"
-        self.sampling = vf.SamplingConfig(
+        self.sampling = self.build_sampling(config)
+        # Sampling by the first step it applies to; live updates add entries.
+        self.sampling_by_step: dict[int, vf.SamplingConfig] = {0: self.sampling}
+        # Truncated policy sampling must ship the sampling masks the trainer replays.
+        self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
+        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+
+    def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
+        return vf.SamplingConfig(
             **config.sampling.model_dump(exclude_none=True, exclude={"logprobs"}),
             # Only policy rollouts need sampling logprobs for importance ratios.
             logprobs=(config.sampling.logprobs or True) if self.uses_live_policy else None,
         )
-        # Truncated policy sampling must ship the sampling masks the trainer replays.
-        self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
-        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+
+    def sampling_at(self, step: int) -> vf.SamplingConfig:
+        return self.sampling_by_step[max(start for start in self.sampling_by_step if start <= step)]
+
+    def reconfigure(self, config: TrainSourceConfig, step: int) -> None:
+        """Adopt this source's new config. Its sampling applies to work dispatched from
+        ``step`` on; earlier groups keep sampling, and train, with the old settings. Its
+        algorithm's length penalty applies to every group scored from now on, including
+        groups that started before the update."""
+        if config.sampling != self.config.sampling:
+            self.sampling = self.build_sampling(config)
+            self.sampling_by_step[step] = self.sampling
+        if config.algo != self.config.algo:
+            self.algorithm.reconfigure(config.algo)
+        self.config = config
 
     async def setup(self) -> None:
         async def connect_source() -> None:
@@ -255,7 +277,7 @@ class Envs(Generic[EnvT]):
         await asyncio.gather(*(env.start() for env in self))
 
 
-class TrainEnvs(Envs[TrainEnv]):
+class TrainEnvs(Envs[TrainEnv], Reconfigurable):
     """Collection of training environments, each with its runtime
     :class:`Algorithm`, built from the env's resolved algorithm config."""
 
@@ -281,6 +303,11 @@ class TrainEnvs(Envs[TrainEnv]):
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
+
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        """Every env adopts its source's applied config, so ``env.config`` is never stale."""
+        for config in update.config.train.source:
+            self.get(config.resolved_name).reconfigure(config, update.step)
 
 
 class EvalEnvs(Envs[EvalEnv]):

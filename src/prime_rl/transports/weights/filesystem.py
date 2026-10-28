@@ -68,14 +68,17 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
-    async def receive(self, step: int) -> None:
-        weights_dir = self.step_dir(step)
-        delta_path = self.config.delta.path if self.config.delta is not None else None
-        data_dir = get_step_path(storage_path(delta_path), step) if delta_path else weights_dir
+    prepared_step: int | None = None
+
+    async def prepare(self, step: int) -> None:
+        """Acknowledge v{step} and wait for its weights while the engines keep serving: a sparse delta's manifest
+        comes first and its part files as the trainer encodes, so the engines read and decode them now and the
+        pause only applies the delta."""
+        if self.prepared_step == step:
+            return
+        weights_dir, data_dir = self.step_dir(step), self._data_dir(step)
         manifest, finished = data_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
         self._ack(step)
-        # A sparse delta's manifest comes first and its part files as the trainer encodes: the engines
-        # read and decode them while they keep serving, and the pause only applies the delta.
         while not (await asyncio.to_thread(manifest.exists) or finished.exists()):
             await asyncio.sleep(0.05)
             revalidate(manifest.parent)
@@ -84,10 +87,21 @@ class FileSystemWeightReceiver(WeightReceiver):
             start = time.perf_counter()
             await self.admin_plane.prefetch_weights(data_dir)
             self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
+        self.prepared_step = step
+
+    async def receive(self, step: int) -> None:
+        await self.prepare(step)
+        weights_dir = self.step_dir(step)
+        finished = weights_dir / FINISHED_MARKER
         while not finished.exists():
             await asyncio.sleep(0.05)
             revalidate(weights_dir)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
-            await self.admin_plane.update_weights(data_dir, transport="filesystem", step=step)
+            await self.admin_plane.update_weights(self._data_dir(step), transport="filesystem", step=step)
+
+    def _data_dir(self, step: int):
+        """Where v{step}'s weights are: the broadcast step dir, or the step dir under ``delta.path``."""
+        delta_path = self.config.delta.path if self.config.delta is not None else None
+        return get_step_path(storage_path(delta_path), step) if delta_path else self.step_dir(step)

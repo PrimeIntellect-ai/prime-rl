@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
 
@@ -18,32 +17,16 @@ class PositionLearningEnhancement(nn.Module):
         hidden_size: int,
         stream_count: int,
         embedding_dim: int,
-        ngram_size: int,
-        heads_per_ngram: int,
-        ngram_vocab_size: int,
-        token_vocab_size: int,
-        eos_token_id: int,
-        vocab_size_divisor: int,
-        ngram_layer_index: int,
         conv_kernel_size: int,
+        conv_dilation: int,
         norm_eps: float,
     ) -> None:
         super().__init__()
         expanded_size = stream_count * hidden_size
         self.hidden_size = hidden_size
         self.stream_count = stream_count
-        self.conv_dilation = ngram_size
+        self.conv_dilation = conv_dilation
 
-        self.ple_embedding = NGramEmbedding(
-            embedding_dim=embedding_dim,
-            ngram_size=ngram_size,
-            heads_per_ngram=heads_per_ngram,
-            ngram_vocab_size=ngram_vocab_size,
-            token_vocab_size=token_vocab_size,
-            eos_token_id=eos_token_id,
-            vocab_size_divisor=vocab_size_divisor,
-            ngram_layer_index=ngram_layer_index,
-        )
         self.key_proj = nn.Linear(embedding_dim, expanded_size, bias=False)
         self.value_proj = nn.Linear(embedding_dim, hidden_size, bias=False)
         self.norm_key = ExpandedRMSNorm(hidden_size, stream_count, norm_eps)
@@ -54,7 +37,7 @@ class PositionLearningEnhancement(nn.Module):
             expanded_size,
             conv_kernel_size,
             groups=expanded_size,
-            dilation=ngram_size,
+            dilation=conv_dilation,
             bias=False,
         )
         nn.init.zeros_(self.conv1d.weight)
@@ -67,10 +50,10 @@ class PositionLearningEnhancement(nn.Module):
     def forward(
         self,
         expanded_states: torch.Tensor,
-        input_ids: torch.LongTensor,
+        embeddings: torch.Tensor,
         cu_seqlens: torch.LongTensor,
     ) -> torch.Tensor:
-        embeddings = self.ple_embedding(input_ids, cu_seqlens).to(expanded_states.dtype)
+        embeddings = embeddings.to(expanded_states.dtype)
         keys = self.norm_key(self.key_proj(embeddings))
         queries = self.norm_query(expanded_states)
         keys = keys.unflatten(-1, (self.stream_count, self.hidden_size))
