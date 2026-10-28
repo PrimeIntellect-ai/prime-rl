@@ -49,9 +49,10 @@ def record_samples(record: dict) -> list[list[TrainingSample]]:
     temperatures = {}
     for trace in record["traces"]:
         sampling = trace["agent"]["config"].get("sampling") or {}
-        temperatures[trace["id"]] = sampling.get("temperature", 1.0)
+        temperature = sampling.get("temperature")
+        temperatures[trace["id"]] = 1.0 if temperature is None else temperature
         # Only the token graph is needed, and the agent config can name a renderer file that
-        # resolves only on the machine that ran the episode.
+        # resolves only on the machine that ran the episode, failing WireEpisode validation elsewhere.
         trace["agent"]["config"] = {}
     episode = vf.WireEpisode.model_validate(record)
     samples_by_trace = []

@@ -96,9 +96,11 @@ def test_replay_loader_rejects_a_mismatched_topology(
         ReplayDataLoader(replay_dir[0], seq_len, dp_world_size, pad_to_multiple_of)
 
 
-def test_replay_config_excludes_fake_data_and_score_centering(tmp_path):
+def test_replay_config_excludes_fake_data_score_centering_and_router_replay(tmp_path):
     with pytest.raises(ValueError, match="at most one of data.fake and data.replay"):
         TrainerConfig(data={"fake": {}, "replay": tmp_path})
     with pytest.raises(ValueError, match="requires loss.score_centering = false"):
         TrainerConfig(data={"replay": tmp_path}, loss={"type": "icepop", "score_centering": True})
+    with pytest.raises(ValueError, match="requires enable_router_replay = false"):
+        TrainerConfig(data={"replay": tmp_path}, loss={"type": "icepop"}, enable_router_replay=True)
     assert TrainerConfig(data={"replay": tmp_path}, loss={"type": "icepop"}).data.replay == tmp_path

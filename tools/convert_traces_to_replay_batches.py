@@ -15,7 +15,8 @@ Usage (from the prime-rl repo):
 `<model>` names the trained model (HF id or path): micro batches are balanced across data ranks by
 its training FLOPs, like the orchestrator does. Match `--num-train-workers` to the trainer's data
 parallel size and `--pad-to-multiple-of` to the orchestrator's (the rl entrypoint sets it to
-`model.cp`, or `32 * model.cp` with MXFP8 quantization).
+`model.cp`, or `32 * model.cp` with MXFP8 quantization). A run that set
+`orchestrator.pad_to_seq_len` is reproduced with `--pad-to-multiple-of <seq_len>`.
 """
 
 import argparse

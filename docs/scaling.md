@@ -315,10 +315,10 @@ Fake data has synthetic token ids and document lengths. To benchmark the RL trai
 
 ```bash
 uv run python tools/convert_traces_to_replay_batches.py <model> <replay_dir> <run_output_dir>/monitors/file/traces/stream/*.jsonl.zst \
-    --seq-len 262144 --rollouts-per-step 1024 --num-train-workers 8 --pad-to-multiple-of 256 --num-steps 10
+    --seq-len 262144 --rollouts-per-step 1024 --num-train-workers 8 --pad-to-multiple-of 32 --num-steps 10
 uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.replay <replay_dir> --max-steps 10
 ```
 
-The converter packs each step the way the orchestrator does, so `--seq-len`, `--num-train-workers` (the trainer's data parallel size) and `--pad-to-multiple-of` must match the trainer; the trainer checks all three at startup. Episodes are recorded before scoring, so advantages are synthetic, and the arrays env servers keep for the trainer (routing replay, sampling masks, top logprobs) are not recorded, so replay requires `loss.score_centering = false`. The trainer cycles through the converted steps.
+The example assumes an MXFP8 `train.toml` without context parallelism. The converter packs each step the way the orchestrator does, so `--seq-len` and `--num-train-workers` (the trainer's data parallel size) must match the trainer, and `--pad-to-multiple-of` must be a multiple of `model.cp` (`32 * model.cp` with MXFP8); the trainer checks all three at startup. To reproduce a run that set `orchestrator.pad_to_seq_len`, pass `--pad-to-multiple-of <seq_len>`. Episodes are recorded before scoring, so advantages are synthetic, and the arrays env servers keep for the trainer (routing replay, sampling masks, top logprobs) are not recorded, so replay requires `loss.score_centering = false` and `enable_router_replay = false`. The trainer cycles through the converted steps.
 
 Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup.
