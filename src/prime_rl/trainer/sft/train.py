@@ -116,7 +116,8 @@ def train(config: SFTConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    # On this branch the trainer exports the swe-marathon checkpoints to Hugging Face instead of training.
+    # On this branch the trainer exports the GeneBench RL checkpoints named by GB_EXPORT_* to Hugging Face
+    # (text-only layout) instead of training; see hf_export.py.
     from prime_rl.trainer.sft import hf_export
 
     hf_export.run(config, parallel_dims)

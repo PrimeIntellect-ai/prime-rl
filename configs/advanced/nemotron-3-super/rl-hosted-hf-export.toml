@@ -1,0 +1,88 @@
+# Nemotron 3.5 Super GeneBench RL -> Hugging Face export job (no training). Text-only NemotronHForCausalLM repos.
+#
+#   prime train configs/advanced/nemotron-3-super/rl-hosted-hf-export.toml --volume nemotron-genebench-base \
+#     -e ~/.config/prime-export/hf.env \
+#     -e GB_EXPORT_RUN_ID=<rl run id> -e GB_EXPORT_STEPS=<steps, e.g. 120,200> \
+#     -e GB_EXPORT_REPOS=<PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step<N>, same order> \
+#     -e GB_EXPORT_ROLES=<best | last | best+last, same order> -y
+#
+# On source_ref (branch exp/genebench-rl-hf-export) the SFT trainer runs src/prime_rl/trainer/sft/hf_export.py
+# and exits. rl_export_plan.py checks the GB_EXPORT_* request strictly before anything is built:
+#   * every step has a complete trainer checkpoint (.metadata);
+#   * repo i is PrimeIntellect/Nemotron-3.5-Super-genebench-rl-step<step i>;
+#   * 'last' is the newest complete checkpoint;
+#   * HF_TOKEN is set (from hf.env), and every repo exists or can be created, and is private.
+# Then, for each step, in order:
+#   1. Load the model weights only from /volume/runs/$GB_EXPORT_RUN_ID/checkpoints/step_N/trainer.
+#      The SFT run mounts the volume read-only.
+#   2. Rewrite the 63 safetensors files of /volume/models/nemotron-3.5-super-text with the trained tensors, cast to
+#      the base dtypes. The 1,040 untrained mtp.* tensors are copied.
+#   3. Stage the result on the run's local output dir, /volume/runs/<thisRunId>/hf-export/step_N/.
+#      It is synced to the volume after the run.
+#   4. Check it against the base, push it to the step's private repo, and verify every shard's sha256 there.
+#   5. Update /volume/runs/<thisRunId>/export_report.json and log "GB_EXPORT_DONE <json>".
+# "GB_EXPORT_ALL_DONE" is logged at the end. Any failure exits non-zero.
+#
+# The model is built exactly as in the RL run's trainer (same topology, CP16/EP16 on 4 nodes, which saved these
+# checkpoints), except that fusions are disabled so every parameter has its canonical name and shape (the DCP
+# keys are canonical either way). [data] is a fake dataset: it is never read, but the config must validate, and
+# the GeneBench volume holds no SFT dataset.
+
+image_tag = "v0.10.1.dev74"
+# The branch must be pushed before launch, or the platform cannot fetch the source overlay. Pin the exact commit
+# for a launch (genebench-env/configs/genebench-hf-export.toml does). uv.lock is unchanged from 017c08835.
+source_ref = "exp/genebench-rl-hf-export"
+gpu_type = "H200_141GB"
+
+max_steps = 1   # never reached: the export returns before the training loop
+dist_timeout_seconds = 7200
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 4
+
+[monitors.wandb]
+project = "nemotron-3.5-super-genebench"
+name = "nemotron-3.5-super-genebench-rl-hf-export"
+
+[ckpt]
+# The platform points output_dir at /volume/runs/<runId>; the export stages its files under it. No checkpoint is
+# saved.
+interval = 40
+keep_last = 1
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
+
+[model.fusions]
+enabled = []
+
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-6
+
+[renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[data]
+type = "fake"
+seq_len = 655360
+batch_size = 2
+micro_batch_size = 1
