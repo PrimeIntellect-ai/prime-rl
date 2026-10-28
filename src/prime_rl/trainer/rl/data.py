@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
@@ -18,6 +20,8 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplingMask, TopLogprobs
+from prime_rl.transports.payload import delete_payloads, resolve_payloads
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class TensorMicroBatch(TypedDict):
@@ -31,7 +35,6 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
-    policy_versions: Int[Tensor, "batch seq"] | None  # Per-token sampling policy version, -1 if unknown
     env_names: list[str]  # One per sequence, parallel to sequence_lengths
     sequence_lengths: list[int]
     padding: int  # Trailing padding tokens, folded into the last sequence's length
@@ -68,6 +71,9 @@ class TensorMicroBatch(TypedDict):
     rl_weights: Float[Tensor, "batch seq"] | None
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
+
+    # Per-token staleness, -1 on tokens the policy did not sample
+    staleness: Int[Tensor, "batch seq"] | None
 
 
 class FakeDataLoader:
@@ -140,7 +146,6 @@ class FakeDataLoader:
             "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
-            "policy_versions": None,
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
@@ -153,6 +158,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -176,7 +182,6 @@ class FakeDataLoader:
             "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
-            "policy_versions": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
@@ -189,6 +194,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
 
@@ -209,6 +215,17 @@ def prepare_micro_batch(
     return micro_batch
 
 
+def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]) -> None:
+    """Keep micro batches out of every loss component (they still run forward/backward,
+    so all ranks issue the same collectives)."""
+    for index in indices:
+        micro_batch = micro_batches[index]
+        micro_batch["loss_mask"] = torch.zeros_like(micro_batch["loss_mask"])
+        for name in ("rl_weights", "ce_weights", "ref_kl_weights"):
+            if micro_batch[name] is not None:
+                micro_batch[name] = torch.zeros_like(micro_batch[name])
+
+
 class DataLoader:
     """Receives packed micro batches from the orchestrator, one stream per DP rank."""
 
@@ -223,6 +240,13 @@ class DataLoader:
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
+        self.dp_rank = dp_rank
+        self.dp_world_size = dp_world_size
+        self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload")
+        self.failed_micro_batches: list[int] = []
+        """Micro batches of the last batch whose arrays could not be fetched on this rank."""
+        self.payload_urls: list[str] = []
+        """The last batch's fetched arrays, for `release_payloads`."""
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -238,7 +262,18 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        start = time.perf_counter()
+        self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+        get_logger().debug(
+            f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+        )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def release_payloads(self) -> None:
+        """Free the last batch's arrays on the env servers. Call once every rank that may
+        read them has fetched them."""
+        delete_payloads(self.payload_urls)
+        self.payload_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
@@ -276,7 +311,6 @@ class DataLoader:
             padding=micro_batch.padding,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
-            policy_versions=stream("policy_versions", np.int64),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=stream("mm_token_type_ids", np.int64),
@@ -285,6 +319,7 @@ class DataLoader:
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
+            staleness=stream("staleness", np.int16),
         )
 
 

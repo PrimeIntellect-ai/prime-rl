@@ -14,7 +14,7 @@ from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserM
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens, token_policy_versions
+from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
 from prime_rl.utils.logger import setup_logger
@@ -190,6 +190,8 @@ def test_partially_stale_trace_ships_fresh_tokens():
         ]
         batch = await s.add(episode([t], version=1))
         assert batch.samples[0].mask.tolist() == [False, False, False, True]
+        # Batch 4 trains on v3: the unlabelled token took dispatch version v1.
+        assert batch.samples[0].staleness.tolist() == [-1, -1, 2, 0]
         assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
 
     asyncio.run(run())
@@ -263,27 +265,3 @@ def test_partial_window_and_shutdown_release():
         assert s.take_rollout_window(force=True) is None
 
     asyncio.run(run())
-
-
-def test_token_policy_versions_follow_weight_updates_within_a_sample():
-    def node(token_ids, sampled, spans=None):
-        return SimpleNamespace(
-            token_ids=token_ids, mask=[False] * (len(token_ids) - sampled) + [True] * sampled, weight_versions=spans
-        )
-
-    branch = SimpleNamespace(
-        nodes=[
-            node([1, 2], 0),
-            # A turn sampled across the v3 -> v5 weight update.
-            node(
-                [3, 4, 5, 6, 7],
-                4,
-                [WeightVersionSpan(version="3", start=0, end=3), WeightVersionSpan(version="5", start=3, end=4)],
-            ),
-            node([8], 0),
-            # Unlabelled tokens take the dispatch version.
-            node([9, 10], 2),
-        ]
-    )
-
-    assert token_policy_versions(branch, fallback=2).tolist() == [-1, -1, -1, 3, 3, 3, 5, -1, 2, 2]

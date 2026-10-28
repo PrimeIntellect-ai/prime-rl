@@ -155,6 +155,27 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
     return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
 
 
+@torch.no_grad()
+def _importance_ratio_metrics(log_ratio: Tensor, keep_mask: Tensor) -> dict[str, Tensor]:
+    """Per-token, pre-cap ratios for token-weighted reduction across samples and ranks.
+
+    Ratio values saturate at 1e30 for finite moments; log ratios and exceedance
+    indicators retain the tail information. Accepted means the sampled-action
+    mask passes, including when SC also corrects rejected actions.
+    """
+    metrics = {}
+    for population, values in (("all", log_ratio.detach()), ("accepted", log_ratio.detach()[keep_mask])):
+        # TensorStats promotes to FP64 when accumulating moments.
+        values = values.float()
+        limit = values.new_tensor(1e30).log()
+        metrics[f"importance_ratio/{population}"] = values.clamp(max=limit).exp()
+        metrics[f"log_importance_ratio/{population}"] = values
+        for threshold in (5, 10, 100, 10000):
+            metrics[f"importance_ratio/{population}/above_{threshold}"] = values > values.new_tensor(threshold).log()
+        metrics[f"importance_ratio/{population}/saturated"] = values > limit
+    return metrics
+
+
 def ipo_weight(config: IPOLossConfig, log_p: Tensor, log_q: Tensor) -> tuple[Tensor, Tensor]:
     # |p - q| = e^max * -expm1(min - max), without cancellation near p = q.
     larger, smaller = torch.maximum(log_p, log_q), torch.minimum(log_p, log_q)
@@ -216,6 +237,7 @@ class RLLoss:
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, ~keep),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep),
+            **_importance_ratio_metrics(log_ratio, keep),
             "is_masked": (~keep).sum() / max(keep.numel(), 1),
         }
         if inputs.support_rows is not None:

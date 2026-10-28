@@ -336,7 +336,8 @@ def test_icepop_loss_masks_extreme_ratio_without_nan():
     result = setup_rl_loss_fn(IcePopLossConfig()).loss(inputs)
 
     assert torch.equal(result.loss, torch.zeros_like(result.loss))
-    assert all(torch.isfinite(value) for value in result.metrics.values())
+    assert result.metrics["importance_ratio/accepted"].numel() == 0
+    assert all(torch.isfinite(value).all() for value in result.metrics.values())
     result.loss.backward()
     assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
 
@@ -365,6 +366,17 @@ def test_ipo_icepop_match_original_on_finite_ratios(config):
         )
         expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
 
+    for population, selected in (("all", loss_mask), ("accepted", keep)):
+        metric = result.metrics[f"importance_ratio/{population}"]
+        assert not metric.requires_grad
+        torch.testing.assert_close(metric, log_ratio[selected].detach().float().exp())
+        for threshold in (5, 10, 100, 10000):
+            torch.testing.assert_close(
+                result.metrics[f"importance_ratio/{population}/above_{threshold}"],
+                log_ratio[selected].detach().float()
+                > torch.tensor(threshold, device="cuda", dtype=torch.float32).log(),
+            )
+
     torch.testing.assert_close(result.loss, expected, rtol=1e-5, atol=1e-5)
     actual_grad = torch.autograd.grad(result.loss, trainer_logprobs, retain_graph=True)[0]
     expected_grad = torch.autograd.grad(expected, trainer_logprobs)[0]
@@ -384,7 +396,14 @@ def test_ipo_excludes_masked_tokens_and_caps_accepted_extreme_ratio():
     result = setup_rl_loss_fn(IPOLossConfig()).loss(inputs)
 
     torch.testing.assert_close(result.loss, torch.tensor(-1e4, device="cuda"))
-    assert all(torch.isfinite(value) for value in result.metrics.values())
+    torch.testing.assert_close(
+        result.metrics["log_importance_ratio/all"], torch.tensor([90.0, 100.0], device="cuda", dtype=torch.float32)
+    )
+    torch.testing.assert_close(
+        result.metrics["importance_ratio/accepted"], torch.tensor([1e30], device="cuda", dtype=torch.float32)
+    )
+    assert result.metrics["importance_ratio/accepted/saturated"].all()
+    assert all(torch.isfinite(value).all() for value in result.metrics.values())
     result.loss.backward()
     torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-1e4, 0.0, 0.0], device="cuda"))
 

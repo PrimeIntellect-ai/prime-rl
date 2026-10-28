@@ -119,6 +119,22 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     assert payload["usage"]["total_tokens"] == 7
 
 
+@pytest.mark.asyncio
+async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
+    # A replay request without compact logprobs: an overflowed step leaves an empty mask row.
+    mask = PackedSamplingMask(ids=np.array([1, 2], dtype=np.int64), counts=np.array([2, 0], dtype=np.int32))
+    output = CompletionOutput(0, "", [1, 2], None, None, sampling_mask=mask, finish_reason="length")
+
+    async def outputs():
+        yield RequestOutput("test", None, [10], None, [output], True)
+
+    params = SamplingParams(extra_args={"prl_replay": True})
+    packed = _PackedOutputs(outputs(), GenerateRequest(model="test", token_ids=[10], sampling_params=params))
+    with pytest.raises(ValueError, match="sampling_support_capacity"):
+        async for _ in packed:
+            pass
+
+
 def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, draws: bool = False):
     """The packed int64 mask the patched sampler hands to the server (pinned host copies need CUDA)."""
     logits = torch.full((len(sampled_ids), 8), -torch.inf)

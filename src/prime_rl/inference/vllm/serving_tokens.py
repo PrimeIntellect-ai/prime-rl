@@ -107,8 +107,12 @@ class _PackedOutputs:
                         "start": num_tokens - 1 - len(output.routed_experts),
                     }
                     output.routed_experts = None
+                mask = output.sampling_mask
+                if mask is not None and (mask.counts <= 0).any():
+                    raise ValueError(
+                        "Missing sampling support: the step's supports exceeded inference.sampling_support_capacity"
+                    )
                 if self._paired or self._sampler_rows:
-                    mask = output.sampling_mask
                     if mask is None or mask.ids.dtype != np.int64:
                         raise ValueError("Missing paired sampling-support evidence (needs enable_return_sampling_mask)")
                     ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)

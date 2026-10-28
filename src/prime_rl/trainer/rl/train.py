@@ -24,6 +24,7 @@ from prime_rl.trainer.rl.data import (
     DataLoader,
     FakeDataLoader,
     TensorMicroBatch,
+    drop_micro_batches,
     prepare_micro_batch,
     raise_score_centering_data_errors,
     score_centering_data_errors,
@@ -62,6 +63,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     setup_model,
     setup_processor,
+    take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -69,6 +71,8 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    STALENESS_BIN_EDGES,
+    STALENESS_BINS,
     TensorStats,
     begin_backward,
     broadcast_pause,
@@ -229,6 +233,7 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
+    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
@@ -328,6 +333,31 @@ def train(config: TrainerConfig):
         logger.debug("Loading batch")
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
+        dropped_micro_batches = 0
+        if not config.data.fake:
+            # Ranks that share a data rank train the same micro batches, so they must drop
+            # the same ones even when only one of them failed to fetch.
+            failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
+            failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
+            dist.all_reduce(failed, op=dist.ReduceOp.MAX)
+            # Every rank has fetched its arrays now, so one rank per data rank frees them
+            # (dummy micro batches may reuse another data rank's, hence after the world
+            # all-reduce).
+            if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
+                dataloader.release_payloads()
+            # A step where no micro batch's arrays could be fetched anywhere is not a
+            # transient failure (unreachable or mismatched env servers): stop instead of
+            # training on nothing.
+            if failed.numel() and bool(failed.all()):
+                raise RuntimeError(
+                    "Could not fetch the training arrays of any micro batch this step; check that "
+                    "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
+                )
+            dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
+            drop_micro_batches(micro_batches, dropped)
+            dropped_micro_batches = int(failed.sum().item())
+            if dropped:
+                logger.warning(f"Dropped {len(dropped)} micro batches whose payloads could not be fetched")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 
@@ -378,7 +408,7 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
-        step_tokens_per_expert = 0
+        routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
         score_centering = config.loss.type != "custom" and config.loss.needs_sampler_support
@@ -561,10 +591,8 @@ def train(config: TrainerConfig):
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
             policy_ages = None
-            if micro_batch["policy_versions"] is not None:
-                # Batch ``progress.step`` trains policy v{progress.step - 1}.
-                versions = micro_batch["policy_versions"].squeeze(0).to("cuda")
-                policy_ages = torch.where(versions >= 0, progress.step - 1 - versions, -1).split(sequence_lengths)
+            if micro_batch["staleness"] is not None:
+                policy_ages = micro_batch["staleness"].squeeze(0).to("cuda").split(sequence_lengths)
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
@@ -609,14 +637,21 @@ def train(config: TrainerConfig):
             with torch.no_grad():
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
             tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
+            if micro_batch["staleness"] is not None:
+                staleness = micro_batch["staleness"].to("cuda")
+                tensor_stats.add(
+                    "mismatch_kl_by_staleness",
+                    mismatch_kl,
+                    mismatch_mask & (staleness >= 0),
+                    torch.bucketize(staleness, staleness_bin_edges, right=True),
+                    STALENESS_BINS,
+                    fold_all=False,
+                )
 
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in moe_stats.items():
-                    tensor_stats.add(name, value)
-                step_tokens_per_expert += tokens_per_expert
+                routing_stats.append(take_moe_routing_stats(model))
 
             for key, loss_tensor in loss_tensors.items():
                 tensor_stats.add(key, loss_tensor)
@@ -694,6 +729,11 @@ def train(config: TrainerConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
+        if is_moe_model:
+            moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
+            for name, values in moe_stats.items():
+                tensor_stats.add(name, values)
+
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
         if is_moe_model:
@@ -768,6 +808,7 @@ def train(config: TrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
+            "payload/dropped_micro_batches": dropped_micro_batches,
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
