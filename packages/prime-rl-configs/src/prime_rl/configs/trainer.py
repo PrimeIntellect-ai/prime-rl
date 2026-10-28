@@ -716,16 +716,11 @@ class TrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.model.lora is not None and self.weight_broadcast.type != "filesystem":
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
             )
-        if self.weight_broadcast.type == "filesystem" and self.weight_broadcast.sparse:
-            if self.model.lora is not None:
-                raise ValueError("Sparse weight broadcast does not support LoRA")
-            if self.optim.type == "muon":
-                raise ValueError("Sparse weight broadcast does not support Muon yet")
         return self
 
     @model_validator(mode="after")

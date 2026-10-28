@@ -4,7 +4,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from math import prod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import torch
@@ -47,6 +47,16 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_filesystem")
 
+
+class DeltaChunk(NamedTuple):
+    """Changes to apply at once, in pinned host memory: ``(checkpoint tensor, count)`` entries, their gaps
+    (``decode_gaps``) and value bytes."""
+
+    entries: list[tuple[str, int]]
+    gaps: torch.Tensor
+    values: torch.Tensor
+
+
 _prefetch_pool = ThreadPoolExecutor(1)
 _reader_pool: ThreadPoolExecutor | None = None
 
@@ -80,9 +90,7 @@ class FileSystemWeightUpdateWorker(Worker):
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
         self.prefetched = (weight_path, _prefetch_pool.submit(self._read_delta, Path(weight_path)))
 
-    def _read_delta(
-        self, step_dir: Path
-    ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
+    def _read_delta(self, step_dir: Path) -> tuple[list[DeltaChunk], dict[str, int]]:
         """Read this worker's part of a delta into a pinned host buffer reused across steps, in chunks of up to 2^26
         changes of consecutive frames."""
         global _reader_pool
@@ -132,7 +140,7 @@ class FileSystemWeightUpdateWorker(Worker):
                 values_end += values.nbytes
             if chunk:
                 pinned.append(
-                    (
+                    DeltaChunk(
                         [entry for entries, _, _ in chunk for entry in entries],
                         self.host_buffer[gaps_at:gaps_end].view(torch.int32),
                         self.host_buffer[values_at:values_end],

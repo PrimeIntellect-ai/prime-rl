@@ -19,10 +19,9 @@ import torch.nn as nn
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
-from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
+from prime_rl.configs.shared import SparseFileSystemWeightBroadcastConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters, join_module_path
 from prime_rl.transports.weights.base import WeightSender
-from prime_rl.transports.weights.filesystem import FileSystemWeightSender
 from prime_rl.transports.weights.sparse_kernels import Pieces, build_pieces, count_changes, write_changes
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sparse_weights import (
@@ -998,7 +997,7 @@ def _write_json(path: Path, value) -> None:
     write_file(path, json.dumps(value).encode())
 
 
-class SparseFileSystemWeightSender(FileSystemWeightSender):
+class SparseFileSystemWeightSender(WeightSender):
     """Filesystem broadcast where steps carry only the delta against the previous broadcast (format in
     ``prime_rl.utils.sparse_weights``). The delta comes from the optimizer step (``diff_in_optimizer``) and is
     written as the step goes; the rest is finished in the background while the next step trains, and the trainer
@@ -1009,8 +1008,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
 
     gathers_full_weights = False
 
-    def __init__(self, output_dir: Path, config: FileSystemWeightBroadcastConfig):
-        super().__init__(output_dir, config)
+    def __init__(self, output_dir: Path, config: SparseFileSystemWeightBroadcastConfig):
+        super().__init__(output_dir, config.timeout)
         self.config = config
         self.encoder: SparseDeltaEncoder | None = None
         self.last_step: int | None = None
