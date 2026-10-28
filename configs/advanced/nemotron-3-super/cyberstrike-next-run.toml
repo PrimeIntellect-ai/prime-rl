@@ -13,7 +13,7 @@
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "8720a2d72af6bc9f77549fdf5ad62380084f48db"
+source_ref = "0a22c5bc9c4001449682d7fa80f21c9adf651d67"
 gpu_type = "H200_141GB"
 
 max_steps = 200
@@ -43,7 +43,7 @@ gpus_per_node = 8
 # CP16/EP16 trainer layout; no two-node trainer reduction.
 num_train_nodes = 4
 num_infer_nodes = 1
-num_infer_replicas = 6
+num_infer_replicas = 4
 orchestrator_on_inference = true
 
 [monitors.wandb]
