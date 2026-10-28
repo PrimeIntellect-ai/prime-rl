@@ -44,7 +44,8 @@ class CheckpointIndexMap:
     checkpoint format; their live params must keep that layout (one byte per
     checkpoint element). Supported: every write is one ``copy_`` of a row/column
     block of a 1-D or 2-D checkpoint tensor. Tensors the loader casts (e.g. an
-    fp32 router from a bf16 checkpoint) are only allowed to stay unchanged.
+    fp32 norm from a bf16 checkpoint) are loaded by value from full checkpoints
+    and anchors; a delta that changes them raises.
     """
 
     def __init__(self, model: Module, tensors: dict[str, tuple[list[int], str]]):
@@ -63,8 +64,8 @@ class CheckpointIndexMap:
             source_2d = source.view(1, -1) if source.dim() == 1 else source
             destination_2d = destination.view(1, -1) if destination.dim() == 1 else destination
             if name is not None and source.dtype != destination.dtype:
+                # Cast on load (e.g. an fp32 norm from a bf16 checkpoint): loaded by value, no deltas
                 unpatchable.add(name)
-                return destination
             if (
                 name is None
                 or param_name is None
@@ -124,7 +125,7 @@ class CheckpointIndexMap:
         self.fp8: dict[str, str] = {}
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
-        self.names = set(self.records) | unpatchable
+        self.names = set(self.records)
 
     def held_checksums(self) -> tuple[list[str], torch.Tensor, torch.Tensor]:
         """``bits_checksum`` of the live param elements each checkpoint tensor was written to, weighted by
@@ -278,11 +279,10 @@ class CheckpointIndexMap:
 
     def row_ranges(self) -> dict[str, tuple[int, int]]:
         """Checkpoint tensor -> the rows ``[begin, end)`` of its ``[rows, num_cols]`` view this worker holds
-        (fp8 tensors: whole 128-row blocks), for ``load_rows``. Tensors the engine casts on load are left out:
-        they never change."""
+        (fp8 tensors: whole 128-row blocks), for ``load_rows``."""
         ranges = {}
         for name, writes in self.records.items():
-            if name.endswith("_scale_inv") or name in self.unpatchable:
+            if name.endswith("_scale_inv"):
                 continue  # scales are set with their weights
             begin, end = min(write[0] for write in writes), max(write[0] + write[1] for write in writes)
             if name in self.fp8:
@@ -295,7 +295,7 @@ class CheckpointIndexMap:
     def load_rows(self, name: str, rows: torch.Tensor, begin: int) -> None:
         """Set the params from rows ``begin:`` of checkpoint tensor ``name`` (the ``row_ranges`` rows, on the
         params' device): the counterpart of ``apply_delta`` for full checkpoints. fp8 tensors are quantized
-        like the engine does, block scales included."""
+        like the engine does, block scales included; tensors the engine casts on load are cast the same way."""
         sources = [(name, rows, begin)]
         if name in self.fp8:
             quantized, scales = quantize_fp8_blocks(rows, self.fp8[name] == "ue8m0")
@@ -303,7 +303,11 @@ class CheckpointIndexMap:
         for source_name, source, first in sources:
             for row0, rows_, col0, cols, index, offset, *strides in self.records[source_name]:
                 block = source[row0 - first : row0 - first + rows_, col0 : col0 + cols]
-                self._view(index, rows_, cols, offset, strides).copy_(as_bits(block))
+                if source_name in self.unpatchable:
+                    flat = self.params[index].data.view(-1)
+                    flat.as_strided((rows_, cols), tuple(strides), offset).copy_(block)
+                else:
+                    self._view(index, rows_, cols, offset, strides).copy_(as_bits(block))
 
     @torch.no_grad()
     def apply_delta(self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor) -> None:
