@@ -112,7 +112,9 @@ def _compute_grad_weight(
 
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
-def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_fp8_gemm(
+    x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, host_num_tokens_per_expert: torch.Tensor | None
+) -> torch.Tensor:
     import deep_gemm
 
     (
@@ -153,7 +155,9 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
 
 
 @_grouped_fp8_gemm.register_fake
-def _grouped_fp8_gemm_fake(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_fp8_gemm_fake(
+    x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, host_num_tokens_per_expert: torch.Tensor | None
+) -> torch.Tensor:
     return x.new_empty((x.shape[0], weight.shape[2]))
 
 
@@ -163,6 +167,7 @@ def _grouped_fp8_gemm_backward(
     x: torch.Tensor,
     weight: torch.Tensor,
     offs: torch.Tensor,
+    host_num_tokens_per_expert: torch.Tensor | None,
     needs_grad_x: bool,
     needs_grad_weight: bool,
     grad_weight_transposed: bool,
@@ -178,7 +183,8 @@ def _grouped_fp8_gemm_backward(
     grad_output = grad_output.contiguous()
 
     if needs_grad_weight:
-        aligned_ms = ks_tensor.tolist()
+        # The host needs every group's rows; from the dispatch's host copy if it has one, otherwise a device sync.
+        aligned_ms = (host_num_tokens_per_expert if host_num_tokens_per_expert is not None else ks_tensor).tolist()
         grouped_total_m = sum(aligned_ms)
         grad_weight = _compute_grad_weight(
             x,
@@ -231,6 +237,7 @@ def _grouped_fp8_gemm_backward_fake(
     x: torch.Tensor,
     weight: torch.Tensor,
     offs: torch.Tensor,
+    host_num_tokens_per_expert: torch.Tensor | None,
     needs_grad_x: bool,
     needs_grad_weight: bool,
     grad_weight_transposed: bool,
@@ -239,24 +246,25 @@ def _grouped_fp8_gemm_backward_fake(
 
 
 def _grouped_fp8_gemm_setup_context(ctx, inputs, output) -> None:
-    x, weight, offs = inputs
-    ctx.save_for_backward(x, weight, offs)
+    x, weight, offs, host_num_tokens_per_expert = inputs
+    ctx.save_for_backward(x, weight, offs, host_num_tokens_per_expert)
     ctx.grad_weight_transposed = _is_transposed_contiguous(weight)
 
 
 def _grouped_fp8_gemm_autograd_backward(ctx, grad_output: torch.Tensor):
-    x, weight, offs = ctx.saved_tensors
-    needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+    x, weight, offs, host_num_tokens_per_expert = ctx.saved_tensors
+    needs_grad_x, needs_grad_weight, _, _ = ctx.needs_input_grad
     grad_x, grad_weight = _grouped_fp8_gemm_backward(
         grad_output,
         x.detach(),
         weight.detach(),
         offs,
+        host_num_tokens_per_expert,
         needs_grad_x,
         needs_grad_weight,
         ctx.grad_weight_transposed,
     )
-    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
+    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None, None
 
 
 _grouped_fp8_gemm.register_autograd(
@@ -269,6 +277,7 @@ def grouped_fp8_gemm(
     x: torch.Tensor,
     weight: torch.Tensor,
     offs: torch.Tensor,
+    host_num_tokens_per_expert: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """FP8 grouped GEMM, drop-in replacement for torch._grouped_mm.
 
@@ -276,8 +285,11 @@ def grouped_fp8_gemm(
         x: (M, K) concatenated token activations in bfloat16, M a multiple of 128.
         weight: (G, K, N) expert weights in bfloat16.
         offs: (G,) int32 cumulative token counts per expert, each group a multiple of 128 rows.
+        host_num_tokens_per_expert: the (G,) token counts per expert as a CPU tensor, if the caller has them on the
+            host. The weight gradient's grouped GEMM takes them on the host; without them the backward copies them there
+            and waits.
 
     Returns:
         (M, N) output tensor in bfloat16. Rows past offs[-1] are left uninitialized.
     """
-    return _grouped_fp8_gemm(x, weight, offs)
+    return _grouped_fp8_gemm(x, weight, offs, host_num_tokens_per_expert)

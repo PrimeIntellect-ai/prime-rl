@@ -318,3 +318,21 @@ def test_forward_does_not_sync_with_the_host():
 
     with _forbid_device_to_host_sync():
         grouped_fp8_gemm(x, weight, offs)
+
+
+def test_backward_with_host_counts_does_not_sync_with_the_host():
+    """Given the counts per expert on the host (as the EP dispatchers pass them), the backward launches without a
+    device-to-host sync, and its gradients are the same bytes as when it copies the counts from the device."""
+    x, weight, offs, _, probe = _inputs(COUNTS["ragged"], 512, 256, "align128")
+    expected = _run_op(x, weight, offs, probe)
+    x_leaf = x.clone().requires_grad_(True)
+    weight_leaf = weight.clone().requires_grad_(True)
+    out = grouped_fp8_gemm(x_leaf, weight_leaf, offs, torch.diff(offs, prepend=offs.new_zeros(1)).cpu())
+    loss = (out * probe).sum()
+    torch.cuda.synchronize()
+
+    with _forbid_device_to_host_sync():
+        loss.backward()
+
+    for actual, reference, label in zip((out.detach(), x_leaf.grad, weight_leaf.grad), expected, ("out", "x", "w")):
+        _assert_bitwise(actual, reference, label)

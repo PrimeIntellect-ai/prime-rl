@@ -89,8 +89,17 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
             selected_experts_indices,
             score_before_experts=score_before_experts,
         )
-        routed_output = experts(routed_input, num_tokens_per_expert)
+        host_num_tokens_per_expert = self.host_num_tokens_per_expert(state)
+        if host_num_tokens_per_expert is None:
+            routed_output = experts(routed_input, num_tokens_per_expert)
+        else:
+            routed_output = experts(routed_input, num_tokens_per_expert, host_num_tokens_per_expert)
         return self.combine(routed_output, state)
+
+    def host_num_tokens_per_expert(self, state: DispatchState) -> torch.Tensor | None:
+        """The dispatch's ``num_tokens_per_expert`` as a CPU tensor, if it copies the counts to the host anyway; the
+        experts then get it as a second routing tensor."""
+        return None
 
     def synchronize(self) -> None:
         return None
@@ -115,6 +124,7 @@ class TorchDispatchState(LocalDispatchState):
     input_splits: torch.Tensor
     output_splits: torch.Tensor
     num_routed_tokens: int
+    host_num_tokens_per_expert: torch.Tensor
 
 
 def permute_for_grouped_gemm(
@@ -348,14 +358,23 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             scores_after_experts = sorted_scores
 
         ep_degree = self.group.size()
+        alignment = self.token_group_alignment
         with torch.no_grad():
             num_tokens_per_expert_group = all_to_all_single_equal(num_tokens_per_expert, self.group)
-            input_splits, output_splits = torch.stack(
+            # Transfer to CPU now once, so a2a can read this without sync: the split sizes, then the routes per local
+            # expert.
+            host = torch.cat(
                 (
                     num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
                     num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
+                    num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=0),
                 )
-            ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
+            ).cpu()
+        input_splits, output_splits = host[:ep_degree], host[ep_degree : 2 * ep_degree]
+        # The aligned rows per local expert, as permute_for_grouped_gemm lays out the expert input.
+        host_num_tokens_per_expert = (
+            (host[2 * ep_degree :].clamp(min=alignment) + alignment - 1) // alignment * alignment
+        )
 
         num_routed_tokens = routed_input.shape[0]
         num_received_tokens = int(output_splits.sum())
@@ -376,8 +395,12 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             input_splits=input_splits,
             output_splits=output_splits,
             num_routed_tokens=num_routed_tokens,
+            host_num_tokens_per_expert=host_num_tokens_per_expert,
         )
         return routed_input, num_tokens_per_expert, state
+
+    def host_num_tokens_per_expert(self, state: TorchDispatchState) -> torch.Tensor:
+        return state.host_num_tokens_per_expert
 
     def combine(self, routed_output: torch.Tensor, state: TorchDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
