@@ -56,7 +56,7 @@ class TrainSamplingConfig(BaseConfig):
     logprobs: int | None = Field(None, ge=1)
     """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
 
-    sampler_draws: int | None = Field(None, ge=1, frozen=True)
+    sampler_draws: int | None = Field(None, ge=1)
     """Draws per token from the untruncated sampler, sent as ``extra_body.extra_args.prl_sampler_draws``.
     Set by the ``rl`` entrypoint for sampled score centering; kept in ``extra_body`` across live updates."""
 
