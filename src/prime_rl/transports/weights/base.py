@@ -99,13 +99,13 @@ class WeightSender(ABC):
         the master finished the handshake."""
 
     def _clean(self, step: int) -> None:
-        """Remove old broadcast dirs, keeping ``step`` and ``step - 1`` (a
-        lagging consumer may still be reading it). Broadcasts are purely
+        """Remove old broadcast dirs, keeping ``step`` and the broadcast before
+        it (a lagging consumer may still be reading it). Broadcasts are purely
         transitive — run state persistence is the checkpoint's job."""
         broadcast_dir = get_broadcast_dir(self.output_dir)
-        for old_step in get_all_ckpt_steps(broadcast_dir):
-            if old_step < step - 1:
-                shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
+        old_steps = sorted(old_step for old_step in get_all_ckpt_steps(broadcast_dir) if old_step < step)
+        for old_step in old_steps[:-1]:
+            shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
 
 
 class WeightReceiver(ABC):

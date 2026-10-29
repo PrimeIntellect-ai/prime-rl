@@ -345,6 +345,8 @@ class SFTConfig(BaseTrainerConfig):
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
+        if self.weight_broadcast.interval != 1:
+            raise ValueError("weight_broadcast.interval is RL only: SFT broadcasts at every step an eval env is due.")
         if self.weight_broadcast.type != "filesystem":
             if self.weight_broadcast.type == "nixl":
                 raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")

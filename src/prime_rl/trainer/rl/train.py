@@ -672,9 +672,10 @@ def train(config: TrainerConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # Broadcast the model just produced (policy v{progress.step}). The final
-        # broadcast keeps inference synchronized with the completed trainer.
-        if weight_sender is None:
+        # Broadcast the model just produced (policy v{progress.step}) every
+        # ``weight_broadcast.interval`` steps. The final broadcast keeps inference
+        # synchronized with the completed trainer.
+        if weight_sender is None or not (is_last_step or progress.step % config.weight_broadcast.interval == 0):
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
