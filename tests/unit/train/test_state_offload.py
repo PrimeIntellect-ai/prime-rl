@@ -1,9 +1,13 @@
 from typing import NamedTuple
 
+import dion
 import pytest
 import torch
+from torch.distributed.checkpoint import load as dcp_load
+from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
 
+from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 
 pytestmark = [pytest.mark.gpu]
@@ -112,3 +116,27 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
     assert pointers_before.keys() == pointers_after.keys()
     for key, pointer in pointers_before.items():
         assert pointers_after[key] == pointer, f"state buffer reallocated for {key}"
+
+
+def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
+    """dion's Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
+
+    def setup():
+        model = make_model(0)
+        groups = [
+            dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
+            dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
+        ]
+        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        return model, CPUOffloadOptimizer(optimizer)
+
+    model, optimizer = setup()
+    run_steps(model, optimizer, num_steps=3, seed=1)
+    dcp_save({"app": AppState(model, [optimizer], None, None)}, checkpoint_id=tmp_path)
+    run_steps(model, optimizer, num_steps=2, seed=2)
+
+    resumed_model, resumed_optimizer = setup()
+    dcp_load({"app": AppState(resumed_model, [resumed_optimizer], None, None)}, checkpoint_id=tmp_path)
+    assert [group["step"] for group in resumed_optimizer.param_groups] == [3, 3]
+    run_steps(resumed_model, resumed_optimizer, num_steps=2, seed=2)
+    assert_params_equal(model, resumed_model)
