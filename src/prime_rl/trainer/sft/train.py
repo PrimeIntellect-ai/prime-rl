@@ -53,6 +53,7 @@ from prime_rl.trainer.utils import (
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
+    get_peak_memory_across_ranks,
     prepare_gradient_offload,
     print_sample,
     scale_gradients_,
@@ -558,7 +559,7 @@ def train(config: SFTConfig):
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
@@ -601,6 +602,7 @@ def train(config: SFTConfig):
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
+            "perf/non_torch_memory": non_torch_memory,
             "perf/mfu": mfu,
             "perf/mfu_6dn": mfu_6dn,
             "step": progress.step,

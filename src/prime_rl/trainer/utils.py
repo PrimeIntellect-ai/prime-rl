@@ -224,6 +224,17 @@ def broadcast_pause(controller: Controller, step: int) -> bool:
     return bool(paused.item())
 
 
+def get_peak_memory_across_ranks() -> tuple[float, float]:
+    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
+    peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    dist.all_reduce(memory, op=dist.ReduceOp.MAX)
+    peak_memory, non_torch_memory = memory.tolist()
+    return peak_memory, non_torch_memory
+
+
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
     """
     Visualize the loss mask of a tokenized sample using rich.
