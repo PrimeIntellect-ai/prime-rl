@@ -1044,7 +1044,7 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
 def test_shared_monitor_disable_and_prime_propagate():
     """CLI ``--no-monitors.wandb`` / ``--no-monitors.file`` (which land as the string
     "None") propagate the disable to both sub-configs, whose monitors default to
-    enabled; a shared ``[monitors.prime]`` reaches the orchestrator only."""
+    enabled; a shared ``[monitors.prime]`` reaches both."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
@@ -1055,18 +1055,21 @@ def test_shared_monitor_disable_and_prime_propagate():
     )
     assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
     assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
-    assert config.orchestrator.monitors.prime is not None
-    assert config.orchestrator.monitors.prime.name == "shared-prime"
+    assert config.trainer.monitors.prime.name == config.orchestrator.monitors.prime.name == "shared-prime"
 
 
-def test_monitor_on_in_one_component_only_is_rejected():
+@pytest.mark.parametrize(
+    "monitor,trainer,orchestrator",
+    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {}, {"prime": "None"})],
+)
+def test_monitor_on_in_one_component_only_is_rejected(monitor, trainer, orchestrator):
     """The components log to one run per monitor, so a monitor is on in all or none."""
-    with pytest.raises(ValueError, match=r"monitors.wandb must match across components"):
+    with pytest.raises(ValueError, match=rf"monitors.{monitor} must match across components"):
         RLConfig.model_validate(
             {
                 "model": {"name": "Qwen/Qwen3-0.6B"},
-                "trainer": {"monitors": {"wandb": {"project": "p"}}},
-                "orchestrator": {"renderer": {"name": "default"}},
+                "trainer": {"monitors": trainer},
+                "orchestrator": {"renderer": {"name": "default"}, "monitors": orchestrator},
             }
         )
 

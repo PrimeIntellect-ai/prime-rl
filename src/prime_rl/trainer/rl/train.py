@@ -110,6 +110,7 @@ def train(config: TrainerConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,
