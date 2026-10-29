@@ -161,6 +161,8 @@ class PrimeMonitor(Monitor):
             return
         # The SFT online-eval process and the RL trainer log into the run their launcher registers.
         attaches = isinstance(config, (SFTOnlineEvalConfig, TrainerConfig))
+        # The RL orchestrator outlives its trainer, so it finishes their shared run.
+        self.finisher = "orch" if isinstance(config, TrainerConfig) else producer
         run_id = os.getenv("RUN_ID")
         if attaches and run_id is None and mode == "online":
             raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")
@@ -229,7 +231,7 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
         if self.run is None:
             return
-        if paused or os.getenv(RUN_FINISHER_VAR, self.producer) != self.producer:
+        if paused or os.getenv(RUN_FINISHER_VAR, self.finisher) != self.producer:
             # Drain only: a paused run continues on resume, and a shared run is finished
             # by the process that outlives this one. A clean exit is not a crash.
             await asyncio.to_thread(self.run.flush, FINISH_TIMEOUT)

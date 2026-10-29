@@ -8,7 +8,6 @@ import pytest
 
 from prime_rl.configs.rl import RLConfig
 from prime_rl.monitors.prime import PrimeMonitor, launch_run
-from prime_rl.utils.process import RUN_FINISHER_VAR
 
 
 @pytest.fixture
@@ -58,7 +57,6 @@ def test_shared_prime_monitor_reaches_the_trainer(prime):
 def test_trainer_and_orchestrator_share_the_launchers_run(sdk_runs, tmp_path, monkeypatch):
     """Both components attach to the run the launcher registered. The trainer's metrics
     land on it, and only the orchestrator finishes it."""
-    monkeypatch.setenv(RUN_FINISHER_VAR, "orchestrator")
     config = _rl_config()
     trainer, orchestrator = (
         PrimeMonitor(config.trainer.monitors.prime),
@@ -67,7 +65,7 @@ def test_trainer_and_orchestrator_share_the_launchers_run(sdk_runs, tmp_path, mo
     with launch_run(config.orchestrator, config.orchestrator.monitors.prime):
         launched = sdk_runs[0]
         asyncio.run(trainer.init(config=config.trainer, output_dir=tmp_path, producer="trainer"))
-        asyncio.run(orchestrator.init(config=config.orchestrator, output_dir=tmp_path, producer="orchestrator"))
+        asyncio.run(orchestrator.init(config=config.orchestrator, output_dir=tmp_path, producer="orch"))
         assert trainer.run.attached and orchestrator.run.attached
         assert trainer.run.id == orchestrator.run.id == launched.id == os.environ["RUN_ID"]
 
