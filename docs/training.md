@@ -316,7 +316,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state, the open train work (groups, in-flight rollouts, unshipped batch) | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Orchestrator | Progress, per-env data state, and with `[ckpt] rollouts = true` the open train work (groups, in-flight rollouts, unshipped batch) | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -349,24 +349,24 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-A resumed run picks up the train work where the checkpoint left it, so the first steps after a resume see the same mix of tasks as an uninterrupted run:
+With `rollouts = true` in the shared `[ckpt]` block (`orchestrator.ckpt.rollouts`, off by default), a resumed run picks up the train work where the checkpoint left it, so the first steps after a resume see the same mix of tasks as an uninterrupted run:
 
 - **Open groups** keep their members: the ones that already finished, and the ones never dispatched.
-- **In-flight rollouts** continue from their newest checkpoint when their env takes rollout checkpoints (`[env.agent.checkpoint]`, see [rollout checkpoints](#rollout-checkpoints)); otherwise they start over. Without this, a resume would skip them and train first on whatever finishes fastest.
+- **In-flight rollouts** continue from their newest restore point when their env supports rollout checkpointing (see [rollout checkpointing](#rollout-checkpointing)); otherwise they start over. Without this, a resume would skip them and train first on whatever finishes fastest.
 - **The unshipped batch** and the results not yet consumed carry over.
 
 The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the open work of an env no longer configured is dropped.
 
 The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its open work needs to `checkpoints/step_{n}/orchestrator/arrays/`: those of the finished but unshipped rollouts, and those of each in-flight rollout up to its restore point. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
 
-#### Rollout checkpoints
+#### Rollout checkpointing
 
-An env takes rollout checkpoints when its agent sets `[env.agent.checkpoint]`: it records a restore point as each model turn goes upstream, streams it to the orchestrator, and the orchestrator checkpoint saves the newest one of every in-flight rollout. A harness that keeps nothing in its box (e.g. `null`) restores from the trace alone. A sandboxed harness restores a box snapshot: set `keep = "all"` and `after = "keep"` so the env server leaves the snapshots to the orchestrator, which keeps each in-flight rollout's newest and the ones its latest checkpoint resumes from, and deletes the rest.
+Rollout checkpointing (`[env.agent.checkpoint]`) is on by default in verifiers, for a runtime that takes snapshots (prime) and a harness that supports it. The agent records a restore point as each model turn goes upstream and streams it to the orchestrator. The orchestrator checkpoint saves the newest one of every in-flight rollout. With `[ckpt] rollouts = true`, every env agent keeps its box snapshots for the orchestrator (`keep = "all"`, `after = "keep"`). The orchestrator keeps each in-flight rollout's newest snapshot and the ones its latest checkpoint resumes from, and deletes the rest. A harness that keeps nothing in its box (`null`) off prime restores from the trace alone when its agent sets `boxless = true`.
 
 ```toml
-[orchestrator.train.source.env.agent.checkpoint]
-keep = "all"
-after = "keep"
+[ckpt]
+interval = 50
+rollouts = true
 ```
 
 ### Pausing a Live Run

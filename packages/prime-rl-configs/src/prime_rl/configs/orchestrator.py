@@ -436,6 +436,13 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 
+    rollouts: bool = False
+    """Also checkpoint the open rollouts: the in-flight ones, which a resumed run
+    continues from their newest restore points, and the finished ones not yet consumed.
+    Every env agent then keeps its box snapshots for this run (`keep = "all"`,
+    `after = "keep"`), which deletes them once no checkpoint resumes from them. An agent
+    with rollout checkpointing off (`checkpoint = None`) restarts its in-flight rollouts."""
+
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
@@ -731,6 +738,18 @@ class OrchestratorConfig(BaseConfig):
                     f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def resolve_rollout_checkpointing(self):
+        """With ``ckpt.rollouts``, this run deletes its env agents' box snapshots itself:
+        a checkpoint may resume from them after the rollout's server is gone."""
+        if self.ckpt is None or not self.ckpt.rollouts:
+            return self
+        for _, source in self.env_sources:
+            for agent in agent_config_fields(source.env).values():
+                if agent.checkpoint is not None:
+                    agent.checkpoint = agent.checkpoint.model_copy(update={"keep": "all", "after": "keep"})
         return self
 
     @model_validator(mode="after")

@@ -288,3 +288,18 @@ def test_a_checkpoint_being_written_holds_its_snapshots_and_the_last_ones():
         assert set(d.snapshots) == {"new"}
 
     asyncio.run(run())
+
+
+def test_a_checkpoint_holds_open_work_only_when_it_saves_rollouts():
+    from prime_rl.configs.orchestrator import CheckpointConfig
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.progress = Progress(step=6)
+    orchestrator.train_source = TrainSource([train_env("a")])
+    orchestrator.config_state = lambda: {}
+    orchestrator.train_sink = sink(["a"], group_size=2)
+    orchestrator.dispatcher = SimpleNamespace(open_work=lambda: [], queued_results=lambda: [], snapshots={})
+    for rollouts in (False, True):
+        orchestrator.config = SimpleNamespace(ckpt=CheckpointConfig(interval=5, rollouts=rollouts))
+        assert ("open_work" in orchestrator.checkpoint_state()) is rollouts

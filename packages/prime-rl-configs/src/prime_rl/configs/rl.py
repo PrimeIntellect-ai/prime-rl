@@ -97,6 +97,9 @@ class SharedCheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    rollouts: bool = False
+    """Also checkpoint the orchestrator's open rollouts, in flight and finished but not yet consumed, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"

@@ -118,7 +118,7 @@ class Orchestrator:
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
     controller: Controller | None
-    shipped_state: tuple[int, dict] | None
+    shipped_state: tuple[int, dict | None] | None
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
@@ -730,9 +730,11 @@ class Orchestrator:
         self.update_dispatch_gate()
         if self.controller is not None:
             self.apply_config_update()
+            # A pause saves the dataset position as of this ship. Open rollouts carry
+            # what was dispatched since, so with them the pause saves the state it finds.
             self.shipped_state = (
                 step,
-                build_state(self.progress, self.train_source, self.config_state(), self.open_work()),
+                None if self.saves_rollouts else build_state(self.progress, self.train_source, self.config_state()),
             )
             await self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -1025,15 +1027,23 @@ class Orchestrator:
         t = time.perf_counter()
         # Snapshot on the event loop, so the dispatcher cannot mutate the state mid-copy;
         # write off it: the env servers persisting the open work's arrays take a while.
-        state = build_state(self.progress, self.train_source, self.config_state(), self.open_work())
-        await self.save_state(state, step)
+        await self.save_state(self.checkpoint_state(), step)
         return time.perf_counter() - t
+
+    @property
+    def saves_rollouts(self) -> bool:
+        return self.config.ckpt is not None and self.config.ckpt.rollouts
+
+    def checkpoint_state(self) -> dict:
+        """A ``build_state`` snapshot of the run now, with its open work if it saves rollouts."""
+        open_work = self.open_work() if self.saves_rollouts else None
+        return build_state(self.progress, self.train_source, self.config_state(), open_work)
 
     async def save_state(self, state: dict, step: int) -> None:
         """Write a ``build_state`` snapshot off the event loop. Its box snapshots are held
         from the start: sweeps go on during the write. The last checkpoint's stay held
         until this one is written."""
-        groups = state["open_work"]["groups"]
+        groups = state["open_work"]["groups"] if "open_work" in state else []
         self.dispatcher.hold_snapshots(groups, release=False)
         await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
         self.dispatcher.hold_snapshots(groups)
@@ -1079,7 +1089,7 @@ class Orchestrator:
             return
         step, state = self.shipped_state
         if self.controller.update(step):
-            await self.save_state(state, step)
+            await self.save_state(state if state is not None else self.checkpoint_state(), step)
             self.controller.mark_saved(step)
             get_logger().info(f"Paused at step {step}, saved its state")
 
