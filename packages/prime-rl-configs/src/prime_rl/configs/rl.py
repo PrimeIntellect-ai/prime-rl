@@ -342,6 +342,16 @@ class RLConfig(BaseConfig):
 
         # The orchestrator queries the inference server it is paired with; without one, it
         # must match the trainer whose weights the external server receives.
+        # The components log to one run per monitor, so a monitor is on in all or none.
+        for name in ("wandb", "file", "prime"):
+            require_equal(
+                f"monitors.{name}",
+                {
+                    f"{component}.monitors.{name}": getattr(config.monitors, name) is not None
+                    for component, config in (("trainer", trainer), ("orchestrator", orchestrator))
+                },
+            )
+
         if inference is not None:
             require_equal(
                 "deployment.gpus_per_node",

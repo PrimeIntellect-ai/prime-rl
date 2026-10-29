@@ -21,7 +21,6 @@ from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
-from prime_rl.utils.process import RUN_FINISHER_VAR
 from prime_rl.utils.record import update_record
 from prime_rl.utils.utils import sanitize
 
@@ -110,10 +109,10 @@ def register(
 def launch_run(config: RLConfig | SFTConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
     """Register the launch's Prime run around starting its components, which attach to
     it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
-    run failed - the SDK leaves an attached run's failure to the process that
-    registered it, so that process supervises the launch: the local ``rl`` or ``sft``
-    launcher, or a multi-node SLURM job's ``run_owner``. A run a managed launch pre-created
-    (``$RUN_ID``) is the platform's."""
+    run failed, and one that ends cleanly finishes it once every component exited - the
+    components only flush their attached run. So the process that registers the run
+    supervises the launch: the local ``rl`` or ``sft`` launcher, or a multi-node SLURM
+    job's ``run_owner``. A run a managed launch pre-created (``$RUN_ID``) is the platform's."""
     if prime is None or os.getenv("RUN_ID") or (os.getenv(pr.MODE_ENV) or "online") != "online":
         yield
         return
@@ -125,8 +124,7 @@ def launch_run(config: RLConfig | SFTConfig, prime: PrimeMonitorConfig | None) -
         # A failed component exits the launcher with a SystemExit chained to its error.
         run.fail(e.__cause__ or e, timeout=FINISH_TIMEOUT)
         raise
-    # The finisher component completes the run; this process only exits.
-    atexit.unregister(run._atexit_hook)
+    run.finish(timeout=FINISH_TIMEOUT)
 
 
 class PrimeMonitor(Monitor):
@@ -134,9 +132,8 @@ class PrimeMonitor(Monitor):
 
     A training run's processes log to one Prime training run: the ``rl`` or ``sft``
     launcher registers it (``launch_run``) and its components attach through ``$RUN_ID``.
-    A component started without a launcher registers its own.
-    ``$PRL_RUN_FINISHER`` names the process that finishes a shared run; the others
-    only flush. A standalone eval instead opens one evaluation per env and epoch when
+    The process that registered a run finishes it; an attached process only flushes, and
+    a component started without a launcher registers and finishes its own. A standalone eval instead opens one evaluation per env and epoch when
     the epoch starts (``log_eval_plan``), streams its episodes into it, and finishes
     it with the epoch's aggregates (``log_eval_epoch``).
 
@@ -169,8 +166,6 @@ class PrimeMonitor(Monitor):
             return
         # The SFT online-eval process and the RL trainer log into the run their launcher registers.
         attaches = isinstance(config, (SFTOnlineEvalConfig, TrainerConfig))
-        # The RL orchestrator outlives its trainer, so it finishes their shared run.
-        self.finisher = "orchestrator" if isinstance(config, TrainerConfig) else producer
         run_id = os.getenv("RUN_ID")
         if attaches and run_id is None and mode == "online":
             raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")
@@ -239,15 +234,14 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
         if self.run is None:
             return
-        if paused or os.getenv(RUN_FINISHER_VAR, self.finisher) != self.producer:
-            # Drain only: a paused run continues on resume, and a shared run is finished
-            # by the process that outlives this one. A clean exit is not a crash.
+        if paused or self.run.attached:
+            # Drain only: a paused run continues on resume, and an attached run is
+            # finished by the process that registered it, once every component exited.
+            # A clean exit is not a crash.
             await asyncio.to_thread(self.run.flush, FINISH_TIMEOUT)
             atexit.unregister(self.run._atexit_hook)
             return
-        # Drains queued uploads so the final step's metrics and episodes land, then
-        # finalizes (idempotent on the platform side); an attached run's failure
-        # marking stays with the launcher.
+        # Drains queued uploads so the final step's metrics and episodes land, then finalizes.
         await asyncio.to_thread(self.run.finish)
 
     async def _init_evaluations(self, config: EvalConfig) -> None:

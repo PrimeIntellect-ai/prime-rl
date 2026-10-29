@@ -146,15 +146,13 @@ def sdk_runs(monkeypatch):
     return runs
 
 
-def test_online_evals_share_the_launchers_run(sdk_runs, tmp_path, monkeypatch):
+def test_online_evals_share_the_launchers_run(sdk_runs, tmp_path):
     """The sft launcher registers the run and makes its id the run identity; the trainer
-    and the online-eval process attach to it. Only the online-eval process finishes the
-    run: it drains its final evals after the trainer exits."""
+    and the online-eval process attach to it and only flush. The launcher finishes the
+    run once both exited."""
     from prime_rl.entrypoints.sft import build_online_eval_config
     from prime_rl.monitors.prime import launch_run
-    from prime_rl.utils.process import RUN_FINISHER_VAR
 
-    monkeypatch.setenv(RUN_FINISHER_VAR, "online-eval")
     config = _sft_config(
         {"eval": {"interval": 50, "source": [{"name": "rev", "env": {"taskset": {"id": "harbor"}}}]}, "inference": {}}
     )
@@ -173,10 +171,10 @@ def test_online_evals_share_the_launchers_run(sdk_runs, tmp_path, monkeypatch):
         assert trainer.run.id == online_eval.run.id == launched.id
 
         asyncio.run(trainer.finalize())
-        assert trainer.run.flushed and not trainer.run.finished
         asyncio.run(online_eval.finalize())
-        assert online_eval.run.finished
-    assert launched.failed is None
+        assert trainer.run.flushed and online_eval.run.flushed
+        assert not (trainer.run.finished or online_eval.run.finished or launched.finished)
+    assert launched.finished and launched.failed is None
 
 
 def test_a_failed_launch_fails_the_run(sdk_runs):
@@ -194,7 +192,8 @@ def test_a_failed_launch_fails_the_run(sdk_runs):
 @pytest.mark.parametrize("command,code", [(["true"], 0), (["false"], 1)])
 def test_slurm_run_owner_fails_the_run_with_its_step(sdk_runs, tmp_path, monkeypatch, command, code):
     """A multi-node SLURM job's run owner registers the run around the job step, exports
-    its id to the step, and marks the run failed when the step fails."""
+    its id to the step, and finishes the run when the step succeeds or fails it when the
+    step fails."""
     from prime_rl.entrypoints import run_owner
     from prime_rl.entrypoints.sft import write_config
 
@@ -213,7 +212,7 @@ def test_slurm_run_owner_fails_the_run_with_its_step(sdk_runs, tmp_path, monkeyp
 
     (run,) = sdk_runs
     assert not run.attached and os.environ["RUN_ID"] == os.environ["PRL_RUN_ID"] == run.id
-    assert (run.failed is not None) == bool(code)
+    assert (run.failed is not None) == bool(code) and run.finished == (not code)
 
 
 @pytest.mark.parametrize("env", [{"RUN_ID": "hosted-1"}, {"PRIME_RUNS_MODE": "disabled"}])

@@ -30,7 +30,6 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
-    RUN_FINISHER_VAR,
     ProcessGroup,
     partition_gpus,
     set_proc_title,
@@ -358,8 +357,6 @@ def sft_local(config: SFTConfig):
             "WANDB_PROGRAM": "uv run sft",
             "WANDB_ARGS": json.dumps(sys.argv),
         }
-    # The online-eval process outlives the trainer, so it finishes the shared Prime run.
-    shared_run_env = {RUN_FINISHER_VAR: "online-eval"} if config.eval is not None else {}
 
     with ProcessGroup() as processes:
         # Optionally, start the inference server for online evals
@@ -405,7 +402,6 @@ def sft_local(config: SFTConfig):
                     "PRL_ATTEMPT_LOG_DIR": str(log_dir),
                     "PRL_LOG_DIR": str(log_dir),
                     **wandb_shared_env,
-                    **shared_run_env,
                     "WANDB_SHARED_LABEL": "online-eval",
                 },
                 log_path=log_dir / "eval.log",
@@ -419,7 +415,6 @@ def sft_local(config: SFTConfig):
             **DEFAULT_TRAINER_ENV_VARS,
             **config.env_vars,
             **wandb_shared_env,
-            **shared_run_env,
             **launcher_attempt_env(config_dir, log_dir),
         }
         if config.eval is not None:
