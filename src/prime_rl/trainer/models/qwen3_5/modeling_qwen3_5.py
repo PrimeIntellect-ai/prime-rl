@@ -22,8 +22,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     Qwen3_5RotaryEmbedding,
     build_qwen3_5_mrope_position_ids,
 )
-from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
-from prime_rl.trainer.models.qwen_vl import materialize_qwen_vl_images
+from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel, materialize_qwen_vl_images
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 

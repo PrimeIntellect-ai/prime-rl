@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from prime_rl.trainer.models.qwen_vl import materialize_qwen_vl_images
+from prime_rl.trainer.models.qwen3_5.vision import materialize_qwen_vl_images
 from prime_rl.transports.batch import MMImageRef, MMRefs
 
 _IMAGE_URL = (
