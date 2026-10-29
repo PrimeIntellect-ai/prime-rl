@@ -597,6 +597,17 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_weight_broadcast_interval(self):
+        """Batches late in a broadcast interval train on rollouts at least ``interval - 1`` steps
+        stale; past ``max_staleness`` every token is masked and the batch never fills."""
+        if self.weight_broadcast.interval - 1 > self.max_staleness:
+            raise ValueError(
+                f"weight_broadcast.interval - 1 ({self.weight_broadcast.interval - 1}) must not exceed "
+                f"max_staleness ({self.max_staleness})"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_loss_aggregation(self):
         """The trainer divides the rl loss by the batch's summed rl weights, so token-mean (weight
         1 per token) and prompt-mean (weight 1 per group) envs can't share a batch."""

@@ -792,6 +792,18 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     assert reloaded == config
 
 
+def test_weight_broadcast_interval():
+    config = RLConfig.model_validate(
+        {"trainer": {}, "orchestrator": {"max_staleness": 3}, "weight_broadcast": {"type": "filesystem", "interval": 4}}
+    )
+    assert config.trainer.weight_broadcast.interval == 4
+    assert config.orchestrator.weight_broadcast.interval == 4
+    with pytest.raises(ValidationError, match="must not exceed max_staleness"):
+        OrchestratorConfig.model_validate(
+            {"weight_broadcast": {"type": "filesystem", "interval": 5}, "max_staleness": 3}
+        )
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {

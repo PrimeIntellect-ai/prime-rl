@@ -97,10 +97,11 @@ from prime_rl.utils.utils import clean_exit
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Maximum shipped batches that inference has not applied the policy for yet. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded; resumed
-# when the watcher advances ``policy.version``. Shipping itself is paced by the
-# trainer: a batch goes out only once every trainer rank requested it.
+# Maximum shipped batches that inference has not applied the policy for yet, on
+# top of the ``weight_broadcast.interval - 1`` versions the trainer never
+# broadcasts. The dispatcher is paused via ``update_dispatch_gate`` once this is
+# exceeded; resumed when the watcher advances ``policy.version``. Shipping itself
+# is paced by the trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
 
 
@@ -1107,12 +1108,13 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
+        max_lead = TARGET_LAG + self.config.weight_broadcast.interval - 1
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > max_lead:
             if was_set:
                 get_logger().info(
-                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - TARGET_LAG} "
+                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - max_lead} "
                     f"(currently v{self.policy.version})"
                 )
             gate.clear()
