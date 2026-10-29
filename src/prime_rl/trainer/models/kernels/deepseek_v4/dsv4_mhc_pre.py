@@ -12,7 +12,9 @@ and per-column `scale` and `base` of shape `(N,)`:
 The RMS norm is folded into the projection, so the fp32 normalized streams are never built.
 Autograd keeps `x`, `mixes` and `rstd`. Each direction is one kernel over the tokens that reads the
 streams twice (projection, then collapse or input gradient); the weight gradient is a second kernel
-that sums fixed split-token partials. The projection follows `torch.get_float32_matmul_precision`
+that sums fixed split-token partials. On SM90 and SM100 the forward projection and sum of squares come
+from DeepGEMM's TF32 `tf32_hc_prenorm_gemm`, the kernel vLLM runs for mHC, and the forward kernel only
+collapses. Elsewhere, and in the backward, the projection follows `torch.get_float32_matmul_precision`
 (TF32 unless it is "highest"), like the fp32 `F.linear` it replaces.
 """
 
@@ -33,11 +35,13 @@ def _configs(**extra):
     ]
 
 
-@triton.autotune(configs=_configs(), key=["HC", "D", "N", "PRECISION"])
+@triton.autotune(configs=_configs(), key=["HC", "D", "N", "PRECISION", "PRECOMPUTED"])
 @triton.jit
 def _fwd_kernel(
     x_ptr,
     w_ptr,
+    projection_ptr,
+    sqrsum_ptr,
     scale_ptr,
     base_ptr,
     mixes_ptr,
@@ -51,6 +55,7 @@ def _fwd_kernel(
     D: tl.constexpr,
     N: tl.constexpr,
     PRECISION: tl.constexpr,
+    PRECOMPUTED: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -63,18 +68,26 @@ def _fwd_kernel(
     n_mask = offs_n < N
     offs_d = tl.arange(0, BLOCK_D)
 
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    sumsq = tl.zeros((BLOCK_M,), dtype=tl.float32)
-    for d0 in range(0, D, BLOCK_D):
-        d = d0 + offs_d
-        d_mask = d < D
-        for i in tl.static_range(HC):
-            k = i * D + d
-            x = tl.load(x_ptr + rows64[:, None] * K + k[None, :], mask=row_mask[:, None] & d_mask[None, :], other=0.0)
-            x = x.to(tl.float32)
-            w = tl.load(w_ptr + offs_n[:, None] * K + k[None, :], mask=n_mask[:, None] & d_mask[None, :], other=0.0)
-            acc = tl.dot(x, tl.trans(w.to(tl.float32)), acc, input_precision=PRECISION)
-            sumsq += tl.sum(x * x, axis=1)
+    if PRECOMPUTED:
+        acc = tl.load(
+            projection_ptr + rows64[:, None] * N + offs_n[None, :], mask=row_mask[:, None] & n_mask[None, :], other=0.0
+        )
+        sumsq = tl.load(sqrsum_ptr + rows, mask=row_mask, other=0.0)
+    else:
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        sumsq = tl.zeros((BLOCK_M,), dtype=tl.float32)
+        for d0 in range(0, D, BLOCK_D):
+            d = d0 + offs_d
+            d_mask = d < D
+            for i in tl.static_range(HC):
+                k = i * D + d
+                x = tl.load(
+                    x_ptr + rows64[:, None] * K + k[None, :], mask=row_mask[:, None] & d_mask[None, :], other=0.0
+                )
+                x = x.to(tl.float32)
+                w = tl.load(w_ptr + offs_n[:, None] * K + k[None, :], mask=n_mask[:, None] & d_mask[None, :], other=0.0)
+                acc = tl.dot(x, tl.trans(w.to(tl.float32)), acc, input_precision=PRECISION)
+                sumsq += tl.sum(x * x, axis=1)
 
     rstd = tl.rsqrt(sumsq / K + norm_eps)
     mixes = acc * rstd[:, None]
@@ -228,6 +241,31 @@ def _grid(num_tokens):
     return lambda meta: (triton.cdiv(num_tokens, meta["BLOCK_M"]),)
 
 
+def _uses_deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor) -> bool:
+    return (
+        torch.cuda.get_device_capability(x.device)[0] in (9, 10)
+        and x.dtype == torch.bfloat16
+        and fn.dtype == torch.float32
+        and fn.shape[0] <= 32
+        and fn.shape[0] % 8 == 0
+        and fn.shape[1] % 64 == 0
+    )
+
+
+def _deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor, num_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """`x @ fn.T` and the per-token sum of squares, split over K like vLLM so short rows still fill the GPU."""
+    import deep_gemm
+
+    k = fn.shape[1]
+    token_blocks = triton.cdiv(num_tokens, 64)
+    sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
+    num_splits = max(1, min(sm_count // token_blocks, triton.cdiv(k, 64) // 4))
+    projection = fn.new_empty(num_splits, num_tokens, fn.shape[0])
+    sqrsum = fn.new_empty(num_splits, num_tokens)
+    deep_gemm.tf32_hc_prenorm_gemm(x.view(num_tokens, k), fn, projection, sqrsum, num_splits)
+    return projection.sum(0), sqrsum.sum(0)
+
+
 @torch.library.custom_op("prime_rl::dsv4_mhc_pre", mutates_args=())
 def _mhc_pre(
     x: torch.Tensor, fn: torch.Tensor, scale: torch.Tensor, base: torch.Tensor, norm_eps: float, hc_eps: float
@@ -238,9 +276,11 @@ def _mhc_pre(
     rstd = x.new_empty(num_tokens, dtype=torch.float32)
     logits = x.new_empty(*lead, n, dtype=torch.float32)
     collapsed = x.new_empty(*lead, hidden)
+    precomputed = _uses_deep_gemm_projection(x, fn)
+    projection, sqrsum = _deep_gemm_projection(x, fn, num_tokens) if precomputed else (None, None)
     _fwd_kernel[_grid(num_tokens)](
-        x, fn, scale, base, mixes, rstd, logits, collapsed, num_tokens, norm_eps, hc_eps,
-        HC=hc, D=hidden, N=n, PRECISION=_precision(), BLOCK_N=_block_n(n),
+        x, fn, projection, sqrsum, scale, base, mixes, rstd, logits, collapsed, num_tokens, norm_eps, hc_eps,
+        HC=hc, D=hidden, N=n, PRECISION=_precision(), PRECOMPUTED=precomputed, BLOCK_N=_block_n(n),
     )  # fmt: skip
     return collapsed, logits, mixes, rstd
 
