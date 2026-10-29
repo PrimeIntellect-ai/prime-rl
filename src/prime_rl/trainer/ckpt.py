@@ -171,6 +171,10 @@ class AppState(Stateful):
                 setattr(self.progress, key, value)
 
 
+RUN_START_FILE = "run_start.json"
+"""Written by a run's first trainer attempt: which committed checkpoints predate the run."""
+
+
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
@@ -198,6 +202,41 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
+
+    def committed_batch(self, step: int) -> str | None:
+        """The batch ID in the checkpoint of ``step`` if every rank finished saving it. A step
+        directory alone may hold an interrupted save or only the orchestrator's state."""
+        try:
+            return msgspec.json.decode(
+                (self.get_ckpt_path(step) / "batch.json").read_bytes(), type=BatchCheckpoint
+            ).batch.batch_id
+        except FileNotFoundError:
+            return None
+
+    def latest_committed_step(self, this_run: bool = False) -> int | None:
+        """Newest committed checkpoint. With ``this_run``, skip the ones ``record_run_start`` found
+        beyond the run's start, unless this run committed that step again."""
+        stale = {}
+        if this_run and (record := self.ckpt_dir / RUN_START_FILE).exists():
+            stale = {int(step): batch for step, batch in json.loads(record.read_text())["stale"].items()}
+        committed = {step: self.committed_batch(step) for step in get_all_ckpt_steps(self.ckpt_dir)}
+        return max(
+            (step for step, batch in committed.items() if batch is not None and stale.get(step) != batch), default=None
+        )
+
+    def record_run_start(self, step: int | None) -> None:
+        """Record the committed checkpoints newer than the one this run starts from (all of them on a
+        fresh start). They belong to an abandoned timeline, e.g. after resuming from an earlier step,
+        and a replacement trainer must not restore one."""
+        stale = {
+            str(other): batch
+            for other in get_all_ckpt_steps(self.ckpt_dir)
+            if (step is None or other > step) and (batch := self.committed_batch(other)) is not None
+        }
+        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.ckpt_dir / f".{RUN_START_FILE}.tmp"
+        temporary.write_text(json.dumps({"start": step, "stale": stale}))
+        temporary.replace(self.ckpt_dir / RUN_START_FILE)
 
     def save_to_path(
         self,

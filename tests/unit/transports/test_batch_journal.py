@@ -92,3 +92,32 @@ def test_failed_deletion_can_be_reconciled(tmp_path, monkeypatch):
     assert journal.read(batch_id) == [b"retained"]
     BatchJournal(tmp_path).prune(checkpoint)
     assert not journal.batch_path(batch_id).exists()
+
+
+def test_a_replacement_trainer_skips_checkpoints_of_another_timeline(tmp_path):
+    """After a resume from an earlier step, newer checkpoints of the abandoned run stay on disk; a
+    replacement restores only the run's start or checkpoints the run committed itself."""
+    from prime_rl.configs.trainer import CheckpointConfig
+    from prime_rl.trainer.ckpt import CheckpointManager
+
+    manager = CheckpointManager(tmp_path, CheckpointConfig())
+    journal = BatchJournal(tmp_path)
+    old, new = uuid4().hex, uuid4().hex
+
+    def commit(step: int, session: str) -> None:
+        batch_id = f"{session}:{step}"
+        journal.write(batch_id, [batch_id.encode()])
+        path = manager.get_ckpt_path(step)
+        path.mkdir(parents=True, exist_ok=True)
+        journal.commit_checkpoint(path, step, batch_id)
+
+    for step in (5, 10, 15):
+        commit(step, old)
+    manager.record_run_start(5)
+    assert manager.latest_committed_step() == 15
+    assert manager.latest_committed_step(this_run=True) == 5
+    commit(10, new)
+    assert manager.latest_committed_step(this_run=True) == 10
+    # A fresh start owns none of them.
+    manager.record_run_start(None)
+    assert manager.latest_committed_step(this_run=True) is None
