@@ -38,6 +38,7 @@ from prime_rl.utils.process import (
 )
 
 SFT_CONFIG = "sft.json"
+TRAINER_CONFIG = "trainer.json"
 SFT_SBATCH = "sft.sbatch"
 
 INFERENCE_CONFIG = "inference.json"
@@ -98,6 +99,8 @@ def sft_config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str
     """The resolved configs a launch leaves in ``config_dir``: the SFT config and, with
     online evals, the inference, online-eval and env-server configs."""
     components: list[tuple[str, Path | str]] = [("SFT", config_dir / SFT_CONFIG)]
+    if config.deployment.type == "multi_node":
+        components.append(("Trainer", config_dir / TRAINER_CONFIG))
     if config.eval is not None:
         if config.inference is not None:
             components.append(("Inference", config_dir / INFERENCE_CONFIG))
@@ -139,9 +142,16 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
 
 
 def write_slurm_script(
-    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str, wandb_shared: bool
+    config: SFTConfig,
+    config_path: Path,
+    run_config_path: Path,
+    log_dir: Path,
+    script_path: Path,
+    prl_run_id: str,
+    wandb_shared: bool,
 ) -> None:
-    """Write the SLURM script to disk."""
+    """Write the SLURM script to disk. The trainer runs ``config_path``; a multi-node
+    job's run owner registers the Prime run from ``run_config_path``."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -200,6 +210,7 @@ def write_slurm_script(
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
+            run_config_path=run_config_path,
             config_dir=config_path.parent,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -240,16 +251,19 @@ def sft_slurm(config: SFTConfig):
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
-    exclude = (
-        {"deployment", "slurm", "dry_run", "clean"}
-        if config.deployment.type == "multi_node"
-        else {"slurm", "dry_run", "clean"}
-    )
-    if online_eval:
-        # The trainer job only needs [eval] for the weight-broadcast cadence; the
-        # inference pool runs on its dedicated nodes in the same allocation.
-        exclude = exclude | {"inference"}
-    write_config(config, config_path, exclude=exclude)
+    if config.deployment.type == "multi_node":
+        # The job's run owner registers the Prime run with the whole config; nothing runs it.
+        write_config(config, config_path, exclude={"dry_run", "clean"})
+        trainer_config_path = config_dir / TRAINER_CONFIG
+        exclude = {"deployment", "slurm", "dry_run", "clean"}
+        if online_eval:
+            # The trainer job only needs [eval] for the weight-broadcast cadence; the
+            # inference pool runs on its dedicated nodes in the same allocation.
+            exclude = exclude | {"inference"}
+        write_config(config, trainer_config_path, exclude=exclude)
+    else:
+        write_config(config, config_path, exclude={"slurm", "dry_run", "clean"})
+        trainer_config_path = config_path
 
     # Trainer and online-eval processes log to a single shared W&B run.
     wandb_shared = online_eval and config.monitors.wandb is not None
@@ -259,7 +273,9 @@ def sft_slurm(config: SFTConfig):
         write_eval_subconfigs(config, config_dir, strip_router=True)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared)
+    write_slurm_script(
+        config, trainer_config_path, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared
+    )
     logger.info(f"Wrote SLURM script to {script_path}")
 
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1

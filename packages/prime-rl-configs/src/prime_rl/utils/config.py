@@ -15,7 +15,7 @@ def default_output_dir() -> Path:
     return Path(os.environ.get("PRL_OUTPUT_DIR", "outputs"))
 
 
-def dump_resolved_config(config: BaseModel, exclude: set[str] | None = None) -> dict:
+def dump_resolved_config(config: BaseModel, exclude: set[str] | dict[str, Any] | None = None) -> dict:
     """Dump a resolved config for a machine-written JSON artifact.
 
     Resolved configs are written as JSON, not TOML: JSON keeps nulls, so explicit None

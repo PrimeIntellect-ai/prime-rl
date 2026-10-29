@@ -235,7 +235,7 @@ CLEANUP_SH
 #
 # The run owner registers the Prime run around the step and fails it when the
 # step fails; every component attaches through the $RUN_ID it exports.
-python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/orchestrator.json srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/rl.json srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.

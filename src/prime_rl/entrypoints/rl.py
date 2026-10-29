@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from prime_rl.configs.algorithm import FrozenModelConfig
@@ -67,7 +68,7 @@ def env_server_names(config: RLConfig, split: str) -> list[str]:
     return [source.resolved_name for source_split, source in env_servers(config) if source_split == split]
 
 
-def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
+def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | dict[str, Any] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / RL_CONFIG, "w") as f:
@@ -521,8 +522,12 @@ def rl_slurm(config: RLConfig):
             env_names={"train": train_env_names, "eval": eval_env_names},
         )
     else:
+        # The job's run owner registers the Prime run with the whole config; nothing runs it.
+        # It keeps [slurm], which multi-node needs, so it drops the copy in [inference].
+        write_config(config, config_dir, exclude={"dry_run": True, "clean": True, "inference": {"slurm"}})
         write_subconfigs(config, config_dir)
-        logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', rl_config_components(config, config_dir))}")
+        components = [("RL", config_dir / RL_CONFIG), *rl_config_components(config, config_dir)]
+        logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', components)}")
 
         train_env_names = env_server_names(config, "train")
         eval_env_names = env_server_names(config, "eval")
@@ -596,7 +601,7 @@ def rl(config: RLConfig):
     if config.slurm is not None:
         rl_slurm(config)
         return
-    with launch_run(config.orchestrator, None if config.dry_run else config.orchestrator.monitors.prime):
+    with launch_run(config, None if config.dry_run else config.orchestrator.monitors.prime):
         rl_local(config)
 
 
