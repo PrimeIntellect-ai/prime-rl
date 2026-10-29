@@ -121,8 +121,16 @@ def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
 
 
 def _online_logsumexp_and_weighted_update(
-    m: torch.Tensor, s: torch.Tensor, t: torch.Tensor, chunk_logits: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    m: torch.Tensor,
+    s: torch.Tensor,
+    t: torch.Tensor,
+    s_other: torch.Tensor,
+    chunk_logits: torch.Tensor,
+    target_idx: torch.Tensor,
+    target_in_chunk: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Online update of the running max ``m``, sum of exp ``s``, exp-weighted logit sum ``t``, and sum of exp
+    over the non-target logits ``s_other``, all relative to ``m``."""
     chunk_m = torch.amax(chunk_logits, dim=-1)
     m_new = torch.maximum(m, chunk_m)
     exp_old = torch.exp(m - m_new)
@@ -130,7 +138,13 @@ def _online_logsumexp_and_weighted_update(
     chunk_exp = torch.exp(chunk_logits - m_new.unsqueeze(-1))
     s_new = s * exp_old + chunk_exp.sum(dim=-1)
     t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
-    return m_new, s_new, t_new
+    # Zero the target's term before summing: subtracting it from s afterwards can't recover the non-target terms
+    # already rounded away against it
+    target_idx = target_idx.unsqueeze(1)
+    target_exp = torch.where(target_in_chunk, 0.0, chunk_exp.gather(1, target_idx).squeeze(1))
+    chunk_exp.scatter_(1, target_idx, target_exp.unsqueeze(1))
+    s_other_new = s_other * exp_old + chunk_exp.sum(dim=-1)
+    return m_new, s_new, t_new, s_other_new
 
 
 def sampling_replay_mask(sampling_mask: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -170,6 +184,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         renormalized over that mask: ``logprob = scaled_logits[label] -
         logsumexp(scaled_logits[mask])``. Other positions — and entropy, a
         full-distribution diagnostic — keep full-vocab normalization.
+
+        Logprobs are computed as ``-softplus(logsumexp_{j != label} - scaled_logits[label])``
+        over the same normalization set, which keeps a confident label's logprob and
+        gradient from rounding to exactly 0 (Barron et al., arXiv:2610.31642).
         """
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
         assert weight.dim() == 2, f"expected weight [V,H], got {tuple(weight.shape)}"
@@ -190,7 +208,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         vocab_chunk_size = min(vocab, 8192)
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
-        logz = torch.empty((n,), device=device, dtype=torch.float32)
+        logz = torch.empty((n,), device=device, dtype=torch.float32)  # label logit - logprob
         replay = torch.zeros((n,), device=device, dtype=torch.bool) if sampling_mask is not None else None
         topk_logprobs = torch.empty_like(topk_ids, dtype=torch.float32) if topk_ids is not None else None
 
@@ -204,6 +222,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             m = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
             s = torch.zeros((token_count,), device=device, dtype=torch.float32)
             t = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            s_other = torch.zeros((token_count,), device=device, dtype=torch.float32)
             target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
             mask_chunk = sampling_mask[start:end].to(torch.long) if sampling_mask is not None else None
@@ -225,7 +244,15 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
                 scaled_logits = scaled_logits * inv_t_chunk
 
-                m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
+                # Branchless target extraction - we don't want to stall the GPU here (because: if torch.any()) calls bool(Tensor) calls Tensor.items() <- sync here we don't want
+                in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
+                chunk_target = scaled_logits.gather(1, local_idx.unsqueeze(1)).squeeze(1)
+                target_logits = torch.where(in_range, chunk_target, target_logits)
+
+                m, s, t, s_other = _online_logsumexp_and_weighted_update(
+                    m, s, t, s_other, scaled_logits, local_idx, in_range
+                )
 
                 if mask_chunk is not None:
                     mask_local, mask_in_range = _sampling_mask_local_indices(mask_chunk, vocab_start, vocab_end)
@@ -234,20 +261,17 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     local, valid = _sampling_mask_local_indices(topk_chunk, vocab_start, vocab_end)
                     topk_logits = torch.where(valid, scaled_logits.gather(1, local), topk_logits)
 
-                # Branchless target extraction - we don't want to stall the GPU here (because: if torch.any()) calls bool(Tensor) calls Tensor.items() <- sync here we don't want
-                in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
-                local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
-                chunk_target = scaled_logits.gather(1, local_idx.unsqueeze(1)).squeeze(1)
-                target_logits = torch.where(in_range, chunk_target, target_logits)
-
             logz_full = m + torch.log(s)
+            # With no other finite logit, log(0) = -inf and the logprob is -softplus(-inf) = 0
+            logprobs_chunk = -F.softplus(m + torch.log(s_other) - target_logits)
             if mask_chunk is not None:
-                logz_chunk = torch.where(replay_chunk, torch.logsumexp(mask_logits, dim=-1), logz_full)
+                other_mask_logits = mask_logits.masked_fill(mask_chunk == labels_chunk.unsqueeze(-1), float("-inf"))
+                replay_logprobs = -F.softplus(torch.logsumexp(other_mask_logits, dim=-1) - target_logits)
+                logprobs_chunk = torch.where(replay_chunk, replay_logprobs, logprobs_chunk)
                 replay[start:end] = replay_chunk
-            else:
-                logz_chunk = logz_full
+            logz_chunk = target_logits - logprobs_chunk
             logz[start:end] = logz_chunk
-            logprobs[start:end] = target_logits - logz_chunk
+            logprobs[start:end] = logprobs_chunk
             entropy[start:end] = logz_full - (t / s)
             if topk_chunk is not None:
                 topk_logprobs[start:end] = (topk_logits - logz_chunk.unsqueeze(-1)).masked_fill(topk_chunk < 0, 0.0)
@@ -255,7 +279,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         ctx.set_materialize_grads(
             False
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, sampling_mask, replay, topk_ids)
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, logprobs, sampling_mask, replay, topk_ids)
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
 
@@ -269,7 +293,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
         assert grad_logprobs is not None or grad_topk is not None, "FusedOutputLinear requires a logprob gradient"
 
-        hidden, weight, labels, inv_temperature, logz, sampling_mask, replay, topk_ids = ctx.saved_tensors
+        hidden, weight, labels, inv_temperature, logz, logprobs, sampling_mask, replay, topk_ids = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
         softcap: float | None = ctx.softcap
 
@@ -295,6 +319,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             topk_chunk = topk_ids[start:end] if topk_ids is not None else None
             grad_head = grad_topk[start:end].float().masked_fill(topk_chunk < 0, 0.0) if grad_topk is not None else None
             grad_scale = -grad_chunk if grad_head is None else -grad_chunk - grad_head.sum(-1)
+            # The label's entry is grad * (1 - p) + (grad_scale + grad) * p. Take 1 - p as -expm1(logprob):
+            # 1 - exp(logprob) rounds to 0 once p rounds to 1, while the non-label entries stay nonzero
+            label_logprobs = logprobs[start:end]
+            label_grad = grad_chunk * -torch.expm1(label_logprobs) + (grad_scale + grad_chunk) * label_logprobs.exp()
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -321,7 +349,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 # Branchless grad scatter like we did in the sync-free forward
                 in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
                 local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
-                grad_logits.scatter_add_(1, local_idx.unsqueeze(1), (grad_chunk * in_range).unsqueeze(1))
+                chunk_label_grad = torch.where(
+                    in_range, label_grad, grad_logits.gather(1, local_idx.unsqueeze(1)).squeeze(1)
+                )
+                grad_logits.scatter_(1, local_idx.unsqueeze(1), chunk_label_grad.unsqueeze(1))
                 if grad_head is not None:
                     local, valid = _sampling_mask_local_indices(topk_chunk, vocab_start, vocab_end)
                     grad_logits.scatter_add_(1, local, grad_head * valid)
@@ -340,8 +371,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
     """Summed cross-entropy over labels != IGNORE_INDEX, with the gradients computed during forward.
 
-    Per chunk of ``chunk_size`` tokens: one full-vocab logits GEMM, the loss, and the gradient
-    (softmax minus one-hot) folded straight into ``grad_hidden`` and ``grad_weight``. Only one chunk's
+    Per chunk of ``chunk_size`` tokens: one full-vocab logits GEMM, the loss (from the logsumexp over the
+    non-target logits), and the gradient (softmax minus one-hot) folded straight into ``grad_hidden`` and ``grad_weight``. Only one chunk's
     logits are alive at a time and backward does no recompute: it scales the stored gradients by the
     incoming scalar. That drops the head's matmul passes from four to three (forward logits, dX, dW).
     Same approach as torchtitan's ChunkedLossWrapper.
@@ -379,14 +410,20 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
             if softcap is not None:
                 tanh_logits = torch.tanh(logits / softcap)
                 logits = softcap * tanh_logits
-            logz = torch.logsumexp(logits, dim=-1)
             target_logits = logits.gather(1, target).squeeze(1)
-            loss += torch.where(valid, logz - target_logits, 0.0).sum()
+            # CE as softplus(logsumexp_{j != target} - z_target) (Barron et al., arXiv:2610.31642): logz - z_target
+            # rounds to exactly 0 for a confident target, and so does its gradient, while the others stay nonzero.
+            # The target is dropped in place (the logits buffer is reused for the gradient below); with no other
+            # finite logit, the logsumexp is -inf and the loss is softplus(-inf) = 0.
+            logits.scatter_(1, target, float("-inf"))
+            token_loss = F.softplus(torch.logsumexp(logits, dim=-1) - target_logits)
+            loss += torch.where(valid, token_loss, 0.0).sum()
 
             if needs_hidden or needs_weight:
-                # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
-                grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
-                grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
+                # dx(loss)/dx(logits) is the softmax exp(z - z_target - loss) off the target and p - 1 = expm1(-loss) at
+                # it, on valid rows and zero elsewhere. The target was dropped to -inf above so exp gives 0 there first.
+                grad_logits = logits.sub_((target_logits + token_loss).unsqueeze(-1)).exp_()
+                grad_logits.scatter_(1, target, torch.expm1(-token_loss).unsqueeze(-1))
                 grad_logits = grad_logits.mul_(valid.unsqueeze(-1))
                 if softcap is not None:
                     grad_logits = grad_logits.mul_(1 - tanh_logits.square())
