@@ -522,10 +522,12 @@ def require_joint_resume_step(ckpt_dir: Path, step: int | None = None, *, allow_
 
 
 def resolve_joint_resume_step(ckpt_dir: Path, resume: ResumeConfig) -> int | None:
-    """Resolve a resume, treating only an empty automatic resume of an empty directory as a fresh start."""
+    """Resolve a resume, allowing a fresh start only without checkpoint artifacts."""
     if resume.dir is not None:
         return require_joint_resume_step(resume.dir.parent, resume.dir_step, allow_legacy=resume.legacy)
-    if resume.step is None and not resume.legacy and (not ckpt_dir.exists() or not any(ckpt_dir.iterdir())):
+    lifecycle_metadata = {CKPT_GENERATION_FILE, CKPT_RETENTION_FILE, CKPT_LOCK_FILE}
+    fresh_start = not ckpt_dir.exists() or all(path.name in lifecycle_metadata for path in ckpt_dir.iterdir())
+    if resume.step is None and not resume.legacy and fresh_start:
         return None
     return require_joint_resume_step(ckpt_dir, resume.step, allow_legacy=resume.legacy)
 

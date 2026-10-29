@@ -75,6 +75,12 @@ def test_hosted_empty_resume_starts_fresh_only_in_empty_checkpoint_dir(tmp_path)
     ckpt_dir.mkdir()
     assert resolve_joint_resume_step(ckpt_dir, resume) is None
 
+    # An orchestrator restart before step 20 can see lifecycle metadata but no
+    # jointly complete checkpoint. That is still a fresh start, not a resume.
+    start_checkpoint_generation(ckpt_dir, generation="hosted-run", resume_step=None)
+    (ckpt_dir / "retention.json").write_text("{}")
+    assert resolve_joint_resume_step(ckpt_dir, resume) is None
+
     get_step_path(ckpt_dir, 1).mkdir()
     with pytest.raises(FileNotFoundError, match="No jointly complete"):
         resolve_joint_resume_step(ckpt_dir, resume)
