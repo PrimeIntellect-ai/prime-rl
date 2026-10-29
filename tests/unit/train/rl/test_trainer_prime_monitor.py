@@ -69,8 +69,8 @@ def test_trainer_and_orchestrator_share_the_launchers_run(sdk_runs, tmp_path, mo
         assert trainer.run.attached and orchestrator.run.attached
         assert trainer.run.id == orchestrator.run.id == launched.id == os.environ["RUN_ID"]
 
-        asyncio.run(trainer.log_metrics({"time/trainer_step": 1.5, "optim/grad_norm": 0.3}, step=1))
-        assert trainer.run.metrics == [(1, {"time/trainer_step": 1.5, "optim/grad_norm": 0.3})]
+        asyncio.run(trainer.log_metrics({"time/step": 1.5, "optim/grad_norm": 0.3}, step=1))
+        assert trainer.run.metrics == [(1, {"time/step": 1.5, "optim/grad_norm": 0.3})]
 
         asyncio.run(trainer.finalize())
         assert trainer.run.flushed and not trainer.run.finished
