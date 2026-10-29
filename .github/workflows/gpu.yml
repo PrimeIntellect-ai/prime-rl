@@ -104,6 +104,7 @@ jobs:
           - {test: alphabet_sort, name: Alphabet Sort}
           - {test: reverse_text_lora, name: Reverse Text LoRA}
           - {test: reverse_text_moe, name: Reverse Text MoE}
+          - {test: reverse_text_modelexpress, name: Reverse Text ModelExpress}
     steps:
       - name: Install Git
         run: |
@@ -126,6 +127,11 @@ jobs:
               cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
+      - name: Install ModelExpress server
+        if: matrix.test == 'reverse_text_modelexpress'
+        run: |
+          apt-get install -y curl make gcc
+          bash scripts/install_modelexpress.sh
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER
