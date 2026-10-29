@@ -49,7 +49,10 @@ async def pause(request: Request):
 
 @router.post("/resume")
 async def resume(request: Request):
-    await engine_client(request).resume_generation()
+    async with request.app.state.weight_update_lock:
+        if not request.app.state.weights_valid:
+            return JSONResponse({"error": "A complete weight update is required before resuming"}, status_code=409)
+        await engine_client(request).resume_generation()
     return {"status": "resumed"}
 
 
@@ -57,9 +60,12 @@ async def resume(request: Request):
 async def update_weights(request: Request):
     data = await request.json()
     client = engine_client(request)
-    await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
-    await client.update_weight_version(str(data["weight_version"]))
+    async with request.app.state.weight_update_lock:
+        request.app.state.weights_valid = False
+        await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+        # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
+        await client.update_weight_version(str(data["weight_version"]))
+        request.app.state.weights_valid = True
     return {"status": "ok"}
 
 
@@ -118,10 +124,12 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     session_id = data.get("session_id", "default")
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, session_id),
-    )
+    async with request.app.state.weight_update_lock:
+        await engine_client(request).collective_rpc(
+            "init_broadcaster",
+            args=(host, port, rank_offset, inference_world_size, timeout, session_id),
+            kwargs={"recoverable": data["recoverable"]} if "recoverable" in data else {},
+        )
     return {"status": "ok"}
 
 
@@ -142,6 +150,8 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.weight_update_lock = asyncio.Lock()
+    state.weights_valid = True
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both

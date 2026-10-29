@@ -364,6 +364,14 @@ Only one replay batch is loaded at a time, alongside the pending live batch. Rea
 
 This is a transport-level recovery API, not an automatic restart flag or control endpoint. Production trainer-only recovery also requires weight-channel reconnection, policy identity after rollback, and launcher supervision that preserves the orchestrator and inference. The trainer's startup weight broadcast still precedes its batch handshake. Ordinary `rl --resume` remains a coordinated restart.
 
+#### Recoverable NCCL weight transfers
+
+`[weight_broadcast] recoverable = true` opts NCCL publishers and receivers into nonblocking NCCL calls with error polling and per-operation deadlines from `weight_broadcast.timeout`. It leaves inference/model-parallel communicators alone. A failed or timed-out weight collective aborts its communicator; the existing `/init_broadcaster` operation can then join surviving inference workers to a replacement publisher using a fresh rendezvous. Every participant must use the same `recoverable` setting. The default remains `false`; polling and waiting for each packet adds transfer overhead.
+
+Weight updates leave engines paused on errors or cancellation. Collective updates are not blindly retried after an HTTP failure: the original operation may still be running. The vLLM server rejects `/resume` after a failed update until a complete replacement reload succeeds. Interrupted layerwise reloads discard deferred tensors and restore the model's original tensor references. This preserves storage references, not old values: some weights may already have changed, so a complete reload is required.
+
+This option provides weight-channel recovery primitives, not automatic trainer recovery. A coordinator must fence the old publisher, reconcile journal replay and policy identity, reconnect all receivers, and complete a full replacement reload before resuming inference. It must also handle outstanding RPCs after an HTTP timeout. NIXL and filesystem transfer remain available; this option does not add NIXL agent reconnection or change LoRA's filesystem requirement.
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:

@@ -391,7 +391,10 @@ class DynamoAdminPlane(AdminPlane):
         port: int,
         timeout: int,
         inference_world_size: int,
+        recoverable: bool = False,
     ) -> None:
+        if recoverable:
+            raise ValueError("Dynamo inference does not support recoverable NCCL weight transfer")
         async with self._mutation_lock:
             self._require_uninitialized_nccl()
             if inference_world_size != 1:

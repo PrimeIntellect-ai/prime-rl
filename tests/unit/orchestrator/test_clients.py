@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -58,7 +59,8 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_admin_plane_initializes_nccl():
+@pytest.mark.parametrize("recoverable", [False, True])
+def test_admin_plane_initializes_nccl(recoverable):
     admin_plane = AdminPlane(ClientConfig())
     client = AsyncMock()
     response = MagicMock()
@@ -72,6 +74,7 @@ def test_admin_plane_initializes_nccl():
             port=29501,
             timeout=1200,
             inference_world_size=1,
+            recoverable=recoverable,
         )
     )
 
@@ -83,6 +86,7 @@ def test_admin_plane_initializes_nccl():
             "rank_offset": 0,
             "inference_world_size": 1,
             "timeout": 1200,
+            **({"recoverable": True} if recoverable else {}),
         },
     )
     asyncio.run(admin_plane.aclose())
@@ -103,6 +107,37 @@ def test_pause_engines_pauses_prefill_before_decode():
     asyncio.run(_pause_engines([engine("decode"), engine("prefill")], step=1, roles=["decode", "prefill"]))
 
     assert events == ["prefill start", "prefill done", "decode start", "decode done"]
+
+
+@pytest.mark.parametrize("failure", ["http", "timeout", "cancelled", None])
+def test_weight_update_resumes_only_after_success(failure):
+    events = []
+
+    async def handle(request):
+        events.append(request.url.path)
+        if request.url.path == "/update_weights":
+            if failure == "http":
+                return httpx.Response(500)
+            if failure == "timeout":
+                raise httpx.ReadTimeout("lost transfer response")
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+        return httpx.Response(200)
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        async with httpx.AsyncClient(base_url="http://engine", transport=httpx.MockTransport(handle)) as client:
+            admin.clients = [client]
+            error = {"http": httpx.HTTPStatusError, "timeout": httpx.ReadTimeout, "cancelled": asyncio.CancelledError}
+            if failure:
+                with pytest.raises(error[failure]):
+                    await admin.update_weights(None, transport="nccl", step=1)
+            else:
+                await admin.update_weights(None, transport="nccl", step=1)
+
+    asyncio.run(run())
+    assert events == (["/pause", "/update_weights"] if failure else ["/pause", "/update_weights", "/resume"])
 
 
 def test_setup_client_creates_renderer_client():

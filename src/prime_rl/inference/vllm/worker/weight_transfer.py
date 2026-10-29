@@ -5,6 +5,7 @@ from torch.nn import Module
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+from vllm.model_executor.model_loader.reload.layerwise import LOADING_LAYERS, _place_kernel_tensors, get_layerwise_info
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
@@ -18,9 +19,28 @@ def load_weights_checkpoint_layerwise(
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
-        initialize_layerwise_reload(model)
-        model.load_weights(state_iter)  # type: ignore
-        finalize_layerwise_reload(model, model_config)
+        try:
+            initialize_layerwise_reload(model)
+            model.load_weights(state_iter)  # type: ignore
+            finalize_layerwise_reload(model, model_config)
+        except BaseException:
+            # Discard deferred loads and restore CUDA-graph tensor references,
+            # without processing partially loaded layers. Values already copied
+            # into those tensors are NOT rolled back: inference must stay paused.
+            abort_layerwise_reload(model)
+            raise
+
+
+def abort_layerwise_reload(model: Module) -> None:
+    """Discard incomplete reload state; tensor values still require a full reload."""
+    for layer in model.modules():
+        info = get_layerwise_info(layer)
+        if info.kernel_tensors is not None:
+            _place_kernel_tensors(layer, info)
+        info.reset()
+        LOADING_LAYERS.discard(layer)
+    if hasattr(model, "_original_do_torchao_reload"):
+        model._do_torchao_reload = model._original_do_torchao_reload
 
 
 @torch.no_grad()
