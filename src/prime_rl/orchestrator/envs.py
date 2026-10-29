@@ -71,6 +71,12 @@ class Env:
         """Where the replicas of a launcher-managed server publish their addresses; read
         when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
+        # A server that keeps its box snapshots past the run (`after = "keep"`) leaves
+        # their deletion to this run: a checkpoint may still resume from them.
+        self.owns_snapshots = any(
+            agent.checkpoint is not None and agent.checkpoint.after == "keep"
+            for agent in agent_config_fields(config.env).values()
+        )
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
@@ -190,12 +196,6 @@ class TrainEnv(Env):
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
         self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
-        # A server that keeps its box snapshots past the run (`after = "keep"`) leaves
-        # their deletion to this run: a checkpoint may still resume from them.
-        self.owns_snapshots = any(
-            agent.checkpoint is not None and agent.checkpoint.after == "keep"
-            for agent in agent_config_fields(config.env).values()
-        )
 
     def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
         return vf.SamplingConfig(

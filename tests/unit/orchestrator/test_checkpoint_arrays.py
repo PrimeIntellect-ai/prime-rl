@@ -95,7 +95,8 @@ def test_a_worker_persists_an_inflight_trace_up_to_its_restore_point(tmp_path):
 
 def _episode(hook: PayloadHook, rng: np.random.Generator) -> vf.Episode:
     trace = _trace(rng)
-    episode = vf.Episode(env=vf.EnvInfo(id="e"), task=trace.task, ok=True, traces=[trace])
+    run = vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1, policy=vf.PolicySpan(start=0, end=0)))
+    episode = vf.Episode(env=vf.EnvInfo(id="e"), task=trace.task, ok=True, traces=[trace], run=run)
     hook.keep(episode, vf.SamplingConfig())
     return episode
 

@@ -31,6 +31,7 @@ from verifiers.v1.serve.delta import dump
 from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
+from prime_rl.orchestrator.utils import result_kind
 from prime_rl.transports.batch.types import PAYLOAD_ARRAYS_KEY, PAYLOAD_INFO_KEY, PAYLOAD_WORKER_KEY
 from prime_rl.transports.payload import persist_payloads
 from prime_rl.utils.logger import format_time, get_logger
@@ -187,12 +188,23 @@ def dump_episode(episode: Any) -> dict:
     return dump(episode, context={"token_arrays": True})
 
 
+EVAL_PLACES = ("eval-queued", "eval")
+
+
+def _queued_place(result: Any) -> str:
+    """Where a result in ``out_q`` waits; a written one's file name already says it."""
+    if isinstance(result, str):
+        return result.split(".")[1]
+    return "queued" if result_kind(result) == "train" else "eval-queued"
+
+
 def _map_episodes(work: dict, fn: Callable[[Any, str], Any]) -> dict:
     """``work`` with ``fn(episode, place)`` applied to each of its in-queue episodes, where
-    ``place`` is where the episode waits: ``queued`` (``out_q``), ``group`` (a sink group
-    still collecting) or ``batch`` (the unshipped batch)."""
+    ``place`` is where the episode waits: ``queued`` (``out_q``), ``group`` (a train sink
+    group still collecting), ``batch`` (the unshipped batch), ``eval-queued`` (``out_q``)
+    or ``eval`` (an eval epoch still collecting)."""
     sink = work["sink"]
-    return {
+    mapped = {
         **work,
         "sink": {
             **sink,
@@ -200,9 +212,15 @@ def _map_episodes(work: dict, fn: Callable[[Any, str], Any]) -> dict:
             "episode_by_trace": {tid: fn(e, "batch") for tid, e in sink["episode_by_trace"].items()},
         },
         "results": [
-            r if isinstance(r, DispatchFailure | GroupCancellation) else fn(r, "queued") for r in work["results"]
+            r if isinstance(r, DispatchFailure | GroupCancellation) else fn(r, _queued_place(r))
+            for r in work["results"]
         ],
     }
+    if (eval_work := work.get("eval")) is not None and eval_work["sink"] is not None:
+        eval_sink = eval_work["sink"]
+        batches = {key: [fn(e, "eval") for e in batch] for key, batch in eval_sink["pending_batches"].items()}
+        mapped["eval"] = {**eval_work, "sink": {**eval_sink, "pending_batches": batches}}
+    return mapped
 
 
 def write_rollouts(work: dict, directory: Path, previous: Path | None) -> dict:
@@ -217,13 +235,19 @@ def write_rollouts(work: dict, directory: Path, previous: Path | None) -> dict:
     directory.mkdir(parents=True, exist_ok=True)
 
     def write_episode(episode: Any, place: str) -> str:
-        persisted = all(
+        evaluated = place in EVAL_PLACES
+        persisted = evaluated or all(
             (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("url", PERSISTED_URL) == PERSISTED_URL
             for trace in episode.traces
         )
         name = f"{episode.id}.{place}" + ("" if persisted else ".unpersisted")
         if previous is None or not _link(previous / name, directory / name):
-            _write(directory / name, dump_episode(episode))
+            dumped = dump_episode(episode)
+            if evaluated:
+                # Eval never trains: a resumed run has no arrays to point at.
+                for trace in dumped["traces"]:
+                    trace["info"].pop(PAYLOAD_INFO_KEY, None)
+            _write(directory / name, dumped)
         return name
 
     groups = []
@@ -271,10 +295,15 @@ def _link(source: Path, target: Path) -> bool:
 
 
 def _work_episodes(work: dict) -> list[Any]:
+    """The in-queue train episodes: the ones whose arrays a resumed run trains on."""
     sink = work["sink"]
     episodes = [episode for group in sink["pending_groups"].values() for episode in group]
     episodes += sink["episode_by_trace"].values()
-    episodes += [r for r in work["results"] if not isinstance(r, DispatchFailure | GroupCancellation)]
+    episodes += [
+        r
+        for r in work["results"]
+        if not isinstance(r, DispatchFailure | GroupCancellation) and result_kind(r) == "train"
+    ]
     return episodes
 
 

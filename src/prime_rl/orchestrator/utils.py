@@ -45,7 +45,8 @@ def result_kind(result: DispatchResult) -> WorkKind:
     """Whether a dispatcher result is train or eval work."""
     if isinstance(result, DispatchFailure | GroupCancellation):
         return result.kind
-    return "train" if isinstance(result.run, vf.TrainRunInfo) else "eval"
+    # A training run's eval episodes carry its run info too, with eval work.
+    return result.run.work.type if isinstance(result.run, vf.TrainRunInfo) else "eval"
 
 
 def result_env_name(result: DispatchResult) -> str:

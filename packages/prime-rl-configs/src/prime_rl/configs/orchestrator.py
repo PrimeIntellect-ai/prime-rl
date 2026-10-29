@@ -438,7 +438,8 @@ class CheckpointConfig(BaseConfig):
 
     rollouts: bool = False
     """Also checkpoint the in-flight rollouts, which a resumed run continues from their
-    newest restore points, and the in-queue ones (finished, not yet shipped).
+    newest restore points, and the in-queue ones (finished, not yet shipped), of train
+    and eval envs alike: an eval epoch in progress resumes where it stopped.
     Every env agent then keeps its box snapshots for this run (`keep = "all"`,
     `after = "keep"`), which deletes them once no checkpoint resumes from them. An agent
     with rollout checkpointing off (`checkpoint = None`) restarts its in-flight rollouts."""

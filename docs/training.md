@@ -354,6 +354,7 @@ With `rollouts = true` in the shared `[ckpt]` block (`orchestrator.ckpt.rollouts
 - **Open groups** keep their members: the ones that already finished, and the ones never dispatched.
 - **In-flight rollouts** (still sampling) continue from their newest restore point when their env supports rollout checkpointing (see [rollout checkpointing](#rollout-checkpointing)); otherwise they start over. Without this, a resume would skip them and train first on whatever finishes fastest.
 - **In-queue rollouts** (finished, not yet shipped: the unshipped batch and the results not yet consumed) carry over.
+- **Eval epochs in progress** resume where they stopped: their open groups and in-flight rollouts, the examples not yet dispatched, and the rollouts already in.
 
 The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the rollouts of an env no longer configured are dropped.
 

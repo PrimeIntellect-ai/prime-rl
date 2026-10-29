@@ -610,18 +610,18 @@ class Dispatcher:
         return True
 
     def open_work(self) -> list[GroupState]:
-        """The train groups still owing episodes, for the orchestrator checkpoint: each
-        with its never-dispatched members and its in-flight ones, which a resumed run
-        continues from their newest restore points (``restores``) or, without one yet,
-        starts over. Completed members are the sink's (or ``out_q``'s) to save."""
+        """The train and eval groups still owing episodes, for the orchestrator
+        checkpoint: each with its never-dispatched members and its in-flight ones, which
+        a resumed run continues from their newest restore points (``restores``) or,
+        without one yet, starts over. Completed members are the sinks' (or ``out_q``'s)
+        to save."""
         groups: dict[uuid.UUID, GroupState] = {}
         for group_id, group in self.groups.items():
-            if group.kind == "train":
-                # A fresh group's id is only its key here.
-                groups[group_id] = dataclasses.replace(group, group_id=group_id, restores=list(group.restores))
+            # A fresh group's id is only its key here.
+            groups[group_id] = dataclasses.replace(group, group_id=group_id, restores=list(group.restores))
         for meta in self.inflight.values():
             group = groups.get(meta.group_id)
-            if meta.kind != "train" or group is None:
+            if group is None:
                 continue
             group.episodes_to_schedule += 1
             if (restore := inflight_restore(meta)) is not None:
@@ -629,13 +629,15 @@ class Dispatcher:
         return list(groups.values())
 
     def resume_open_work(self, groups: list[GroupState], snapshots: dict[str, str]) -> None:
-        """Reopen a checkpoint's open groups; those of envs this run no longer trains on
-        are dropped, their restored members with them. ``snapshots`` are the ones the
-        checkpointed run owned: the next sweep deletes those the resume does not use."""
+        """Reopen a checkpoint's open groups; those of envs this run no longer trains or
+        evaluates on are dropped, their restored members with them. ``snapshots`` are the
+        ones the checkpointed run owned: the next sweep deletes those the resume does not
+        use."""
         assert self.train_envs is not None
         dropped = 0
         for group in groups:
-            if group.env_name not in self.train_envs.names:
+            envs = self.train_envs if group.kind == "train" else self.eval_envs
+            if envs is None or group.env_name not in envs.names:
                 dropped += 1
                 continue
             assert group.group_id is not None
@@ -688,9 +690,12 @@ class Dispatcher:
                     drop[env_name].append(snapshot)
             for env_name, snapshots in drop.items():
                 # A removed env's snapshots go through any server that can delete them.
-                env = (
-                    self.train_envs.get(env_name) if env_name in self.train_envs.names else next(iter(self.train_envs))
-                )
+                if env_name in self.train_envs.names:
+                    env = self.train_envs.get(env_name)
+                elif self.eval_envs is not None and env_name in self.eval_envs.names:
+                    env = self.eval_envs.get(env_name)
+                else:
+                    env = next(iter(self.train_envs))
                 try:
                     deleted = await env.discard_checkpoints(snapshots)
                 except Exception as e:  # a failed sweep retries with the next one

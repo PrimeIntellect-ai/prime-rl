@@ -24,6 +24,20 @@ class EvalSink:
         self.pending_batch_failures: dict[tuple[str, int], list[DispatchFailure]] = defaultdict(list)
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
 
+    def state_dict(self) -> dict:
+        """The eval epochs still collecting, for the orchestrator checkpoint."""
+        return {
+            "pending_batches": dict(self.pending_batches),
+            "pending_batch_failures": dict(self.pending_batch_failures),
+            "pending_batch_cancellations": dict(self.pending_batch_cancellations),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Take a checkpoint's eval epochs back; those of envs no longer evaluated go."""
+        names = set(self.eval_envs.names)
+        for field in ("pending_batches", "pending_batch_failures", "pending_batch_cancellations"):
+            getattr(self, field).update({key: value for key, value in state[field].items() if key[0] in names})
+
     def add(self, episode: vf.Episode) -> EvalBatch | None:
         # Env servers keep every episode's training arrays; eval never trains on them.
         delete_payloads(url for trace in episode.traces for url in trace_payload_urls(trace))

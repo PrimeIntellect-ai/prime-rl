@@ -98,7 +98,7 @@ class SharedCheckpointConfig(BaseConfig):
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
     rollouts: bool = False
-    """Also checkpoint the orchestrator's in-flight and in-queue rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
+    """Also checkpoint the orchestrator's in-flight and in-queue rollouts, train and eval, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
 
 
 class SharedModelConfig(BaseConfig):

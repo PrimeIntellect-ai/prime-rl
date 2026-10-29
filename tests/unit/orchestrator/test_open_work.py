@@ -2,6 +2,7 @@
 their in-flight rollouts' restore points, the sink's buffers, the env mix."""
 
 import asyncio
+import dataclasses
 import uuid
 from types import SimpleNamespace
 
@@ -264,6 +265,8 @@ def test_a_group_waiting_in_the_queue_keeps_its_size():
     from prime_rl.orchestrator.orchestrator import Orchestrator
 
     orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.eval_source = orchestrator.eval_sink = None
+    orchestrator.eval_triggered_steps = set()
     orchestrator.train_sink = sink(["a"], group_size=2)
     orchestrator.dispatcher = SimpleNamespace(
         open_work=lambda: [], queued_results=lambda: [member("a", "gq")], snapshots={}
@@ -295,6 +298,8 @@ def test_a_checkpoint_holds_open_work_only_when_it_saves_rollouts():
     from prime_rl.orchestrator.orchestrator import Orchestrator
 
     orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.eval_source = orchestrator.eval_sink = None
+    orchestrator.eval_triggered_steps = set()
     orchestrator.progress = Progress(step=6)
     orchestrator.train_source = TrainSource([train_env("a")])
     orchestrator.config_state = lambda: {}
@@ -368,3 +373,80 @@ def test_a_rollout_whose_arrays_were_persisted_since_is_written_again(tmp_path):
 
     assert (first, second) == (f"{queued.id}.queued.unpersisted", f"{queued.id}.queued")
     assert (tmp_path / "7" / second).stat().st_ino != (tmp_path / "6" / first).stat().st_ino
+
+
+def eval_member(env: str, step: int = 4) -> vf.Episode:
+    episode = member(env, "unused")
+    episode.run = vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=step))
+    return episode
+
+
+def test_a_training_runs_eval_episode_is_eval_work():
+    from prime_rl.orchestrator.utils import result_kind
+
+    assert result_kind(wire(member("a", "g"))) == "train"
+    assert result_kind(wire(eval_member("e"))) == "eval"
+
+
+def test_an_eval_env_owns_the_snapshots_it_keeps():
+    from prime_rl.configs.orchestrator import EvalSourceConfig
+    from prime_rl.orchestrator.envs import EvalEnv
+
+    config = EvalSourceConfig.model_validate(
+        {"env": {"taskset": {"id": "reverse-text"}, "agent": {"checkpoint": {"after": "keep"}}}}
+    )
+    assert EvalEnv(config, None, []).owns_snapshots
+
+
+def test_eval_epochs_survive_the_checkpoint(tmp_path):
+    """A resumed run gets its eval epochs back: the open eval groups, the examples not yet
+    dispatched, the rollouts already in, and the steps whose evals fired."""
+    from prime_rl.configs.orchestrator import CheckpointConfig
+    from prime_rl.orchestrator.ckpt import ROLLOUTS_DIR, CheckpointManager, build_state
+    from prime_rl.orchestrator.dispatcher import DispatcherMode
+    from prime_rl.orchestrator.eval_sink import EvalSink
+    from prime_rl.orchestrator.eval_source import EvalSource
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+    from prime_rl.orchestrator.types import TaskRequest
+    from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
+
+    def orchestrator() -> Orchestrator:
+        o = Orchestrator.__new__(Orchestrator)
+        eval_env = SimpleNamespace(
+            name="e", examples=[make_task(0), make_task(1)], config=SimpleNamespace(group_size=2)
+        )
+        o.eval_envs = SimpleNamespace(names=["e"], get=lambda name: eval_env)
+        o.train_envs = TrainEnvs(["a"])
+        o.train_sink = sink(["a"])
+        o.eval_source = EvalSource([eval_env], intervals={"e": 1}, is_resumed=True)
+        o.eval_sink = EvalSink(eval_envs=o.eval_envs)
+        o.eval_triggered_steps, o.eval_triggered_at = set(), {}
+        o.dispatcher = dispatcher(["a"])
+        o.dispatcher.eval_envs, o.dispatcher.eval_source = o.eval_envs, o.eval_source
+        o.dispatcher.mode = DispatcherMode.PREFER_TRAIN
+        o.dispatcher.out_q = asyncio.Queue()
+        return o
+
+    saved = orchestrator()
+    open_group = dataclasses.replace(group("e", to_schedule=1, emitted=1), kind="eval", step=4)
+    saved.dispatcher.groups = {open_group.group_id: open_group}
+    saved.eval_source.queue.append(TaskRequest(env_name="e", task=make_task(1), step=4))
+    landed = wire(eval_member("e"))
+    landed.traces[0].info[PAYLOAD_INFO_KEY] = {"url": "http://worker", "branches": {}}
+    saved.eval_sink.pending_batches[("e", 4)].append(landed)
+    saved.eval_triggered_steps.add(4)
+    work = saved.open_work()
+    manager = CheckpointManager(tmp_path, CheckpointConfig())
+    manager.save_state(build_state(Progress(step=6), TrainSource([train_env("a")]), {}, work), step=6)
+
+    (name,) = [f for f in (manager.get_ckpt_path(6) / ROLLOUTS_DIR).iterdir()]
+    assert name.name == f"{landed.id}.eval"
+    resumed = orchestrator()
+    resumed.resume_open_work(manager.load(Progress(), TrainSource([train_env("a")]), step=6))
+    (reopened,) = resumed.dispatcher.groups.values()
+    assert (reopened.kind, reopened.env_name, reopened.step) == ("eval", "e", 4)
+    assert [request.task.key for request in resumed.eval_source.queue] == [make_task(1).key]
+    ((episode,),) = resumed.eval_sink.pending_batches.values()
+    assert episode.id == landed.id and PAYLOAD_INFO_KEY not in episode.traces[0].info
+    assert resumed.eval_triggered_steps == {4} and ("e", 4) in resumed.eval_triggered_at
+    assert resumed.dispatcher.mode == DispatcherMode.PREFER_EVAL

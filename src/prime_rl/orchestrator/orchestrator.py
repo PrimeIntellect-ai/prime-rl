@@ -386,11 +386,11 @@ class Orchestrator:
             on_result=self.train_source.on_result,
         )
 
+        self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         if self.resumed_work is not None:
             self.resume_open_work(self.resumed_work)
             self.resumed_work = None
 
-        self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
             self.receiver,
             policy=self.policy,
@@ -1048,14 +1048,17 @@ class Orchestrator:
         self.dispatcher.hold_snapshots(groups)
 
     def open_work(self) -> dict:
-        """The in-flight and in-queue train rollouts a resumed run picks up where this one
-        left them: the open groups (their in-flight rollouts continue from their newest
-        restore points), and the in-queue ones in the sink's buffers and in ``out_q``."""
+        """The in-flight and in-queue train and eval rollouts a resumed run picks up where
+        this one left them: the open groups (their in-flight rollouts continue from their
+        newest restore points), the in-queue ones in the sinks' buffers and in ``out_q``,
+        and the eval examples not yet dispatched."""
         sink = self.train_sink.state_dict()
-        results = [result for result in self.dispatcher.queued_results() if result_kind(result) == "train"]
+        results = self.dispatcher.queued_results()
         # A group whose last member waits in ``out_q`` is neither the dispatcher's nor the
         # sink's anymore; its size goes with the sink's.
         for result in results:
+            if result_kind(result) != "train":
+                continue
             group_id = result_group_id(result)
             if group_id not in sink["group_targets"]:
                 target = self.train_sink.group_targets.get(group_id)
@@ -1065,21 +1068,46 @@ class Orchestrator:
             "sink": sink,
             "results": results,
             "snapshots": dict(self.dispatcher.snapshots),
+            "eval": {
+                "queue": list(self.eval_source.queue) if self.eval_source is not None else [],
+                "sink": self.eval_sink.state_dict() if self.eval_sink is not None else None,
+                "triggered_steps": sorted(self.eval_triggered_steps),
+            },
         }
 
     def resume_open_work(self, work: dict) -> None:
         """Take a checkpoint's in-flight and in-queue rollouts back before the dispatcher
-        starts. Those of envs this run no longer trains on are dropped; envs new to the
-        run start sampling as the resumed rollouts drain."""
+        starts. Those of envs this run no longer trains or evaluates on are dropped; envs
+        new to the run start sampling as the resumed rollouts drain."""
         self.train_sink.load_state_dict(work["sink"])
         self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
         # A resumed group finalizes at the size it opened with, not today's ``group_size``.
         for group in self.dispatcher.groups.values():
-            self.train_sink.group_targets[str(group.group_id)] = group.target_episodes
-        names = set(self.train_envs.names)
+            if group.kind == "train":
+                self.train_sink.group_targets[str(group.group_id)] = group.target_episodes
+        names = {"train": set(self.train_envs.names), "eval": set(self.eval_envs.names if self.eval_envs else [])}
         for result in work["results"]:
-            if result_env_name(result) in names:
+            if result_env_name(result) in names[result_kind(result)]:
                 self.dispatcher.out_q.put_nowait(result)
+        self.resume_eval(work.get("eval"), names["eval"])
+
+    def resume_eval(self, work: dict | None, names: set[str]) -> None:
+        """Take a checkpoint's eval epochs back: the examples not yet dispatched and the
+        rollouts already in. Their epochs time from the resume."""
+        if work is None or self.eval_source is None or self.eval_sink is None:
+            return
+        self.eval_source.queue.extend(request for request in work["queue"] if request.env_name in names)
+        if work["sink"] is not None:
+            self.eval_sink.load_state_dict(work["sink"])
+        self.eval_triggered_steps.update(work["triggered_steps"])
+        now = time.perf_counter()
+        for env_name, step, _, _ in self.eval_sink.batch_progress():
+            self.eval_triggered_at[(env_name, step)] = now
+        for group in self.dispatcher.groups.values():
+            if group.kind == "eval":
+                self.eval_triggered_at.setdefault((group.env_name, group.step), now)
+        if self.dispatcher.eval_has_work:
+            self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason="the resumed run has eval work")
 
     async def apply_control(self) -> None:
         """Save the state as of shipping the last step if a pause is due at it. A trainer paused
