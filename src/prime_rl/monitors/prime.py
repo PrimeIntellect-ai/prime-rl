@@ -110,8 +110,10 @@ def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig
     """Register the launch's Prime run around starting its components, which attach to
     it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
     run failed - the SDK leaves an attached run's failure to the process that
-    registered it. A run a managed launch pre-created (``$RUN_ID``) is the platform's.
-    Without a Prime API key, the components run the monitor disabled."""
+    registered it, so that process supervises the launch: the local ``rl`` or ``sft``
+    launcher, or a multi-node SLURM job's ``run_owner``. A run a managed launch pre-created
+    (``$RUN_ID``) is the platform's. Without a Prime API key, the components run the
+    monitor disabled."""
     if prime is None or os.getenv("RUN_ID") or (os.getenv(pr.MODE_ENV) or "online") != "online":
         yield
         return
@@ -119,6 +121,7 @@ def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig
     if run.mode == "disabled":
         # register already warned; the components need not warn again each.
         os.environ[pr.MODE_ENV] = "disabled"
+        atexit.unregister(run._atexit_hook)
         yield
         return
     os.environ["PRL_RUN_ID"] = os.environ["RUN_ID"] = run.id

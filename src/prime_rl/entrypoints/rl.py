@@ -591,11 +591,13 @@ def rl(config: RLConfig):
 
     from prime_rl.monitors.prime import launch_run
 
+    # On SLURM the job registers the run: the in-job `rl` (single node) or the
+    # batch script's run owner (multi node), so that a live process owns its status.
+    if config.slurm is not None:
+        rl_slurm(config)
+        return
     with launch_run(config.orchestrator, None if config.dry_run else config.orchestrator.monitors.prime):
-        if config.slurm is not None:
-            rl_slurm(config)
-        else:
-            rl_local(config)
+        rl_local(config)
 
 
 def main():
