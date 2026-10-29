@@ -19,23 +19,23 @@ class OtherLeaf(BaseModel):
 
 class Source(BaseModel):
     name: str
-    weight: Annotated[float, Live] = 1.0
+    weight: Annotated[float, Live()] = 1.0
 
 
 class Algo(BaseModel):
     kind: str = "grpo"
-    penalty: Annotated[Leaf | None, Live] = None
+    penalty: Annotated[Leaf | None, Live()] = None
 
 
 class Root(BaseModel):
-    live: Annotated[Leaf, Live] = Leaf()
+    live: Annotated[Leaf, Live()] = Leaf()
     frozen: Leaf = Leaf()
     swappable: Leaf | OtherLeaf = Leaf()
     optional: Leaf | None = None
-    live_optional: Annotated[Leaf | None, Live] = None
+    live_optional: Annotated[Leaf | None, Live()] = None
     source: list[Source] = [Source(name="math"), Source(name="code")]
     algo: Algo = Algo()
-    default_algo: Annotated[Algo, Frozen] = Algo()
+    default_algo: Annotated[Algo, Frozen()] = Algo()
 
 
 @pytest.mark.parametrize(
@@ -101,15 +101,13 @@ def test_frozen_raw_changes_skips_live_fields(field, algo, frozen):
     assert frozen_raw_changes(root, root.model_dump(), raw) == frozen
 
 
-def test_annotated_live_and_frozen_are_the_same_alias():
-    """``Annotated`` compares metadata by identity, so ``Annotated[T, Live]`` used twice is
-    one alias. Copying a field's annotation keeps the marker."""
-    from typing import Annotated, get_args
+def test_markers_are_value_objects():
+    """Markers compare by value and a copy of a field's metadata still decides live/frozen."""
+    from dataclasses import replace
 
-    marker = Annotated[int, Live]
-    assert marker is Annotated[int, Live]
-    assert marker.__metadata__[0] is Live
-    assert get_args(marker)[1] is Live
+    assert Live() == Live() and Frozen() == Frozen() and Live() != Frozen()
+    assert replace(Live()).live is True
+    assert replace(Frozen()).live is False
 
 
 def test_frozen_fields_accept_assignment():

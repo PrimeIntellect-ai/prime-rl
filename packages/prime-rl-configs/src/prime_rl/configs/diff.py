@@ -15,21 +15,19 @@ from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
 
-class _Live:
+@dataclass(frozen=True)
+class Live:
     """``Annotated`` marker for a field that may change while a run is going."""
 
-    live = True
+    live: bool = True
 
 
-class _Frozen:
+@dataclass(frozen=True)
+class Frozen:
     """``Annotated`` marker for a sub-config whose fields stay frozen, live ones included:
     e.g. a default that only seeds other fields when the config loads."""
 
-    live = False
-
-
-Live = _Live()
-Frozen = _Frozen()
+    live: bool = False
 
 
 def _live(info: FieldInfo, live: bool | None) -> bool | None:

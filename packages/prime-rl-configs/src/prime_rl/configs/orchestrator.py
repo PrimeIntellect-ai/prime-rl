@@ -39,7 +39,7 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: Annotated[float, Live] = Field(1.0, ge=0, le=2.0)
+    temperature: Annotated[float, Live()] = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
     top_p: float = Field(1.0, gt=0, le=1.0)
@@ -52,7 +52,7 @@ class TrainSamplingConfig(BaseConfig):
     a default top-k is injected when only top-p truncates so sampling masks stay
     bounded — see docs/inference.md (Sampling Replay)."""
 
-    max_completion_tokens: Annotated[int | None, Live] = None
+    max_completion_tokens: Annotated[int | None, Live()] = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
     logprobs: int | None = Field(None, ge=1)
@@ -60,7 +60,7 @@ class TrainSamplingConfig(BaseConfig):
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
-    extra_body: Annotated[dict[str, Any], Live] = {}
+    extra_body: Annotated[dict[str, Any], Live()] = {}
     """Extra body forwarded with each request to the inference server."""
 
     def truncates_distribution(self) -> bool:
@@ -232,7 +232,7 @@ class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    ratio: Annotated[float, Live] = Field(1.0, gt=0)
+    ratio: Annotated[float, Live()] = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     group_size: int = Field(1, ge=1)
@@ -292,7 +292,7 @@ class EvalSourceConfig(EnvConfig):
 class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""
 
-    interval: Annotated[int, Live] = Field(100, ge=1)
+    interval: Annotated[int, Live()] = Field(100, ge=1)
     """Step interval at which to evaluate this env."""
 
 
@@ -343,7 +343,7 @@ class TrainConfig(SourceGroupConfig):
     source: list[TrainSourceConfig] = Field(default_factory=list)
     """Training sources."""
 
-    sampling: Annotated[TrainSamplingConfig, Frozen] = TrainSamplingConfig()
+    sampling: Annotated[TrainSamplingConfig, Frozen()] = TrainSamplingConfig()
     """Sampling that every training source inherits."""
 
     select: vf.SelectConfig = vf.SelectConfig()
@@ -353,7 +353,7 @@ class TrainConfig(SourceGroupConfig):
     """Rollouts generated per example that every training source inherits unless it
     sets its own. ``batch_size`` must be divisible by every source's group size."""
 
-    algo: Annotated[AlgoConfig, Frozen] = GRPOAlgoConfig()
+    algo: Annotated[AlgoConfig, Frozen()] = GRPOAlgoConfig()
     """Training algorithm that every training source inherits. Defaults to ``grpo``."""
 
     @model_validator(mode="after")
@@ -442,13 +442,13 @@ class ConcurrencyConfig(BaseConfig):
     in-flight episode cap from engine KV pressure; these fields only bound and
     seed it."""
 
-    initial_inflight: Annotated[int | None, Live] = Field(None, ge=1)
+    initial_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
     """Optional initial in-flight episodes to start from. Set it when a good value is known to skip the initial ramp; otherwise auto-derive a pessimistic bound at runtime."""
 
-    min_inflight: Annotated[int, Live] = Field(1, ge=1)
+    min_inflight: Annotated[int, Live()] = Field(1, ge=1)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: Annotated[int | None, Live] = Field(1024, ge=1)
+    max_inflight: Annotated[int | None, Live()] = Field(1024, ge=1)
     """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
     @model_validator(mode="after")
@@ -534,7 +534,7 @@ class OrchestratorConfig(BaseConfig):
     dispatch_per_minute: int | None = Field(None, ge=1)
     """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
-    batch_size: Annotated[int, Live] = Field(128, ge=1)
+    batch_size: Annotated[int, Live()] = Field(128, ge=1)
     """Samples to train on per step."""
 
     constant_trainer_batch_size: bool = True
@@ -561,7 +561,7 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    max_staleness: Annotated[int, Live] = Field(8, ge=0)
+    max_staleness: Annotated[int, Live()] = Field(8, ge=0)
     """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
 
     heartbeat: HeartbeatConfig | None = None
