@@ -469,9 +469,9 @@ function rowProducer(row, meta) {
   if (meta?.type === "sft") return "trainer";
   for (const key of Object.keys(row)) {
     if (TRAINER_KEY_RE.test(key)) return "trainer";
-    if (ORCH_KEY_RE.test(key)) return "orch";
+    if (ORCH_KEY_RE.test(key)) return "orchestrator";
   }
-  return Object.keys(row).some((k) => k.startsWith("progress/")) ? "orch" : "trainer";
+  return Object.keys(row).some((k) => k.startsWith("progress/")) ? "orchestrator" : "trainer";
 }
 
 /* store = {byKey, timeKeys, timeZero} — the primary run's is state.metrics,

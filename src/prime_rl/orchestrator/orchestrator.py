@@ -226,7 +226,7 @@ class Orchestrator:
         )
 
         await monitors.setup(
-            producer="orch",
+            producer="orchestrator",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,
