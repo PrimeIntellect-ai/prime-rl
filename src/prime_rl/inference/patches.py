@@ -34,6 +34,7 @@ def apply_shared_vllm_patches():
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()
+    monkey_patch_collective_rpc_drain_failed_replies()
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
@@ -348,6 +349,92 @@ def monkey_patch_online_fp8_parameter_cast():
 
     _per_block_cast_to_fp8._prime_rl_unwraps_parameters = True
     fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+
+
+def monkey_patch_collective_rpc_drain_failed_replies():
+    """Read every worker's reply before raising for a failed collective RPC.
+
+    ``MultiprocExecutor.collective_rpc`` raises on the first failed reply and leaves the other
+    workers' replies queued. The next RPC then returns those stale replies as its own, and every
+    later call is off by one for those workers. With TP > 1, a weight update cancelled on every
+    rank (its trainer was replaced) made the following ``init_broadcaster`` fail with the update's
+    error, although the workers had re-initialized.
+    """
+    import pickle
+    import time
+
+    import cloudpickle
+    from vllm.logger import init_logger
+    from vllm.v1.executor.multiproc_executor import FutureWrapper, MultiprocExecutor, WorkerProc
+
+    if getattr(MultiprocExecutor.collective_rpc, "_prime_rl_drains_failed_replies", False):
+        return
+
+    def collective_rpc(
+        self,
+        method,
+        timeout=None,
+        args=(),
+        kwargs=None,
+        non_block=False,
+        unique_reply_rank=None,
+        kv_output_aggregator=None,
+        ec_output_aggregator=None,
+    ):
+        assert self.rpc_broadcast_mq is not None, "collective_rpc should not be called on follower node"
+        if self.is_failed:
+            raise RuntimeError("Executor failed.")
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+        kwargs = kwargs or {}
+
+        aggregators = [a for a in (kv_output_aggregator, ec_output_aggregator) if a]
+        if aggregators:
+            output_rank = None
+
+            def aggregate(outputs):
+                rank = unique_reply_rank or 0
+                result = outputs[rank]
+                for a in aggregators:
+                    result = a.aggregate(outputs, output_rank=rank)
+                return result
+
+        else:
+            output_rank = unique_reply_rank
+
+            def aggregate(outputs):
+                return outputs
+
+        send_method = method if isinstance(method, str) else cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
+        self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))
+
+        response_mqs = self.response_mqs
+        if output_rank is not None:
+            response_mqs = (response_mqs[output_rank],)
+
+        def get_response():
+            responses, error = [], None
+            for mq in response_mqs:
+                dequeue_timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+                try:
+                    status, result = mq.dequeue(timeout=dequeue_timeout)
+                except TimeoutError as e:
+                    raise TimeoutError(f"RPC call to {method} timed out.") from e
+                if status != WorkerProc.ResponseStatus.SUCCESS and error is None:
+                    error = result
+                responses.append(result)
+            if error is not None:
+                raise RuntimeError(
+                    f"Worker failed with error '{error}', please check the stack trace above for the root cause"
+                )
+            return responses[0] if output_rank is not None else responses
+
+        future = FutureWrapper(self.futures_queue, get_response=get_response, aggregate=aggregate)
+        return future if non_block else future.result()
+
+    collective_rpc._prime_rl_drains_failed_replies = True
+    MultiprocExecutor.collective_rpc = collective_rpc
+    init_logger(__name__).debug("Patched MultiprocExecutor.collective_rpc to drain every reply of a failed RPC.")
 
 
 def monkey_patch_kv_xfer_finished_tolerate_freed():

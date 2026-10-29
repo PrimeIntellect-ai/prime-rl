@@ -24,6 +24,8 @@ SENDER_READY_MARKER = ".sender_ready"
 RECEIVER_READY_MARKER = ".receiver_ready"
 STARTED_MARKER = ".started"
 FINISHED_MARKER = ".finished"
+# Raised by the consumer when it replaces a failed publisher: in-flight transfers of that step stop.
+ABORTED_MARKER = ".aborted"
 
 
 class BroadcastAborted(Exception):
@@ -134,6 +136,8 @@ class WeightReceiver(ABC):
         self.admin_plane = admin_plane
         self.model_name = model_name
         self.aborted = asyncio.Event()
+        self.awaited_step: int | None = None
+        """The offer this receiver last waited for, found by name rather than by listing the directory."""
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""
@@ -144,17 +148,28 @@ class WeightReceiver(ABC):
 
     def abort(self) -> None:
         """Stop waiting on the current publisher (it was replaced): waits for its markers raise
-        ``BroadcastAborted`` until ``clear_abort``. A transfer already moving weights into the
-        engines is not interrupted."""
+        ``BroadcastAborted`` until ``clear_abort``, and in-flight recoverable NCCL transfers stop
+        at their next poll. A load from complete files is not interrupted."""
         self.aborted.set()
+        for step in self._offered_steps():
+            if self.step_dir(step).exists():
+                (self.step_dir(step) / ABORTED_MARKER).touch()
 
     def clear_abort(self) -> None:
         self.aborted.clear()
 
     def clear_offers(self) -> None:
         """Drop every offered version: a replaced publisher's offers can never complete."""
-        for step in get_all_ckpt_steps(self.broadcast_dir):
+        for step in self._offered_steps():
             shutil.rmtree(self.step_dir(step), ignore_errors=True)
+
+    def _offered_steps(self) -> set[int]:
+        """Steps in the broadcast directory, including the one this receiver last waited for: a listing
+        of a shared filesystem can lag behind a step directory found by name."""
+        steps = set(get_all_ckpt_steps(self.broadcast_dir))
+        if self.awaited_step is not None:
+            steps.add(self.awaited_step)
+        return steps
 
     async def _wait_for(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
         while not path.exists():
@@ -180,6 +195,7 @@ class WeightReceiver(ABC):
         """Block until the trainer offers v{step}. Runs before the orchestrator
         advances ``policy.version`` — the version must never move ahead of a
         confirmed offer."""
+        self.awaited_step = step
         await self._wait_for(self.step_dir(step) / SENDER_READY_MARKER, cancelled)
 
     def _ack(self, step: int) -> None:

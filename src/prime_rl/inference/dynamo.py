@@ -333,7 +333,10 @@ class DynamoAdminPlane(AdminPlane):
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        abort_path: Path | None = None,
     ) -> None:
+        # Dynamo transfers are not recoverable, so there is nothing to cancel through abort_path.
+        del abort_path
         if transport != "nccl":
             async with self._mutation_lock:
                 await self.ensure_topology_current()
