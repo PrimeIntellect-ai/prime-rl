@@ -65,15 +65,10 @@ mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
 
 export PRL_RUN_ID={{ prl_run_id }}
-{% if prime_run_id %}
-# The Prime run the launcher registered: every process attaches to it.
-export RUN_ID={{ prime_run_id }}
-{% endif %}
 export PRL_RUN_NAME={{ run_name }}
 {% if wandb_shared %}
 # Trainer and online-eval log to one shared W&B run. The trainer creates the run,
 # and the online-eval process finalizes it after the final epoch.
-export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
 export WANDB_SHARED_FINISHER=online-eval
@@ -150,8 +145,14 @@ CLEANUP_SH
 
 # Run trainer and online-eval roles in one SLURM step. A non-zero exit on any
 # node terminates the other roles. Clean trainer exits let the final eval drain.
-srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+# The run owner registers the Prime run around the step and fails it when the
+# step fails; every role attaches through the $RUN_ID it exports.
+python -m prime_rl.entrypoints.run_owner sft $TRAIN_CONFIG_PATH srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     set -o pipefail
+{%- if wandb_shared %}
+    # The run owner set $PRL_RUN_ID to the Prime run's id.
+    export WANDB_RUN_ID=$PRL_RUN_ID
+{%- endif %}
 
     cd $PROJECT_DIR
     [ -f .env ] && source .env

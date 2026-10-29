@@ -191,6 +191,31 @@ def test_a_failed_launch_fails_the_run(sdk_runs):
     assert sdk_runs[0].failed is error
 
 
+@pytest.mark.parametrize("command,code", [(["true"], 0), (["false"], 1)])
+def test_slurm_run_owner_fails_the_run_with_its_step(sdk_runs, tmp_path, monkeypatch, command, code):
+    """A multi-node SLURM job's run owner registers the run around the job step, exports
+    its id to the step, and marks the run failed when the step fails."""
+    from prime_rl.entrypoints import run_owner
+    from prime_rl.entrypoints.sft import write_config
+
+    monkeypatch.setenv("RUN_ID", "")
+    monkeypatch.setattr(run_owner.signal, "signal", lambda *args: None)
+    path = tmp_path / "sft.json"
+    write_config(_sft_config(), path)
+    monkeypatch.setattr(run_owner.sys, "argv", ["prime", "sft", str(path), *command])
+
+    if code:
+        with pytest.raises(SystemExit) as exit_info:
+            run_owner.main()
+        assert exit_info.value.code == code
+    else:
+        run_owner.main()
+
+    (run,) = sdk_runs
+    assert not run.attached and os.environ["RUN_ID"] == os.environ["PRL_RUN_ID"] == run.id
+    assert (run.failed is not None) == bool(code)
+
+
 @pytest.mark.parametrize("env", [{"RUN_ID": "hosted-1"}, {"PRIME_RUNS_MODE": "disabled"}])
 def test_launch_registers_no_run_it_does_not_own(sdk_runs, monkeypatch, env):
     """A managed launch pre-created the run, or the monitor opens no platform run."""
