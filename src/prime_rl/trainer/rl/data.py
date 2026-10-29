@@ -85,6 +85,7 @@ class FakeDataLoader:
         self.num_micro_batches = self.batch_size // self.dp_world_size
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
+        self.doc_len = config.doc_len
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
@@ -114,8 +115,11 @@ class FakeDataLoader:
         sequence_lengths = []
 
         while total_seq_len < self.seq_len:
-            # Generate reasonably long documents
-            seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
+            if self.doc_len is not None:
+                seq_len_to_generate = self.doc_len
+            else:
+                # Generate reasonably long documents
+                seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
             if seq_len_to_generate + total_seq_len > self.seq_len:
                 seq_len_to_generate = self.seq_len - total_seq_len
             total_seq_len += seq_len_to_generate
