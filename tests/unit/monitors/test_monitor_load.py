@@ -1,9 +1,11 @@
-"""Each monitor under an orchestrator-sized load: a batch of multi-MB episodes and
-thousands of metric rows, logged through ``monitors.log`` as the orchestrator does.
+"""Each monitor under an orchestrator-sized load: up to a thousand agentic episodes
+(100 turns, 100k tokens each) and thousands of metric rows, logged through
+``monitors.log`` as the orchestrator does.
 Everything logged must arrive, and the event loop must stay responsive while the
 monitor writes or uploads."""
 
 import asyncio
+import gc
 import gzip
 import statistics
 import time
@@ -16,6 +18,7 @@ import wandb
 from prime_runs.sinks import RftMetricsSink, TracesSink
 from prime_runs.worker import UploadWorker
 from prime_traces import TracesClient
+from prime_traces.core.client import GZIP_LEVEL
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
 from verifiers.v1.types import AssistantMessage, Usage, UserMessage
@@ -27,11 +30,11 @@ from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
+from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.utils.pathing import get_file_monitor_dir
 
-EPISODES = 96
-TURNS = 4
-TOKENS_PER_MESSAGE = 8_000
+TURNS = 100
+TOKENS_PER_MESSAGE = 500
 METRIC_ROWS = 2_000
 METRIC_KEYS = 200
 # The orchestrator's own work runs between monitor calls; a stall this long delays
@@ -83,18 +86,23 @@ def _trace(rng: np.random.Generator) -> vf.Trace:
 
 
 @pytest.fixture(scope="module")
-def episodes() -> list[vf.Episode]:
-    rng = np.random.default_rng(0)
+def trace() -> vf.Trace:
+    return _trace(np.random.default_rng(0))
+
+
+def _episodes(trace: vf.Trace, count: int) -> list[vf.Episode]:
+    """``count`` episodes that share one trace: every monitor serializes each episode
+    on its own, so the load is the same as distinct traces at a fraction of the memory."""
     return [
         vf.Episode(
             env=vf.EnvInfo(id="load", name="load"),
-            task=(trace := _trace(rng)).task,
+            task=trace.task,
             group=vf.GroupInfo(id=f"g{i // 8}"),
             traces=[trace],
             ok=True,
             run=vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1, policy=vf.PolicySpan(start=0, end=0))),
         )
-        for i in range(EPISODES)
+        for i in range(count)
     ]
 
 
@@ -149,29 +157,21 @@ def _assert_responsive(name: str, lags: list[float], calls: list[float]) -> None
 
 
 @pytest.fixture
+def orchestrator_gc():
+    """Collect garbage as the orchestrator does: automatic full collections off."""
+    threshold = gc.get_threshold()
+    collector = GarbageCollector(interval=1)
+    collector.start()
+    yield
+    gc.callbacks.remove(collector.on_collection)
+    gc.set_threshold(*threshold)
+    gc.unfreeze()
+
+
+@pytest.fixture
 def registered():
     yield monitors.MONITORS
     monitors.MONITORS.clear()
-
-
-def test_file_monitor_under_load(tmp_path, episodes, registered):
-    async def run():
-        monitor = FileMonitor(FileMonitorConfig())
-        await monitor.init(tmp_path)
-        registered.append(monitor)
-        result = await _drive(episodes)
-        await monitors.finalize()
-        return result
-
-    lags, calls = asyncio.run(run())
-
-    with open_chunk(get_trace_stream(tmp_path), 0) as chunk:
-        records = [orjson.loads(line) for line in chunk.read().splitlines()]
-    assert len(records) == EPISODES
-    assert len(records[0]["traces"][0]["nodes"]) == 2 * TURNS
-    rows = (get_file_monitor_dir(tmp_path) / "metrics.jsonl").read_bytes().splitlines()
-    assert len(rows) == METRIC_ROWS
-    _assert_responsive("file monitor", lags, calls)
 
 
 class FakeTracesAPI:
@@ -183,7 +183,7 @@ class FakeTracesAPI:
 
     def upload_batch(self, body, idempotency_key, *, line_format, schema_version=1, context=None, compress=True):
         if compress:
-            gzip.compress(body, mtime=0)
+            gzip.compress(body, compresslevel=GZIP_LEVEL, mtime=0)
         self.lines += body.count(b"\n") + (not body.endswith(b"\n"))
         return {"upload_id": idempotency_key.split(":", 1)[1], "status": "committed"}
 
@@ -203,60 +203,92 @@ class FakePlatform:
         return {}
 
 
-def test_prime_monitor_under_load(tmp_path, episodes, registered, monkeypatch):
+async def _file(tmp_path, monkeypatch):
+    monitor = FileMonitor(FileMonitorConfig())
+    await monitor.init(tmp_path)
+
+    def delivered() -> tuple[int | None, list[int]]:
+        with open_chunk(get_trace_stream(tmp_path), 0) as chunk:
+            episodes = sum(1 for _ in chunk.read().splitlines())
+        rows = (get_file_monitor_dir(tmp_path) / "metrics.jsonl").read_bytes().splitlines()
+        return episodes, [orjson.loads(row)["step"] for row in rows]
+
+    return monitor, delivered
+
+
+async def _prime(tmp_path, monkeypatch):
     """The real SDK run and uploader threads, with fake endpoints behind them."""
     monkeypatch.setenv("PRIME_RUNS_MODE", "disabled")
     for var in ("RUN_ID", "PRL_RUN_FINISHER"):
         monkeypatch.delenv(var, raising=False)
     traces_api, platform = FakeTracesAPI(), FakePlatform()
+    monitor = PrimeMonitor(PrimeMonitorConfig(name="load"))
+    await monitor.init(config=None, output_dir=tmp_path)
+    traces = TracesSink(client=TracesClient(api_client=traces_api))
+    metrics = RftMetricsSink(platform)
+    for sink in (traces, metrics):
+        sink.start(monitor.run.id, {"run_type": "train"})
+    monitor.run._worker = UploadWorker([traces])
+    monitor.run._metrics_worker = UploadWorker([metrics])
 
-    async def run():
-        monitor = PrimeMonitor(PrimeMonitorConfig(name="load"))
-        await monitor.init(config=None, output_dir=tmp_path)
-        traces = TracesSink(client=TracesClient(api_client=traces_api))
-        metrics = RftMetricsSink(platform)
-        for sink in (traces, metrics):
-            sink.start(monitor.run.id, {"run_type": "train"})
-        monitor.run._worker = UploadWorker([traces])
-        monitor.run._metrics_worker = UploadWorker([metrics])
-        registered.append(monitor)
-        result = await _drive(episodes)
-        await monitors.finalize()
-        return result, traces
+    def delivered() -> tuple[int, list[int]]:
+        assert traces.episodes_written == traces_api.lines
+        return traces_api.lines, sorted(platform.steps)
 
-    (lags, calls), traces = asyncio.run(run())
-
-    assert traces.episodes_written == EPISODES
-    assert traces_api.lines == EPISODES
-    assert sorted(platform.steps) == list(range(1, METRIC_ROWS + 1))
-    _assert_responsive("prime monitor", lags, calls)
+    return monitor, delivered
 
 
-def test_wandb_monitor_under_load(tmp_path, episodes, registered, monkeypatch):
-    """W&B in offline mode: the real SDK writes the run locally, without a server."""
+async def _wandb(tmp_path, monkeypatch):
+    """W&B in offline mode: the real SDK writes the run locally, without a server. W&B
+    takes metrics only."""
     monkeypatch.setenv("WANDB_MODE", "offline")
     monkeypatch.setenv("WANDB_SILENT", "true")
     for var in ("WANDB_SHARED_MODE", "WANDB_RUN_ID"):
         monkeypatch.delenv(var, raising=False)
-    steps: list[int] = []
+    monitor = WandbMonitor(WandbMonitorConfig(project="load", offline=True))
+    await monitor.init(output_dir=tmp_path)
+    # wandb.init binds the module-level log to the new run.
+    log, steps = wandb.log, []
+
+    def counting_log(data, *args, **kwargs):
+        steps.append(data["step"])
+        return log(data, *args, **kwargs)
+
+    monkeypatch.setattr(wandb, "log", counting_log)
+    return monitor, lambda: (None, steps)
+
+
+# The SDK uploads one episode at a time, at about 16 ms each here. A thousand episodes
+# logged at once fill its queue, and log() then waits for room (up to 5 s, then drops).
+SDK_BACKPRESSURE = pytest.mark.xfail(reason="prime_runs blocks log() while its upload queue is full", strict=True)
+
+
+@pytest.mark.parametrize(
+    "start,count",
+    [
+        pytest.param(
+            start,
+            count,
+            id=f"{start.__name__[1:]}-{count}",
+            marks=SDK_BACKPRESSURE if (start, count) == (_prime, 1000) else (),
+        )
+        for start in (_file, _prime, _wandb)
+        for count in (10, 100, 1000)
+    ],
+)
+def test_monitor_under_load(start, count, trace, tmp_path, registered, orchestrator_gc, monkeypatch):
+    episodes = _episodes(trace, count)
 
     async def run():
-        monitor = WandbMonitor(WandbMonitorConfig(project="load", offline=True))
-        await monitor.init(output_dir=tmp_path)
-        # wandb.init binds the module-level log to the new run.
-        log = wandb.log
-
-        def counting_log(data, *args, **kwargs):
-            steps.append(data["step"])
-            return log(data, *args, **kwargs)
-
-        monkeypatch.setattr(wandb, "log", counting_log)
+        monitor, delivered = await start(tmp_path, monkeypatch)
         registered.append(monitor)
         result = await _drive(episodes)
         await monitors.finalize()
-        return result
+        return result, delivered
 
-    lags, calls = asyncio.run(run())
+    (lags, calls), delivered = asyncio.run(run())
 
+    logged, steps = delivered()
+    assert logged in (count, None)
     assert steps == list(range(1, METRIC_ROWS + 1))
-    _assert_responsive("W&B monitor", lags, calls)
+    _assert_responsive(f"{start.__name__[1:]} monitor, {count} episodes", lags, calls)

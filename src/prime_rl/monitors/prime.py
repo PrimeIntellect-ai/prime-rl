@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import prime_runs as pr
+from prime_runs.config import Config
 
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.monitors import PrimeMonitorConfig
@@ -36,6 +37,10 @@ FINISH_TIMEOUT = 60.0
 
 
 OFF_HINT = "turn the monitor off with --no-monitors.prime"
+NO_KEY = (
+    "No Prime API key found - the run is not logged to Prime. Authenticate with "
+    f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
+)
 
 
 def _base_url() -> str | None:
@@ -91,10 +96,7 @@ def register(
         if id is not None:
             raise
         if "needs an API key" in str(e):
-            get_logger().warning(
-                "No Prime API key found - the run is not logged to Prime. Authenticate with "
-                f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
-            )
+            get_logger().warning(NO_KEY)
             return pr.init(kind="train", mode="disabled", finish_timeout=FINISH_TIMEOUT, **init_kwargs)
         # Registering fails without a team, or for a team outside the external-runs allowlist.
         raise RuntimeError(
@@ -263,6 +265,10 @@ class PrimeMonitor(Monitor):
                 f"exactly one eval source (got {len(self.sources)})"
             )
         online = self.mode == "online"
+        # Evaluations open lazily, when their epoch starts; decide at launch instead.
+        if online and not Config().api_key:
+            self.logger.warning(NO_KEY)
+            self.mode, online = "disabled", False
         self.logger.info("Streaming eval epochs to the Prime platform" if online else "Prime evaluations disabled")
 
         def record() -> None:
