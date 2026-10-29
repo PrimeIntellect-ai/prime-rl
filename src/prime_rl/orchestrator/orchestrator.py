@@ -735,9 +735,9 @@ class Orchestrator:
             metrics |= {
                 "progress/input_tokens": num_input,
                 "progress/output_tokens": num_output,
-                "time/orchestrator_step": step_time,
+                "time/step": step_time,
                 "time/pack": pack_time,
-                "time/orchestrator_save_ckpt": save_ckpt_time,
+                "time/save_ckpt": save_ckpt_time,
                 "time/send_batch": send_batch_time,
                 "step": step,
             }

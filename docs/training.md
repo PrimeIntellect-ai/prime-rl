@@ -308,7 +308,7 @@ Pulled from the console log and mirrored to W&B.
 | `perf/mfu_6dn` | MFU from the plain 6 x active params x tokens estimate (no attention FLOPs) |
 | `perf/peak_memory` | peak GPU memory from all sources, max over ranks (GiB) |
 | `perf/non_torch_memory` | GPU memory outside PyTorch's caching allocator (symmetric memory such as Mega MoE's buffers, NCCL, CUDA context), max over ranks (GiB) |
-| `time/trainer_step`, `time/orchestrator_step`, `time/forward_backward`, `time/trainer_save_ckpt`, `time/orchestrator_save_ckpt` (RL); `time/step`, `time/forward_backward`, `time/save_ckpt` (SFT) | step breakdown |
+| `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Checkpointing
 

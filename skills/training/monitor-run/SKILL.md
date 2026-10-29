@@ -149,11 +149,11 @@ All metrics print to the console log (and W&B when configured).
 
 | Source | Metric | Description |
 |--------|--------|-------------|
-| trainer | `time/trainer_step` | total trainer step |
+| trainer | `time/step` | total trainer step |
 | trainer | `time/wait_for_batch` | **high → orchestrator is bottleneck** |
-| trainer | `time/forward_backward`, `time/broadcast_weights`, `time/trainer_save_ckpt` | phase timings |
+| trainer | `time/forward_backward`, `time/broadcast_weights`, `time/save_ckpt` | phase timings |
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
-| orchestrator | `time/orchestrator_step`, `time/orchestrator_save_ckpt` | phase timings |
+| orchestrator | `time/step`, `time/save_ckpt` | phase timings |
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
 | orchestrator | `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
 | orchestrator | `staleness/token/{mean,masked}`, `staleness/rollout/{mean,max}`, `staleness/rollout/{in_flight,in_queue}/{mean,max}`, `staleness/rollout/dropped` | per-step token and rollout staleness of trained rollouts (rollout = max token staleness) |
