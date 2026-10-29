@@ -72,6 +72,19 @@ def test_layer_export_matches_trainer_conversion(tmp_path, exporter, tied, fp8):
             assert torch.equal(actual[name].view(torch.uint8), tensor.view(torch.uint8))
 
 
+def test_layer_export_preserves_integer_buffer_dtype(tmp_path, exporter, monkeypatch):
+    model = torch.nn.Module()
+    table = torch.tensor([[1, 2], [3, 4]], dtype=torch.int64)
+    model.register_buffer("tid2eid", table)
+    dcp.save({"app": {"model": model.state_dict()}}, checkpoint_id=tmp_path, no_dist=True)
+    checkpoint = exporter.Checkpoint(tmp_path, FileSystemReader(tmp_path).read_metadata(), model, None, None)
+    monkeypatch.setattr(exporter, "convert_state_dict_to_hf", lambda model, state: state)
+
+    loaded = exporter.load_layer(checkpoint, ["tid2eid"])
+    assert loaded["tid2eid"].dtype == torch.int64
+    assert torch.equal(loaded["tid2eid"], table)
+
+
 def test_export_config_drops_source_quantization(exporter):
     config = PretrainedConfig()
     config.text_config = PretrainedConfig()

@@ -109,9 +109,10 @@ def load_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
     skeleton = model.state_dict()
     state_dict = {}
     for key in keys:
+        stored_dtype = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"].properties.dtype
         dtype = resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16)
-        if key.endswith("mlp.router.selection_bias"):
-            dtype = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"].properties.dtype
+        if not stored_dtype.is_floating_point or key.endswith("mlp.router.selection_bias"):
+            dtype = stored_dtype
         state_dict[key] = torch.empty(skeleton[key].shape, dtype=dtype)
     dcp_load(
         {"app": {"model": state_dict}},
