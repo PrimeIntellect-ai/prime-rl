@@ -68,7 +68,8 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         # Run optimizer step
         result = self.optimizer.step(closure)
 
-        # Move states back to CPU
+        # Move states back to CPU, into the pinned buffers a background checkpoint save may still read
+        self._wait_for_pending_save()
         self._move_states("cpu")
 
         return result

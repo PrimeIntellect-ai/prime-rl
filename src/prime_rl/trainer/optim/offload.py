@@ -86,12 +86,14 @@ class GradientOffloadManager:
         timeout_seconds: float,
         target_chunk_numel: int,
         chunk_ready_callback: Callable[[int], None],
+        before_optimizer_chunks: Callable[[], None],
         gradient_dtypes: dict[int, torch.dtype],
         compute_dtypes: dict[int, torch.dtype],
     ):
         self._chunks = chunks
         self._dp_replicate = dp_replicate
         self._chunk_ready_callback = chunk_ready_callback
+        self._before_optimizer_chunks = before_optimizer_chunks
         self._timeout_seconds = timeout_seconds
         # Per-step wall-time accumulators; each key is written by exactly one pipeline thread.
         self._timings: dict[str, float] = {}
@@ -493,6 +495,8 @@ class GradientOffloadManager:
             self._completed_chunks = 0
 
     def begin_backward(self, *, final_backward: bool) -> None:
+        if final_backward and self._overlap_optimizer:
+            self._before_optimizer_chunks()
         with self._condition:
             self._raise_worker_error()
             if self._backward_open:
@@ -740,6 +744,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             timeout_seconds=self._TIMEOUT_SECONDS,
             target_chunk_numel=self._TARGET_CPU_CHUNK_NUMEL,
             chunk_ready_callback=self._step_cpu_chunk,
+            before_optimizer_chunks=self._wait_for_pending_save,
             gradient_dtypes={id(master.model_param): master.gradient_dtype for master in master_weights.values()},
             compute_dtypes={id(master.model_param): master.compute_dtype for master in master_weights.values()},
         )
@@ -911,6 +916,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._initialized = True
             return
         # Synchronous path (validation steps and checkpoint boundaries).
+        self._wait_for_pending_save()
         gradients_by_chunk = [self._gradient_manager.load_cpu_chunk(i) for i in range(len(self._chunks))]
         for i in range(len(self._chunks)):
             output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)
