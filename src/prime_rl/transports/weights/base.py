@@ -26,6 +26,10 @@ STARTED_MARKER = ".started"
 FINISHED_MARKER = ".finished"
 
 
+class BroadcastAborted(Exception):
+    """A receiver stopped waiting on a publisher that was replaced. Inference was not touched."""
+
+
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
     """Remove broadcast dirs beyond ``step``. Resume hygiene, run by the
     trainer master before its startup broadcast: stale leftovers of a longer
@@ -129,9 +133,36 @@ class WeightReceiver(ABC):
         self.config = config
         self.admin_plane = admin_plane
         self.model_name = model_name
+        self.aborted = asyncio.Event()
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""
+
+    async def reconnect(self) -> None:
+        """Join a replacement publisher's transfer group. Only transports whose inference
+        workers hold a session with the publisher reconnect."""
+
+    def abort(self) -> None:
+        """Stop waiting on the current publisher (it was replaced): waits for its markers raise
+        ``BroadcastAborted`` until ``clear_abort``. A transfer already moving weights into the
+        engines is not interrupted."""
+        self.aborted.set()
+
+    def clear_abort(self) -> None:
+        self.aborted.clear()
+
+    def clear_offers(self) -> None:
+        """Drop every offered version: a replaced publisher's offers can never complete."""
+        for step in get_all_ckpt_steps(self.broadcast_dir):
+            shutil.rmtree(self.step_dir(step), ignore_errors=True)
+
+    async def _wait_for(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
+        while not path.exists():
+            if self.aborted.is_set():
+                raise BroadcastAborted(f"Stopped waiting for {path}")
+            if cancelled is not None and cancelled():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.1)
 
     def step_dir(self, step: int) -> Path:
         return get_step_path(self.broadcast_dir, step)
@@ -149,11 +180,7 @@ class WeightReceiver(ABC):
         """Block until the trainer offers v{step}. Runs before the orchestrator
         advances ``policy.version`` — the version must never move ahead of a
         confirmed offer."""
-        sender_ready = self.step_dir(step) / SENDER_READY_MARKER
-        while not sender_ready.exists():
-            if cancelled is not None and cancelled():
-                raise asyncio.CancelledError
-            await asyncio.sleep(0.1)
+        await self._wait_for(self.step_dir(step) / SENDER_READY_MARKER, cancelled)
 
     def _ack(self, step: int) -> None:
         """Acknowledge the offered version — unblocks the waiting trainer."""

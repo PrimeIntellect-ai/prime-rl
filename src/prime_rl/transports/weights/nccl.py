@@ -265,6 +265,10 @@ class NCCLWeightReceiver(WeightReceiver):
             recoverable=self.config.recoverable,
         )
 
+    async def reconnect(self) -> None:
+        # Each worker aborts its communicator with the replaced trainer and joins a fresh one.
+        await self.initialize()
+
     async def receive(self, step: int) -> None:
         await self.admin_plane.update_weights(
             self.step_dir(step),
