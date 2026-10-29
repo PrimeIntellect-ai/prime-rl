@@ -71,7 +71,7 @@ def sft_lora_resume_process(
 ) -> ProcessResult:
     """Fixture for resuming SFT LoRA CI integration test"""
     # Remove the first run's adapter so the resume checks only pass if resume exports its own.
-    shutil.rmtree(run_dir / "adapter")
+    shutil.rmtree(run_dir / "adapter", ignore_errors=True)
     wandb_name += "-resume"
     cmd = [
         "uv",
