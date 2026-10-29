@@ -638,6 +638,8 @@ def test_policy_sources_accept_different_top_p_values():
 
     assert [source.sampling.top_k for source in config.train.source] == [None, None]
     assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
+    # Replayed supports return their sampler probabilities, so partial supports are recognizable.
+    assert [source.sampling.logprobs for source in config.train.source] == [1, 1]
     data = config.model_dump(mode="json")
     data["eval"] = {
         "source": [
@@ -1303,7 +1305,7 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
 @pytest.mark.parametrize("top_k", [32, 256])
 @pytest.mark.parametrize("top_p", [0.9, 1.0])
-def test_score_centering_captures_complete_bounded_support(top_k, top_p):
+def test_score_centering_records_replayed_support(top_k, top_p):
     config = RLConfig.model_validate(
         {
             "trainer": {"loss": {"type": "icepop", "score_centering": True}},
@@ -1320,7 +1322,7 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
             "inference": {},
         }
     )
-    assert config.orchestrator.train.source[0].sampling.logprobs == top_k
+    assert config.orchestrator.train.source[0].sampling.logprobs == 1
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 

@@ -109,9 +109,7 @@ class _PackedOutputs:
                     output.routed_experts = None
                 mask = output.sampling_mask
                 if mask is not None and (mask.counts <= 0).any():
-                    raise ValueError(
-                        "Missing sampling support: the step's supports exceeded inference.sampling_support_capacity"
-                    )
+                    raise ValueError("Missing sampling support for a replayed token")
                 if self._paired or self._sampler_rows:
                     if mask is None or mask.ids.dtype != np.int64:
                         raise ValueError("Missing paired sampling-support evidence (needs enable_return_sampling_mask)")
@@ -159,6 +157,9 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
         extra_args = sampling_params.extra_args or {}
+        if extra_args.get("prl_replay", False) and not extra_args.get("prl_compact_logprobs", False):
+            # A partial support is only recognizable by its sampler probabilities.
+            return self.create_error_response("Replay requests require compact logprobs (sampling logprobs >= 1)")
         if extra_args.get("prl_compact_logprobs", False):
             if request.stream or sampling_params.logprobs is None:
                 return self.create_error_response(

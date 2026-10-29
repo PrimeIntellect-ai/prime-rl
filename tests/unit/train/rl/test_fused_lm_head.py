@@ -13,8 +13,13 @@ from prime_rl.utils.utils import default_dtype
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("head_only", [False, True])
-def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
+@pytest.mark.parametrize("partial", [False, True])
+def test_fused_head_top_logprobs_gradient(dtype, replay, head_only, partial):
     from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask, selective_topk_log_softmax
+
+    if partial and (not replay or dtype != torch.float32):
+        # bf16 logits tie often, so the cutoff comparison would depend on GEMM rounding.
+        pytest.skip("partial supports are replayed, compared in float32")
 
     torch.manual_seed(7)
     hidden = torch.randn(1, 7, 16, device="cuda", dtype=dtype, requires_grad=True)
@@ -23,19 +28,22 @@ def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
     head_ids = torch.stack([labels, (labels + 1) % 8203, (labels + 2) % 8203, torch.full_like(labels, -1)], dim=-1)
     head_ids[:, 2] = -1
     sampling_mask = head_ids if replay else None
+    # Partial supports also count every id at or above their cutoff's logit.
+    positions = torch.arange(7, device="cuda").unsqueeze(0)
+    support_cutoff = torch.where(positions % 2 == 0, head_ids[..., 1], -1) if partial else None
     temperature = torch.linspace(0.6, 1.4, 7, device="cuda").unsqueeze(0)
     coefficient = torch.randn_like(head_ids, dtype=torch.float32)
-    out = lm(hidden, labels, temperature, sampling_mask, head_ids)
+    out = lm(hidden, labels, temperature, sampling_mask, head_ids, support_cutoff)
     loss = (out["topk_logprobs"] * coefficient).sum()
     if not head_only:
         loss = loss + out["logprobs"].sum()
     actual = torch.autograd.grad(loss, (hidden, lm.weight))
     logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
-    head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
+    head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels, support_cutoff)
     reference = (head * coefficient).sum()
     if not head_only:
         sampled = (
-            selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask)
+            selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask, support_cutoff)
             if replay
             else selective_log_softmax(logits, labels)
         )

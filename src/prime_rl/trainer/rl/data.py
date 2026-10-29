@@ -53,6 +53,9 @@ class TensorMicroBatch(TypedDict):
     # Sampling-mask token ids per position, padded with -1 to the micro batch's
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
+    # Per position, the cutoff id of a partial sampling mask (see partial_support_cutoffs), else -1.
+    # None when no mask in the micro batch is partial.
+    support_cutoff: Int[Tensor, "batch seq"] | None
     top_logprobs_ids: Int[Tensor, "batch seq head"] | None
     top_logprobs_values: Float[Tensor, "batch seq head"] | None
 
@@ -148,6 +151,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "support_cutoff": None,
             "top_logprobs_ids": None,
             "top_logprobs_values": None,
             "mm_refs": None,
@@ -183,6 +187,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "support_cutoff": None,
             "top_logprobs_ids": None,
             "top_logprobs_values": None,
             "mm_refs": None,
@@ -284,7 +289,7 @@ class DataLoader:
                 .reshape(packed_routed_experts.shape)
                 .unsqueeze(0)
             )
-        sampling_mask = None
+        sampling_mask = support_cutoff = None
         packed_sampling_mask = micro_batch.sampling_mask
         if packed_sampling_mask is not None:
             counts = np.frombuffer(packed_sampling_mask.counts, dtype=np.int32)
@@ -294,6 +299,12 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+            if packed_sampling_mask.logprobs is not None:
+                cutoffs = partial_support_cutoffs(
+                    counts, ids, np.frombuffer(packed_sampling_mask.logprobs, dtype=np.float32)
+                )
+                if cutoffs is not None:
+                    support_cutoff = torch.from_numpy(cutoffs).unsqueeze(0)
         top_ids = top_values = None
         # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
         heads = [
@@ -341,6 +352,7 @@ class DataLoader:
             mm_token_type_ids=stream("mm_token_type_ids", np.int64),
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
+            support_cutoff=support_cutoff,
             top_logprobs_ids=top_ids,
             top_logprobs_values=top_values,
             rl_weights=stream("rl_weights", np.float32),
@@ -350,12 +362,33 @@ class DataLoader:
         )
 
 
+PARTIAL_SUPPORT_TOLERANCE = 1e-4
+
+
+def partial_support_cutoffs(counts: np.ndarray, ids: np.ndarray, logprobs: np.ndarray) -> np.ndarray | None:
+    """Per row, the cutoff id of a partial sampling mask, else -1; None when no mask is partial.
+
+    The server returns at most ``inference.sampling_support_width`` ids of a support, with sampler
+    logprobs normalized over the whole support. A mask whose recorded sampler mass falls more than
+    ``PARTIAL_SUPPORT_TOLERANCE`` short of one is partial: it holds the support's top ids, the sampled
+    token and the cutoff, its least likely id (the one with the lowest recorded logprob)."""
+    rows = np.repeat(np.arange(len(counts)), counts)
+    mass = np.bincount(rows, weights=np.exp(logprobs.astype(np.float64)), minlength=len(counts))
+    partial = (counts > 0) & (mass < 1 - PARTIAL_SUPPORT_TOLERANCE)
+    if not partial.any():
+        return None
+    # Sorted by row, then logprob: each row's first entry is its cutoff.
+    lowest = np.lexsort((logprobs, rows))[(np.cumsum(counts) - counts)[partial]]
+    cutoffs = np.full(len(counts), -1, dtype=np.int64)
+    cutoffs[partial] = ids[lowest]
+    return cutoffs
+
+
 SCORE_CENTERING_DATA_ERRORS = (
     "Missing or out-of-vocabulary sampler top logprobs",
     "Sampler top logprobs must be finite and nonpositive",
     "Duplicate sampler head ids",
     "Sampler head mass exceeds one",
-    "Sampler probabilities must normalize over the recorded support",
     "Sampled token is missing from the recorded support",
 )
 
@@ -378,10 +411,9 @@ def score_centering_data_errors(
     ordered = top_ids.sort(-1).values
     head_mass = top_values.exp().masked_fill(~valid, 0.0).sum(-1)
     if sampling_mask is None:
-        unnormalized = unsampled = torch.zeros_like(rl_mask)
+        unsampled = torch.zeros_like(rl_mask)
     else:
         replay = (sampling_mask >= 0).any(-1)
-        unnormalized = replay & ~torch.isclose(head_mass, torch.ones_like(head_mass), atol=1e-4, rtol=0)
         unsampled = replay & ~(sampling_mask == input_ids.unsqueeze(-1)).any(-1)
     errors = torch.stack(
         [
@@ -389,7 +421,6 @@ def score_centering_data_errors(
             (valid & (~top_values.isfinite() | (top_values > 1e-6))).any(-1),
             ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(-1),
             head_mass > 1.0001,
-            unnormalized,
             unsampled,
         ],
         dim=-1,

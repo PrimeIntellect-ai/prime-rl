@@ -60,6 +60,7 @@ class FusedOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
         topk_ids: Tensor | None = None,
+        support_cutoff: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
 
@@ -68,15 +69,19 @@ class FusedOutputLinear(torch.nn.Linear):
         labels = labels.reshape(b * s).contiguous()
 
         if temperature is None:
-            assert sampling_mask is None and topk_ids is None, "Sampling evidence requires per-token temperatures"
+            assert sampling_mask is None and topk_ids is None and support_cutoff is None, (
+                "Sampling evidence requires per-token temperatures"
+            )
             loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
-        support = replay = None
+        support = replay = cutoff = None
         if sampling_mask is not None:
             support = sampling_mask.reshape(b * s, sampling_mask.shape[-1]).long().contiguous()
             replay = sampling_replay_mask(support, labels)
+            if support_cutoff is not None:
+                cutoff = support_cutoff.reshape(b * s).long().contiguous()
         if topk_ids is not None:
             support = topk_ids.reshape(b * s, topk_ids.shape[-1]).long().contiguous()
         logprobs, entropy, topk_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
@@ -88,6 +93,7 @@ class FusedOutputLinear(torch.nn.Linear):
             support,
             replay,
             topk_ids is not None,
+            cutoff,
             self.softcap,
         )
 
@@ -112,6 +118,7 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
         topk_ids: Tensor | None = None,
+        support_cutoff: Tensor | None = None,
     ) -> PrimeLmOutput:
         logits = super().forward(hidden_states)
         if self.softcap is not None:
@@ -140,6 +147,30 @@ def _online_logsumexp_and_weighted_update(
     s_new = s * exp_old + chunk_exp.sum(dim=-1)
     t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
     return m_new, s_new, t_new
+
+
+def _online_masked_logsumexp_update(
+    m: torch.Tensor, s: torch.Tensor, chunk_logits: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Online logsumexp whose rows can be entirely -inf (they keep m = -inf, s = 0)."""
+    m_new = torch.maximum(m, torch.amax(chunk_logits, dim=-1))
+    shift = torch.where(torch.isfinite(m_new), m_new, 0.0)
+    s_new = s * torch.exp(m - shift) + torch.exp(chunk_logits - shift.unsqueeze(-1)).sum(dim=-1)
+    return m_new, s_new
+
+
+def _scaled_logits_at(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    ids: torch.Tensor,
+    inv_temperature: torch.Tensor,
+    softcap: float | None,
+) -> torch.Tensor:
+    """Scaled logit of one id per row, rounded to the logits GEMM's output dtype like the chunked logits."""
+    logits = torch.bmm(hidden.unsqueeze(1), weight[ids].unsqueeze(-1)).reshape(-1).to(torch.float32)
+    if softcap is not None:
+        logits = softcap * torch.tanh(logits / softcap)
+    return logits * inv_temperature
 
 
 def sampling_replay_mask(sampling_mask: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -171,16 +202,18 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         support: torch.Tensor | None = None,  # [N, K] int64, -1-padded
         replay: torch.Tensor | None = None,  # [N] bool
         return_support: bool = False,
+        cutoff: torch.Tensor | None = None,  # [N] int64, -1 where the support is complete
         softcap: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
 
         ``replay`` rows are renormalized over their ``support`` (the sampling mask):
-        ``logprob = scaled_logits[label] - logsumexp(scaled_logits[support])``. Other
-        rows — and entropy, a full-distribution diagnostic — keep full-vocab
-        normalization. With ``return_support`` it also returns the logprobs at the
-        support ids under the same normalization.
+        ``logprob = scaled_logits[label] - logsumexp(scaled_logits[support])``. A replay
+        row with a ``cutoff`` id holds a partial support, which also counts every id whose
+        logit reaches the cutoff's. Other rows — and entropy, a full-distribution
+        diagnostic — keep full-vocab normalization. With ``return_support`` it also returns
+        the logprobs at the support ids under the same normalization.
         """
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
         assert weight.dim() == 2, f"expected weight [V,H], got {tuple(weight.shape)}"
@@ -203,6 +236,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
         logz = torch.empty((n,), device=device, dtype=torch.float32)
         support_logprobs = torch.empty_like(support, dtype=torch.float32) if return_support else None
+        thresholds = partial = None
+        if cutoff is not None:
+            partial = replay & (cutoff >= 0)
+            thresholds = torch.empty((n,), device=device, dtype=torch.float32)
 
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
@@ -221,6 +258,14 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 # Each support id lives in exactly one vocab chunk; collect its logit
                 # into a [tokens, K] buffer and logsumexp once after the loop.
                 support_logits = torch.full_like(support_chunk, float("-inf"), dtype=torch.float32)
+            if cutoff is not None:
+                partial_chunk = partial[start:end]
+                threshold = _scaled_logits_at(
+                    hidden_chunk, weight, cutoff[start:end].clamp_min(0), inv_temperature[start:end], softcap
+                )
+                thresholds[start:end] = threshold
+                above_m = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
+                above_s = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -236,6 +281,11 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 if support_chunk is not None:
                     local, in_range = _sampling_mask_local_indices(support_chunk, vocab_start, vocab_end)
                     support_logits = torch.where(in_range, scaled_logits.gather(1, local), support_logits)
+                if cutoff is not None:
+                    above = partial_chunk.unsqueeze(-1) & (scaled_logits >= threshold.unsqueeze(-1))
+                    above_m, above_s = _online_masked_logsumexp_update(
+                        above_m, above_s, scaled_logits.masked_fill(~above, float("-inf"))
+                    )
 
                 # Branchless target extraction - we don't want to stall the GPU here (because: if torch.any()) calls bool(Tensor) calls Tensor.items() <- sync here we don't want
                 in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
@@ -245,7 +295,13 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
             logz_full = m + torch.log(s)
             if replay is not None:
-                logz_chunk = torch.where(replay[start:end], torch.logsumexp(support_logits, dim=-1), logz_full)
+                logz_support = torch.logsumexp(support_logits, dim=-1)
+                if cutoff is not None:
+                    # Every id at or above the cutoff's logit, plus the recorded ids below it.
+                    below = support_logits.masked_fill(support_logits >= threshold.unsqueeze(-1), float("-inf"))
+                    logz_partial = torch.logaddexp(above_m + torch.log(above_s), torch.logsumexp(below, dim=-1))
+                    logz_support = torch.where(partial_chunk, logz_partial, logz_support)
+                logz_chunk = torch.where(replay[start:end], logz_support, logz_full)
             else:
                 logz_chunk = logz_full
             logz[start:end] = logz_chunk
@@ -259,7 +315,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         ctx.set_materialize_grads(
             False
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, support, replay)
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, support, replay, thresholds, partial)
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
 
@@ -273,7 +329,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
         assert grad_logprobs is not None or grad_support is not None, "FusedOutputLinear requires a logprob gradient"
 
-        hidden, weight, labels, inv_temperature, logz, support, replay = ctx.saved_tensors
+        hidden, weight, labels, inv_temperature, logz, support, replay, thresholds, partial = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
         softcap: float | None = ctx.softcap
 
@@ -296,6 +352,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             logz_chunk = logz[start:end]
             support_chunk = support[start:end] if support is not None else None
             replay_chunk = replay[start:end] if replay is not None else None
+            if thresholds is not None:
+                threshold_chunk, partial_chunk = thresholds[start:end], partial[start:end]
             grad_head = (
                 grad_support[start:end].float().masked_fill(support_chunk < 0, 0.0)
                 if grad_support is not None
@@ -322,6 +380,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     mask_indicator = torch.zeros(scaled_logits.shape, dtype=torch.int8, device=scaled_logits.device)
                     mask_indicator.scatter_add_(1, local, in_range.to(torch.int8))
                     masked_out = replay_chunk.unsqueeze(-1) & (mask_indicator == 0)
+                    if thresholds is not None:
+                        masked_out &= ~(partial_chunk.unsqueeze(-1) & (scaled_logits >= threshold_chunk.unsqueeze(-1)))
                     scaled_logits.masked_fill_(masked_out, float("-inf"))
                 probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
@@ -341,7 +401,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 if needs_weight:
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
-        return grad_hidden, grad_weight, None, None, None, None, None, None, None
+        return grad_hidden, grad_weight, None, None, None, None, None, None, None, None
 
 
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
@@ -476,6 +536,7 @@ def _patch_model_forward(model: nn.Module) -> None:
         temperature: torch.Tensor | None = None,
         sampling_mask: torch.Tensor | None = None,
         topk_ids: torch.Tensor | None = None,
+        support_cutoff: torch.Tensor | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
@@ -501,6 +562,7 @@ def _patch_model_forward(model: nn.Module) -> None:
             temperature=temperature[:, slice_indices] if temperature is not None else None,
             sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
             topk_ids=topk_ids[:, slice_indices] if topk_ids is not None else None,
+            support_cutoff=support_cutoff[:, slice_indices] if support_cutoff is not None else None,
         )
 
     # Bind the new forward to the model

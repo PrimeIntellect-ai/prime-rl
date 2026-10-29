@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 REPLAY_KEY = "prl_replay"
-CAPACITY_ENV = "PRIME_SAMPLING_SUPPORT_CAPACITY"
+WIDTH_ENV = "PRIME_SAMPLING_SUPPORT_WIDTH"
 _capture: ContextVar[list | None] = ContextVar("prl_capture", default=None)
 
 
@@ -91,7 +91,12 @@ def patch_request_replay():
                 self._prime_draws[indices],
             )
         output.sampling_mask_tensors = capture_supports(
-            processed, cu_num_logits, torch.where(keep, num_sampled, 0), int(os.environ[CAPACITY_ENV]), rows
+            processed,
+            cu_num_logits,
+            torch.where(keep, num_sampled, 0),
+            output.sampled_token_ids,
+            int(os.environ[WIDTH_ENV]),
+            rows,
         )
         return output
 

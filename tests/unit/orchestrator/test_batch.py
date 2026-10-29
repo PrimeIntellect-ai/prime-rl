@@ -34,7 +34,7 @@ def _sample(**fields) -> TrainingSample:
     )
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "sampled"])
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
@@ -60,6 +60,9 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     if corruption is None:
         batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
         validate_score_centering_data(batch, vocab_size=9)
+        # A partial support records only part of its sampler mass.
+        batch["top_logprobs_values"][0, 1] = torch.tensor([0.5, 0.25]).log()
+        validate_score_centering_data(batch, vocab_size=9)
         return
     match corruption:
         case "missing":
@@ -70,9 +73,6 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
             batch["top_logprobs_ids"][0, 1, 1] = 9
         case "mass":
             batch["top_logprobs_values"][0, 1] = 0
-        case "support_mass":
-            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-            batch["top_logprobs_values"][0, 1] = torch.tensor([0.5, 0.25]).log()
         case "sampled":
             batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
             batch["input_ids"][0, 1] = 4

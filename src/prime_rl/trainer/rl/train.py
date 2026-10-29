@@ -430,6 +430,9 @@ def train(config: TrainerConfig):
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
+            support_cutoff = (
+                micro_batch["support_cutoff"].to("cuda") if micro_batch["support_cutoff"] is not None else None
+            )
 
             topk_ids = sampler_topk = topk_valid = sampler_tail_mass = None
             if score_centering:
@@ -443,7 +446,11 @@ def train(config: TrainerConfig):
                     topk_valid = topk_ids >= 0
                     sampler_tail_mass = (1.0 - sampler_topk.exp().masked_fill(~topk_valid, 0.0).sum(-1)).clamp_min(0.0)
                     if sampling_mask is not None:
-                        sampler_tail_mass = sampler_tail_mass.masked_fill((sampling_mask >= 0).any(-1), 0.0)
+                        # A complete replayed support has no tail; a partial one keeps its unrecorded mass.
+                        complete = (sampling_mask >= 0).any(-1)
+                        if support_cutoff is not None:
+                            complete &= support_cutoff < 0
+                        sampler_tail_mass = sampler_tail_mass.masked_fill(complete, 0.0)
                     # Validated on the GPU and checked once after the last micro batch, so the
                     # host never waits on it
                     score_centering_errors.append(
@@ -477,6 +484,8 @@ def train(config: TrainerConfig):
                 # Sampling masks ride at the sampled token's own position (like inference
                 # logprobs); shift to align with the label each position predicts.
                 sampling_mask = shift_tensor_left(sampling_mask, pad_value=-1)
+            if support_cutoff is not None:
+                support_cutoff = shift_tensor_left(support_cutoff, pad_value=-1)
 
             seq_lens_are_pre_shard = False
 
@@ -497,6 +506,8 @@ def train(config: TrainerConfig):
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+                if support_cutoff is not None:
+                    support_cutoff = shard_for_cp(support_cutoff, cp_rank=cp_rank, cp_world_size=cp_size)
 
             if routed_experts is not None:
                 routed_experts = routed_experts.to("cuda").int()
@@ -528,6 +539,7 @@ def train(config: TrainerConfig):
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                     sampling_mask=sampling_mask,
+                    support_cutoff=support_cutoff,
                     topk_ids=topk_ids,
                 )
 
@@ -538,12 +550,16 @@ def train(config: TrainerConfig):
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
                 if sampling_mask is not None:
-                    out["logprobs"] = selective_log_softmax_with_sampling_mask(scaled_logits, labels, sampling_mask)
+                    out["logprobs"] = selective_log_softmax_with_sampling_mask(
+                        scaled_logits, labels, sampling_mask, support_cutoff
+                    )
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
                 if topk_ids is not None:
-                    out["topk_logprobs"] = selective_topk_log_softmax(scaled_logits, topk_ids, sampling_mask, labels)
+                    out["topk_logprobs"] = selective_topk_log_softmax(
+                        scaled_logits, topk_ids, sampling_mask, labels, support_cutoff
+                    )
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:

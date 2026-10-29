@@ -54,7 +54,9 @@ class TrainSamplingConfig(BaseConfig):
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
     logprobs: int | None = Field(None, ge=1)
-    """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
+    """Record this many top sampler probabilities per token, in addition to its sampled logprob.
+    Truncated sampling records at least one, which returns the sampler probabilities of each
+    replayed support — see docs/inference.md (Sampling Replay)."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
@@ -602,11 +604,20 @@ class OrchestratorConfig(BaseConfig):
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
-        Owned here: opd/opsd is rejected (full-vocab prefill refs would mix
-        normalizations). Frozen-source envs sample externally and are exempt."""
+        Owned here: every truncating config records sampler logprobs (a support
+        wider than the server's width arrives partial, recognized by its mass);
+        opd/opsd is rejected (full-vocab prefill refs would mix normalizations).
+        Frozen-source envs sample externally and are exempt."""
         truncating = [sampling for sampling in self.policy_samplings if sampling.truncates_distribution()]
         if not truncating:
             return self
+        self.update_policy_samplings(
+            lambda sampling: (
+                sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, 1)})
+                if sampling.truncates_distribution()
+                else sampling
+            )
+        )
 
         if any(sampling.temperature == 0 for sampling in truncating):
             raise ValueError(

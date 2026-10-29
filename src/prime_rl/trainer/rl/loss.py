@@ -72,16 +72,39 @@ def selective_log_softmax(
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
 
 
+def _sampling_mask_logz(
+    logits: Tensor, labels: Tensor, sampling_mask: Tensor, support_cutoff: Tensor | None = None
+) -> tuple[Tensor, Tensor]:
+    """Rows replayed against their sampling mask (see ``sampling_replay_mask``) and their log normalizer:
+    over the mask, or for a partial mask (``support_cutoff >= 0``) over the mask plus every id whose logit
+    reaches the cutoff's. Non-replayed rows are zeroed (or keep the full vocabulary) before the logsumexp
+    so the unselected ``where`` branch can't emit NaN grads."""
+    replay = sampling_replay_mask(sampling_mask, labels)
+    mask_logits = logits.gather(-1, sampling_mask.clamp_min(0).long()).masked_fill(sampling_mask < 0, -torch.inf)
+    mask_logits = torch.where(replay.unsqueeze(-1), mask_logits, 0.0)
+    logz = mask_logits.logsumexp(-1)
+    if support_cutoff is not None:
+        partial = (replay & (support_cutoff >= 0)).unsqueeze(-1)
+        cutoff_logits = logits.gather(-1, support_cutoff.clamp_min(0).long().unsqueeze(-1))
+        recorded = torch.zeros(logits.shape, dtype=torch.int8, device=logits.device)
+        recorded.scatter_add_(-1, sampling_mask.clamp_min(0).long(), (sampling_mask >= 0).to(torch.int8))
+        support = ~partial | (recorded > 0) | (logits >= cutoff_logits)
+        logz = torch.where(partial.squeeze(-1), logits.masked_fill(~support, -torch.inf).logsumexp(-1), logz)
+    return replay, logz
+
+
 def selective_topk_log_softmax(
-    logits: Tensor, topk_ids: Tensor, sampling_mask: Tensor | None = None, labels: Tensor | None = None
+    logits: Tensor,
+    topk_ids: Tensor,
+    sampling_mask: Tensor | None = None,
+    labels: Tensor | None = None,
+    support_cutoff: Tensor | None = None,
 ) -> Tensor:
     """Gather head logprobs under the same normalization as the sampled token."""
     logz = logits.logsumexp(-1, keepdim=True)
     if sampling_mask is not None:
-        replay = sampling_replay_mask(sampling_mask, labels).unsqueeze(-1)
-        mask_logits = logits.gather(-1, sampling_mask.clamp_min(0).long()).masked_fill(sampling_mask < 0, -torch.inf)
-        mask_logits = torch.where(replay, mask_logits, 0.0)
-        logz = torch.where(replay, mask_logits.logsumexp(-1, keepdim=True), logz)
+        replay, mask_logz = _sampling_mask_logz(logits, labels, sampling_mask, support_cutoff)
+        logz = torch.where(replay.unsqueeze(-1), mask_logz.unsqueeze(-1), logz)
     head = logits.gather(-1, topk_ids.clamp_min(0).long()) - logz
     return head.masked_fill(topk_ids < 0, 0.0)
 
@@ -91,18 +114,15 @@ def selective_log_softmax_with_sampling_mask(
     logits: Float[Tensor, "batch seq vocab"],
     index: Int[Tensor, "batch seq"],
     sampling_mask: Int[Tensor, "batch seq mask"],
+    support_cutoff: Int[Tensor, "batch seq"] | None = None,
 ) -> Float[Tensor, "batch seq"]:
     """Per-token logprobs with sampling-mask replay: positions with a usable
     mask (see ``sampling_replay_mask``) get ``logits[index] -
-    logsumexp(logits[mask])``, others full-vocab. Non-replayed rows are zeroed
-    before the logsumexp so the unselected ``where`` branch can't emit NaN grads.
+    logsumexp(logits[mask])`` (a partial mask also counts every id at or above its
+    ``support_cutoff``'s logit), others full-vocab.
     """
     full_logprobs = selective_log_softmax(logits, index)
-    replay = sampling_replay_mask(sampling_mask, index)
-    mask_logits = torch.gather(logits, -1, sampling_mask.clamp_min(0).long())
-    mask_logits = torch.where(sampling_mask >= 0, mask_logits, float("-inf"))
-    mask_logits = torch.where(replay.unsqueeze(-1), mask_logits, 0.0)
-    logz_masked = torch.logsumexp(mask_logits, dim=-1)
+    replay, logz_masked = _sampling_mask_logz(logits, index, sampling_mask, support_cutoff)
     target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
     return torch.where(replay, target_logits - logz_masked, full_logprobs)
 

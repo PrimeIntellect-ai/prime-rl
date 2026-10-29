@@ -267,10 +267,14 @@ Training sampling requires positive temperature. With untruncated sampling
 and the trainer approximates the remaining sampler mass as proportional to its own tail.
 
 With truncated sampling (top-p, top-k, or both), the launcher enables sampling replay
-and the server captures the sampler's probability for every token of each recorded
-support, at any width. The renderer retains the complete recorded support; the trainer normalizes over that same support and computes exact
-centering on it, without a tail approximation. `score_centering_topk` only controls
-the captured head for untruncated sampling. The existing sampling-replay limits and
+and the server captures the sampler's probability for every returned token of each
+recorded support. A support of at most `inference.sampling_support_width` ids is
+returned whole; the renderer retains it, and the trainer normalizes over that same
+support and computes exact centering on it, without a tail approximation. A wider
+support returns its top ids, the sampled token and its cutoff (a partial support);
+the trainer normalizes over those ids plus every id at or above the cutoff's logit,
+and treats the ids that were not returned as the tail, as above.
+`score_centering_topk` only controls the captured head for untruncated sampling. The existing sampling-replay limits and
 eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
 
 With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is

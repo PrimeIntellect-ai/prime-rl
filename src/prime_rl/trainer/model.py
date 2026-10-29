@@ -971,6 +971,7 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
+    support_cutoff: Int[Tensor, "batch seq"] | None = None,
     topk_ids: Int[Tensor, "batch seq head"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
@@ -986,6 +987,8 @@ def forward(
         "sampling_mask": sampling_mask,
     }
 
+    if support_cutoff is not None:
+        kwargs["support_cutoff"] = support_cutoff
     if topk_ids is not None:
         kwargs["topk_ids"] = topk_ids
 

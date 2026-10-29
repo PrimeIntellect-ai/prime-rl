@@ -120,8 +120,7 @@ def test_generate_response_post_process_preserves_prompt_metadata():
 
 
 @pytest.mark.asyncio
-async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
-    # A replay request without compact logprobs: an overflowed step leaves an empty mask row.
+async def test_replay_mask_rows_without_support_fail_the_request():
     mask = PackedSamplingMask(ids=np.array([1, 2], dtype=np.int64), counts=np.array([2, 0], dtype=np.int32))
     output = CompletionOutput(0, "", [1, 2], None, None, sampling_mask=mask, finish_reason="length")
 
@@ -130,7 +129,7 @@ async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
 
     params = SamplingParams(extra_args={"prl_replay": True})
     packed = _PackedOutputs(outputs(), GenerateRequest(model="test", token_ids=[10], sampling_params=params))
-    with pytest.raises(ValueError, match="sampling_support_capacity"):
+    with pytest.raises(ValueError, match="Missing sampling support"):
         async for _ in packed:
             pass
 
@@ -279,10 +278,11 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
 
 
 @pytest.mark.gpu
-def test_capture_supports_is_the_masked_set():
+@pytest.mark.parametrize("width", [1 << 20, 64])
+def test_capture_supports_is_the_masked_set(width):
     from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
 
-    from prime_rl.inference.vllm.paired_capture import capture_supports
+    from prime_rl.inference.vllm.paired_capture import CUTOFF_FLAG, capture_supports
 
     torch.manual_seed(0)
     num_reqs, vocab = 6, 50_000
@@ -292,28 +292,52 @@ def test_capture_supports_is_the_masked_set():
     masked = apply_top_k_top_p_triton(logits.clone(), None, top_p)
     cu = torch.arange(num_reqs + 1, device="cuda", dtype=torch.int32)
     committed = torch.tensor([1, 1, 0, 1, 1, 1], device="cuda", dtype=torch.int32)
+    # A middle kept id, the least likely one, and the most likely one.
+    kept = [torch.isfinite(row).nonzero().squeeze(-1) for row in masked]
+    order = [k[masked[req, k].argsort(descending=True)] for req, k in enumerate(kept)]
+    sampled = torch.stack([o[[len(o) // 2, -1, 0, 0, len(o) // 2, -1][req]] for req, o in enumerate(order)])
     rows = (
         torch.tensor([2], device="cuda"),
         torch.tensor([[7, 8, 9]], device="cuda"),
         torch.tensor([3], device="cuda"),
     )
-    captured = capture_supports(masked, cu, committed, 1 << 20, rows).to_cpu_nonblocking()
+    captured = capture_supports(masked, cu, committed, sampled.unsqueeze(-1), width, rows).to_cpu_nonblocking()
     torch.cuda.synchronize()
     supports = captured.tolists()
 
     offsets = supports.offsets
+    partial_rows = 0
     for req in range(num_reqs):
         entries = supports.token_ids[offsets[req] : offsets[req + 1]]
         if req == 2:
             assert entries.tolist() == [7, 8, 9]
             continue
-        kept = torch.isfinite(masked[req]).nonzero().squeeze(-1)
         ids = entries & 0xFFFFFFFF
+        flagged = ids >= CUTOFF_FLAG
+        ids = ids & (CUTOFF_FLAG - 1)
         values = ((entries >> 32).astype(np.int32) ^ NEG_INF_BITS).view(np.float32)
-        assert ids.tolist() == kept.tolist()
-        np.testing.assert_allclose(values, masked[req, kept].log_softmax(-1).cpu().numpy(), atol=1e-5)
-
-    overflow = capture_supports(masked, cu, committed, int(offsets[2]), rows).to_cpu_nonblocking()
-    torch.cuda.synchronize()
-    assert overflow.counts_cpu.tolist()[:2] == [offsets[1], offsets[2] - offsets[1]]
-    assert (overflow.counts_cpu[2:] == -1).all()
+        # Logprobs are normalized over the whole kept set, whatever was returned.
+        reference = masked[req].log_softmax(-1)
+        np.testing.assert_allclose(values, reference[torch.from_numpy(ids).cuda()].cpu().numpy(), atol=1e-5)
+        if len(kept[req]) <= width:
+            assert ids.tolist() == kept[req].tolist() and not flagged.any()
+            continue
+        partial_rows += 1
+        x = masked[req].cpu()
+        assert len(ids) <= width and len(set(ids.tolist())) == len(ids)
+        assert set(ids.tolist()) <= set(kept[req].tolist())
+        # The cutoff, the least likely kept id, comes last and is the only flagged entry.
+        assert flagged.tolist() == [False] * (len(ids) - 1) + [True]
+        assert x[ids[-1]] == x[kept[req].cpu()].min()
+        assert int(sampled[req]) in ids.tolist()
+        # The rest is every kept id at or above one logit, as many as fit next to the sampled token and the
+        # cutoff. A sampled token below that logit (here the middle one) is appended after them.
+        rest = [i for i in ids[:-1].tolist() if i != int(sampled[req])]
+        appended = int(sampled[req]) != ids[-1] and x[int(sampled[req])] < x[rest].min()
+        head = rest if appended else ids[:-1].tolist()
+        lowest = x[head].min()
+        assert len(head) <= width - 2
+        assert (torch.isfinite(x) & (x >= lowest)).sum() == len(head)
+        assert (torch.isfinite(x) & (x >= x[torch.isfinite(x) & (x < lowest)].max())).sum() > width - 2
+    assert partial_rows == sum(len(kept[req]) > width for req in (0, 1, 3, 4, 5))
+    assert partial_rows >= (0 if width > vocab else 3)

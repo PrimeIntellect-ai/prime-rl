@@ -195,7 +195,8 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
     replayed = wire.SamplingMask(
         ids=np.array([5, 6, 8], np.int32).tobytes(),
         counts=np.array([0, 0, 1, 2], np.int32).tobytes(),
-        logprobs=np.log(np.array([1.0, 0.75, 0.25], np.float32)).tobytes(),
+        # The second row is a partial support: it records 0.85 of its sampler mass.
+        logprobs=np.log(np.array([1.0, 0.6, 0.25], np.float32)).tobytes(),
     )
     plain = wire.SamplingMask(ids=np.array([9], np.int32).tobytes(), counts=np.array([0, 0, 0, 1], np.int32).tobytes())
     samples = [
@@ -226,10 +227,14 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
     rows = {
         tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
     }
-    expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
+    expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.6, 0.25]), (9,): [np.nan]}
     assert rows.keys() == expected.keys()
     for key, value in expected.items():
         np.testing.assert_allclose(rows[key], value, rtol=1e-6)
+    # Its cutoff is its least likely recorded id.
+    cutoff, mask = tensor["support_cutoff"][0], tensor["sampling_mask"][0]
+    assert [row[row >= 0].tolist() for row in mask[cutoff >= 0]] == [[6, 8]]
+    assert cutoff[cutoff >= 0].tolist() == [8]
 
 
 @pytest.mark.parametrize("support", ["complete", "mismatch"])
