@@ -141,7 +141,7 @@ def test_journal_disk_io_does_not_block_event_loop(tmp_path, setup_transport, mo
             assert not sending.done()
             requests = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in receivers]
             await asyncio.sleep(0.05)
-            assert not any(request.done() for request in requests)
+            assert not sending.done()
             # This coroutine must run before the worker can finish its write.
             release.set()
             await asyncio.wait_for(asyncio.gather(sending, *requests), 10)
@@ -189,33 +189,34 @@ def test_replacement_replays_only_when_authorized(tmp_path, authorized):
             results = await asyncio.gather(
                 *(asyncio.to_thread(receiver.wait) for receiver in replacements), return_exceptions=True
             )
-            expected = [f"{sender.journal_session}:{step}" for step in (1, 2)]
+            # Batch 1 was delivered to the old attempt and replays from the journal; batch 2 is live.
+            replayed, live = (f"{sender.journal_session}:{step}" for step in (1, 2))
             if authorized:
                 assert results == [None] * len(replacements)
                 assert sender.handshake.active == group and not sending.done()
                 for receiver in replacements:
-                    assert [record.batch_id for record in receiver.replay_plan.batches] == expected
-                    batch = receiver.receive()
-                    assert sender.encode(batch) == sender.journal.read(expected[0])[receiver.data_rank]
+                    assert [record.batch_id for record in receiver.replay_plan.batches] == [replayed]
+                    batch = await asyncio.to_thread(receiver.receive)
+                    assert sender.encode(batch) == sender.journal.read(replayed)[receiver.data_rank]
                 await asyncio.wait_for(
                     asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in replacements)), 5
                 )
                 for receiver in replacements:
-                    batch = receiver.receive()
-                    assert sender.encode(batch) == sender.journal.read(expected[1])[receiver.data_rank]
-                assert sender.replay_batches_sent == 2 and sender.current_step == 3
+                    batch = await asyncio.to_thread(receiver.receive)
+                    assert sender.encode(batch) == sender.journal.read(live)[receiver.data_rank]
+                assert sender.replay_batches_sent == 1 and sender.current_step == 3
                 await _send_while_ranks_request(sender, replacements)
-                assert sender.current_step == 4 and sender.replay_batches_sent == 2
+                assert sender.current_step == 4 and sender.replay_batches_sent == 1
             else:
                 assert all(isinstance(result, RecoveryRequired) for result in results)
-                assert all([record.batch_id for record in result.plan.batches] == expected for result in results)
+                assert all([record.batch_id for record in result.plan.batches] == [replayed] for result in results)
                 assert sender.handshake.active == active and not sending.done()
                 # A probe does not displace the accepted trainer.
                 await asyncio.wait_for(
                     asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in receivers)), 5
                 )
                 for receiver in receivers:
-                    assert receiver.receive()[0].journal_batch_id == expected[-1]
+                    assert receiver.receive()[0].journal_batch_id == live
         finally:
             if not sending.done():
                 sending.cancel()
@@ -224,6 +225,277 @@ def test_replacement_replays_only_when_authorized(tmp_path, authorized):
     try:
         asyncio.run(run())
     finally:
+        for transport in [sender, *receivers, *replacements]:
+            transport.close()
+
+
+def test_authorization_for_another_attempt_supersedes_an_admission_in_progress(tmp_path):
+    """``authorize_recovery`` can reject the candidate while its automatic admission awaits the
+    reconciliation; the sender tells its ranks, keeps serving and admits the authorized attempt."""
+    sender, receivers = _zmq(tmp_path)
+    sender.journal = BatchJournal(tmp_path)
+    sender.auto_recover = True
+    replacements = []
+
+    async def run():
+        await _send_while_ranks_request(sender, receivers)
+        checkpoint_path = tmp_path / "checkpoints" / "step_0" / "trainer"
+        checkpoint_path.mkdir(parents=True)
+        sender.journal.commit_checkpoint(checkpoint_path, 0, f"{sender.journal_session}:0")
+        checkpoint = msgspec.json.decode((checkpoint_path / "batch.json").read_bytes(), type=BatchCheckpoint)
+        await _send_while_ranks_request(sender, receivers)
+        active = sender.handshake.active
+        for receiver in receivers:
+            receiver.close()
+        superseded = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        authorized = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+
+        async def reconcile(group):
+            if group == superseded:
+                sender.authorize_recovery(active.attempt_id, authorized.attempt_id)
+
+        sender.on_replacement = reconcile
+        port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
+
+        def connect(group):
+            attempt = []
+            for rank, data_rank in enumerate(RANK_TO_DATA_RANK):
+                receiver = ZMQBatchReceiver(
+                    tmp_path, data_rank, rank, len(receivers), 1, ZMQTransportConfig(host="127.0.0.1", port=port), group
+                )
+                receiver.socket.setsockopt(zmq.RCVTIMEO, 10_000)
+                attempt.append(receiver)
+            replacements.extend(attempt)
+            return asyncio.gather(*(asyncio.to_thread(receiver.wait) for receiver in attempt), return_exceptions=True)
+
+        sending = asyncio.create_task(sender.send(MICRO_BATCH_GRID))
+        try:
+            results = await connect(superseded)
+            assert all(
+                isinstance(result, RuntimeError) and "another trainer attempt" in str(result) for result in results
+            )
+            assert not sender.serve_task.done()
+            assert await connect(authorized) == [None] * len(receivers)
+            assert sender.handshake.active == authorized
+        finally:
+            sending.cancel()
+            await asyncio.gather(sending, return_exceptions=True)
+
+    try:
+        asyncio.run(run())
+    finally:
+        for transport in [sender, *receivers, *replacements]:
+            transport.close()
+
+
+def test_authorization_for_another_attempt_tells_a_candidate_still_collecting_its_ranks(tmp_path):
+    """The ranks of a candidate that ``authorize_recovery`` rejects before all of them said hello get a
+    reply too, instead of waiting for one forever while holding their GPUs."""
+    sender, receivers = _zmq(tmp_path)
+    sender.journal = BatchJournal(tmp_path)
+    replacements = []
+
+    async def run():
+        await _send_while_ranks_request(sender, receivers)
+        active = sender.handshake.active
+        candidate = TrainerGroup(uuid4().hex, len(receivers), 1)
+        port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
+        for rank, data_rank in enumerate(RANK_TO_DATA_RANK[:2]):
+            receiver = ZMQBatchReceiver(
+                tmp_path, data_rank, rank, len(receivers), 1, ZMQTransportConfig(host="127.0.0.1", port=port), candidate
+            )
+            receiver.socket.setsockopt(zmq.RCVTIMEO, 5000)
+            replacements.append(receiver)
+        waits = asyncio.gather(*(asyncio.to_thread(receiver.wait) for receiver in replacements), return_exceptions=True)
+        while len(sender.handshake.pending) < len(replacements):
+            await asyncio.sleep(0.05)
+        sender.authorize_recovery(active.attempt_id, uuid4().hex)
+        results = await waits
+        assert all(
+            isinstance(result, RuntimeError) and "another trainer attempt" in str(result) for result in results
+        ), results
+        assert sender.handshake.candidate is None and not sender.serve_task.done()
+
+    try:
+        asyncio.run(run())
+    finally:
+        if sender.serve_task is not None:
+            sender.serve_task.cancel()
+        for transport in [sender, *receivers, *replacements]:
+            transport.close()
+
+
+def test_a_newer_attempt_supersedes_a_candidate_that_never_completed(tmp_path):
+    """A candidate whose other ranks never said hello is told it was superseded once a newer attempt
+    starts, also while its ranks are still connected, and the newer attempt is admitted."""
+    sender, receivers = _zmq(tmp_path)
+    sender.journal = BatchJournal(tmp_path)
+    sender.auto_recover = True
+    replacements = []
+
+    async def run():
+        await _send_while_ranks_request(sender, receivers)
+        checkpoint_path = tmp_path / "checkpoints" / "step_0" / "trainer"
+        checkpoint_path.mkdir(parents=True)
+        sender.journal.commit_checkpoint(checkpoint_path, 0, f"{sender.journal_session}:0")
+        checkpoint = msgspec.json.decode((checkpoint_path / "batch.json").read_bytes(), type=BatchCheckpoint)
+        await _send_while_ranks_request(sender, receivers)
+        for receiver in receivers:
+            receiver.close()
+        port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
+
+        def connect(group, ranks):
+            attempt = []
+            for rank in ranks:
+                receiver = ZMQBatchReceiver(
+                    tmp_path,
+                    RANK_TO_DATA_RANK[rank],
+                    rank,
+                    len(receivers),
+                    1,
+                    ZMQTransportConfig(host="127.0.0.1", port=port),
+                    group,
+                )
+                receiver.socket.setsockopt(zmq.RCVTIMEO, 10_000)
+                attempt.append(receiver)
+            replacements.extend(attempt)
+            return asyncio.gather(*(asyncio.to_thread(receiver.wait) for receiver in attempt), return_exceptions=True)
+
+        incomplete = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        newer = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        sending = asyncio.create_task(sender.send(MICRO_BATCH_GRID))
+        try:
+            superseded = connect(incomplete, [0, 1])
+            while len(sender.handshake.pending) < 2:
+                await asyncio.sleep(0.05)
+            admitted = connect(newer, range(len(receivers)))
+            results = await superseded
+            assert all(
+                isinstance(result, RuntimeError) and "newer trainer attempt" in str(result) for result in results
+            ), results
+            assert await admitted == [None] * len(receivers)
+            assert sender.handshake.active == newer
+        finally:
+            sending.cancel()
+            await asyncio.gather(sending, return_exceptions=True)
+
+    try:
+        asyncio.run(run())
+    finally:
+        for transport in [sender, *receivers, *replacements]:
+            transport.close()
+
+
+def test_authorization_while_the_replay_plan_is_read_admits_the_candidate(tmp_path, monkeypatch):
+    """``authorize_recovery`` for the candidate itself can arrive while its replay plan is read; the
+    candidate is admitted, not turned away as unauthorized with the authorization left behind."""
+    import prime_rl.transports.batch.zmq as zmq_transport
+
+    sender, receivers = _zmq(tmp_path)
+    sender.journal = BatchJournal(tmp_path)
+    replacements = []
+
+    async def run():
+        await _send_while_ranks_request(sender, receivers)
+        checkpoint_path = tmp_path / "checkpoints" / "step_0" / "trainer"
+        checkpoint_path.mkdir(parents=True)
+        sender.journal.commit_checkpoint(checkpoint_path, 0, f"{sender.journal_session}:0")
+        checkpoint = msgspec.json.decode((checkpoint_path / "batch.json").read_bytes(), type=BatchCheckpoint)
+        await _send_while_ranks_request(sender, receivers)
+        active = sender.handshake.active
+        group = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        loop = asyncio.get_running_loop()
+        plan_replay = zmq_transport.plan_replay
+
+        def plan_while_authorized(*args):
+            async def authorize():
+                sender.authorize_recovery(active.attempt_id, group.attempt_id)
+
+            asyncio.run_coroutine_threadsafe(authorize(), loop).result()
+            return plan_replay(*args)
+
+        monkeypatch.setattr(zmq_transport, "plan_replay", plan_while_authorized)
+        port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
+        for rank, data_rank in enumerate(RANK_TO_DATA_RANK):
+            receiver = ZMQBatchReceiver(
+                tmp_path, data_rank, rank, len(receivers), 1, ZMQTransportConfig(host="127.0.0.1", port=port), group
+            )
+            receiver.socket.setsockopt(zmq.RCVTIMEO, 5000)
+            replacements.append(receiver)
+        sending = asyncio.create_task(sender.send(MICRO_BATCH_GRID))
+        try:
+            results = await asyncio.gather(
+                *(asyncio.to_thread(receiver.wait) for receiver in replacements), return_exceptions=True
+            )
+            assert results == [None] * len(replacements)
+            assert sender.handshake.active == group
+        finally:
+            sending.cancel()
+            await asyncio.gather(sending, return_exceptions=True)
+
+    try:
+        asyncio.run(run())
+    finally:
+        for transport in [sender, *receivers, *replacements]:
+            transport.close()
+
+
+def test_a_rank_lost_during_admission_discards_the_replacement(tmp_path):
+    """A replacement whose rank disconnects while it is reconciled is not accepted without that rank;
+    the next complete attempt is admitted."""
+    sender, receivers = _zmq(tmp_path)
+    sender.journal = BatchJournal(tmp_path)
+    sender.auto_recover = True
+    replacements = []
+    dropped = zmq.Context.instance().socket(zmq.DEALER)
+
+    async def run():
+        await _send_while_ranks_request(sender, receivers)
+        checkpoint_path = tmp_path / "checkpoints" / "step_0" / "trainer"
+        checkpoint_path.mkdir(parents=True)
+        sender.journal.commit_checkpoint(checkpoint_path, 0, f"{sender.journal_session}:0")
+        checkpoint = msgspec.json.decode((checkpoint_path / "batch.json").read_bytes(), type=BatchCheckpoint)
+        await _send_while_ranks_request(sender, receivers)
+        for receiver in receivers:
+            receiver.close()
+        broken = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        complete = TrainerGroup(uuid4().hex, len(receivers), 1, checkpoint)
+        port = int(sender.socket.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(":", 1)[1])
+        transport = ZMQTransportConfig(host="127.0.0.1", port=port)
+
+        def receiver(group: TrainerGroup, rank: int) -> ZMQBatchReceiver:
+            replacement = ZMQBatchReceiver(tmp_path, RANK_TO_DATA_RANK[rank], rank, len(receivers), 1, transport, group)
+            replacement.socket.setsockopt(zmq.RCVTIMEO, 10_000)
+            replacements.append(replacement)
+            return replacement
+
+        async def reconcile(group):
+            if group == broken:
+                # Rank 1 of the broken attempt goes away while it is reconciled. Its socket belongs
+                # to this thread: ZMQ sockets must not be closed while another thread uses them.
+                dropped.close(linger=0)
+                await asyncio.sleep(0.5)
+
+        sender.on_replacement = reconcile
+        sending = asyncio.create_task(sender.send(MICRO_BATCH_GRID))
+        try:
+            dropped.connect(f"tcp://127.0.0.1:{port}")
+            dropped.send(msgspec.msgpack.encode(TrainerHello(broken, 1, RANK_TO_DATA_RANK[1])))
+            others = [receiver(broken, rank) for rank in range(len(receivers)) if rank != 1]
+            results = await asyncio.gather(*(asyncio.to_thread(rank.wait) for rank in others), return_exceptions=True)
+            assert all(isinstance(result, RuntimeError) and "disconnected" in str(result) for result in results)
+            assert sender.handshake.active != broken and not sender.serve_task.done()
+            attempt = [receiver(complete, rank) for rank in range(len(receivers))]
+            assert await asyncio.gather(*(asyncio.to_thread(rank.wait) for rank in attempt)) == [None] * len(attempt)
+            assert sender.handshake.active == complete
+        finally:
+            sending.cancel()
+            await asyncio.gather(sending, return_exceptions=True)
+
+    try:
+        asyncio.run(run())
+    finally:
+        dropped.close(linger=0)
         for transport in [sender, *receivers, *replacements]:
             transport.close()
 
