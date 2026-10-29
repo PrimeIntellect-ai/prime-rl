@@ -220,16 +220,24 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
         assert resolve_payloads([packed], pool)[0] == []
     assert len(packed.top_logprobs.ids) == 3 * 4
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
-    ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
+    offsets, ids, values = tensor["support_offsets"], tensor["support_ids"], tensor["support_logprobs"]
     assert ids.shape == values.shape
-    assert ids.shape[0] == sum(packed.sequence_lengths)
+    assert offsets.shape[0] == sum(packed.sequence_lengths) + 1
     rows = {
-        tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
+        tuple(ids[start:end].tolist()): values[start:end].tolist()
+        for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist())
+        if end > start
     }
     expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
     assert rows.keys() == expected.keys()
     for key, value in expected.items():
         np.testing.assert_allclose(rows[key], value, rtol=1e-6)
+    replayed_rows = {
+        tuple(ids[start:end].tolist())
+        for start, end, row_replayed in zip(offsets[:-1].tolist(), offsets[1:].tolist(), tensor["support_replayed"])
+        if row_replayed
+    }
+    assert replayed_rows == {(5,), (6, 8), (9,)}
 
 
 @pytest.mark.parametrize("support", ["complete", "mismatch"])

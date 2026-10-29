@@ -518,21 +518,26 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
+        """Score centering (and the exact KL) needs the sampler distribution over each token's support: the
+        full replayed support of truncated sampling, or ``score_centering_k`` draws of untruncated sampling."""
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        if loss.type == "custom":
             return self
-        if not self.orchestrator.policy_samplings:
-            raise ValueError("Score centering requires a policy-sampled training source")
 
-        def request_logprobs(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
+        def request_support(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            k = (sampling.top_k or 1) if sampling.truncates_distribution() else loss.score_centering_topk
+            truncated = sampling.truncates_distribution()
+            k = (sampling.top_k or 1) if truncated else loss.score_centering_k
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
-            return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
+            update: dict = {"logprobs": max(sampling.logprobs or 0, k)}
+            if not truncated:
+                update["sampler_draws"] = k
+            # Validated, not copied: the sampling config derives extra_body from sampler_draws.
+            return TrainSamplingConfig.model_validate({**sampling.model_dump(), **update})
 
-        self.orchestrator.update_policy_samplings(request_logprobs)
+        self.orchestrator.update_policy_samplings(request_support)
         return self
 
     @model_validator(mode="after")

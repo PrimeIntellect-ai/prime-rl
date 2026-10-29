@@ -182,7 +182,7 @@ class TrainEnv(Env):
 
     def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
         return vf.SamplingConfig(
-            **config.sampling.model_dump(exclude_none=True, exclude={"logprobs"}),
+            **config.sampling.model_dump(exclude_none=True, exclude={"logprobs", "sampler_draws"}),
             # Only policy rollouts need sampling logprobs for importance ratios.
             logprobs=(config.sampling.logprobs or True) if self.uses_live_policy else None,
         )

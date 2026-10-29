@@ -137,8 +137,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
             "roundtrip",
             "--trainer.loss.type",
             "icepop",
-            "--trainer.loss.score-centering",
-            "--trainer.loss.score-centering-topk",
+            "--trainer.loss.score-centering-k",
             "4",
         ],
     )
@@ -148,6 +147,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.enable_return_sampling_mask
+    assert reloaded.orchestrator.train.source[0].sampling.extra_body["extra_args"]["prl_sampler_draws"] == 4
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
 
 
@@ -248,13 +248,17 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
-    assert config.loss.score_centering_topk == 128
-    assert not config.loss.score_centering
+    assert config.loss.score_centering_k == 16
+    assert config.loss.kl_coeff == 0
     for unsupported in (
         {"type": "ipo_tis"},
         {"type": "score_centering"},
-        {"type": "ipo", "score_centering": True},
-        {"type": "icepop", "score_centering_topk": None},
+        {"type": "sfc_kl"},
+        {"type": "icepop", "score_centering_k": None},
+        {"type": "icepop", "score_centering": False},
+        {"type": "icepop", "score_centering_estimator": "topk"},
+        {"type": "ipo", "kl_staleness": "linear"},
+        {"type": "reinforce", "kl_estimator": "k3"},
     ):
         with pytest.raises(ValidationError):
             TrainerConfig.model_validate({"loss": unsupported})
@@ -1347,7 +1351,7 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     config = RLConfig.model_validate(
         {
-            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "trainer": {"loss": {"type": "icepop"}},
             "orchestrator": {
                 "train": {
                     "source": [
@@ -1366,10 +1370,34 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
+@pytest.mark.parametrize(
+    "loss,top_k,logprobs,draws",
+    [
+        ({}, 64, 64, None),
+        ({}, None, 16, 16),
+        ({"score_centering_k": 8}, None, 8, 8),
+        ({"type": "custom", "import_path": "my_module.my_loss"}, None, None, None),
+    ],
+)
+def test_sampler_capture_follows_sampling_truncation(loss, top_k, logprobs, draws):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "ipo", **loss}},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_k": top_k}}]}
+            },
+            "inference": {},
+        }
+    )
+    sampling = config.orchestrator.train.source[0].sampling
+    assert sampling.logprobs == logprobs
+    assert sampling.extra_body["extra_args"].get("prl_sampler_draws") == draws
+
+
 def test_score_centering_replays_top_p_alone():
     config = RLConfig.model_validate(
         {
-            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "trainer": {"loss": {"type": "icepop"}},
             "orchestrator": {
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}}]}
             },

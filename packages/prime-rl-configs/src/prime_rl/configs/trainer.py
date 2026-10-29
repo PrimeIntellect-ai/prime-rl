@@ -509,7 +509,38 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the optimizer state from checkpoint."""
 
 
-class IPOLossConfig(BaseConfig):
+class RLLossConfig(BaseConfig):
+    """Shared RL loss fields. Per token, the loss is
+    ``-adv_tau * A * (w(a) * log p(a) - sum_v sg[q_v * w_v] * log p_v) + beta * KL(q || p)``
+    over the sampler's support: the score is always centered under the sampler (arXiv:2609.20807). The loss
+    types differ only in the importance weight ``w``."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    score_centering_k: int = Field(16, ge=1)
+    """Sampler draws per token under untruncated sampling, each weighted 1/K in the score centering.
+    Truncated sampling replays its full support and centers exactly."""
+
+    kl_coeff: float = Field(0.0, ge=0, allow_inf_nan=False)
+    """KL(sampler || trainer) coefficient beta_0; 0 disables the KL term."""
+
+    kl_estimator: Literal["exact", "k1"] = "exact"
+    """KL estimator. ``exact``: the sum over the sampler's support (as score centering). ``k1``: ``log q(a) -
+    log p(a)`` on the sampled token, differentiated directly."""
+
+    kl_staleness: Literal["none", "inv_sqrt"] = "none"
+    """KL coefficient schedule over token age (trainer step minus the policy step that sampled the token):
+    ``none`` uses beta_0 everywhere, ``inv_sqrt`` uses 0 at age 0 and beta_0 / sqrt(age) otherwise."""
+
+    @property
+    def support_kl(self) -> bool:
+        return self.kl_coeff > 0 and self.kl_estimator == "exact"
+
+
+class IPOLossConfig(RLLossConfig):
+    """Weight ``1(|p - q| <= eps) * min(p / q, max_importance_ratio)``."""
+
     type: Literal["ipo"] = "ipo"
     eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
@@ -517,11 +548,10 @@ class IPOLossConfig(BaseConfig):
     max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
     """Cap the importance weight of accepted tokens while preserving its policy gradient."""
 
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
 
+class IcePopLossConfig(RLLossConfig):
+    """Weight ``1(ratio_low <= p / q <= ratio_high) * p / q``."""
 
-class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
     ratio_low: float = Field(0.2, gt=0)
@@ -530,22 +560,17 @@ class IcePopLossConfig(BaseConfig):
     ratio_high: float = Field(5.0, gt=0)
     """Upper accepted trainer-to-inference probability ratio."""
 
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    score_centering: bool = False
-    """Center the ratio-masked importance-weighted score under the sampler."""
-
-    score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization. With sampling replay, the
-    complete recorded support is captured instead."""
-
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
         return self
+
+
+class ReinforceLossConfig(RLLossConfig):
+    """Weight 1: no importance sampling."""
+
+    type: Literal["reinforce"] = "reinforce"
 
 
 class CustomLossConfig(BaseConfig):
@@ -559,7 +584,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | ReinforceLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

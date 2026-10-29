@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
+from dataclasses import replace
 from functools import partial
 import time
 import asyncio
@@ -22,6 +23,7 @@ from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import (
     DataLoader,
     FakeDataLoader,
+    TensorMicroBatch,
     drop_micro_batches,
     prepare_micro_batch,
     raise_score_centering_data_errors,
@@ -30,6 +32,7 @@ from prime_rl.trainer.rl.data import (
 )
 from prime_rl.utils.cp import (
     gather_for_cp,
+    gather_ragged_for_cp,
     gather_for_cp_wo_grad,
     setup_context_parallel,
     setup_cp_params,
@@ -38,17 +41,19 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    Loss,
+    RLLoss,
     compute_entropy,
     compute_loss,
     _mismatch_kl_from_log_ratio,
     selective_log_softmax,
-    selective_log_softmax_with_sampling_mask,
-    selective_topk_log_softmax,
+    selective_log_softmax_with_support,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -92,6 +97,21 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
+
+
+def sparse_head_backward(micro_batch: TensorMicroBatch, support: TokenSupport, rl_loss_fn: Loss) -> bool:
+    """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
+    stream), and each is replayed against a support holding its label or centered by a loss whose softmax terms
+    cancel (``RLLoss.sparse_logit_grad``)."""
+    if micro_batch["ce_weights"] is not None or micro_batch["ref_kl_weights"] is not None:
+        return False
+    if isinstance(rl_loss_fn, RLLoss) and rl_loss_fn.sparse_logit_grad:
+        return True
+    rl_tokens = micro_batch["loss_mask"][0]
+    if micro_batch["rl_weights"] is not None:
+        rl_tokens = rl_tokens & (micro_batch["rl_weights"][0] != 0)
+    replay = support_replay_mask(support, micro_batch["input_ids"][0], support.row_index())
+    return bool(replay[rl_tokens].all())
 
 
 @clean_exit
@@ -392,7 +412,7 @@ def train(config: TrainerConfig):
         routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
-        score_centering = config.loss.type == "icepop" and config.loss.score_centering
+        score_centering = config.loss.type != "custom"
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
@@ -428,33 +448,36 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            sampling_mask = (
-                micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
-            )
-
-            topk_ids = sampler_topk = topk_valid = sampler_tail_mass = None
+            support = label_support = None
+            if micro_batch["support_offsets"] is not None and (
+                score_centering or bool(micro_batch["support_replayed"].any())
+            ):
+                support = TokenSupport(
+                    ids=micro_batch["support_ids"],
+                    offsets=micro_batch["support_offsets"],
+                    replayed=micro_batch["support_replayed"],
+                    logprobs=micro_batch["support_logprobs"],
+                )
+                support = replace(support, sparse_backward=sparse_head_backward(micro_batch, support, rl_loss_fn))
+                support = support.to("cuda")
+                label_support = support.shift_left()
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                if micro_batch["top_logprobs_ids"] is None or micro_batch["top_logprobs_values"] is None:
+                if support is None or support.logprobs is None:
                     # Raises unless the micro batch has no RL tokens
                     validate_score_centering_data(micro_batch, vocab_size=vocab_size)
                 else:
-                    topk_ids = micro_batch["top_logprobs_ids"].to("cuda")
-                    sampler_topk = micro_batch["top_logprobs_values"].to("cuda")
-                    topk_valid = topk_ids >= 0
-                    sampler_tail_mass = (1.0 - sampler_topk.exp().masked_fill(~topk_valid, 0.0).sum(-1)).clamp_min(0.0)
-                    if sampling_mask is not None:
-                        sampler_tail_mass = sampler_tail_mass.masked_fill((sampling_mask >= 0).any(-1), 0.0)
+                    rl_mask = loss_mask[0] if rl_weights is None else loss_mask[0] & (rl_weights[0] != 0)
                     # Validated on the GPU and checked once after the last micro batch, so the
                     # host never waits on it
                     score_centering_errors.append(
                         score_centering_data_errors(
-                            input_ids,
-                            loss_mask,
-                            rl_weights,
-                            topk_ids,
-                            sampler_topk,
-                            sampling_mask,
+                            input_ids[0],
+                            rl_mask,
+                            support.ids,
+                            support.logprobs,
+                            support.row_index(),
+                            support.replayed,
                             vocab_size=vocab_size,
                         )
                     )
@@ -472,12 +495,6 @@ def train(config: TrainerConfig):
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
             labels = shift_tensor_left(input_ids)
-            if topk_ids is not None:
-                topk_ids = shift_tensor_left(topk_ids, pad_value=-1)
-            if sampling_mask is not None:
-                # Sampling masks ride at the sampled token's own position (like inference
-                # logprobs); shift to align with the label each position predicts.
-                sampling_mask = shift_tensor_left(sampling_mask, pad_value=-1)
 
             seq_lens_are_pre_shard = False
 
@@ -490,14 +507,14 @@ def train(config: TrainerConfig):
                     input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if topk_ids is not None:
-                    topk_ids = shard_for_cp(topk_ids, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-                if sampling_mask is not None:
-                    # The LM head consumes masks after any deferred VLM sharding, so
-                    # they must follow the label shard rather than the input shard.
-                    sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+                if label_support is not None:
+                    # The LM head consumes the support after any deferred VLM sharding, so
+                    # it must follow the label shard rather than the input shard.
+                    shard_len = label_support.num_rows // cp_size
+                    cp_shard_entries = label_support.offsets[::shard_len].diff().tolist()
+                    label_support = label_support.rows(cp_rank * shard_len, (cp_rank + 1) * shard_len)
 
             if routed_experts is not None:
                 routed_experts = routed_experts.to("cuda").int()
@@ -508,10 +525,9 @@ def train(config: TrainerConfig):
             if cp_enabled:
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
 
-            if sampling_mask is not None:
-                assert sampling_mask.shape[:2] == labels.shape, (
-                    f"sampling_mask shape {tuple(sampling_mask.shape)} is not aligned with "
-                    f"labels shape {tuple(labels.shape)}"
+            if label_support is not None:
+                assert label_support.num_rows == labels.numel(), (
+                    f"support rows {label_support.num_rows} are not aligned with labels shape {tuple(labels.shape)}"
                 )
 
             # Forward pass with per-token temperatures
@@ -528,8 +544,7 @@ def train(config: TrainerConfig):
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
-                    sampling_mask=sampling_mask,
-                    topk_ids=topk_ids,
+                    support=label_support,
                 )
 
             if out.get("logprobs") is None:
@@ -538,20 +553,20 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
-                if sampling_mask is not None:
-                    out["logprobs"] = selective_log_softmax_with_sampling_mask(scaled_logits, labels, sampling_mask)
+                if label_support is not None:
+                    out["logprobs"], out["support_logprobs"] = selective_log_softmax_with_support(
+                        scaled_logits, labels, label_support
+                    )
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
-                if topk_ids is not None:
-                    out["topk_logprobs"] = selective_topk_log_softmax(scaled_logits, topk_ids, sampling_mask, labels)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
-                if out.get("topk_logprobs") is not None:
-                    out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
+                if score_centering and label_support is not None:
+                    out["support_logprobs"] = gather_ragged_for_cp(out["support_logprobs"], cp_shard_entries, cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -562,12 +577,16 @@ def train(config: TrainerConfig):
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
 
-            trainer_topk = out.get("topk_logprobs")
-            if trainer_topk is not None:
-                trainer_topk = torch.cat([torch.zeros_like(trainer_topk[:, :1]), trainer_topk[:, :-1]], dim=1)
+            trainer_support = None
+            if score_centering and support is not None and support.logprobs is not None:
+                first_row = int(support.offsets[1])
+                trainer_support = torch.cat([out["support_logprobs"].new_zeros(first_row), out["support_logprobs"]])
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
+            policy_ages = None
+            if micro_batch["staleness"] is not None:
+                policy_ages = micro_batch["staleness"].squeeze(0).to("cuda").split(sequence_lengths)
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
@@ -581,16 +600,9 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
-                trainer_support_logprobs=trainer_topk.squeeze(0).split(sequence_lengths)
-                if trainer_topk is not None
-                else None,
-                sampler_support_logprobs=sampler_topk.squeeze(0).split(sequence_lengths)
-                if sampler_topk is not None
-                else None,
-                support_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
-                sampler_tail_mass=sampler_tail_mass.squeeze(0).split(sequence_lengths)
-                if sampler_tail_mass is not None
-                else None,
+                support=support,
+                trainer_support_logprobs=trainer_support,
+                policy_ages=policy_ages,
             )
 
             # Backward pass

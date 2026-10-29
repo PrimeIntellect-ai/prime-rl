@@ -9,7 +9,7 @@ We subclass it to return the per-token payloads as packed arrays instead of
 per-token JSON: ``routed_experts`` as ``{data, shape, start, dtype}`` base64
 raw bytes (the form the PD router can merge and the renderers parse),
 ``completion_logprobs`` as a ``{data, shape, dtype}`` float32 array instead of
-``logprobs.content``, opt-in ``compact_logprobs`` for sampled and top-k evidence,
+``logprobs.content``, opt-in ``compact_logprobs`` for replayed-support and sampler-draw evidence,
 and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
 instead of one list per token.
 
@@ -91,7 +91,6 @@ class _PackedOutputs:
         extra_args = request.sampling_params.extra_args or {}
         self._paired = extra_args.get("prl_paired_capture", False)
         self._sampler_rows = extra_args.get("prl_sampler_rows", 0)
-        self._draws = bool(extra_args.get("prl_sampler_draws"))
         self.fields: dict[int, dict[str, Any]] = {}
 
     async def __aiter__(self):
@@ -119,10 +118,9 @@ class _PackedOutputs:
                     if self._paired:
                         mask.ids = ids
                     else:
-                        # Sampler rows are compact logprobs, not a support to replay.
+                        # Sampler draws are compact logprobs, not a support to replay.
                         output.sampling_mask = None
-                        if self._draws:
-                            fields["compact_logprobs"]["samples"] = True
+                        fields["compact_logprobs"]["samples"] = True
                     output.logprobs = None
                 elif isinstance(output.logprobs, FlatLogprobs) and (self._num_logprobs or 0) <= 1:
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
@@ -159,19 +157,23 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
         extra_args = sampling_params.extra_args or {}
+        if extra_args.get("prl_sampler_draws") and not extra_args.get("prl_compact_logprobs", False):
+            return self.create_error_response("Sampler draws require compact logprobs (prl_compact_logprobs=True)")
         if extra_args.get("prl_compact_logprobs", False):
             if request.stream or sampling_params.logprobs is None:
                 return self.create_error_response(
                     "Compact logprobs require a non-streaming request with logprobs enabled"
                 )
-            # Captured on the GPU: the replayed support, or the sampled token plus K draws or the top ids.
-            # logprobs = 0 (sampled token only) keeps vLLM's flat logprobs.
+            # Captured on the GPU: the replayed support, or the sampled token plus K draws.
             if extra_args.get("prl_replay", False):
                 sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
-                sampling_params.logprobs = None
-            elif rows := extra_args.get("prl_sampler_draws") or sampling_params.logprobs:
-                sampling_params.extra_args = {**extra_args, "prl_sampler_rows": rows}
-                sampling_params.logprobs = None
+            elif draws := extra_args.get("prl_sampler_draws"):
+                sampling_params.extra_args = {**extra_args, "prl_sampler_rows": draws}
+            else:
+                return self.create_error_response(
+                    "Compact logprobs need sampling replay (prl_replay) or sampler draws (prl_sampler_draws)"
+                )
+            sampling_params.logprobs = None
         if not request.stream:
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None

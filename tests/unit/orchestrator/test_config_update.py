@@ -69,6 +69,23 @@ def test_example_config_frozen_changes_are_rejected(example):
     ]
 
 
+def test_live_extra_body_update_keeps_sampler_draws():
+    orchestrator = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "ipo"}},
+            "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "inference": {},
+        }
+    ).orchestrator
+    raw = dump_resolved_config(orchestrator)
+    raw["train"]["source"][0]["sampling"]["temperature"] = 0.8
+    raw["train"]["source"][0]["sampling"]["extra_body"] = {}
+
+    config, _ = validate_update(orchestrator, raw)
+
+    assert config.train.source[0].sampling.extra_body["extra_args"]["prl_sampler_draws"] == 16
+
+
 def test_example_config_length_penalty_is_live(example):
     raw = dump_resolved_config(example)
     raw["train"]["source"][0]["algo"]["length_penalty"] = {"num_output_tokens_weight": 0.2}

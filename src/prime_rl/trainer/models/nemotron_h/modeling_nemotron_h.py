@@ -4,7 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -207,7 +207,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         labels: torch.LongTensor | None = None,
         temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
+        support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
@@ -223,7 +223,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
             outputs.last_hidden_state,
             labels,
             temperature=temperature,
-            sampling_mask=sampling_mask,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:

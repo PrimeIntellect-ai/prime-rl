@@ -135,7 +135,7 @@ async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
             pass
 
 
-def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, draws: bool = False):
+def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool):
     """The packed int64 mask the patched sampler hands to the server (pinned host copies need CUDA)."""
     logits = torch.full((len(sampled_ids), 8), -torch.inf)
     for i, q in logq.items():
@@ -148,7 +148,7 @@ def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, d
         cu, num_sampled = torch.arange(len(sampled_ids) + 1), torch.ones(len(sampled_ids), dtype=torch.int32)
         sampled = torch.tensor(sampled_ids).view(-1, 1)
         rows = np.full(len(sampled_ids), 4)
-        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows, np.full(len(sampled_ids), draws))
+        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows)
     return PackedSamplingMask(
         ids=packed.flatten().numpy(), counts=np.full(len(sampled_ids), packed.shape[1], dtype=np.int32)
     )
@@ -157,17 +157,16 @@ def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, d
 @pytest.mark.gpu
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flat", [False, True])
-@pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("routed", [False, True])
-async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, routed):
+async def test_gpu_capture_matches_native_evidence_and_metadata(flat, routed):
     serving = object.__new__(PrimeRlServingTokens)
     serving.engine_client = SimpleNamespace(
         vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=routed))
     )
     serving.enable_prompt_tokens_details = True
     serving.enable_log_outputs = False
-    sampled_ids = [2, 3] if replay else [2, 7]
-    probabilities = {1: 0.6, 2: 0.2, 3: 0.2, 4: 0.0} if replay else {1: 0.6, 2: 0.25, 3: 0.1, 4: 0.04, 7: 0.01}
+    sampled_ids = [2, 3]
+    probabilities = {1: 0.6, 2: 0.2, 3: 0.2, 4: 0.0}
     with np.errstate(divide="ignore"):
         logq = {i: float(np.float32(np.log(q))) for i, q in probabilities.items()}
     logprobs = FlatLogprobs() if flat else []
@@ -177,10 +176,8 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
             logprobs.append_fast(ids, [logq[i] for i in ids], iter(range(len(ids))), [None] * len(ids))
         else:
             logprobs.append({i: Logprob(logq[i]) for i in ids})
-    support = (
-        PackedSamplingMask(ids=np.array([1, 2, 3, 1, 2, 3], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32))
-        if replay
-        else None
+    support = PackedSamplingMask(
+        ids=np.array([1, 2, 3, 1, 2, 3], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32)
     )
     experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.uint8) if routed else None
 
@@ -213,7 +210,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
     evidence = []
     for captured in (False, True):
         output = (
-            request_output(None, _gpu_capture(logq, sampled_ids, replay))
+            request_output(None, _gpu_capture(logq, sampled_ids, replay=True))
             if captured
             else request_output(logprobs, support)
         )
@@ -221,8 +218,9 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
         async def generate_outputs():
             yield deepcopy(output)
 
-        extra_args = {"prl_paired_capture": True} if replay else {"prl_sampler_rows": 4}
-        params = SamplingParams(logprobs=None if captured else 4, extra_args=extra_args if captured else None)
+        params = SamplingParams(
+            logprobs=None if captured else 4, extra_args={"prl_paired_capture": True} if captured else None
+        )
         request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params, return_token_ids=True)
         request._response_mm_placeholders = {"image": [PlaceholderRangeInfo(offset=0, length=1)]}
         metadata = RequestResponseMetadata(request_id="test")
@@ -251,7 +249,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
     evidence = [(np.round(logprobs, 6).tolist(), *heads) for logprobs, *heads in evidence]
     assert all(item[0] == evidence[0][0] and item[1] == evidence[0][1] for item in evidence)
     np.testing.assert_allclose(np.array(evidence[-1][2]), np.array(evidence[0][2]), atol=1e-6)
-    assert evidence[0][1] == ([[1, 2, 3]] * 2 if replay else [[1, 2]] * 2)
+    assert evidence[0][1] == [[1, 2, 3]] * 2
     assert responses[0] == responses[1]
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
     assert responses[1]["kv_transfer_params"] == {"kv": "kept"}
@@ -261,7 +259,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
 @pytest.mark.gpu
 def test_gpu_capture_sampler_draws_round_trip():
     logq = {1: float(np.log(0.6)), 2: float(np.log(0.3)), 5: float(np.log(0.1))}
-    mask = _gpu_capture(logq, [2, 5], replay=False, draws=True)
+    mask = _gpu_capture(logq, [2, 5], replay=False)
     ids, compact = serialize_paired_support(mask.ids, mask.counts)
     raw = pybase64.b64decode(compact["data"])
     values = np.frombuffer(raw, dtype="<f4", offset=len(ids) * 4)

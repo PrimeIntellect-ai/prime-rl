@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 import pytest
 
@@ -34,7 +36,7 @@ def _sample(**fields) -> TrainingSample:
     )
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "support_mass", "sampled"])
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
@@ -44,52 +46,55 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         validate_score_centering_data,
     )
 
-    def make_batch():
+    def batch(rows, replayed, input_ids=(0, 3, 6), with_logprobs=True):
         return {
-            "input_ids": torch.tensor([[0, 3, 6]]),
+            "input_ids": torch.tensor([input_ids]),
             "loss_mask": torch.tensor([[False, True, True]]),
             "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
-            "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
-            "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
-            "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
-            "sampling_mask": torch.tensor([[[-1, -1], [-1, -1], [6, -1]]]),
+            "support_ids": torch.tensor([i for row in rows for i, _ in row], dtype=torch.int32),
+            "support_logprobs": torch.tensor([q for row in rows for _, q in row]).log() if with_logprobs else None,
+            "support_offsets": torch.tensor([0, *itertools.accumulate(len(row) for row in rows)]),
+            "support_replayed": torch.tensor(replayed),
         }
 
-    batch = make_batch()
-    validate_score_centering_data(batch, vocab_size=9)
+    head = [(3, 0.75), (7, 0.25)]
+    clean = batch([[], head, [(6, 1.0)]], [False, False, True])
+    validate_score_centering_data(clean, vocab_size=9)
     if corruption is None:
-        batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-        validate_score_centering_data(batch, vocab_size=9)
+        validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
+        # Sampler draws may repeat
+        validate_score_centering_data(batch([[], [(3, 0.75), (3, 0.75)], []], [False, False, False]), vocab_size=9)
         return
     match corruption:
         case "missing":
-            batch["top_logprobs_ids"] = None
+            corrupt = batch([[], head, [(6, 1.0)]], [False, False, True], with_logprobs=False)
         case "duplicate":
-            batch["top_logprobs_ids"][0, 1, 1] = 3
+            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, True, False])
         case "vocab":
-            batch["top_logprobs_ids"][0, 1, 1] = 9
-        case "mass":
-            batch["top_logprobs_values"][0, 1] = 0
+            corrupt = batch([[], [(3, 0.75), (9, 0.25)], []], [False, False, False])
         case "support_mass":
-            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-            batch["top_logprobs_values"][0, 1] = torch.tensor([0.5, 0.25]).log()
+            corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
         case "sampled":
-            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
-            batch["input_ids"][0, 1] = 4
+            corrupt = batch([[], head, []], [False, True, False], input_ids=(0, 4, 6))
     with pytest.raises(ValueError) as error:
-        validate_score_centering_data(batch, vocab_size=9)
+        validate_score_centering_data(corrupt, vocab_size=9)
     if corruption == "missing":
         return
 
     # The trainer flags each micro batch on its device and raises the first failure once per step
     def errors(batch, device):
-        names = ("input_ids", "loss_mask", "rl_weights", "top_logprobs_ids", "top_logprobs_values", "sampling_mask")
-        return score_centering_data_errors(*(batch[name].to(device) for name in names), vocab_size=9)
+        counts = batch["support_offsets"].diff()
+        rows = torch.repeat_interleave(torch.arange(len(counts)), counts)
+        rl_mask = batch["loss_mask"][0] & (batch["rl_weights"][0] != 0)
+        tensors = (batch["input_ids"][0], rl_mask, batch["support_ids"], batch["support_logprobs"], rows)
+        return score_centering_data_errors(
+            *(x.to(device) for x in tensors), batch["support_replayed"].to(device), vocab_size=9
+        )
 
     for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
-        raise_score_centering_data_errors([errors(make_batch(), device)])
+        raise_score_centering_data_errors([errors(clean, device)])
         with pytest.raises(ValueError, match=f"^{error.value}$"):
-            raise_score_centering_data_errors([errors(make_batch(), device), errors(batch, device)])
+            raise_score_centering_data_errors([errors(clean, device), errors(corrupt, device)])
 
 
 @pytest.fixture
