@@ -14,6 +14,7 @@ from prime_runs.config import Config
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.monitors import PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -49,9 +50,10 @@ def _base_url() -> str | None:
 
 
 def register(
-    config: OrchestratorConfig | SFTConfig | None, name: str | None, mode: str, id: str | None = None
+    config: RLConfig | OrchestratorConfig | SFTConfig | None, name: str | None, mode: str, id: str | None = None
 ) -> pr.Run:
-    """Attach to the platform run ``id``, or register ``config``'s training run."""
+    """Attach to the platform run ``id``, or register ``config``'s training run with the
+    whole config: an ``rl`` launch's covers the trainer and inference too."""
     init_kwargs: dict[str, Any]
     if id is not None:
         init_kwargs = {"id": id}
@@ -59,30 +61,32 @@ def register(
         # The RFT API requires a base model.
         init_kwargs = {"name": name, "model": "unknown"}
     else:
-        wandb_project = config.monitors.wandb.project if config.monitors.wandb else None
         if isinstance(config, SFTConfig):
+            model = config.model.name
             # SFT trains on a dataset, not on environments, and has no rollouts.
             environments = []
             training = pr.TrainingSpec(
                 max_steps=config.max_steps or 0,
                 batch_size=config.data.batch_size,
                 seq_len=config.data.seq_len,
-                wandb_project=wandb_project,
+                wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
             )
         else:
-            environments = [env.env_id for env in config.train.source]
+            orchestrator = config.orchestrator if isinstance(config, RLConfig) else config
+            model = orchestrator.model.name
+            environments = [env.env_id for env in orchestrator.train.source]
             training = pr.TrainingSpec(
-                max_steps=config.max_steps or 0,
-                batch_size=config.batch_size,
+                max_steps=orchestrator.max_steps or 0,
+                batch_size=orchestrator.batch_size,
                 rollouts_per_example=max(
-                    (source.group_size for source in config.train.source), default=config.train.group_size
+                    (source.group_size for source in orchestrator.train.source), default=orchestrator.train.group_size
                 ),
-                seq_len=config.seq_len,
-                wandb_project=wandb_project,
+                seq_len=orchestrator.seq_len,
+                wandb_project=orchestrator.monitors.wandb.project if orchestrator.monitors.wandb else None,
             )
         init_kwargs = dict(
             name=name,
-            model=config.model.name,
+            model=model,
             environments=environments,
             training=training,
             config=config.model_dump(exclude_none=True, mode="json"),
@@ -103,7 +107,7 @@ def register(
 
 
 @contextmanager
-def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
+def launch_run(config: RLConfig | SFTConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
     """Register the launch's Prime run around starting its components, which attach to
     it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
     run failed - the SDK leaves an attached run's failure to the process that
