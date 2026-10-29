@@ -1059,6 +1059,18 @@ def test_shared_monitor_disable_and_prime_propagate():
     assert config.orchestrator.monitors.prime.name == "shared-prime"
 
 
+def test_monitor_on_in_one_component_only_is_rejected():
+    """The components log to one run per monitor, so a monitor is on in all or none."""
+    with pytest.raises(ValueError, match=r"monitors.wandb must match across components"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "trainer": {"monitors": {"wandb": {"project": "p"}}},
+                "orchestrator": {"renderer": {"name": "default"}},
+            }
+        )
+
+
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
     """An empty shared [ckpt] block is a presence-only signal, not a field
     setting — it should not conflict with a non-empty [trainer.ckpt]."""
