@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import torch
 from torch import nn
 from torch.distributed.checkpoint.state_dict import (
@@ -36,7 +37,8 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
-from prime_rl.transports.batch.journal import BatchJournal
+from prime_rl.transports.batch.journal import BatchCheckpoint, BatchJournal
+from prime_rl.transports.batch.recovery import validate_checkpoint
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
@@ -179,6 +181,7 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.batch_journal = BatchJournal(batch_output_dir or output_dir)
+        self.restored_batch: BatchCheckpoint | None = None
 
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
         if resume is not None and resume.step is not None:
@@ -297,6 +300,13 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        record_path = ckpt_path / "batch.json"
+        restored = msgspec.json.decode(record_path.read_bytes(), type=BatchCheckpoint) if record_path.exists() else None
+        if restored is not None:
+            validate_checkpoint(restored)
+            if restored.step != step:
+                raise ValueError("Restored batch record does not match the loaded checkpoint step")
+        self.restored_batch = restored
 
     def save(
         self,
