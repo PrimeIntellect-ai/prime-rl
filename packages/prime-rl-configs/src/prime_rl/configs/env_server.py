@@ -26,7 +26,7 @@ class EnvServerConfig(BaseConfig):
     log: LogConfig = LogConfig()
 
     checkpoint_dirs: list[Path] = []
-    """Where an orchestrator checkpoint keeps the training arrays its open work needs. The
+    """Where an orchestrator checkpoint keeps the training arrays its in-flight and in-queue rollouts need. The
     first is the run's own checkpoint directory: the workers persist arrays only under it.
     The others (a forked run's source checkpoint) are only read, when a rollout restores.
     Set by the RL launcher; empty, the workers neither persist nor restore arrays."""

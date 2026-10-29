@@ -437,8 +437,8 @@ class CheckpointConfig(BaseConfig):
     """Step interval at which to save the orchestrator checkpoint."""
 
     rollouts: bool = False
-    """Also checkpoint the open rollouts: the in-flight ones, which a resumed run
-    continues from their newest restore points, and the finished ones not yet consumed.
+    """Also checkpoint the in-flight rollouts, which a resumed run continues from their
+    newest restore points, and the in-queue ones (finished, not yet shipped).
     Every env agent then keeps its box snapshots for this run (`keep = "all"`,
     `after = "keep"`), which deletes them once no checkpoint resumes from them. An agent
     with rollout checkpointing off (`checkpoint = None`) restarts its in-flight rollouts."""

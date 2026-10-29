@@ -1026,7 +1026,7 @@ class Orchestrator:
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
         # Snapshot on the event loop, so the dispatcher cannot mutate the state mid-copy;
-        # write off it: the env servers persisting the open work's arrays take a while.
+        # write off it: the env servers persisting the rollouts' arrays take a while.
         await self.save_state(self.checkpoint_state(), step)
         return time.perf_counter() - t
 
@@ -1035,7 +1035,8 @@ class Orchestrator:
         return self.config.ckpt is not None and self.config.ckpt.rollouts
 
     def checkpoint_state(self) -> dict:
-        """A ``build_state`` snapshot of the run now, with its open work if it saves rollouts."""
+        """A ``build_state`` snapshot of the run now, with its in-flight and in-queue rollouts
+        if it saves them."""
         open_work = self.open_work() if self.saves_rollouts else None
         return build_state(self.progress, self.train_source, self.config_state(), open_work)
 
@@ -1049,9 +1050,9 @@ class Orchestrator:
         self.dispatcher.hold_snapshots(groups)
 
     def open_work(self) -> dict:
-        """The train work a resumed run picks up where this one left it: the open groups
-        (their in-flight rollouts continue from their newest restore points), the sink's
-        buffers, and the train results waiting in ``out_q``."""
+        """The in-flight and in-queue train rollouts a resumed run picks up where this one
+        left them: the open groups (their in-flight rollouts continue from their newest
+        restore points), and the in-queue ones in the sink's buffers and in ``out_q``."""
         sink = self.train_sink.state_dict()
         results = [result for result in self.dispatcher.queued_results() if result_kind(result) == "train"]
         # A group whose last member waits in ``out_q`` is neither the dispatcher's nor the
@@ -1069,9 +1070,9 @@ class Orchestrator:
         }
 
     def resume_open_work(self, work: dict) -> None:
-        """Take a checkpoint's open work back before the dispatcher starts. Work of envs
-        this run no longer trains on is dropped; envs new to the run start sampling as
-        the resumed work drains."""
+        """Take a checkpoint's in-flight and in-queue rollouts back before the dispatcher
+        starts. Those of envs this run no longer trains on are dropped; envs new to the
+        run start sampling as the resumed rollouts drain."""
         self.train_sink.load_state_dict(work["sink"])
         self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
         # A resumed group finalizes at the size it opened with, not today's ``group_size``.

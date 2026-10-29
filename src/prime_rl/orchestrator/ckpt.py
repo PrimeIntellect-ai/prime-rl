@@ -1,6 +1,6 @@
 """Checkpoint manager for orchestrator progress, train-source state and the open train
 work. Layout: ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``, and next to
-it ``arrays/``, the training arrays the open work needs (``persist_arrays``)."""
+it ``arrays/``, the training arrays the in-flight and in-queue rollouts need (``persist_arrays``)."""
 
 from __future__ import annotations
 
@@ -87,8 +87,8 @@ class CheckpointManager:
         return self.read_state(step, path).get("config")
 
     def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> dict | None:
-        """Load progress and the train source, and return the checkpoint's open work
-        (``build_state``), if it has any."""
+        """Load progress and the train source, and return the checkpoint's in-flight
+        and in-queue rollouts (``build_state``), if it has them."""
         start = time.perf_counter()
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state = self.read_state(step, path)
@@ -114,9 +114,9 @@ def build_state(
     """A snapshot of the orchestrator's checkpointed state, independent of later changes.
     ``config_state`` holds the launch config (``base``), the config that applies from the
     resume step on (``applied``) and its ``revision``, all dumped to JSON-ready dicts.
-    ``open_work`` is the train work a resumed run picks up where this one left it: the
-    open groups with their in-flight rollouts' restore points, the sink's buffers and
-    the results not yet consumed."""
+    ``open_work`` holds the in-flight and in-queue rollouts a resumed run picks up where
+    this one left them: the open groups with their in-flight rollouts' restore points,
+    and the in-queue ones in the sink's buffers and the results not yet consumed."""
     state = {"progress": progress, "train_source": train_source.state_dict(), "config": config_state}
     if open_work is not None:
         state["open_work"] = open_work

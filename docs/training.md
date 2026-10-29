@@ -316,7 +316,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state, and with `[ckpt] rollouts = true` the open train work (groups, in-flight rollouts, unshipped batch) | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Orchestrator | Progress, per-env data state, and with `[ckpt] rollouts = true` the in-flight and in-queue rollouts | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -349,15 +349,15 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-With `rollouts = true` in the shared `[ckpt]` block (`orchestrator.ckpt.rollouts`, off by default), a resumed run picks up the train work where the checkpoint left it, so the first steps after a resume see the same mix of tasks as an uninterrupted run:
+With `rollouts = true` in the shared `[ckpt]` block (`orchestrator.ckpt.rollouts`, off by default), a resumed run picks up its in-flight and in-queue rollouts where the checkpoint left them, so the first steps after a resume see the same mix of tasks as an uninterrupted run:
 
 - **Open groups** keep their members: the ones that already finished, and the ones never dispatched.
-- **In-flight rollouts** continue from their newest restore point when their env supports rollout checkpointing (see [rollout checkpointing](#rollout-checkpointing)); otherwise they start over. Without this, a resume would skip them and train first on whatever finishes fastest.
-- **The unshipped batch** and the results not yet consumed carry over.
+- **In-flight rollouts** (still sampling) continue from their newest restore point when their env supports rollout checkpointing (see [rollout checkpointing](#rollout-checkpointing)); otherwise they start over. Without this, a resume would skip them and train first on whatever finishes fastest.
+- **In-queue rollouts** (finished, not yet shipped: the unshipped batch and the results not yet consumed) carry over.
 
-The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the open work of an env no longer configured is dropped.
+The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the rollouts of an env no longer configured are dropped.
 
-The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its open work needs to `checkpoints/step_{n}/orchestrator/arrays/`: those of the finished but unshipped rollouts, and those of each in-flight rollout up to its restore point. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
+The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its in-flight and in-queue rollouts need to `checkpoints/step_{n}/orchestrator/arrays/`: those of the in-queue rollouts, and those of each in-flight rollout up to its restore point. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
 
 #### Rollout checkpointing
 
