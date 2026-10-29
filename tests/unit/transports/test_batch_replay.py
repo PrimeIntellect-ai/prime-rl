@@ -73,14 +73,26 @@ def _batch(step):
     )
 
 
+# Journaled batches delivered to a killed attempt that its replacements receive again
+REPLAYED = {
+    "before_receipt": 1,
+    "after_receipt": 2,
+    "after_update": 2,
+    "during_checkpoint": 2,
+    "after_checkpoint": 0,
+    "twice": 4,
+}
+
+
+@pytest.mark.parametrize("admission", ["authorized", "auto"])
 @pytest.mark.parametrize(
     "crash_phase", ["before_receipt", "after_receipt", "after_update", "during_checkpoint", "after_checkpoint", "twice"]
 )
-def test_killed_trainer_replays_without_restarting_sender(tmp_path, crash_phase):
+def test_killed_trainer_replays_without_restarting_sender(tmp_path, crash_phase, admission):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    sender = ZMQBatchSender(tmp_path, 1, 0, ZMQTransportConfig(port=port))
+    sender = ZMQBatchSender(tmp_path, 1, 0, ZMQTransportConfig(port=port), auto_recover=admission == "auto")
     sender.journal = BatchJournal(tmp_path)
     context = multiprocessing.get_context("spawn")
     processes, connections = [], []
@@ -119,7 +131,8 @@ def test_killed_trainer_replays_without_restarting_sender(tmp_path, crash_phase)
                 restored = max(records, key=lambda record: record.step)
                 assert restored.step == (2 if crash_phase == "after_checkpoint" else 0)
                 replacement = TrainerGroup(uuid4().hex, 1, restored.step + 1, restored)
-                sender.authorize_recovery(group.attempt_id, replacement.attempt_id)
+                if admission == "authorized":
+                    sender.authorize_recovery(group.attempt_id, replacement.attempt_id)
                 phase = "after_update" if crash_phase == "twice" and crash == 0 else None
                 process, connection = launch(replacement, phase)
                 group = replacement
@@ -129,7 +142,7 @@ def test_killed_trainer_replays_without_restarting_sender(tmp_path, crash_phase)
             await asyncio.to_thread(process.join, 5)
             assert process.exitcode == 0
             assert state == {"value": 15, "batches": [f"{sender.journal_session}:{step}" for step in range(5)]}
-            assert sender.current_step == 5 and sender.replay_batches_sent > 0
+            assert sender.current_step == 5 and sender.replay_batches_sent == REPLAYED[crash_phase]
             assert not list(sender.journal.path.glob("*/step_*"))
         finally:
             if not sending.done():

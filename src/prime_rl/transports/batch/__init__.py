@@ -23,12 +23,19 @@ from prime_rl.transports.batch.zmq import (
 
 
 def setup_batch_sender(
-    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfig, journal: bool = False
+    output_dir: Path,
+    data_world_size: int,
+    current_step: int,
+    transport: TransportConfig,
+    journal: bool = False,
+    auto_recover: bool = False,
 ) -> BatchSender:
     if transport.type == "filesystem":
+        if auto_recover:
+            raise ValueError("Trainer recovery requires the ZMQ batch transport")
         sender = FileSystemBatchSender(output_dir, data_world_size, current_step)
     elif transport.type == "zmq":
-        sender = ZMQBatchSender(output_dir, data_world_size, current_step, transport)
+        sender = ZMQBatchSender(output_dir, data_world_size, current_step, transport, auto_recover=auto_recover)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
     if journal:

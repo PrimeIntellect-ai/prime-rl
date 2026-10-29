@@ -4,7 +4,15 @@ import msgspec
 import pytest
 
 from prime_rl.transports.batch.journal import BatchCheckpoint, BatchJournal, BatchRecord
-from prime_rl.transports.batch.recovery import BatchRequest, TrainerGroup, TrainerHandshake, TrainerHello, plan_replay
+from prime_rl.transports.batch.recovery import (
+    BatchRequest,
+    PolicyState,
+    SessionOrigin,
+    TrainerGroup,
+    TrainerHandshake,
+    TrainerHello,
+    plan_replay,
+)
 
 
 def test_handshake_counts_distinct_ranks_and_fences_connections():
@@ -71,14 +79,33 @@ def retained_batches(tmp_path):
     return journal, session, TrainerGroup(uuid4().hex, 4, 2, checkpoint), records
 
 
-def test_replay_plan_starts_after_checkpoint_and_includes_pending_batch(retained_batches):
+def test_replay_plan_starts_after_checkpoint(retained_batches):
     journal, session, group, records = retained_batches
     other_session = uuid4().hex
     journal.write(f"{other_session}:2", [b"unrelated"])
-    plan = plan_replay(journal, group, session, through=3, data_world_size=2)
-    assert plan.restored == group.restored and plan.batches == records[2:]
+    plan = plan_replay(journal, group, session, None, through=3, data_world_size=2)
+    assert plan.restored == group.restored and plan.start_step == 2 and plan.batches == records[2:]
+    # Nothing to replay when the checkpoint covers every delivered batch
+    assert plan_replay(journal, group, session, None, through=1, data_world_size=2).batches == []
     assert not journal.batch_path(records[1].batch_id).exists()
     assert journal.read(records[2].batch_id) == [b"2:0", b"2:1"]
+
+
+def test_replay_plan_accepts_commit_before_release_marker(retained_batches):
+    """A trainer can fail after recording its checkpoint's batch but before the journal's
+    release marker names it; that checkpoint's batch is still retained."""
+    journal, session, group, records = retained_batches
+    path = journal.path.parent / "checkpoints" / "step_2" / "trainer"
+    path.mkdir(parents=True)
+    checkpoint = BatchCheckpoint(2, records[2])
+    (path / "batch.json").write_bytes(msgspec.json.encode(checkpoint))
+    replacement = TrainerGroup(uuid4().hex, 4, 3, checkpoint)
+    assert plan_replay(journal, replacement, session, None, through=3, data_world_size=2).batches == records[3:]
+    # The marker's checkpoint stays valid, but an older one lost its batches
+    assert plan_replay(journal, group, session, None, through=3, data_world_size=2).batches == records[2:]
+    older = TrainerGroup(uuid4().hex, 4, 1, BatchCheckpoint(0, records[0]))
+    with pytest.raises(ValueError, match="older"):
+        plan_replay(journal, older, session, None, through=3, data_world_size=2)
 
 
 @pytest.mark.parametrize("fault", ["missing", "corrupt", "foreign", "topology", "checkpoint", "no_checkpoint"])
@@ -99,4 +126,41 @@ def test_replay_plan_fails_closed(retained_batches, fault):
     elif fault == "no_checkpoint":
         group = msgspec.structs.replace(group, restored=None)
     with pytest.raises((ValueError, FileNotFoundError)):
-        plan_replay(journal, group, session, through=3, data_world_size=2)
+        plan_replay(journal, group, session, None, through=3, data_world_size=2)
+
+
+@pytest.mark.parametrize("restored", ["scratch", "previous_session"])
+def test_replay_plan_from_session_origin(tmp_path, restored):
+    """A trainer that fails before its first checkpoint in this producer session restores the
+    position the session started from and replays the whole session."""
+    journal = BatchJournal(tmp_path)
+    session = uuid4().hex
+    checkpoint = None
+    if restored == "previous_session":
+        checkpoint = BatchCheckpoint(4, BatchRecord(f"{uuid4().hex}:4", ["a" * 64, "b" * 64]))
+    start = 1 if checkpoint is None else 5
+    records = [journal.write(f"{session}:{step}", [b"0", b"1"]) for step in range(start, start + 3)]
+    origin = SessionOrigin(start, checkpoint)
+    group = TrainerGroup(uuid4().hex, 2, start, checkpoint)
+    plan = plan_replay(journal, group, session, origin, through=start + 2, data_world_size=2)
+    assert plan.start_step == start and plan.batches == records
+    with pytest.raises(ValueError, match="neither committed"):
+        plan_replay(journal, group, session, None, through=start + 2, data_world_size=2)
+    with pytest.raises(ValueError, match="neither committed"):
+        other = SessionOrigin(start, BatchCheckpoint(4, BatchRecord(f"{uuid4().hex}:4", ["c" * 64, "d" * 64])))
+        plan_replay(journal, group, session, other, through=start + 2, data_world_size=2)
+
+
+@pytest.mark.parametrize(
+    "policy, published",
+    [
+        # Inference serves v5: the replacement restored at step 3 recomputes 4 and 5 silently
+        (PolicyState(5, reload=False), [6, 7]),
+        # An interrupted update left v5 incomplete: recompute and publish v5 itself
+        (PolicyState(5, reload=True), [5, 6, 7]),
+        # Inference serves an older policy than the restored v3: publish v3 at startup
+        (PolicyState(3, reload=True), [3, 4, 5, 6, 7]),
+    ],
+)
+def test_replacement_publishes_monotonic_policies(policy, published):
+    assert [step for step in range(3, 8) if policy.publishes(step)] == published
