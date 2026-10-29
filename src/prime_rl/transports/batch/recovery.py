@@ -28,15 +28,42 @@ class BatchRequest(msgspec.Struct, tag="batch", frozen=True):
     step: int
 
 
+class SessionOrigin(msgspec.Struct, frozen=True):
+    """Where the producer session's first trainer group started. A replacement that restores
+    the same position replays the session's journal from its first batch."""
+
+    start_step: int
+    restored: BatchCheckpoint | None = None
+
+
 class ReplayPlan(msgspec.Struct, frozen=True):
-    restored: BatchCheckpoint
+    start_step: int
+    restored: BatchCheckpoint | None
     batches: list[BatchRecord]
+
+
+class PolicyState(msgspec.Struct, frozen=True):
+    """Which policy a replacement trainer publishes first.
+
+    ``version`` is the newer of the policy inference last applied completely and the
+    replacement's restored checkpoint; policy versions never move backwards. Without
+    ``reload``, inference serves that version and the replacement publishes only later ones.
+    With ``reload``, inference holds no complete policy (an interrupted in-place update) or an
+    older one, and the replacement also publishes ``version`` itself once it recomputed it."""
+
+    version: int
+    reload: bool
+
+    def publishes(self, step: int) -> bool:
+        """Whether the replacement publishes the policy it holds after ``step``."""
+        return step > self.version or (self.reload and step == self.version)
 
 
 class HandshakeReply(msgspec.Struct):
     attempt_id: str
     status: Literal["accepted", "recovery_required", "rejected"]
     plan: ReplayPlan | None = None
+    policy: PolicyState | None = None
     error: str | None = None
 
 
@@ -45,7 +72,7 @@ class RecoveryRequired(RuntimeError):
         self.plan = plan
         super().__init__(
             f"Trainer recovery requires replay of {len(plan.batches)} journaled batches "
-            f"after {plan.restored.batch.batch_id}; replacement is not authorized"
+            f"from step {plan.start_step}; replacement is not authorized"
         )
 
 
@@ -60,32 +87,43 @@ def validate_checkpoint(checkpoint: BatchCheckpoint) -> None:
 
 
 def plan_replay(
-    journal: BatchJournal, group: TrainerGroup, session: str, through: int, data_world_size: int
+    journal: BatchJournal,
+    group: TrainerGroup,
+    session: str,
+    origin: SessionOrigin | None,
+    through: int,
+    data_world_size: int,
 ) -> ReplayPlan:
     """Validate every retained payload without loading whole batches into memory.
 
-    ``through`` includes the prepared batch awaiting delivery. Entries from other
-    producer sessions are never joined implicitly.
+    ``through`` is the last batch the producer handed to the transport before the batch
+    it is collecting now; the replacement then receives that live batch normally. A
+    checkpoint from this producer session must match the journal's committed record; any
+    other restored position must be the session origin. Entries from other producer
+    sessions are never joined implicitly.
     """
     checkpoint = group.restored
-    if checkpoint is None:
-        raise ValueError("Recovery requires a checkpoint with batch.json")
-    validate_checkpoint(checkpoint)
-    restored_session, step = _position(checkpoint.batch.batch_id)
-    if restored_session != session:
-        raise ValueError("Restored checkpoint belongs to a different producer session")
-    if group.start_step != step + 1 or group.start_step > through:
-        raise ValueError("Restored position is incompatible with the pending batch")
-    if len(checkpoint.batch.hashes) != data_world_size:
-        raise ValueError("Restored checkpoint has a different data world size")
-    marker = journal.path / session / "checkpoint.json"
-    if marker.exists():
-        committed = msgspec.json.decode(marker.read_bytes(), type=BatchCheckpoint)
-        validate_checkpoint(committed)
-        if committed != checkpoint:
-            raise ValueError("Restored checkpoint does not match the journal's committed checkpoint")
-    elif journal.record(checkpoint.batch.batch_id) != checkpoint.batch:
-        raise ValueError("Restored checkpoint hashes do not match the journal")
+    restored_session = _position(checkpoint.batch.batch_id)[0] if checkpoint is not None else None
+    if restored_session == session:
+        validate_checkpoint(checkpoint)
+        if group.start_step != checkpoint.step + 1:
+            raise ValueError("Restored position does not follow the restored checkpoint")
+        if len(checkpoint.batch.hashes) != data_world_size:
+            raise ValueError("Restored checkpoint has a different data world size")
+        marker = journal.path / session / "checkpoint.json"
+        if marker.exists():
+            committed = msgspec.json.decode(marker.read_bytes(), type=BatchCheckpoint)
+            validate_checkpoint(committed)
+            if committed != checkpoint:
+                raise ValueError("Restored checkpoint does not match the journal's committed checkpoint")
+        elif journal.record(checkpoint.batch.batch_id) != checkpoint.batch:
+            raise ValueError("Restored checkpoint hashes do not match the journal")
+    elif origin is None or SessionOrigin(group.start_step, checkpoint) != origin:
+        raise ValueError(
+            "Restored checkpoint is neither committed in this producer session nor the position it started from"
+        )
+    if group.start_step > through + 1:
+        raise ValueError("Restored position is ahead of the batches the producer has delivered")
     records = []
     for step in range(group.start_step, through + 1):
         record = journal.record(f"{session}:{step}")
@@ -96,7 +134,7 @@ def plan_replay(
                 if hashlib.file_digest(file, "sha256").hexdigest() != expected:
                     raise ValueError(f"Journal payload checksum mismatch: {record.batch_id}, rank {rank}")
         records.append(record)
-    return ReplayPlan(checkpoint, records)
+    return ReplayPlan(group.start_step, checkpoint, records)
 
 
 class TrainerHandshake:

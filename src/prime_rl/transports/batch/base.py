@@ -8,6 +8,7 @@ from uuid import uuid4
 import msgspec
 
 from prime_rl.transports.batch.journal import BatchJournal
+from prime_rl.transports.batch.recovery import HandshakeReply
 from prime_rl.transports.batch.types import MicroBatch, encode_array
 from prime_rl.utils.logger import get_logger
 
@@ -58,6 +59,9 @@ class BatchSender(ABC):
         self.journal_write_time = perf_counter() - start
         return payloads
 
+    def start(self) -> None:
+        """Begin serving trainers before the first batch. Override if needed."""
+
     @abstractmethod
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
         """Send grid of micro batches to the trainers once every trainer rank requested the step.
@@ -97,6 +101,11 @@ class BatchReceiver(ABC):
         self.data_rank = data_rank
         self.rank = rank
         self.world_size = world_size
+
+    def connect(self) -> HandshakeReply | None:
+        """Join the orchestrator's producer session before the first request. Transports
+        without a handshake have nothing to agree on."""
+        return None
 
     @abstractmethod
     def wait(self) -> None:
