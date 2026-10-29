@@ -54,7 +54,7 @@ class CheckpointManager:
         start = time.perf_counter()
         if state.get("open_work") is not None:
             persist_arrays(state["open_work"], (ckpt_path / ARRAYS_DIR).resolve())
-            state = {**state, "open_work": _map_episodes(state["open_work"], dump)}
+            state = {**state, "open_work": _map_episodes(state["open_work"], dump_episode)}
         # Save to a temporary file and do an atomic rename, to avoid corrupting the last
         # file if the process gets killed while writing
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
@@ -127,6 +127,12 @@ ARRAYS_DIR = "arrays"
 PERSISTED_URL = "checkpoint"
 """Where a persisted blob's URL points in the saved state: the checkpoint's own
 ``arrays/``, wherever a resumed run finds it (``resolve_arrays``)."""
+
+
+def dump_episode(episode: Any) -> dict:
+    """An episode as the checkpoint file holds it: its nodes' token streams as raw bytes,
+    which pickle without a Python object per token."""
+    return dump(episode, context={"token_arrays": True})
 
 
 def _map_episodes(work: dict, fn: Callable[[Any], Any]) -> dict:
