@@ -240,21 +240,19 @@ def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
 
     mask = vf.SamplingMask(ids=np.array([5, 6, 8], np.int32), counts=np.array([0, 0, 1, 2], np.int32))
     head = vf.TopLogprobs(
-        ids=np.array([1, 2, 5, 8, 6 if support == "complete" else 7], np.int32),
-        logprobs=np.array([-0.1, -2.5, 0.0, -0.3, -1.4], np.float32),
-        counts=np.array([0, 2, 1, 2], np.int32),
+        ids=np.array([5, 8, 6], np.int32),
+        logprobs=np.array([0.0, -0.3, -1.4], np.float32),
+        counts=np.array([0, 0, 1, 2] if support == "complete" else [0, 1, 0, 2], np.int32),
     )
     if support == "mismatch":
         with pytest.raises(ValueError):
             _encode_sampler_evidence(mask, head, 4)
         return
     sampling_mask, top_logprobs = _encode_sampler_evidence(mask, head, 4)
+    assert top_logprobs is None
     np.testing.assert_array_equal(np.frombuffer(sampling_mask.ids, np.int32), [5, 8, 6])
     np.testing.assert_array_equal(np.frombuffer(sampling_mask.counts, np.int32), [0, 0, 1, 2])
     np.testing.assert_array_equal(np.frombuffer(sampling_mask.logprobs, np.float32), np.float32([0.0, -0.3, -1.4]))
-    np.testing.assert_array_equal(np.frombuffer(top_logprobs.ids, np.int32), [1, 2])
-    np.testing.assert_array_equal(np.frombuffer(top_logprobs.logprobs, np.float32), np.float32([-0.1, -2.5]))
-    np.testing.assert_array_equal(np.frombuffer(top_logprobs.counts, np.int32), [0, 2, 0, 0])
 
 
 def test_unfetchable_micro_batches_are_reported():

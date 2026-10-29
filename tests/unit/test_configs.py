@@ -147,7 +147,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.run_dir == config.run_dir
     assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
-    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.inference.enable_return_sampling_mask
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
 
 
@@ -657,28 +657,27 @@ def test_group_defaults_match_source_defaults(group):
 
 
 def test_policy_sources_accept_different_top_p_values():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        config = OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "train": {
-                    "source": [
-                        {
-                            "name": "top-p-95",
-                            "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.95},
-                        },
-                        {
-                            "name": "top-p-97",
-                            "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.97},
-                        },
-                    ]
-                },
-            }
-        )
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {
+                        "name": "top-p-95",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.95},
+                    },
+                    {
+                        "name": "top-p-97",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.97},
+                    },
+                ]
+            },
+        }
+    )
 
-    assert [source.sampling.top_k for source in config.train.source] == [128, 128]
+    assert [source.sampling.top_k for source in config.train.source] == [None, None]
     assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
     data = config.model_dump(mode="json")
     data["eval"] = {
@@ -725,29 +724,6 @@ def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, 
     else:
         config = TrainSourceConfig.model_validate(source)
         assert TrainSourceConfig.model_validate_json(config.model_dump_json()) == config
-
-
-def test_policy_sources_reject_mixed_top_k_capture():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
-            OrchestratorConfig.model_validate(
-                {
-                    "renderer": {"name": "qwen3"},
-                    "train": {
-                        "source": [
-                            {
-                                "name": "truncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                                "sampling": {"top_p": 0.95},
-                            },
-                            {
-                                "name": "untruncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                            },
-                        ]
-                    },
-                }
-            )
 
 
 def test_single_node_auto_inference_ports_follow_server_port():
@@ -1246,17 +1222,14 @@ def test_explicit_inference_parser_wins_over_auto():
 
 
 @pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-@pytest.mark.parametrize("top_p_first", [None, False, True])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
-    monkeypatch.setenv("PRL_TOP_P_BEFORE_TOP_K", "0")
     config = InferenceConfig(
         deployment=deployment,
         slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
-        **({"top_p_before_top_k": top_p_first} if top_p_first is not None else {}),
         vllm={"enable_return_routed_experts": True},
     )
 
@@ -1265,16 +1238,6 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
-
-    assert config.top_p_before_top_k is (top_p_first is not False)
-    assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == ("0" if top_p_first is False else "1")
-    if top_p_first is not False:
-        monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "0")
-        with pytest.raises(ValueError, match="requires VLLM_USE_V2_MODEL_RUNNER"):
-            setup_vllm_env(config)
-        config.enable_return_sampling_mask = False
-        setup_vllm_env(config)
-        assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == "0"
 
 
 def test_pd_role_connectors():
@@ -1399,6 +1362,21 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
         }
     )
     assert config.orchestrator.train.source[0].sampling.logprobs == top_k
-    assert config.inference.vllm.max_logprobs >= top_k + 2
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_score_centering_replays_top_p_alone():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}}]}
+            },
+            "inference": {},
+        }
+    )
+    sampling = config.orchestrator.train.source[0].sampling
+    assert sampling.top_k is None and sampling.logprobs == 1
+    assert sampling.extra_body["extra_args"]["prl_replay"]
+    assert config.inference.enable_return_sampling_mask

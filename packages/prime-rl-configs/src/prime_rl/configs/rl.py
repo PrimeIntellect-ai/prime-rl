@@ -523,50 +523,32 @@ class RLConfig(BaseConfig):
             return self
         if not self.orchestrator.policy_samplings:
             raise ValueError("Score centering requires a policy-sampled training source")
-        requested = []
 
         def request_logprobs(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
-            if k is None:
-                raise ValueError("Truncated score centering requires a bounded top_k")
+            k = (sampling.top_k or 1) if sampling.truncates_distribution() else loss.score_centering_topk
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
-            requested.append(max(sampling.logprobs or 0, k) + 2)
             return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
 
         self.orchestrator.update_policy_samplings(request_logprobs)
-        if self.inference is not None:
-            if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
-                raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
-            self.inference.vllm.logprobs_mode = "processed_logprobs"
-            limit = getattr(self.inference.vllm, "max_logprobs", 20)
-            if limit != -1:
-                self.inference.vllm.max_logprobs = max(limit, *requested)
-        else:
-            warnings.warn(
-                "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
-                stacklevel=2,
-            )
         return self
 
     @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
-        masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND). Only opted-in requests capture
-        masks; eval requests retain independent sampling settings."""
-        policy_samplings = [
-            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
-        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
-        if not any(sampling.truncates_distribution() for sampling in policy_samplings):
+        masks the trainer replays, and recorded sampler logprobs are captured next to them.
+        Only opted-in requests capture masks; eval requests retain independent sampling settings."""
+        if not any(
+            sampling.truncates_distribution() or sampling.logprobs for sampling in self.orchestrator.policy_samplings
+        ):
             return self
         if self.inference is None:
             warnings.warn(
-                "Truncated train sampling with no managed inference server: set "
+                "Truncated train sampling or sampler logprobs with no managed inference server: set "
                 "`enable_return_sampling_mask = true` on the standalone server's config so it "
-                "returns the sampling masks the trainer replays.",
+                "returns the sampling masks and sampler logprobs the trainer needs.",
                 stacklevel=2,
             )
             return self

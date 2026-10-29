@@ -432,10 +432,7 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
-            sampler_support_complete = (
-                (sampling_mask >= 0).any(-1) if score_centering and sampling_mask is not None else None
-            )
-            topk_ids = sampler_topk = topk_valid = None
+            topk_ids = sampler_topk = topk_valid = sampler_tail_mass = None
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
                 if micro_batch["top_logprobs_ids"] is None or micro_batch["top_logprobs_values"] is None:
@@ -445,6 +442,9 @@ def train(config: TrainerConfig):
                     topk_ids = micro_batch["top_logprobs_ids"].to("cuda")
                     sampler_topk = micro_batch["top_logprobs_values"].to("cuda")
                     topk_valid = topk_ids >= 0
+                    sampler_tail_mass = (1.0 - sampler_topk.exp().masked_fill(~topk_valid, 0.0).sum(-1)).clamp_min(0.0)
+                    if sampling_mask is not None:
+                        sampler_tail_mass = sampler_tail_mass.masked_fill((sampling_mask >= 0).any(-1), 0.0)
                     # Validated on the GPU and checked once after the last micro batch, so the
                     # host never waits on it
                     score_centering_errors.append(
@@ -581,15 +581,15 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
-                trainer_topk_logprobs=trainer_topk.squeeze(0).split(sequence_lengths)
+                trainer_support_logprobs=trainer_topk.squeeze(0).split(sequence_lengths)
                 if trainer_topk is not None
                 else None,
-                sampler_topk_logprobs=sampler_topk.squeeze(0).split(sequence_lengths)
+                sampler_support_logprobs=sampler_topk.squeeze(0).split(sequence_lengths)
                 if sampler_topk is not None
                 else None,
-                topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
-                sampler_support_complete=sampler_support_complete.squeeze(0).split(sequence_lengths)
-                if sampler_support_complete is not None
+                support_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
+                sampler_tail_mass=sampler_tail_mass.squeeze(0).split(sequence_lengths)
+                if sampler_tail_mass is not None
                 else None,
             )
 

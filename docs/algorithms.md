@@ -266,9 +266,9 @@ Training sampling requires positive temperature. With untruncated sampling
 (`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
 and the trainer approximates the remaining sampler mass as proportional to its own tail.
 
-With bounded top-k (optionally combined with top-p), the launcher captures at least
-`top_k` probabilities and enables sampling replay. The renderer retains the complete
-recorded support; the trainer normalizes over that same support and computes exact
+With truncated sampling (top-p, top-k, or both), the launcher enables sampling replay
+and the server captures the sampler's probability for every token of each recorded
+support, at any width. The renderer retains the complete recorded support; the trainer normalizes over that same support and computes exact
 centering on it, without a tail approximation. `score_centering_topk` only controls
 the captured head for untruncated sampling. The existing sampling-replay limits and
 eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
@@ -282,10 +282,12 @@ This is an approximation to the unknown sampler tail, not exact full-distributio
 centering. The IcePop ratio band remains `[0.2, 5]` by default.
 
 The launcher configures probability capture automatically. Standalone inference
-servers need `processed_logprobs` and `max_logprobs >= sampling.logprobs + 2`.
-The renderer requests two extra candidates to recover a head independent of the
-sampled action, excluding ties at the head boundary. Missing heads fail explicitly.
-Compact HTTP transport packs token IDs and probabilities into binary buffers.
+servers need `enable_return_sampling_mask = true`: the sampler captures the head on
+the GPU from the processed distribution, next to the sampling mask, so vLLM returns
+no logprobs for these requests. The renderer requests two extra candidates to recover
+a head independent of the sampled action, excluding ties at the head boundary. Missing
+heads fail explicitly. Compact HTTP transport packs token IDs and probabilities into
+binary buffers.
 
 Metrics report captured sampler `score_centering/head_mass`, modeled
 `score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
