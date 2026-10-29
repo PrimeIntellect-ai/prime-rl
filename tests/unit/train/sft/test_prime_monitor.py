@@ -189,7 +189,7 @@ def test_a_failed_launch_fails_the_run(sdk_runs):
     assert sdk_runs[0].failed is error
 
 
-@pytest.mark.parametrize("command,code", [(["true"], 0), (["false"], 1)])
+@pytest.mark.parametrize("command,code", [(["bash", "-c", '[ "$RUN_ID" = run-123 ]'], 0), (["false"], 1)])
 def test_slurm_run_owner_fails_the_run_with_its_step(sdk_runs, tmp_path, monkeypatch, command, code):
     """A multi-node SLURM job's run owner registers the run around the job step, exports
     its id to the step, and finishes the run when the step succeeds or fails it when the
