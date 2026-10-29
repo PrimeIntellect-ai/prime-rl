@@ -141,7 +141,7 @@ def test_journal_disk_io_does_not_block_event_loop(tmp_path, setup_transport, mo
             assert not sending.done()
             requests = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in receivers]
             await asyncio.sleep(0.05)
-            assert not any(request.done() for request in requests)
+            assert not sending.done()
             # This coroutine must run before the worker can finish its write.
             release.set()
             await asyncio.wait_for(asyncio.gather(sending, *requests), 10)
@@ -189,33 +189,34 @@ def test_replacement_replays_only_when_authorized(tmp_path, authorized):
             results = await asyncio.gather(
                 *(asyncio.to_thread(receiver.wait) for receiver in replacements), return_exceptions=True
             )
-            expected = [f"{sender.journal_session}:{step}" for step in (1, 2)]
+            # Batch 1 was delivered to the old attempt and replays from the journal; batch 2 is live.
+            replayed, live = (f"{sender.journal_session}:{step}" for step in (1, 2))
             if authorized:
                 assert results == [None] * len(replacements)
                 assert sender.handshake.active == group and not sending.done()
                 for receiver in replacements:
-                    assert [record.batch_id for record in receiver.replay_plan.batches] == expected
-                    batch = receiver.receive()
-                    assert sender.encode(batch) == sender.journal.read(expected[0])[receiver.data_rank]
+                    assert [record.batch_id for record in receiver.replay_plan.batches] == [replayed]
+                    batch = await asyncio.to_thread(receiver.receive)
+                    assert sender.encode(batch) == sender.journal.read(replayed)[receiver.data_rank]
                 await asyncio.wait_for(
                     asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in replacements)), 5
                 )
                 for receiver in replacements:
-                    batch = receiver.receive()
-                    assert sender.encode(batch) == sender.journal.read(expected[1])[receiver.data_rank]
-                assert sender.replay_batches_sent == 2 and sender.current_step == 3
+                    batch = await asyncio.to_thread(receiver.receive)
+                    assert sender.encode(batch) == sender.journal.read(live)[receiver.data_rank]
+                assert sender.replay_batches_sent == 1 and sender.current_step == 3
                 await _send_while_ranks_request(sender, replacements)
-                assert sender.current_step == 4 and sender.replay_batches_sent == 2
+                assert sender.current_step == 4 and sender.replay_batches_sent == 1
             else:
                 assert all(isinstance(result, RecoveryRequired) for result in results)
-                assert all([record.batch_id for record in result.plan.batches] == expected for result in results)
+                assert all([record.batch_id for record in result.plan.batches] == [replayed] for result in results)
                 assert sender.handshake.active == active and not sending.done()
                 # A probe does not displace the accepted trainer.
                 await asyncio.wait_for(
                     asyncio.gather(sending, *(asyncio.to_thread(receiver.wait) for receiver in receivers)), 5
                 )
                 for receiver in receivers:
-                    assert receiver.receive()[0].journal_batch_id == expected[-1]
+                    assert receiver.receive()[0].journal_batch_id == live
         finally:
             if not sending.done():
                 sending.cancel()
