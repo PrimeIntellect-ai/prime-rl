@@ -142,11 +142,6 @@ class MuseGlimmerDecoderLayer(GradientCheckpointingLayer):
 class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
     config_class = MuseGlimmerConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["MuseGlimmerDecoderLayer"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _can_compile_fullgraph = True
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -241,9 +236,6 @@ class MuseGlimmerModel(nn.Module):
 class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
     """Text-only MuseGlimmer. Built from the composite checkpoint config, its weights keep the
     checkpoint's `model.language_model.*` names; the vision tower is not loaded."""
-
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: MuseGlimmerConfig | MuseGlimmerTextConfig) -> None:
         super().__init__(config)

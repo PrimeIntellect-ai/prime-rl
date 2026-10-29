@@ -285,8 +285,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
 class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = AfmoeConfig
     base_model_prefix = "model"
-    _no_split_modules = ["AfmoeDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
     _keep_in_fp32_modules = [
         "input_layernorm",
         "post_attention_layernorm",
@@ -296,15 +294,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
         "k_norm",
         "norm",
     ]
-    _supports_sdpa = False
-    _supports_flash_attn = True
-    _supports_flex_attn = False
-    _supports_attention_backend = True
-    _can_compile_fullgraph = False
-    _can_record_outputs = {
-        "hidden_states": AfmoeDecoderLayer,
-    }
-    supports_gradient_checkpointing = True
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
@@ -320,8 +309,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class AfmoeModel(AfmoePreTrainedModel):
-    _no_split_modules = ["AfmoeDecoderLayer"]
-
     def __init__(self, config: AfmoeConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -404,8 +391,6 @@ class AfmoeModel(AfmoePreTrainedModel):
 
 class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
