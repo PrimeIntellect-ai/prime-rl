@@ -178,7 +178,7 @@ class BaseAlgoConfig(BaseConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    sampling: SamplingConfig = Field(SamplingConfig(), frozen=True)
+    sampling: SamplingConfig = SamplingConfig()
     """Sampling component: which model generates train rollouts."""
 
     @model_validator(mode="after")
