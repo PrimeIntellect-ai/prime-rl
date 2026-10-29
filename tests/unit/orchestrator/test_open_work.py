@@ -349,3 +349,22 @@ def test_a_failed_checkpoint_writer_raises(tmp_path):
     manager.save_state = fail
     with pytest.raises(RuntimeError, match="exited with 1"):
         asyncio.run(manager.save_forked({}, 6))
+
+
+def test_a_rollout_whose_arrays_were_persisted_since_is_written_again(tmp_path):
+    """A rollout file names whether its arrays were persisted: the one of a checkpoint
+    that could not persist them still points at the env server, and must not be
+    linked by one that did."""
+    from prime_rl.orchestrator.ckpt import PERSISTED_URL, write_rollouts
+    from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
+
+    queued = wire(member("a", "gb"))
+    queued.traces[0].info[PAYLOAD_INFO_KEY] = {"url": "http://worker", "branches": {}}
+    work = {"groups": [], "sink": sink(["a"]).state_dict(), "results": [queued], "snapshots": {}}
+
+    first = write_rollouts(work, tmp_path / "6", None)["results"][0]
+    queued.traces[0].info[PAYLOAD_INFO_KEY]["url"] = PERSISTED_URL
+    second = write_rollouts(work, tmp_path / "7", tmp_path / "6")["results"][0]
+
+    assert (first, second) == (f"{queued.id}.queued.unpersisted", f"{queued.id}.queued")
+    assert (tmp_path / "7" / second).stat().st_ino != (tmp_path / "6" / first).stat().st_ino

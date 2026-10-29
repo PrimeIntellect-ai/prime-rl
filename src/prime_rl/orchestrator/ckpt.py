@@ -209,13 +209,19 @@ def write_rollouts(work: dict, directory: Path, previous: Path | None) -> dict:
     """Write each in-queue episode and in-flight restore point of ``work`` to its own file
     in ``directory``, one at a time, and return ``work`` with the file names in their
     place. An episode does not change while it waits in one place, so a file of that
-    name in the ``previous`` checkpoint's directory is linked, not written again. A
-    served episode's type is a parametrized generic, which pickle cannot find by name,
-    so the files hold the episodes dumped."""
+    name in the ``previous`` checkpoint's directory is linked, not written again. Its
+    payload URLs depend on whether this checkpoint persisted its arrays
+    (``persist_arrays``), so the name says that too. A served episode's type is a
+    parametrized generic, which pickle cannot find by name, so the files hold the
+    episodes dumped."""
     directory.mkdir(parents=True, exist_ok=True)
 
     def write_episode(episode: Any, place: str) -> str:
-        name = f"{episode.id}.{place}"
+        persisted = all(
+            (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("url", PERSISTED_URL) == PERSISTED_URL
+            for trace in episode.traces
+        )
+        name = f"{episode.id}.{place}" + ("" if persisted else ".unpersisted")
         if previous is None or not _link(previous / name, directory / name):
             _write(directory / name, dump_episode(episode))
         return name
