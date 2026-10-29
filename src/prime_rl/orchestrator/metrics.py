@@ -188,6 +188,10 @@ class TimingMetrics(StatGroup):
         return Stat([trace.timing.agent.harness.duration for trace in self.traces])
 
     @property
+    def agent_checkpoint(self) -> Stat:
+        return Stat([trace.timing.agent.checkpoint.duration for trace in self.traces])
+
+    @property
     def finalize(self) -> Stat:
         return Stat([trace.timing.finalize.duration for trace in self.traces])
 
@@ -204,6 +208,7 @@ class TimingMetrics(StatGroup):
             **{phase: getattr(self, phase) for phase in self.PHASES},
             "agent/model": self.agent_model,
             "agent/harness": self.agent_harness,
+            "agent/checkpoint": self.agent_checkpoint,
             "total": self.total,
         }
 

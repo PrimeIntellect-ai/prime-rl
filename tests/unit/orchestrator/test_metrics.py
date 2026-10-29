@@ -39,6 +39,7 @@ def mk(
     agent: float = 0.0,
     agent_model: float = 0.0,
     agent_harness: float = 0.0,
+    agent_checkpoint: float = 0.0,
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
@@ -70,6 +71,7 @@ def mk(
                 duration=agent,
                 model=SimpleNamespace(duration=agent_model),
                 harness=SimpleNamespace(duration=agent_harness),
+                checkpoint=SimpleNamespace(duration=agent_checkpoint),
             ),
             finalize=SimpleNamespace(duration=finalize),
             scoring=SimpleNamespace(duration=scoring),
@@ -283,16 +285,28 @@ def test_nested_metrics_and_rewards():
 
 def test_nested_timing():
     m = train_episodes(
-        [mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]
+        [
+            mk(
+                setup=1.0,
+                agent=2.0,
+                agent_model=1.0,
+                agent_harness=0.5,
+                agent_checkpoint=0.5,
+                finalize=0.5,
+                scoring=0.5,
+            )
+        ]
     ).metrics
     timing = m.by_agent()["agent"].timing
     assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
-    assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
+    assert timing.agent_model.mean() == 1.0 and timing.agent_harness.mean() == 0.5
+    assert timing.agent_checkpoint.mean() == 0.5
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/agent/timing/setup/mean"] == 1.0
     assert out["train/agg/all/agent/timing/total/mean"] == 4.0
-    assert out["train/agg/all/agent/timing/agent/model/mean"] == 1.5
+    assert out["train/agg/all/agent/timing/agent/model/mean"] == 1.0
     assert out["train/agg/all/agent/timing/agent/harness/mean"] == 0.5
+    assert out["train/agg/all/agent/timing/agent/checkpoint/mean"] == 0.5
 
 
 def test_train_only_metrics_absent_from_eval():
