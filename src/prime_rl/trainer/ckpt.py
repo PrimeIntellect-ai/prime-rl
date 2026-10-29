@@ -3,12 +3,14 @@ import gc
 import json
 import shutil
 import time
+from concurrent.futures import Future
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
+from torch.distributed.checkpoint.staging import AsyncStager
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -16,11 +18,14 @@ from torch.distributed.checkpoint.state_dict import (
     set_state_dict,
 )
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from torch.distributed.checkpoint.state_dict_saver import async_save as dcp_async_save
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.distributed.tensor import DTensor, Shard
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
+from torch.utils._pytree import tree_map_only
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.shared import ResumeConfig
@@ -29,6 +34,7 @@ from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
+    get_model_packed_parameters,
     join_loaded_optimizer_state_for_runtime,
     split_packed_optimizer_state_for_checkpoint,
     write_back_loaded_packed_optimizer_state,
@@ -53,6 +59,48 @@ def _try_rmtree(path: Path, logger) -> None:
         shutil.rmtree(path)
     except OSError as e:
         logger.warning(f"Failed to remove {path}: {e}, skipping cleanup")
+
+
+class _NoCopyStager(AsyncStager):
+    """Hands the state dict to the background writer as is: it is already a CPU snapshot."""
+
+    _synchronize_after_execute = False
+
+    def stage(self, state_dict: dict[str, Any]) -> dict[str, Any]:
+        return state_dict
+
+
+def _copy_gpu_tensors_to_cpu(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Copy GPU tensors to CPU and keep CPU tensors by reference. The containers are rebuilt, so
+    the result shares no dict or list with the live optimizer state."""
+
+    def to_cpu(tensor: torch.Tensor) -> torch.Tensor:
+        if isinstance(tensor, DTensor):
+            if tensor._local_tensor.is_cpu:
+                return tensor
+            return DTensor(tensor._local_tensor.cpu(), tensor._spec, requires_grad=False)
+        return tensor if tensor.is_cpu else tensor.cpu()
+
+    return tree_map_only(torch.Tensor, to_cpu, state_dict)
+
+
+def _copy_cpu_state_split_on_sharded_dim_to_gpu(
+    model: nn.Module, optimizer_state_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """Splitting a packed parameter's state along its sharded dim all-gathers it, so CPU-resident
+    state is copied to GPU for that gather to run over NCCL."""
+    state = dict(optimizer_state_dict["state"])
+    for packed_info in get_model_packed_parameters(model):
+        if packed_info.fqn not in state:
+            continue
+        sharded_on_packing_dim = Shard(packed_info.spec.dim)
+        state[packed_info.fqn] = {
+            key: DTensor(value._local_tensor.cuda(), value._spec, requires_grad=False)
+            if isinstance(value, DTensor) and value._local_tensor.is_cpu and sharded_on_packing_dim in value.placements
+            else value
+            for key, value in state[packed_info.fqn].items()
+        }
+    return {**optimizer_state_dict, "state": state}
 
 
 class AppState(Stateful):
@@ -86,14 +134,12 @@ class AppState(Stateful):
     def _has_cpu_offload(self) -> bool:
         return any(isinstance(optimizer, OffloadOptimizer) for optimizer in self.optimizers)
 
-    def state_dict(self) -> dict[str, Any]:
-        for optimizer in self.optimizers:
-            if isinstance(optimizer, OffloadOptimizer):
-                optimizer.prepare_checkpoint_save()
-
+    def _build_state_dict(self, background_save: bool = False) -> dict[str, Any]:
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
+        if background_save:
+            optimizer_state_dict = _copy_cpu_state_split_on_sharded_dim_to_gpu(self.model, optimizer_state_dict)
         # Runtime fusions own one physical state tensor per fused parameter; the checkpoint
         # sees it under the canonical names. This dict is also the template dcp_load writes
         # into, and load_state_dict packs the loaded entries back into the runtime state.
@@ -107,6 +153,14 @@ class AppState(Stateful):
         if self.progress is not None:
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
+        return state_dict
+
+    def state_dict(self) -> dict[str, Any]:
+        for optimizer in self.optimizers:
+            if isinstance(optimizer, OffloadOptimizer):
+                optimizer.prepare_checkpoint_save()
+
+        state_dict = self._build_state_dict()
 
         for optimizer in self.optimizers:
             if isinstance(optimizer, OffloadOptimizer):
@@ -118,6 +172,11 @@ class AppState(Stateful):
             torch.cuda.empty_cache()
 
         return state_dict
+
+    def cpu_state_dict(self) -> dict[str, Any]:
+        """The state dict for a background save: GPU tensors are copied to CPU, while the CPU-resident
+        optimizer state is passed by reference, so its owner must not update it until the write is done."""
+        return _copy_gpu_tensors_to_cpu(self._build_state_dict(background_save=True))
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         checkpoint_optimizers = self._get_checkpoint_optimizers()
@@ -178,6 +237,10 @@ class CheckpointManager:
         else:
             self.ckpt_steps = all_steps
 
+        # Background writes run their DCP collectives on their own gloo group, created on the first one
+        self._async_save_group: torch.distributed.ProcessGroup | None = None
+        self._pending_save: tuple[int, Future] | None = None
+
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
@@ -190,13 +253,12 @@ class CheckpointManager:
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
-    ):
-        """Save the trainer checkpoint to a given path."""
+    ) -> Future | None:
+        """Save the trainer checkpoint to a given path. A background save returns the future of its write."""
         self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.perf_counter()
 
-        # Create checkpoint state
-        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+        app_state = AppState(model, optimizers, scheduler, progress)
 
         # Checkpoint the local dataloader
         if dataloader is not None:
@@ -211,9 +273,33 @@ class CheckpointManager:
 
         # Before the sharded state, so the mapping is in place once .metadata appears
         self._save_mapping(path, model)
-        dcp_save(state_dict, checkpoint_id=path, process_group=get_dcp_group())
 
+        offload_optimizers = [optimizer for optimizer in optimizers if isinstance(optimizer, OffloadOptimizer)]
+        if self.config.async_save and offload_optimizers:
+            if self._async_save_group is None:
+                self._async_save_group = get_dcp_group()
+            state_dict = {"app": app_state.cpu_state_dict()}
+            write_start_time = time.perf_counter()
+            future = dcp_async_save(
+                state_dict, checkpoint_id=path, process_group=self._async_save_group, async_stager=_NoCopyStager()
+            )
+            for optimizer in offload_optimizers:
+                optimizer.hold_state_updates(future)
+
+            def log_write_time(future: Future) -> None:
+                if future.exception() is None:
+                    write_time = format_time(time.perf_counter() - write_start_time)
+                    self.logger.info(f"Wrote training checkpoint to {path} in the background in {write_time}")
+
+            future.add_done_callback(log_write_time)
+            self.logger.debug(
+                f"Started background save of training checkpoint in {format_time(write_start_time - start_time)}"
+            )
+            return future
+
+        dcp_save({"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
         self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
+        return None
 
     def _save_mapping(self, path: Path, model: nn.Module) -> None:
         """Write the prime -> HF conversion of the saved model weights as views, so a reader can
@@ -299,7 +385,9 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
-        """Save the full checkpoint state for a specified step."""
+        """Save the full checkpoint state for a specified step. A background save is only added to
+        ``ckpt_steps`` once ``wait`` has seen its write finish."""
+        self.wait()
         ckpt_path = self.get_ckpt_path(step)
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
@@ -307,7 +395,19 @@ class CheckpointManager:
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier(group=get_dcp_group())
 
-        self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        future = self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        if future is None:
+            bisect.insort(self.ckpt_steps, step)
+        else:
+            self._pending_save = (step, future)
+
+    def wait(self) -> None:
+        """Block until the pending background save is written, raising its error if it failed."""
+        if self._pending_save is None:
+            return
+        step, future = self._pending_save
+        self._pending_save = None
+        future.result()
         bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:

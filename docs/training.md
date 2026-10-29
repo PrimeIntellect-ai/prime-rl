@@ -331,6 +331,8 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
+With CPU optimizer offload (`model.offload` = `optimizer` or `full`), `ckpt.async_save = true` on the trainer (`--trainer.ckpt.async-save` for `rl`, `--ckpt.async-save` for `sft`) writes the trainer checkpoint in a background thread. The save copies the GPU weights to CPU and passes the CPU optimizer state to the writer without copying it. Training continues, and the next optimizer update of the CPU state waits until the write is done. `time/save_ckpt` then measures only the blocking part. A step counts toward `keep_last` once its write has finished, and the trainer waits for the final write before it exits.
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:

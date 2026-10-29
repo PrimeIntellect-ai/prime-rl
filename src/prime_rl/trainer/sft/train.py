@@ -668,6 +668,7 @@ def train(config: SFTConfig):
     if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.wait()
         if paused:
             controller.mark_saved(progress.step)
         else:
