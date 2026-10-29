@@ -20,11 +20,7 @@ from prime_rl.trainer.rl.loss import (
 pytestmark = [pytest.mark.gpu]
 
 
-WEIGHTINGS = [
-    IPOLossConfig(eps=0.3, score_centering=True, score_centering_estimator="topk"),
-    IcePopLossConfig(ratio_low=0.5, ratio_high=2.0, score_centering=True, score_centering_estimator="topk"),
-    ReinforceLossConfig(score_centering=True, score_centering_estimator="topk"),
-]
+WEIGHTINGS = [IPOLossConfig(eps=0.3), IcePopLossConfig(ratio_low=0.5, ratio_high=2.0), ReinforceLossConfig()]
 
 
 def _dense_weight(config, p, q):
@@ -47,27 +43,14 @@ def _ragged(trainer: torch.Tensor, sampler: torch.Tensor, valid: torch.Tensor, r
     )
 
 
-def _support_case(replay: bool):
-    """Every action of one prefix as its own token. Replay: support {0..3}, p renormalized over it and the
-    tail empty. No replay: head {0, 1} of the full vocabulary and a sampler tail proportional to p."""
+def _support_case():
+    """Every action of one prefix as its own token, replayed against support {0..3} with p renormalized over it."""
     logits = torch.tensor([0.3, -0.4, 0.1, -0.9, -1.5, -2.0], requires_grad=True)
-    if replay:
-        logp = logits[:4].log_softmax(-1)
-        q = torch.tensor([0.4, 0.2, 0.3, 0.1])
-        head, q_tail = 4, 0.0
-    else:
-        logp = logits.log_softmax(-1)
-        p = logp.detach().exp()
-        head = 2
-        q_head = torch.tensor([0.45, 0.25])
-        q_tail = 1 - q_head.sum()
-        q = torch.cat((q_head, q_tail * p[head:] / p[head:].sum()))
+    logp = logits[:4].log_softmax(-1)
+    q = torch.tensor([0.4, 0.2, 0.3, 0.1])
     n = len(q)
     support = _ragged(
-        logp[:head].expand(n, -1),
-        q[:head].log().expand(n, -1),
-        torch.ones((n, head), dtype=torch.bool),
-        torch.full((n,), replay),
+        logp.expand(n, -1), q.log().expand(n, -1), torch.ones((n, n), dtype=torch.bool), torch.ones(n, dtype=torch.bool)
     )
     return logits, logp, q, support
 
@@ -86,11 +69,10 @@ def _support_inputs(logp, q, support, advantages, **kwargs):
     )
 
 
-@pytest.mark.parametrize("replay", [True, False])
 @pytest.mark.parametrize("config", WEIGHTINGS, ids=lambda c: c.type)
 @pytest.mark.parametrize("constant_advantage", [False, True])
-def test_score_centering_matches_dense_gradient(config, replay, constant_advantage):
-    logits, logp, q, support = _support_case(replay)
+def test_score_centering_matches_dense_gradient(config, constant_advantage):
+    logits, logp, q, support = _support_case()
     n = len(q)
     advantages = torch.ones(n) if constant_advantage else torch.linspace(-1.0, 1.3, n)
     loss = setup_rl_loss_fn(config).loss(_support_inputs(logp, q, support, advantages)).loss
@@ -104,16 +86,13 @@ def test_score_centering_matches_dense_gradient(config, replay, constant_advanta
         torch.testing.assert_close(gradient, torch.zeros_like(logits), atol=2e-7, rtol=0)
 
 
-@pytest.mark.parametrize("replay", [True, False])
 @pytest.mark.parametrize("kl_staleness", ["none", "inv_sqrt"])
 @pytest.mark.parametrize("estimator", ["exact", "k1"])
-def test_kl_matches_dense_kl(replay, kl_staleness, estimator):
-    logits, logp, q, support = _support_case(replay)
+def test_kl_matches_dense_kl(kl_staleness, estimator):
+    logits, logp, q, support = _support_case()
     n = len(q)
     ages = torch.arange(n)
-    config = ReinforceLossConfig(
-        kl_coeff=0.5, kl_staleness=kl_staleness, kl_estimator=estimator, score_centering_estimator="topk"
-    )
+    config = ReinforceLossConfig(kl_coeff=0.5, kl_staleness=kl_staleness, kl_estimator=estimator)
     inputs = _support_inputs(logp, q, support, torch.zeros(n), policy_ages=ages)
     inputs.loss_weights = None
     result = setup_rl_loss_fn(config).loss(inputs)
@@ -131,53 +110,6 @@ def test_kl_matches_dense_kl(replay, kl_staleness, estimator):
     assert torch.equal(result.metrics["kl/age0"], result.metrics["kl"][ages == 0])
 
 
-def _main_icepop_score_centering(config, inputs, head, sampler, valid):
-    """IcePop with score centering as on main after #4012 (90fbb8db2)."""
-    mask = inputs.loss_mask
-    log_ratio = inputs.trainer_logprobs[mask] - inputs.inference_logprobs[mask]
-    advantages = inputs.advantages[mask]
-    low, high = log_ratio.new_tensor(config.ratio_low).log(), log_ratio.new_tensor(config.ratio_high).log()
-    keep = (log_ratio.detach() >= low) & (log_ratio.detach() <= high)
-    loss = (-config.adv_tau * advantages[keep] * torch.exp(log_ratio[keep])).sum()
-    head, valid, sampler = head[mask], valid[mask], sampler[mask].detach()
-    with torch.no_grad():
-        p = head.exp().masked_fill(~valid, 0.0)
-        q = sampler.exp().masked_fill(~valid, 0.0)
-        accepted = valid & (head - sampler >= low) & (head - sampler <= high)
-        mass = p.masked_fill(~accepted, 0.0)
-        rho = (1.0 - q.sum(-1)).clamp_min(1e-6) / (1.0 - p.sum(-1)).clamp_min(1e-6)
-        alpha = ((-rho.log() >= low) & (-rho.log() <= high)).to(p.dtype)
-        mass = mass - alpha.unsqueeze(-1) * p
-    return loss + (config.adv_tau * advantages * (mass * head).sum(-1)).sum()
-
-
-def test_icepop_topk_tail_matches_main():
-    torch.manual_seed(0)
-    n, vocab, k = 64, 32, 8
-    logits = torch.randn(n, vocab, requires_grad=True)
-    logp = logits.log_softmax(-1)
-    sampler = (logits.detach() + 0.5 * torch.randn(n, vocab)).log_softmax(-1)
-    ids = sampler.topk(k, -1).indices
-    labels = torch.multinomial(sampler.exp(), 1).squeeze(-1)
-    q_head = sampler.gather(-1, ids)
-    head, valid = logp.gather(-1, ids), torch.rand(n, k) > 0.1
-    inputs = LossInputs(
-        trainer_logprobs=logp.gather(-1, labels[:, None]).squeeze(-1),
-        inference_logprobs=sampler.gather(-1, labels[:, None]).squeeze(-1),
-        ref_logprobs=None,
-        advantages=torch.randn(n),
-        loss_mask=torch.rand(n) > 0.2,
-        **_ragged(head, q_head, valid, torch.zeros(n, dtype=torch.bool)),
-    )
-    config = IcePopLossConfig(score_centering=True, score_centering_estimator="topk")
-    actual = setup_rl_loss_fn(config).loss(inputs).loss
-    expected = _main_icepop_score_centering(config, inputs, head, q_head, valid)
-    torch.testing.assert_close(actual, expected)
-    torch.testing.assert_close(
-        torch.autograd.grad(actual, logits, retain_graph=True)[0], torch.autograd.grad(expected, logits)[0]
-    )
-
-
 @pytest.mark.parametrize("config", WEIGHTINGS, ids=lambda c: c.type)
 def test_sampled_estimator_is_unbiased(config):
     """Over many prefixes, the K-draw center and KL match the exact sums over q in expectation, and the
@@ -191,7 +123,7 @@ def test_sampled_estimator_is_unbiased(config):
     full = torch.arange(vocab).expand(n, -1)
 
     def run(ids, replayed, kl_coeff):
-        cfg = config.model_copy(update={"score_centering_estimator": "sampled", "kl_coeff": kl_coeff})
+        cfg = config.model_copy(update={"kl_coeff": kl_coeff})
         logp = logits.log_softmax(-1).expand(n, -1)
         inputs = LossInputs(
             trainer_logprobs=logp.gather(-1, sampled[:, None]).squeeze(-1),
@@ -212,18 +144,6 @@ def test_sampled_estimator_is_unbiased(config):
         torch.testing.assert_close(estimate, exact, atol=0.01, rtol=0)
         torch.testing.assert_close(estimate_grad, exact_grad, atol=0.01, rtol=0)
     torch.testing.assert_close(run(draws, False, 0.0)[1], torch.zeros(vocab), atol=0.02, rtol=0)
-
-
-def test_score_centering_auto_centers_only_replayed_tokens():
-    logits, logp, q, support = _support_case(replay=False)
-    advantages = torch.ones(len(q))
-    inputs = _support_inputs(logp, q, support, advantages)
-    result = setup_rl_loss_fn(ReinforceLossConfig()).loss(inputs)
-    uncentered = -(q * advantages * logp).sum()
-    torch.testing.assert_close(
-        torch.autograd.grad(result.loss, logits, retain_graph=True)[0], torch.autograd.grad(uncentered, logits)[0]
-    )
-    assert bool((result.metrics["score_centering/uncentered"] == 1).all())
 
 
 def test_grpo_loss():

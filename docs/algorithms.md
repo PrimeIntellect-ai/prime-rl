@@ -270,45 +270,42 @@ loss_t = -tau_A * A_t * (w_a * log p(a) - sum_v sg[q_v * w_v] * log p_v) + beta_
 ([score centering](https://arxiv.org/abs/2609.20807)) has zero mean under the sampler, so it removes variance
 without biasing the weighted gradient; it applies even when the sampled token is rejected.
 
-The support is chosen per token:
+Score centering is always on for these three types. The support is chosen per token:
 
 - **Sampling replay** (truncated sampling, `top_k` and/or `top_p`): the replayed sampling mask with its
-  sampler probabilities, captured at any width (top-p alone needs no `top_k`). `p` and `q` are both normalized over it, so centering and the KL are exact.
-- **Untruncated sampling**, by `score_centering_estimator`:
-  - `sampled` (default): K = `score_centering_k` i.i.d. draws `v_k ~ q`, captured on the GPU next to the
-    sampled token. `q_v` in the sums becomes `1/K` per draw, an unbiased Monte Carlo estimate:
-    `sum_v q_v w_v grad log p_v ≈ mean_k w(v_k) grad log p(v_k)`, and the KL becomes `mean_k (log q(v_k) - log p(v_k))`.
-  - `topk`: the top-K sampler head plus the remaining tail, modeled with trainer probabilities proportional to
-    the sampler's. Tail tokens then share one ratio and are accepted or rejected together.
+  sampler probabilities, captured at any width (top-p alone needs no `top_k`). `p` and `q` are both normalized
+  over it, so centering and the KL are exact.
+- **Untruncated sampling** (no `top_k`, `top_p = 1`): K = `score_centering_k` i.i.d. draws `v_k ~ q`, captured
+  on the GPU next to the sampled token. `q_v` in the sums becomes `1/K` per draw, an unbiased Monte Carlo
+  estimate: `sum_v q_v w_v grad log p_v ≈ mean_k w(v_k) grad log p(v_k)`, and the KL becomes
+  `mean_k (log q(v_k) - log p(v_k))`.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `score_centering` | `"auto"` | `auto`: center replayed tokens exactly, leave untruncated tokens uncentered. `true`: also center untruncated tokens with the estimator below. `false`: off. |
-| `score_centering_estimator` | `"sampled"` | Untruncated tokens: `sampled` (K draws, weight 1/K) or `topk` (top-K head + tail). |
-| `score_centering_k` | 16 | K: draws or head size per untruncated token. |
+| `score_centering_k` | 16 | K: sampler draws per untruncated token. |
 | `kl_coeff` | 0.0 | KL coefficient `beta_0`; 0 disables the KL. |
 | `kl_estimator` | `"exact"` | `exact`: the KL over the token's support as above. `k1`: `log q(a) - log p(a)` on the sampled token, differentiated directly (gradient `-beta_t grad log p(a)`); needs no support. |
 | `kl_staleness` | `"none"` | `none`: `beta_t = beta_0`. `inv_sqrt`: `beta_t = 0` at token age 0, `beta_0 / sqrt(age)` otherwise. |
 
-Standalone inference servers need `enable_return_sampling_mask = true`: the sampler captures its probabilities
-on the GPU from the processed distribution, next to the sampling mask, so vLLM returns no logprobs for these
-requests.
+The `rl` launcher requests the sampler support for every policy-sampled train source (temperature must be
+above 0). Standalone inference servers need `enable_return_sampling_mask = true`: the sampler captures its
+probabilities on the GPU from the processed distribution, next to the sampling mask, so vLLM returns no logprobs
+for these requests.
 
 Token age is the trainer step minus the policy step whose weights sampled the token, from the inference
-engines' per-token weight-version labels. The launcher enables sampler probability capture whenever the
-loss needs it. Metrics: `score_centering/{uncentered,tail_mass,head_mass,mask_tv}` (sampler tail mass, trainer mass on the
-support `E_q[p/q]`, total variation between `p` and `q`, both estimated from the draws under `sampled`), and with the KL `kl`, `kl/beta`, `kl/age0`.
+engines' per-token weight-version labels. Metrics: `score_centering/support_mass` (trainer mass on the support,
+`E_q[p/q]`; exactly 1 under replay), `score_centering/mask_tv` (total variation between `p` and `q`), both
+estimated from the draws under untruncated sampling, and with the KL `kl`, `kl/beta`, `kl/age0`.
 
 ### StableReinforce-Equivalent
 
 Tinker's [`stable_reinforce`](https://tinker-docs.thinkingmachines.ai/tinker/losses/stable-reinforce/) loss
-(REINFORCE without importance sampling, centered under the sampler, plus a `k1` sampler-to-learner KL) maps to:
+(REINFORCE without importance sampling, centered under the sampler, plus a `k1` sampler-to-learner KL) maps to
+untruncated sampling with:
 
 ```toml
 [trainer.loss]
 type = "reinforce"
-score_centering = true
-score_centering_estimator = "sampled"
 score_centering_k = 8
 kl_coeff = 0.01
 kl_estimator = "k1"
@@ -316,9 +313,8 @@ kl_estimator = "k1"
 
 The fused LM head skips its dense softmax backward when every rl token's logit gradient lies on its label and
 support (no ce / ref_kl stream in the micro batch): tokens replayed against their sampling mask (any loss), or
-REINFORCE centered over K draws without a KL, whose centering weights sum to one. Without replay a KL of either
-estimator has a dense gradient, so this config takes the dense backward; with top-p / top-k replay the same loss
-is sparse.
+REINFORCE without a KL, whose centering weights sum to one. Without replay a KL of either estimator has a dense
+gradient, so this config takes the dense backward; with top-p / top-k replay the same loss is sparse.
 
 ### Custom Loss
 

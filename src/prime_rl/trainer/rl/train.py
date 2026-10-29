@@ -412,9 +412,7 @@ def train(config: TrainerConfig):
         routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
-        score_centering = config.loss.type != "custom" and config.loss.needs_sampler_support
-        replayed_only = score_centering and config.loss.score_centering == "auto" and not config.loss.support_kl
-        draws = score_centering and config.loss.score_centering_estimator == "sampled"
+        score_centering = config.loss.type != "custom"
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
@@ -467,13 +465,9 @@ def train(config: TrainerConfig):
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
                 if support is None or support.logprobs is None:
                     # Raises unless the micro batch has no RL tokens
-                    validate_score_centering_data(
-                        micro_batch, vocab_size=vocab_size, replayed_only=replayed_only, draws=draws
-                    )
+                    validate_score_centering_data(micro_batch, vocab_size=vocab_size)
                 else:
                     rl_mask = loss_mask[0] if rl_weights is None else loss_mask[0] & (rl_weights[0] != 0)
-                    if replayed_only:
-                        rl_mask = rl_mask & support.replayed
                     # Validated on the GPU and checked once after the last micro batch, so the
                     # host never waits on it
                     score_centering_errors.append(
@@ -485,7 +479,6 @@ def train(config: TrainerConfig):
                             support.row_index(),
                             support.replayed,
                             vocab_size=vocab_size,
-                            draws=draws,
                         )
                     )
 

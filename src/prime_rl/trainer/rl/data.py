@@ -358,8 +358,7 @@ def _merge_support(top_logprobs: TopLogprobs | None, sampling_mask: SamplingMask
 SCORE_CENTERING_DATA_ERRORS = (
     "Missing or out-of-vocabulary sampler top logprobs",
     "Sampler top logprobs must be finite and nonpositive",
-    "Duplicate sampler head ids",
-    "Sampler head mass exceeds one",
+    "Duplicate ids in the replayed support",
     "Sampler probabilities must normalize over the recorded support",
     "Sampled token is missing from the recorded support",
 )
@@ -374,19 +373,17 @@ def score_centering_data_errors(
     replayed: Bool[Tensor, " seq"],
     *,
     vocab_size: int,
-    draws: bool,
 ) -> Bool[Tensor, " checks"]:
     """Flag each check in ``SCORE_CENTERING_DATA_ERRORS`` that the CSR sampler evidence on ``rl_mask`` tokens
-    fails (``rows``: each entry's token). ``draws``: tokens without a sampling mask carry i.i.d. sampler draws,
-    which may repeat. Runs on the tensors' device without a host sync, so the trainer can validate on the GPU
-    and check the flags once per step with ``raise_score_centering_data_errors``."""
+    fails (``rows``: each entry's token). Tokens without a sampling mask carry i.i.d. sampler draws, which may
+    repeat. Runs on the tensors' device without a host sync, so the trainer can validate on the GPU and check
+    the flags once per step with ``raise_score_centering_data_errors``."""
     ids, rows = ids.long(), rows.long()
 
     def any_per_token(flags: Tensor) -> Tensor:
         return torch.zeros(rl_mask.numel(), dtype=torch.int32, device=ids.device).index_add_(0, rows, flags.int()) > 0
 
-    head = replayed | (not draws)
-    keys = torch.where(head[rows], rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device))
+    keys = torch.where(replayed[rows], rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device))
     sorted_keys, order = keys.sort()
     duplicate = torch.zeros_like(keys, dtype=torch.bool)
     duplicate[order[1:]] = sorted_keys[1:] == sorted_keys[:-1]
@@ -396,7 +393,6 @@ def score_centering_data_errors(
             ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token((ids < 0) | (ids >= vocab_size)),
             any_per_token(~values.isfinite() | (values > 1e-6)),
             any_per_token(duplicate),
-            head & (q > 1.0001),
             replayed & ~torch.isclose(q, torch.ones_like(q), atol=1e-4, rtol=0),
             replayed & ~any_per_token(ids == input_ids[rows]),
         ],
@@ -415,16 +411,11 @@ def raise_score_centering_data_errors(errors: list[Bool[Tensor, " checks"]]) -> 
         raise ValueError(SCORE_CENTERING_DATA_ERRORS[int(failed[0]) % len(SCORE_CENTERING_DATA_ERRORS)])
 
 
-def validate_score_centering_data(
-    batch: TensorMicroBatch, *, vocab_size: int, replayed_only: bool = False, draws: bool = False
-) -> None:
-    """Validate sampler evidence on the CPU before the LM head consumes it. ``replayed_only``: only tokens with
-    a sampling mask need it. ``draws``: tokens without a sampling mask carry i.i.d. sampler draws."""
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
+    """Validate sampler evidence on the CPU before the LM head consumes it."""
     mask = batch["loss_mask"][0]
     if batch["rl_weights"] is not None:
         mask = mask & (batch["rl_weights"][0] != 0)
-    if replayed_only:
-        mask = mask & batch["support_replayed"] if batch["support_replayed"] is not None else mask & False
     if not mask.any():
         return
     ids, values, offsets = batch["support_ids"], batch["support_logprobs"], batch["support_offsets"]
@@ -433,7 +424,7 @@ def validate_score_centering_data(
     counts = offsets.diff()
     rows = torch.repeat_interleave(torch.arange(len(counts)), counts)
     errors = score_centering_data_errors(
-        batch["input_ids"][0], mask, ids, values, rows, batch["support_replayed"], vocab_size=vocab_size, draws=draws
+        batch["input_ids"][0], mask, ids, values, rows, batch["support_replayed"], vocab_size=vocab_size
     )
     raise_score_centering_data_errors([errors])
 

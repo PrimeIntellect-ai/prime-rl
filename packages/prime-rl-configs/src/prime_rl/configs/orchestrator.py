@@ -58,7 +58,7 @@ class TrainSamplingConfig(BaseConfig):
 
     sampler_draws: int | None = Field(None, ge=1)
     """Draws per token from the untruncated sampler, sent as ``extra_body.extra_args.prl_sampler_draws``.
-    Set by the ``rl`` entrypoint for sampled score centering; kept in ``extra_body`` across live updates."""
+    Set by the ``rl`` entrypoint for score centering of untruncated sampling; kept in ``extra_body`` across live updates."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers

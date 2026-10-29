@@ -72,7 +72,7 @@ def test_example_config_frozen_changes_are_rejected(example):
 def test_live_extra_body_update_keeps_sampler_draws():
     orchestrator = RLConfig.model_validate(
         {
-            "trainer": {"loss": {"type": "ipo", "score_centering": True}},
+            "trainer": {"loss": {"type": "ipo"}},
             "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
             "inference": {},
         }

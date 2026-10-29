@@ -36,7 +36,7 @@ def _sample(**fields) -> TrainingSample:
     )
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "support_mass", "sampled"])
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
@@ -62,16 +62,16 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     validate_score_centering_data(clean, vocab_size=9)
     if corruption is None:
         validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
+        # Sampler draws may repeat
+        validate_score_centering_data(batch([[], [(3, 0.75), (3, 0.75)], []], [False, False, False]), vocab_size=9)
         return
     match corruption:
         case "missing":
             corrupt = batch([[], head, [(6, 1.0)]], [False, False, True], with_logprobs=False)
         case "duplicate":
-            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, False, False])
+            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, True, False])
         case "vocab":
             corrupt = batch([[], [(3, 0.75), (9, 0.25)], []], [False, False, False])
-        case "mass":
-            corrupt = batch([[], [(3, 1.0), (7, 1.0)], []], [False, False, False])
         case "support_mass":
             corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
         case "sampled":
@@ -88,7 +88,7 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         rl_mask = batch["loss_mask"][0] & (batch["rl_weights"][0] != 0)
         tensors = (batch["input_ids"][0], rl_mask, batch["support_ids"], batch["support_logprobs"], rows)
         return score_centering_data_errors(
-            *(x.to(device) for x in tensors), batch["support_replayed"].to(device), vocab_size=9, draws=False
+            *(x.to(device) for x in tensors), batch["support_replayed"].to(device), vocab_size=9
         )
 
     for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):

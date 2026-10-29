@@ -518,24 +518,21 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
-        """Score centering and the KL need the sampler distribution over each token's support: the full
-        replayed support of truncated sampling (``auto`` or on), or K draws / a top-K head of untruncated
-        sampling (only when explicitly on)."""
+        """Score centering (and the exact KL) needs the sampler distribution over each token's support: the
+        full replayed support of truncated sampling, or ``score_centering_k`` draws of untruncated sampling."""
         loss = self.trainer.loss
-        if loss.type not in ("ipo", "icepop", "reinforce") or not loss.needs_sampler_support:
+        if loss.type == "custom":
             return self
-        explicit = loss.score_centering is True or loss.support_kl
 
         def request_support(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
-            if not (sampling.truncates_distribution() or explicit):
-                return sampling
             if sampling.temperature <= 0:
-                raise ValueError("Score centering and the KL require stochastic sampling (temperature > 0)")
-            k = (sampling.top_k or 1) if sampling.truncates_distribution() else loss.score_centering_k
+                raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
+            truncated = sampling.truncates_distribution()
+            k = (sampling.top_k or 1) if truncated else loss.score_centering_k
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             update: dict = {"logprobs": max(sampling.logprobs or 0, k)}
-            if not sampling.truncates_distribution() and loss.score_centering_estimator == "sampled":
+            if not truncated:
                 update["sampler_draws"] = k
             # Validated, not copied: the sampling config derives extra_body from sampler_draws.
             return TrainSamplingConfig.model_validate({**sampling.model_dump(), **update})

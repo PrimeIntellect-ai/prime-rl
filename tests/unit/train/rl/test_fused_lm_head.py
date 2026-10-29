@@ -83,7 +83,7 @@ def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
 @pytest.mark.parametrize("softcap", [None, 30.0])
 def test_fused_head_sparse_backward_matches_dense(replay, softcap):
     """Replayed tokens keep any loss's logit gradient on their support; without replay, REINFORCE centered over
-    K draws does."""
+    K draws without a KL does."""
     torch.manual_seed(0)
     n, h, v = 9, 16, 8203
     hidden = torch.randn(1, n, h, device="cuda", requires_grad=True)
@@ -97,9 +97,9 @@ def test_fused_head_sparse_backward_matches_dense(replay, softcap):
     support = dataclasses.replace(support, logprobs=-counts.float().log()[support.row_index().long()])
     temperature = torch.linspace(0.6, 1.4, n, device="cuda").unsqueeze(0)
     if replay:
-        config = IPOLossConfig(score_centering=True, kl_coeff=0.1)
+        config = IPOLossConfig(kl_coeff=0.1)
     else:
-        config = ReinforceLossConfig(score_centering=True, score_centering_estimator="sampled")
+        config = ReinforceLossConfig()
         assert RLLoss(config).sparse_logit_grad
     grads = []
     for sparse in (False, True):

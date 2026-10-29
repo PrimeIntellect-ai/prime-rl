@@ -198,9 +198,9 @@ def reinforce_weight(config: ReinforceLossConfig, log_p: Tensor, log_q: Tensor) 
 class RLLoss:
     """Policy gradient with importance weight ``w`` (set by the loss type), score centering under the sampler
     and an optional KL(sampler || trainer), all over one support per token, as sums ``sum_v u_v f(v)`` that
-    estimate ``E_q[f]``: the replayed sampling mask (exact, ``u_v = q_v``), K i.i.d. sampler draws
-    (``u_v = 1/K``), or a captured top-k head (``u_v = q_v``) plus a tail with trainer probabilities
-    proportional to the sampler's. The KL can instead be estimated on the sampled token (``k1``)."""
+    estimate ``E_q[f]``: the replayed sampling mask of truncated sampling (exact, ``u_v = q_v``) or K i.i.d.
+    draws of untruncated sampling (``u_v = 1/K``). The KL can instead be estimated on the sampled token
+    (``k1``)."""
 
     def __init__(self, config: IPOLossConfig | IcePopLossConfig | ReinforceLossConfig):
         self.config = config
@@ -213,14 +213,8 @@ class RLLoss:
     @property
     def sparse_logit_grad(self) -> bool:
         """Whether every token's logit gradient lies on its label and support even without replay: REINFORCE
-        centered over K draws (weights 1/K sum to one, so the softmax terms cancel) and no KL."""
-        config = self.config
-        return (
-            config.type == "reinforce"
-            and config.score_centering is True
-            and config.score_centering_estimator == "sampled"
-            and config.kl_coeff == 0
-        )
+        (the centering weights sum to one, so the softmax terms cancel) without a KL."""
+        return self.config.type == "reinforce" and self.config.kl_coeff == 0
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         config = self.config
@@ -251,7 +245,6 @@ class RLLoss:
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
     def support_loss(self, inputs: LossInputs, advantages: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        config = self.config
         mask = inputs.loss_mask
         rows = inputs.support_rows.long()
 
@@ -261,45 +254,20 @@ class RLLoss:
         log_p = inputs.trainer_support_logprobs
         log_q = inputs.sampler_support_logprobs.detach()
         count = row_sum(torch.ones_like(log_q))
-        has_support = count > 0
-        replayed = has_support & inputs.support_replayed
-        p, q = log_p.exp(), log_q.exp()
-        if config.score_centering_estimator == "sampled":
-            u = torch.where(replayed[rows], q, 1.0 / count[rows])
-            q_tail = torch.zeros_like(count)
-        else:
-            u = q
-            q_tail = torch.where(replayed, 0.0, (1.0 - row_sum(q)).clamp_min(0.0))
-
+        u = torch.where(inputs.support_replayed[rows], log_q.exp(), 1.0 / count[rows])
         with torch.no_grad():
             _, w = self.weight(log_p, log_q)
-            # Tail tokens share one ratio: with p_v = p_tail / q_tail * q_v, sum_tail q_v w_v grad log p_v
-            # = -c * sum_head p_v grad log p_v, as sum_v p_v grad log p_v = 0 over the normalized support.
-            p_tail = (1.0 - row_sum(p.detach())).clamp_min(1e-6)
-            _, w_tail = self.weight(p_tail.log(), q_tail.log())
-            c = q_tail * w_tail / p_tail
-            mass = u * w - c[rows] * p.detach()
-            centered = replayed if config.score_centering == "auto" else has_support
-            mass = mass * (centered & (config.score_centering is not False))[rows]
-        loss = advantages.detach() * row_sum(mass * log_p)[mask]
+        loss = advantages.detach() * row_sum(u * w * log_p)[mask]
 
-        # E_q[p/q] and the TV E_q|p/q - 1| / 2 over the support; the head adds the tail bucket to the TV.
+        # E_q[p/q] and the TV E_q|p/q - 1| / 2 over the support.
         ratio = (log_p.detach() - log_q).exp()
-        head_mass = row_sum(u * ratio)
-        p_tail_mass = torch.where(q_tail > 0, (1.0 - head_mass).clamp_min(0.0), 0.0)
         metrics = {
-            "score_centering/uncentered": 1.0 - centered[mask].float(),
-            "score_centering/tail_mass": q_tail[mask],
-            "score_centering/head_mass": head_mass[mask],
-            "score_centering/mask_tv": 0.5 * (row_sum((u * (ratio - 1.0)).abs()) + (q_tail - p_tail_mass).abs())[mask],
+            "score_centering/support_mass": row_sum(u * ratio)[mask],
+            "score_centering/mask_tv": 0.5 * row_sum((u * (ratio - 1.0)).abs())[mask],
         }
-        if not config.support_kl:
+        if not self.config.support_kl:
             return loss, metrics
-
-        # KL(q || p) over the head plus the tail bucket; the tail vanishes on replayed rows.
-        p_tail = (1.0 - row_sum(p)).clamp_min(1e-6)
-        kl = row_sum(u * (log_q - log_p)) + torch.xlogy(q_tail, q_tail) - q_tail * p_tail.log()
-        kl = (kl * has_support)[mask]
+        kl = row_sum(u * (log_q - log_p))[mask]
         return loss + self.kl_penalty(kl, inputs, metrics), metrics
 
     def kl_penalty(self, kl: Tensor, inputs: LossInputs, metrics: dict[str, Tensor]) -> Tensor:

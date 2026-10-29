@@ -166,24 +166,16 @@ def capture_supports(logits, cu_num_logits, committed, capacity, sampler_rows=No
     return CsrSupports(flat, counts)
 
 
-def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows, draws):
-    """Per selected request: the sampled token, then ``num_rows`` ids from the processed distribution q (i.i.d.
-    draws with replacement, or the top ids), each packed with its full-vocabulary processed logprob. The rows
-    copy vLLM's ``[sampled, top...]`` logprob layout. Draws use the global generator, so they are independent
-    of the sampled token. Returns the selected request indices, packed rows and row sizes."""
+def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
+    """Per selected request: the sampled token, then ``num_rows`` i.i.d. draws (with replacement) from the
+    processed distribution q, each packed with its full-vocabulary processed logprob. The rows copy vLLM's
+    ``[sampled, top...]`` logprob layout. Draws use the global generator, so they are independent of the sampled
+    token. Returns the selected request indices, packed rows and row sizes."""
     selected = np.flatnonzero(num_rows)
     width = int(num_rows.max())
     index = torch.from_numpy(selected).pin_memory().to(logits.device, non_blocking=True)
     x = logits[cu_num_logits[:-1].long()[index]].float()
-    if draws[selected].all():
-        alternatives = torch.multinomial(x.softmax(-1), width, replacement=True)
-    elif not draws[selected].any():
-        alternatives = x.topk(width).indices
-    else:
-        use_draws = torch.from_numpy(draws[selected]).pin_memory().to(x.device, non_blocking=True).unsqueeze(-1)
-        alternatives = torch.where(
-            use_draws, torch.multinomial(x.softmax(-1), width, replacement=True), x.topk(width).indices
-        )
+    alternatives = torch.multinomial(x.softmax(-1), width, replacement=True)
     ids = torch.cat([sampled[index].view(-1, 1).long(), alternatives], dim=1)
     values = (x.gather(1, ids) - x.logsumexp(-1, keepdim=True)).clamp_min(-9999.0)
     packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
