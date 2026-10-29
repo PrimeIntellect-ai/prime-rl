@@ -3,6 +3,7 @@
 import ctypes
 import os
 import time
+from collections.abc import Callable
 
 import torch
 from vllm.distributed.device_communicators.pynccl_wrapper import (
@@ -30,6 +31,10 @@ class _Config(ctypes.Structure):
     ]
 
 
+# How often a waiting transfer checks its cancellation callback.
+CANCEL_CHECK_INTERVAL_S = 0.5
+
+
 class WeightBroadcastCommunicator:
     """Single-threaded communicator, separate from inference/model collectives.
 
@@ -46,6 +51,10 @@ class WeightBroadcastCommunicator:
         self.device = torch.device(f"cuda:{device}" if isinstance(device, int) else device)
         self.rank = group.rank
         self.timeout = timeout
+        # A dead peer on an intra-node P2P/SHM path raises no NCCL error, so a coordinator that
+        # knows the publisher is gone cancels the wait instead of letting it run to the deadline.
+        self.cancelled: Callable[[], bool] | None = None
+        self.next_cancel_check = 0.0
         self.nccl = NCCLLibrary()
         self.comm = ncclComm_t()
         init = self.nccl.lib.ncclCommInitRankConfig
@@ -92,6 +101,10 @@ class WeightBroadcastCommunicator:
         now = time.monotonic()
         if now >= deadline:
             raise TimeoutError(f"NCCL weight transfer did not complete within {self.timeout}s")
+        if self.cancelled is not None and now >= self.next_cancel_check:
+            self.next_cancel_check = now + CANCEL_CHECK_INTERVAL_S
+            if self.cancelled():
+                raise RuntimeError("NCCL weight transfer was cancelled: its publisher was replaced")
         # Most metadata broadcasts finish in microseconds. Do not impose a
         # scheduler sleep on each one; yield during longer transfers/waits.
         if now >= deadline - self.timeout + 0.001:
