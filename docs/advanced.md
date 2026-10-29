@@ -5,6 +5,7 @@ This page covers the specialized features layered on top of the core training st
 ## Table of Contents
 
 - [Custom Modeling](#custom-modeling)
+  - [Router Precision](#router-precision)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
@@ -21,11 +22,14 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
 | GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
+| GLM-5.3 Flash, text only (`glm5_next`) | `zai-org/GLM-5.3-Flash-BF16` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
+| Qwen3.8 Flash Next VLM | `Qwen/Qwen3.8-Flash-Next` | ✅ | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
+| Muse Glimmer (text only) | `meta-models/Muse-Glimmer-30B` | — | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
@@ -41,6 +45,8 @@ Dense linear precision and routed-expert precision are configured independently.
 
 - `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90 or SM100).
 - `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
+
+Both skip `lm_head`, the router and a few gate/projection modules by default (`ignore_patterns`). Add model-specific modules with `extra_ignore_patterns`, which keeps the defaults; setting `ignore_patterns` replaces them.
 
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
@@ -102,6 +108,16 @@ In RL runs, configure the same precision selection for rollouts. Inference modul
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 
+### Router precision
+
+Router gates use BF16 operands and share the transformer block's FSDP unit. Logits are produced in FP32 directly from the gate GEMM;
+score functions, normalization and routing weights remain FP32.
+
+For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply
+by FP32 routing weights and sum the contributions in FP32, then cast once to the expert output dtype.
+This also covers MXFP8 expert compute with Torch dispatch. DeepEP and MegaMoE use their own combine
+kernels and do not share this accumulation guarantee.
+
 ### Expert Parallelism Backends
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
@@ -146,16 +162,15 @@ The built-in VLM registry covers:
 |---|---|---|---|
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
+| Qwen3.8 Flash Next | `qwen4_exp` | `model.visual` | `model.language_model` |
 
 ### Enabling VLM Mode
 
-Add `[model.vlm]` and bfloat16 dtypes:
+Add `[model.vlm]` to your RL or SFT config:
 
 ```toml
 [model]
 name = "Qwen/Qwen3.5-4B"
-optimization_dtype = "bfloat16"
-reduce_dtype = "bfloat16"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"
@@ -170,8 +185,8 @@ VLM training requires a registered custom PrimeRL implementation.
 ### Limitations
 
 - **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
-- **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
-- **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
+- **Precision settings are separate.** The examples serve with `inference.vllm.dtype = "bfloat16"` while retaining `trainer.model.optimization_dtype = "float32"` and `reduce_dtype = "float32"`. VLM mode does not require BF16 optimizer state or gradient reduction.
+- **Monitor trainer–inference mismatch.** Image encoding, parallel reductions and model kernels can contribute numerical differences. Track `mismatch_kl/all/mean`, `masked_mismatch_kl/mean`, `unmasked_mismatch_kl/mean` and `is_masked/mean` alongside reward.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
 
 ## LoRA Training

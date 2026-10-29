@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import cast
 # modules with implementations that have incompatible CUDA requirements.
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
+import fla.utils
 import torch
 import torch._dynamo
 import torch.distributed as dist
@@ -21,8 +23,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
-from torch.distributed.tensor.parallel import parallelize_module
+from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -37,7 +38,6 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -56,11 +56,12 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
+from prime_rl.trainer.ngram_runtime import configure_ngram_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world, wait_for_master
@@ -151,40 +152,10 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
-def apply_fp32_moe_router(model: nn.Module) -> None:
-    """Cast MoE router gates to fp32 so routing runs in fp32 in forward and backward.
-
-    The FSDP bf16 cast exemption is applied separately in `setup_fsdp`.
-    """
-    logger = get_logger()
-    num_routers = 0
-    for moe in iter_moe_blocks(model):
-        moe.router.to(torch.float32)
-        if isinstance(moe.router, TokenChoiceTopKRouter):
-            moe.router.fp32_gate = True
-        num_routers += 1
-
-    # No-op for non-MoE models: moe_router_dtype='float32' is the default,
-    # so absence of MoE routers is the common case, not an error.
-    if num_routers > 0:
-        logger.info(f"Running {num_routers} MoE router gates in fp32")
-
-
-def get_full_offload_dtype_policy(
-    model: nn.Module,
-    config: ModelConfig,
-) -> dict[int, tuple[torch.dtype, torch.dtype]]:
+def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
-    if config.moe_router_dtype != "float32":
-        return policy
-
-    for moe in iter_moe_blocks(model):
-        for param in moe.router.parameters():
-            if param.is_floating_point():
-                policy[id(param)] = (torch.float32, torch.float32)
-    return policy
+    return {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -234,72 +205,58 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
-def get_load_balance_stats(
-    model: nn.Module,
-    group: dist.ProcessGroup | None = None,
-) -> dict[str, Tensor | None]:
-    """Compute routing stats after summing raw counts across the group, if given.
-
-    Also returns this rank's raw per-layer expert counts (`[num_moe_layers, num_experts]`) for step-level stats.
-    """
-    per_layer_max_vio = []
-    per_layer_routing_confidence = []
+def take_moe_routing_stats(model: nn.Module) -> Tensor:
+    """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 1]` (tokens per expert,
+    then the routing confidence sum), and reset them."""
     block_mlps = list(iter_moe_blocks(model))
     if not block_mlps:
-        return {"max_vio": None, "routing_confidence": None, "tokens_per_expert": torch.empty(0, 0)}
-
-    local_tokens_per_expert = torch.stack([block_mlp.tokens_per_expert for block_mlp in block_mlps])
-    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
-    if group is not None:
-        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
-        packed_stats = torch.cat(
-            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
-        )
-        dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
-        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
-
-    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
-        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
-        balanced_load = tokens_per_expert.mean()
-        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.detach())
-
-        routing_confidence = routing_confidence_sum / num_routed_tokens
-        per_layer_routing_confidence.append(routing_confidence.detach())
-
+        return torch.empty(0, 0)
+    stats = torch.stack(
+        [
+            torch.cat((block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum.reshape(1)))
+            for block_mlp in block_mlps
+        ]
+    )
+    for block_mlp in block_mlps:
         block_mlp.tokens_per_expert.zero_()
         block_mlp.routing_confidence_sum.zero_()
-    return {
-        "max_vio": torch.stack(per_layer_max_vio),
-        "routing_confidence": torch.stack(per_layer_routing_confidence),
-        "tokens_per_expert": local_tokens_per_expert,
-    }
+    return stats
 
 
 def get_global_moe_stats(
     model: nn.Module,
+    routing_stats: list[Tensor],
     ep_group: dist.ProcessGroup | None,
     dp_cp_group: dist.ProcessGroup,
 ) -> tuple[dict[str, Tensor], Tensor]:
-    """Reduce one microstep's routing stats across EP, then DP and CP ranks.
+    """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step.
 
-    Also returns this rank's unreduced per-layer expert counts, to accumulate over the step for `get_expert_load_stats`.
+    Also returns this rank's unreduced per-layer expert counts summed over the micro steps, for `get_expert_load_stats`.
     """
-    stats = {}
-    load_balance_stats = get_load_balance_stats(model, group=ep_group)
-    tokens_per_expert = load_balance_stats.pop("tokens_per_expert")
-    for name, values in load_balance_stats.items():
-        if values is None:
-            continue
-        value = values.max() if name == "max_vio" else values.mean()
-        if name == "max_vio":
-            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
-        else:
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            value /= dist.get_world_size(dp_cp_group)
-        stats[name] = value.to("cpu")
-    return stats, tokens_per_expert
+    stats = torch.stack(routing_stats)
+    tokens_per_expert = stats[..., :-1].sum(dim=0)
+    if stats.numel() == 0:
+        return {}, tokens_per_expert
+    if ep_group is not None:
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=ep_group)
+
+    per_layer_max_vio = []
+    per_layer_routing_confidence = []
+    for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
+        top_k = block_mlp.router.top_k
+        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-1], layer_stats[:, -1]
+        num_routed_tokens = layer_tokens_per_expert.sum(dim=1) / top_k
+        layer_tokens_per_expert = layer_tokens_per_expert.sort(dim=1, descending=True).values[:, top_k:]
+        balanced_load = layer_tokens_per_expert.mean(dim=1)
+        per_layer_max_vio.append((layer_tokens_per_expert.amax(dim=1) - balanced_load) / balanced_load)
+        per_layer_routing_confidence.append(routing_confidence_sum / num_routed_tokens)
+
+    max_vio = torch.stack(per_layer_max_vio, dim=1).amax(dim=1)
+    routing_confidence = torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1)
+    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX, group=dp_cp_group)
+    dist.all_reduce(routing_confidence, op=dist.ReduceOp.SUM, group=dp_cp_group)
+    routing_confidence /= dist.get_world_size(dp_cp_group)
+    return {"max_vio": max_vio, "routing_confidence": routing_confidence}, tokens_per_expert
 
 
 def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
@@ -542,23 +499,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
+    for table in [module for module in model.modules() if isinstance(module, NGramTable)]:
+        if isinstance(table.weight, DTensor):
+            table_mesh = (
+                parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
+                if parallel_dims.dp_replicate_enabled
+                else parallel_dims.get_mesh("dp_shard_mod_head")
+            )
+        else:
+            table_mesh = hsdp_mesh
+        fully_shard(table, mesh=table_mesh, **fsdp_config)
+        table.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
-    fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
-        for module in transformer_block.modules():
-            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
-                embedding = module.ngram_embedding
-                dp_mod_head_mesh = (
-                    parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
-                    if parallel_dims.dp_replicate_enabled
-                    else parallel_dims.get_mesh("dp_shard_mod_head")
-                )
-                parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
-                fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
-                embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
-
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
@@ -570,23 +526,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                     block_mlp.experts, expert_mesh_info, shard_placement_fn
                 ),
             }
-
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
-            if fullgraph:
-                raise ValueError(
-                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the fp32 router is "
-                    "its own FSDP unit inside the compiled block, and dynamo cannot trace FSDP hooks."
-                )
-            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
-            # bf16 for forward and its gradients reduce in fp32.
-            fully_shard(
-                block_mlp.router,
-                mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
-                reshard_after_forward=config.reshard_after_forward,
-                shard_placement_fn=shard_placement_fn,
-            )
 
         fully_shard(
             transformer_block,
@@ -727,7 +666,11 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
         )
         snapshot_path = convert_dir / "prime"
-        if not snapshot_path.exists() and get_world().is_master:
+        if not (snapshot_path / ".prime-v1").is_file() and get_world().is_master:
+            # The marker is written last, so a cache without it is left over from an interrupted conversion
+            if snapshot_path.exists():
+                logger.warning(f"Removing incomplete PrimeRL conversion cache {snapshot_path} and converting again")
+                shutil.rmtree(snapshot_path)
             logger.debug(
                 f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
@@ -779,6 +722,8 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+    # FLA's metadata cache must not skip operations during checkpoint replay.
+    fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
     checkpointed_layers = 0
@@ -801,15 +746,31 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 DYNAMIC_INT_ARGS = (
     # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
     "max_seqlen",
+    # DeepSeek V4: largest compressed-entry count of any document in the row. Sizes the HCA picks.
+    "max_entries_per_doc",
+)
+
+# Tensor args, as (name, dim), whose dim changes between calls. Marking the tensor itself does not reach a compiled
+# layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
+# the arg instead, so callers must pass these args by keyword.
+DYNAMIC_TENSOR_ARG_DIMS = (
+    # DeepSeek V4: the decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    ("mhc_states", 1),
 )
 
 
-def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+def mark_dynamic_args() -> None:
+    """Add DYNAMIC_INT_ARGS and DYNAMIC_TENSOR_ARG_DIMS to torch.compiler.config.dynamic_sources, keeping its entries."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    patterns = []
     for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
-        pattern = rf".*\['{arg}'\]"
+        # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
+        # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
+    for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
+        patterns.append(rf".*\['{arg}'\]:{dim}")
+    for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)
@@ -817,7 +778,7 @@ def mark_dynamic_int_args() -> None:
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    mark_dynamic_int_args()
+    mark_dynamic_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
@@ -836,20 +797,21 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     if quant is None:
         return
 
+    ignore_modules = quant.ignore_patterns + quant.extra_ignore_patterns
     if isinstance(quant, FP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] not in (9, 10):
             raise ValueError(
                 f"FP8 blockwise quantization (DeepGEMM) requires SM90 or SM100, but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=ignore_modules)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 10:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
@@ -954,9 +916,6 @@ def setup_model(
     if config.freeze_moe_router:
         freeze_moe_router(model)
 
-    if config.moe_router_dtype == "float32":
-        apply_fp32_moe_router(model)
-
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
     # No-op for models without a sparse indexer.
@@ -966,6 +925,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    configure_ngram_runtime(model, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -1011,6 +971,7 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
+    topk_ids: Int[Tensor, "batch seq head"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1024,6 +985,9 @@ def forward(
         "temperature": temperature,
         "sampling_mask": sampling_mask,
     }
+
+    if topk_ids is not None:
+        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)

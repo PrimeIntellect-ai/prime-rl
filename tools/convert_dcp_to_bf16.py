@@ -167,6 +167,8 @@ def save_model_assets(
         generation_config = deepcopy(model.generation_config)
         generation_config.use_cache = True
         generation_config.save_pretrained(output_dir)
+    # Processor first: it saves its own (unmodified) tokenizer, which the configured
+    # tokenizer (pad token, custom chat template) must override.
     processor = setup_processor(model_config)
     if processor is not None:
         processor.save_pretrained(output_dir)

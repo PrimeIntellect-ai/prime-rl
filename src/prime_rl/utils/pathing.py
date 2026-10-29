@@ -6,13 +6,14 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.utils.config import dump_resolved_config
+from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
 
@@ -243,12 +244,14 @@ def write_launch_artifacts(config_dir: Path, name: str) -> None:
     write_launch_toml(config_dir, name)
 
 
-def env_address_file(config_dir: Path, split: str, name: str) -> Path:
+def env_address_file(config_dir: Path, split: str, name: str, replica: int | None = None) -> Path:
     """Where a launcher-managed env server publishes the address it bound
-    (``envs/<split>/<name>.address``, next to its config). The server binds an
-    OS-assigned port, so two runs on one host never race for the same one; a client
-    waits for this file instead of assuming a port."""
-    return config_dir / "envs" / split / f"{name}.address"
+    (``envs/<split>/<name>.address``, next to its config, or ``<name>.<replica>.address``
+    for one of several replicas). The server binds an OS-assigned port, so two runs on one
+    host never race for the same one; a client waits for this file instead of assuming a
+    port."""
+    stem = name if replica is None else f"{name}.{replica}"
+    return config_dir / "envs" / split / f"{stem}.address"
 
 
 def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
@@ -400,6 +403,29 @@ def validate_run_dir(
         )
 
 
+def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None:
+    """Set the run identity and prepare the run directory of a launcher's ``config`` (``run``, ``run_dir``,
+    ``output_dir``, ``clean``, ``resume``): validate it (with ``clean``, unless ``$NEVER_CLEAN`` is set, delete it
+    first) and create it and ``ckpt_output_dir``.
+
+    The run identity is runtime-only, never sub-config: ``$PRL_RUN_ID`` / ``$PRL_RUN_NAME`` carry it between
+    processes, and every spawned process inherits them. Components launched standalone have no run identity."""
+    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
+    assert config.run.name is not None  # resolved at construction
+    os.environ["PRL_RUN_NAME"] = config.run.name
+    clean = config.clean and not os.environ.get("NEVER_CLEAN")
+    validate_run_dir(
+        config.run_dir,
+        output_dir=config.output_dir,
+        resuming=config.resume is not None,
+        clean=clean,
+        ckpt_output_dir=ckpt_output_dir,
+    )
+    config.run_dir.mkdir(parents=True, exist_ok=True)
+    if ckpt_output_dir is not None:
+        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+
+
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
     """Remove stale step artifacts past ``resume_step`` and broadcasts from it onward.
 
@@ -447,3 +473,9 @@ async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -
             logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
         await asyncio.sleep(interval)
         wait_time += interval
+
+
+def get_links_path(output_dir: Path) -> Path:
+    """Each monitor's run-page links for the launcher's banner: ``{monitor: {"attempt",
+    "expected", "links": {label: url}}}``."""
+    return output_dir / "monitors" / "links.json"

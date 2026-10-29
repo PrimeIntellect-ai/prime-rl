@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import orjson
+from verifiers.v1.trace import EXCLUDE_FIELDS
+from verifiers.v1.types import decode_ndarray
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -23,6 +25,20 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+
+LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
+"""Node fields that stay on the wire but out of live trace files: expensive per-token information
+only the trainer needs."""
+
+
+def _live_value(value: Any) -> Any:
+    """A node field for a live trace file: per-token streams arrive as raw-bytes `__nd__` dicts
+    (a dict of them for `loss_weights`), which orjson writes as lists once decoded."""
+    if isinstance(value, dict):
+        if value.get("__nd__"):
+            return decode_ndarray(value)
+        return {key: _live_value(item) for key, item in value.items()}
+    return value
 
 
 class FileMonitor(Monitor):
@@ -105,11 +121,10 @@ class FileMonitor(Monitor):
                     appends.pop(path, None)
                     path.unlink(missing_ok=True)
                     continue
-                # Training arrays stay on the wire; live records only need display data.
-                line = {key: value for key, value in delta.items() if key != "routing_repairs"}
+                line = dict(delta)
                 if "nodes" in line:
                     line["nodes"] = [
-                        {key: value for key, value in node.items() if key not in ("routed_experts", "sampling_mask")}
+                        {key: _live_value(value) for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
                         for node in line["nodes"]
                     ]
                 if "open" in delta:

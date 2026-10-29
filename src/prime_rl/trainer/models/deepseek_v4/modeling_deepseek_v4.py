@@ -40,8 +40,8 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     transposed, i.e. summing over the *source* stream axis. Sinkhorn leaves `comb` doubly
     stochastic but not symmetric, so that direction is not a free choice.
 
-    Both gates come out of the hyper-connection in fp32 and are cast back to the residual's
-    dtype before mixing, so the residual keeps the dtype it entered with.
+    Both gates come out of the hyper-connection in fp32 and stay fp32 through the write-back,
+    which rounds once to the residual's dtype, so the residual keeps the dtype it entered with.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
@@ -95,17 +95,6 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
     config_class = DeepseekV4Config
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["DeepseekV4DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention runs its own fused kernel; no transformers backend can serve it.
-    _supports_flash_attn = False
-    _supports_sdpa = False
-    _supports_flex_attn = False
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
-    _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -207,19 +196,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             Token ids. Threaded down to every decoder layer, not just the embedding: the
             bootstrap layers route on `tid2eid[input_ids]` and cannot run without them.
         position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Each token's position within its own document. Only checked, never consulted: the
-            positions every rotation and every causal threshold reads are derived from
-            `seq_lens`, so the two cannot disagree.
-
-            NOTE: omitting it is not the same as having no positions. `inject_prime_lm_head`
-            rebinds this model's forward and substitutes a 1-based `arange(1, N + 1)`, which is
-            wrong for V4 twice over, since entries are numbered and rotated from 0: it shifts
-            every query-entry RoPE distance by one and admits an entry whose last source token
-            is one past the query. `check_position_ids` rejects it, so a caller that passes
-            nothing gets a `ValueError` rather than a working default.
-
-            TODO: make that substitution 0-based, matching HF's convention and every other
-            model's own fallback, after which an omitted `position_ids` would just be accepted.
+            Ignored. V4 derives every position it rotates or thresholds on from `seq_lens`.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
@@ -259,16 +236,20 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             cp_rank=cp_rank,
             cp_world_size=cp_world_size,
         )
-        if position_ids is not None:
-            packed.check_position_ids(position_ids)
 
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
+            # Every input with this rank's row length must be dynamic, or the layer pins the length to a constant.
+            # Inputs that need no grad reach the compiled layer as they are, so marking them works.
+            for tensor in (input_ids, routed_experts_layer):
+                if tensor is not None:
+                    torch._dynamo.maybe_mark_dynamic(tensor, 1)
+            # By keyword: DYNAMIC_TENSOR_ARG_DIMS in trainer/model.py marks its sequence axis dynamic by name.
             mhc_states = decoder_layer(
-                mhc_states,
+                mhc_states=mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
@@ -280,8 +261,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
 class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)

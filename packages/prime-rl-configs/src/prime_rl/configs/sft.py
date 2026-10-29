@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -13,6 +13,8 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
+    BaseMultiNodeDeploymentConfig,
+    BaseSingleNodeDeploymentConfig,
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
     ResumeConfig,
@@ -20,7 +22,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import BaseTrainerConfig
+from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -36,6 +38,11 @@ class BaseDataConfig(BaseConfig):
 
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
+
+    pad_to_seq_len: bool = False
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
+    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
+    at the cost of extra padding."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -163,20 +170,7 @@ class SFTValConfig(BaseConfig):
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
-class BaseDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
-    """GPUs per node."""
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: int = 1
-    """GPUs allocated to the trainer."""
-
-    num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
-    """GPUs allocated to inference for online evals (alias: ``num_eval_gpus``). Only used when an ``[inference]`` block is configured."""
-
+class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
         if self.num_train_gpus > self.gpus_per_node:
@@ -184,18 +178,10 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: int = Field(2, ge=1)
-    """Training nodes."""
-
-    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
-    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
-    one SLURM allocation with the trainer nodes."""
-
-    nodes_per_fsdp_group: int | None = None
-    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
+class MultiNodeDeploymentConfig(BaseMultiNodeDeploymentConfig):
+    num_infer_nodes: int = Field(0, ge=0)
+    """Inference nodes for online evals. These nodes share one SLURM allocation with the
+    trainer nodes."""
 
 
 SFTDeploymentConfig: TypeAlias = Annotated[
@@ -204,8 +190,6 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 
 
 class SFTConfig(BaseTrainerConfig):
-    # bf16 routing skips the fp32 gate GEMM and its fp32 FSDP unit.
-    auto_moe_router_dtype = "bfloat16"
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
@@ -281,17 +265,6 @@ class SFTConfig(BaseTrainerConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     ### Pre-validation normalization
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_deployment(cls, data):
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus"):
-                deployment.pop(key, None)
-        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -480,6 +453,18 @@ class SFTConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe":
+            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank,
+                max(data.micro_batch_size * data.seq_len for data in data_configs),
+                self.model.cp,
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_micro_batch_size(self):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
@@ -503,18 +488,6 @@ class SFTConfig(BaseTrainerConfig):
         return self
 
     ### Auto-setup and validate shared configs
-
-    @model_validator(mode="after")
-    def auto_setup_deployment(self):
-        if self.deployment.type == "multi_node":
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-        return self
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):

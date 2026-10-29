@@ -1,4 +1,5 @@
 import gc
+import math
 import os
 import pickle
 import shutil
@@ -17,6 +18,7 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.control.controller import Controller
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -151,7 +153,8 @@ def bind_process_to_gpu_numa_node() -> None:
         bus_id = bus_id.decode()
     domain, rest = bus_id.split(":", 1)
     sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
-    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    numa_path = Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node")
+    numa_node = int(numa_path.read_text()) if numa_path.exists() else -1
     if numa_node < 0:
         logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
         return
@@ -214,6 +217,24 @@ def get_dcp_group() -> dist.ProcessGroup:
     return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
 
 
+def broadcast_pause(controller: Controller, step: int) -> bool:
+    """Whether the master's controller pauses at ``step``, applied by every rank."""
+    paused = torch.tensor(controller.update(step), device="cuda")
+    dist.broadcast(paused, src=0)
+    return bool(paused.item())
+
+
+def get_peak_memory_across_ranks() -> tuple[float, float]:
+    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
+    peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    dist.all_reduce(memory, op=dist.ReduceOp.MAX)
+    peak_memory, non_torch_memory = memory.tolist()
+    return peak_memory, non_torch_memory
+
+
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
     """
     Visualize the loss mask of a tokenized sample using rich.
@@ -225,83 +246,104 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     rich_print(text)
 
 
-def flexible_all_gather(tensor: Tensor) -> Tensor:
-    """
-    All-gather a 1D tensor between all ranks, with potentially different numbr of element per rank.
-    Returns a tensor of shape (world_size * max_numel, dtype=tensor.dtype, device=tensor.device)
-    """
-
-    assert tensor.ndim == 1, "Can only flexibly all-gather 1D tensors"
-
-    if dist.get_world_size() == 1:
-        return tensor
-
-    # Find the tensor with the most elements
-    local_numel = tensor.numel()
-    local_numel_tensor = torch.tensor(local_numel, device=tensor.device)
-    all_numel_tensors = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
-    dist.all_gather(all_numel_tensors, local_numel_tensor)
-    all_numels = [numel.item() for numel in all_numel_tensors]
-    max_numel = int(max(all_numels))
-
-    # Pad the tensor with zeros if it has less elements than the maximum
-    if local_numel < max_numel:
-        tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
-
-    # All-gather the tensors
-    all_tensors = [
-        torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())
-    ]
-    dist.all_gather(all_tensors, tensor)
-    all_tensors_unpadded = torch.cat([tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)])
-
-    return all_tensors_unpadded
+# Log2 bins over token staleness: bucketizing by the edges (``right=True``) gives each token's bin
+STALENESS_BIN_EDGES = [1, 2, 4, 8, 16, 32, 64]
+STALENESS_BINS = ["0", "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64+"]
 
 
-class Tensors(defaultdict):
-    """A class to accumulate tensors and compute statistics (mean, median, std, min, max) across multiple steps and ranks."""
+class TensorStats:
+    """Accumulates a step's tensor metrics on the GPU and reduces them across ranks once per step.
+
+    Values are folded into a running count, sum, sum of squares, min and max per key, so memory
+    stays constant however many tokens a step trains on. Each key reports mean, std, min and max
+    over all its values on all ranks. Keys without any value on any rank are left out."""
 
     def __init__(self):
-        assert dist.is_initialized(), "Tensors requires a distributed environment"
-        super().__init__(list)
+        assert dist.is_initialized(), "TensorStats requires a distributed environment"
+        # Per key: count, sum, sum of squares, -min, max
+        self.moments: dict[str, Tensor] = {}
 
-    def compute_stats(self) -> dict[str, float | int]:
-        """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
+    def add(
+        self,
+        key: str,
+        values: Tensor,
+        mask: Tensor | None = None,
+        env_ids: Tensor | None = None,
+        env_names: list[str] | None = None,
+        fold_all: bool = True,
+    ) -> None:
+        """Fold ``values`` (where ``mask`` is set) into ``key``. With ``env_ids`` (each value's index into
+        ``env_names``), fold them into ``{key}/{env}`` per env and, with ``fold_all``, into ``{key}/all``
+        instead.
 
-        local_keys = list(self.keys())
+        Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
+        # A custom loss may emit a metric on the CPU
+        values = values.detach().reshape(-1).to(device="cuda", dtype=torch.float64)
+        if values.numel() == 0:
+            return
+        mask = torch.ones_like(values, dtype=torch.bool) if mask is None else mask.reshape(-1).to(values.device)
+        if env_ids is None:
+            self._fold(key, _moments(values, mask[:, None])[0])
+            return
+        env_ids = env_ids.reshape(-1).to(values.device)
+        members = (env_ids[:, None] == torch.arange(len(env_names), device=values.device)) & mask[:, None]
+        rows = _moments(values, members)
+        for env_name, row in zip(env_names, rows):
+            self._fold(f"{key}/{env_name}", row)
+        if fold_all:
+            self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
+
+    def _fold(self, key: str, row: Tensor) -> None:
+        if (moments := self.moments.get(key)) is None:
+            self.moments[key] = row
+        else:
+            moments[:3] += row[:3]
+            torch.maximum(moments[3:], row[3:], out=moments[3:])
+
+    def compute_stats(self) -> dict[str, float]:
+        """Reduce every key across all ranks and compute its statistics. Collective: every rank must call it."""
         gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_keys, local_keys)
-        keys = sorted({key for rank_keys in gathered_keys if rank_keys is not None for key in rank_keys})
+        dist.all_gather_object(gathered_keys, list(self.moments))
+        keys = sorted({key for rank_keys in gathered_keys for key in rank_keys})
+        if not keys:
+            return {}
+
+        empty = torch.tensor([0, 0, 0, -math.inf, -math.inf], dtype=torch.float64, device="cuda")
+        rows = torch.stack([self.moments.get(key, empty) for key in keys])
+        sums, extremes = rows[:, :3].contiguous(), rows[:, 3:].contiguous()
+        dist.all_reduce(sums, op=dist.ReduceOp.SUM)
+        dist.all_reduce(extremes, op=dist.ReduceOp.MAX)
+        self.moments.clear()
 
         metrics = {}
-        for key in keys:
-            # All-gather tensors across steps and ranks (get global distribution)
-            values = self.pop(key, [])
-            tensors = torch.cat(values, dim=0).to("cuda") if values else torch.empty(0, device="cuda")
-            assert tensors.ndim == 1, "Can only aggregate 1D tensors"
-            tensors = flexible_all_gather(tensors)
-            assert tensors.ndim == 1, "Can only aggregate 1D tensors"
-
-            # Handle empty tensors (can happen when all rollouts in a batch fail)
-            if tensors.numel() == 0:
-                metrics[f"{key}/mean"] = float("nan")
-                metrics[f"{key}/median"] = float("nan")
-                metrics[f"{key}/std"] = float("nan")
-                metrics[f"{key}/min"] = float("nan")
-                metrics[f"{key}/max"] = float("nan")
+        for key, (count, total, total_sq), (neg_min, max_) in zip(keys, sums.tolist(), extremes.tolist()):
+            if count == 0:
                 continue
-
-            # Compute relevant tensor statistics
-            metrics[f"{key}/mean"] = tensors.mean().item()
-            metrics[f"{key}/median"] = torch.median(tensors).item()
-            metrics[f"{key}/std"] = tensors.std().item()
-            metrics[f"{key}/min"] = tensors.min().item()
-            metrics[f"{key}/max"] = tensors.max().item()
-
-            # Add back all-gathered tensors to self
-            self[key].append(tensors.tolist())
-
+            mean = total / count
+            metrics[f"{key}/mean"] = mean
+            # Bessel-corrected like torch.std
+            variance = max(total_sq - total * mean, 0.0) / (count - 1) if count > 1 else math.nan
+            metrics[f"{key}/std"] = math.sqrt(variance)
+            metrics[f"{key}/min"] = -neg_min
+            metrics[f"{key}/max"] = max_
         return metrics
+
+
+def _moments(values: Tensor, members: Tensor) -> Tensor:
+    """Count, sum, sum of squares, -min and max of ``values`` for each column of the boolean
+    ``members`` [values, groups]. Plain reductions, so no atomics contend on a few addresses."""
+    values = values[:, None]
+    member_values = torch.where(members, values, 0.0)
+    return torch.stack(
+        [
+            members.sum(0, dtype=torch.float64),
+            member_values.sum(0),
+            member_values.square().sum(0),
+            torch.where(members, -values, -math.inf).amax(0),
+            torch.where(members, values, -math.inf).amax(0),
+        ],
+        dim=1,
+    )
 
 
 def _is_env_tensor_stat(key: str, allowed_stats: set[str]) -> bool:
@@ -315,6 +357,7 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
     mean_max_only_prefixes = (
         "is_masked/",
         "mismatch_kl/",
+        "mismatch_kl_by_staleness/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",

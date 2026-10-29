@@ -1,9 +1,11 @@
 ---
 name: monitor-run
-description: Monitor an ongoing prime-rl training run — find the output directory, tail logs, check key metrics, inspect SLURM jobs, and restart safely. Use when asked to check on a run, debug training, or investigate performance.
+description: Monitor a local or SLURM prime-rl training run — find the output directory, tail logs, check key metrics, inspect jobs, and restart safely. Model Factory monitoring uses model-factory.
 ---
 
 # Monitor a run
+
+For a managed Model Factory run ID or dashboard link, use the [model-factory skill](../../model-factory/SKILL.md) for `prime train` status, logs, metrics, and stop commands.
 
 ## Runbook
 
@@ -138,6 +140,7 @@ All metrics print to the console log (and W&B when configured).
 | Metric | Description |
 |--------|-------------|
 | `mismatch_kl/{all,env}/{mean,std,max}` | KL between trainer and (old) inference policy over trainable tokens |
+| `mismatch_kl_by_staleness/{bin}/{mean,std,max}` | the same KL per log2 token-staleness bin (`0`, `1`, `2-3`, `4-7`, …); bin `0` is numerical mismatch alone, the rise across bins is staleness drift |
 | `entropy/{all,env}/{mean,std,max}` | policy entropy over trainable tokens |
 | `is_masked/mean` | fraction of tokens masked by the IPO trust region |
 | `optim/grad_norm` | spikes may precede divergence |
@@ -152,8 +155,8 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
 | orchestrator | `time/step`, `time/save_ckpt` | phase timings |
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
-| orchestrator | `dispatcher/off_policy/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
-| orchestrator | `off_policy/{mean,max}`, `off_policy/{in_flight,in_queue}/{mean,max}`, `off_policy/dropped` | per-step staleness of trained rollouts |
+| orchestrator | `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
+| orchestrator | `staleness/token/{mean,masked}`, `staleness/rollout/{mean,max}`, `staleness/rollout/{in_flight,in_queue}/{mean,max}`, `staleness/rollout/dropped` | per-step token and rollout staleness of trained rollouts (rollout = max token staleness) |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window and reports stale, errored, and no-signal counts.
@@ -199,8 +202,10 @@ A trace has several steps, so each is stamped as its own event rather than impli
 where the record sits. The file monitor stamps `info.kind` and `info.dispatch`/
 `info.arrival` (`{step, time}` each) as an episode lands; the ship-time annotation adds
 `info.effective` and `info.ship` — the orchestrator step whose batch shipped the
-cohort, or for eval the step that produced the policy it measured. Staleness is
-`ship.step - dispatch.step`. Only `effective` ties to a step; `all` is the whole stream.
+cohort, or for eval the step that produced the policy it measured. `ship.step -
+dispatch.step` is the dispatch-to-ship lag in steps; rollout staleness comes from the
+token policy versions instead (`staleness/rollout/*`). Only `effective` ties to a step;
+`all` is the whole stream.
 
 Everything learned after arrival is an append-only trace update keyed by `trace_id`,
 one file per producer so each has a single writer: the orchestrator records cohort

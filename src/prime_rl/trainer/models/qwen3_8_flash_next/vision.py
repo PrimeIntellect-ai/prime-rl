@@ -1,0 +1,274 @@
+import math
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+from transformers.modeling_outputs import BaseModelOutputWithPooling
+
+from prime_rl.trainer.models.layers.attn import (
+    flash_attn_2_varlen_op,
+    flash_attn_3_varlen_op,
+    flash_attn_4_varlen_op,
+)
+from prime_rl.trainer.models.layers.rotary_emb import rotate_half
+from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextVisionConfig
+
+
+class VisionRotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, theta: float = 10_000.0) -> None:
+        super().__init__()
+        self.dim = dim
+        self.theta = theta
+        self.register_buffer("inv_freq", torch.empty(dim // 2), persistent=False)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        positions = torch.arange(0, self.dim, 2, dtype=torch.float32, device=self.inv_freq.device)
+        self.inv_freq.copy_(1.0 / (self.theta ** (positions / self.dim)))
+
+    def forward(self, sequence_length: int) -> torch.Tensor:
+        positions = torch.arange(sequence_length, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
+        return torch.outer(positions, self.inv_freq)
+
+
+class VisionPatchEmbed(nn.Module):
+    def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
+        super().__init__()
+        self.in_channels = config.in_channels
+        self.temporal_patch_size = config.temporal_patch_size
+        self.patch_size = config.patch_size
+        kernel_size = (self.temporal_patch_size, self.patch_size, self.patch_size)
+        self.proj = nn.Conv3d(
+            self.in_channels,
+            config.hidden_size,
+            kernel_size=kernel_size,
+            stride=kernel_size,
+            bias=True,
+        )
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        patch_width = self.in_channels * self.temporal_patch_size * self.patch_size**2
+        pixel_values = pixel_values.view(-1, patch_width).to(self.proj.weight.dtype)
+        return F.linear(
+            pixel_values,
+            self.proj.weight.view(self.proj.out_channels, patch_width),
+            self.proj.bias,
+        )
+
+
+class VisionMLP(nn.Module):
+    def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
+        super().__init__()
+        self.linear_fc1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=True)
+        self.linear_fc2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=True)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.linear_fc2(F.gelu(self.linear_fc1(hidden_states), approximate="tanh"))
+
+
+class VisionAttention(nn.Module):
+    FLASH_ATTENTION_FUNCTIONS = {
+        "flash_attention_2": flash_attn_2_varlen_op,
+        "flash_attention_3": flash_attn_3_varlen_op,
+        "flash_attention_4": flash_attn_4_varlen_op,
+    }
+
+    def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
+        super().__init__()
+        self.num_heads = config.num_heads
+        self.head_dim = config.hidden_size // config.num_heads
+        self.qkv = nn.Linear(config.hidden_size, config.hidden_size * 3, bias=True)
+        self.proj = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
+        self.attention_implementation = config._attn_implementation
+        self.flash_attention = self.FLASH_ATTENTION_FUNCTIONS[self.attention_implementation]
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.IntTensor,
+        max_seqlen: int,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        sequence_length = hidden_states.shape[0]
+        query, key, value = (
+            self.qkv(hidden_states).view(sequence_length, 3, self.num_heads, self.head_dim).unbind(dim=1)
+        )
+        cos, sin = position_embeddings
+        cos = cos.unsqueeze(1).float()
+        sin = sin.unsqueeze(1).float()
+        query_dtype = query.dtype
+        query = ((query.float() * cos) + (rotate_half(query.float()) * sin)).to(query_dtype)
+        key = ((key.float() * cos) + (rotate_half(key.float()) * sin)).to(query_dtype)
+
+        if self.attention_implementation == "flash_attention_4":
+            attention_output, _ = self.flash_attention(
+                query,
+                key,
+                value,
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
+                causal=False,
+            )
+        else:
+            attention_output = self.flash_attention(
+                query,
+                key,
+                value,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                causal=False,
+            )
+        return self.proj(attention_output.reshape(sequence_length, -1))
+
+
+class VisionBlock(nn.Module):
+    def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
+        super().__init__()
+        self.norm1 = nn.LayerNorm(config.hidden_size, eps=1e-6)
+        self.norm2 = nn.LayerNorm(config.hidden_size, eps=1e-6)
+        self.attn = VisionAttention(config)
+        self.mlp = VisionMLP(config)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.IntTensor,
+        max_seqlen: int,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        hidden_states = hidden_states + self.attn(
+            self.norm1(hidden_states), cu_seqlens, max_seqlen, position_embeddings
+        )
+        return hidden_states + self.mlp(self.norm2(hidden_states))
+
+
+class VisionPatchMerger(nn.Module):
+    def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
+        super().__init__()
+        merged_hidden_size = config.hidden_size * config.spatial_merge_size**2
+        self.merged_hidden_size = merged_hidden_size
+        self.norm = nn.LayerNorm(config.hidden_size, eps=1e-6)
+        self.linear_fc1 = nn.Linear(merged_hidden_size, merged_hidden_size)
+        self.linear_fc2 = nn.Linear(merged_hidden_size, config.out_hidden_size)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.norm(hidden_states).view(-1, self.merged_hidden_size)
+        return self.linear_fc2(F.gelu(self.linear_fc1(hidden_states)))
+
+
+class Qwen3_8FlashNextVisionModel(nn.Module):
+    def __init__(self, config: Qwen3_8FlashNextVisionConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.spatial_merge_size = config.spatial_merge_size
+        self.patch_embed = VisionPatchEmbed(config)
+        self.pos_embed = nn.Embedding(config.num_position_embeddings, config.hidden_size)
+        self.num_grid_per_side = math.isqrt(config.num_position_embeddings)
+        self.rotary_pos_emb = VisionRotaryEmbedding(config.hidden_size // config.num_heads // 2)
+        self.blocks = nn.ModuleList(VisionBlock(config) for _ in range(config.depth))
+        self.merger = VisionPatchMerger(config)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.patch_embed.proj.weight.dtype
+
+    def rotary_embeddings(self, grid_thw: torch.Tensor) -> torch.Tensor:
+        grids = grid_thw.tolist()
+        frequency_table = self.rotary_pos_emb(max(max(height, width) for _, height, width in grids))
+        coordinates = []
+        merge_size = self.spatial_merge_size
+        for frames, height, width in grids:
+            block_rows = torch.arange(height // merge_size, device=frequency_table.device)
+            block_columns = torch.arange(width // merge_size, device=frequency_table.device)
+            intra_rows = torch.arange(merge_size, device=frequency_table.device)
+            intra_columns = torch.arange(merge_size, device=frequency_table.device)
+            rows = block_rows[:, None, None, None] * merge_size + intra_rows[None, None, :, None]
+            columns = block_columns[None, :, None, None] * merge_size + intra_columns[None, None, None, :]
+            rows = rows.expand(height // merge_size, width // merge_size, merge_size, merge_size).reshape(-1)
+            columns = columns.expand(height // merge_size, width // merge_size, merge_size, merge_size).reshape(-1)
+            coordinates.append(torch.stack((rows, columns), dim=-1).repeat(frames, 1))
+        return frequency_table[torch.cat(coordinates)].flatten(1)
+
+    def interpolated_position_embeddings(self, grid_thw: torch.Tensor) -> torch.Tensor:
+        embeddings = []
+        merge_size = self.spatial_merge_size
+        for frames, height, width in grid_thw.tolist():
+            row_positions = torch.arange(height, dtype=torch.float32, device=self.pos_embed.weight.device)
+            column_positions = torch.arange(width, dtype=torch.float32, device=self.pos_embed.weight.device)
+            row_scale = torch.tensor(
+                (self.num_grid_per_side - 1) / (height - 1) if height > 1 else 0.0,
+                dtype=torch.float32,
+                device=self.pos_embed.weight.device,
+            )
+            column_scale = torch.tensor(
+                (self.num_grid_per_side - 1) / (width - 1) if width > 1 else 0.0,
+                dtype=torch.float32,
+                device=self.pos_embed.weight.device,
+            )
+            row_floor = (row_positions * row_scale).floor().long()
+            column_floor = (column_positions * column_scale).floor().long()
+            row_ceil = (row_floor + 1).clamp_max(self.num_grid_per_side - 1)
+            column_ceil = (column_floor + 1).clamp_max(self.num_grid_per_side - 1)
+            row_fraction = torch.addcmul(-row_floor.float(), row_positions, row_scale)[:, None]
+            column_fraction = torch.addcmul(-column_floor.float(), column_positions, column_scale)[None, :]
+            weight11 = row_fraction * column_fraction
+            weight10 = torch.addcmul(row_fraction, -row_fraction, column_fraction)
+            weight01 = torch.addcmul(column_fraction, -row_fraction, column_fraction)
+            weight00 = 1 - row_fraction - weight01
+
+            indices = torch.stack(
+                [
+                    (row_floor[:, None] * self.num_grid_per_side + column_floor[None, :]).flatten(),
+                    (row_floor[:, None] * self.num_grid_per_side + column_ceil[None, :]).flatten(),
+                    (row_ceil[:, None] * self.num_grid_per_side + column_floor[None, :]).flatten(),
+                    (row_ceil[:, None] * self.num_grid_per_side + column_ceil[None, :]).flatten(),
+                ]
+            )
+            weights = torch.stack([weight00.flatten(), weight01.flatten(), weight10.flatten(), weight11.flatten()]).to(
+                self.pos_embed.weight.dtype
+            )
+            corner_embeddings = self.pos_embed(indices)
+            # Match inference's fused-add order and rounding after each stage.
+            position_embedding = corner_embeddings[0] * weights[0, :, None]
+            for corner in range(1, 4):
+                position_embedding = torch.addcmul(
+                    position_embedding, corner_embeddings[corner], weights[corner, :, None]
+                )
+            position_embedding = position_embedding.repeat(frames, 1)
+            position_embedding = (
+                position_embedding.view(
+                    frames,
+                    height // merge_size,
+                    merge_size,
+                    width // merge_size,
+                    merge_size,
+                    -1,
+                )
+                .permute(0, 1, 3, 2, 4, 5)
+                .flatten(0, 4)
+            )
+            embeddings.append(position_embedding)
+        return torch.cat(embeddings)
+
+    def forward(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> BaseModelOutputWithPooling:
+        hidden_states = self.patch_embed(pixel_values)
+        hidden_states = hidden_states + self.interpolated_position_embeddings(grid_thw)
+        rotary = self.rotary_embeddings(grid_thw)
+        rotary = torch.cat((rotary, rotary), dim=-1)
+        position_embeddings = (rotary.cos().to(hidden_states.dtype), rotary.sin().to(hidden_states.dtype))
+        sequence_lengths = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0])
+        cu_seqlens = F.pad(sequence_lengths.cumsum(dim=0, dtype=torch.int32), (1, 0))
+        max_seqlen = int(sequence_lengths.max())
+        for block in self.blocks:
+            hidden_states = block(hidden_states, cu_seqlens, max_seqlen, position_embeddings)
+        return BaseModelOutputWithPooling(
+            last_hidden_state=hidden_states,
+            pooler_output=self.merger(hidden_states),
+        )
+
+
+__all__ = ["Qwen3_8FlashNextVisionModel"]

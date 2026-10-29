@@ -18,6 +18,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
     flash_attn_4_varlen_op,
+    quadratic_attention_flops,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -81,6 +82,15 @@ class AfmoeAttentionBase(nn.Module):
         # QK normalization
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.sliding_window or seq_len),
+        )
 
 
 class AfmoeFlashAttention(AfmoeAttentionBase):
@@ -269,8 +279,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
 class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = AfmoeConfig
     base_model_prefix = "model"
-    _no_split_modules = ["AfmoeDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
     _keep_in_fp32_modules = [
         "input_layernorm",
         "post_attention_layernorm",
@@ -280,15 +288,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
         "k_norm",
         "norm",
     ]
-    _supports_sdpa = False
-    _supports_flash_attn = True
-    _supports_flex_attn = False
-    _supports_attention_backend = True
-    _can_compile_fullgraph = False
-    _can_record_outputs = {
-        "hidden_states": AfmoeDecoderLayer,
-    }
-    supports_gradient_checkpointing = True
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
@@ -304,8 +303,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class AfmoeModel(AfmoePreTrainedModel):
-    _no_split_modules = ["AfmoeDecoderLayer"]
-
     def __init__(self, config: AfmoeConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -388,8 +385,6 @@ class AfmoeModel(AfmoePreTrainedModel):
 
 class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)

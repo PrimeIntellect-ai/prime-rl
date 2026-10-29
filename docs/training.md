@@ -21,12 +21,16 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
   - [Pausing a Live Run](#pausing-a-live-run)
+  - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
+  - [Config Files](#config-files)
   - [Log Files](#log-files)
-  - [Console Output](#console-output)
+  - [Dashboard](#dashboard)
+- [Monitors](#monitors)
+  - [File](#file)
   - [Weights & Biases](#weights--biases)
-  - [Platform Monitoring](#platform-monitoring)
+  - [Prime](#prime)
 - [Rules of Thumb](#rules-of-thumb)
 
 ## Entrypoints
@@ -61,7 +65,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.constant_trainer_batch_size` | Keep trainer batches constant when samples have no training signal, such as zero advantage on all tokens. Enabled by default. Disable it for faster collection with variable trainer batch sizes. |
 | `orchestrator.train.group_size` | Rollouts generated per task. |
-| `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.max_staleness` | Maximum token staleness (default 8): the version a batch trains on minus the policy version that sampled the token, queue time included. Staler tokens are masked out of the loss; the rest of the sample still trains. Tokens without a policy label (Dynamo engines) take their rollout's dispatch version. A sample is dropped only when nothing is left to train, and rollouts are never cancelled for staleness. The main staleness dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `staleness/token/masked`, `staleness/rollout/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
@@ -74,7 +78,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
+| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime](#prime). |
 
 **Run management:**
 
@@ -128,6 +132,7 @@ Pulled from the console logs and mirrored to W&B.
 **Stability** (trainer):
 
 - `mismatch_kl/{all,env}/{mean,std,max}` — KL between trainer's current policy and the (older) inference policy that generated the rollouts. A sustained, growing mean is the early-warning sign for off-policy collapse.
+- `mismatch_kl_by_staleness/{bin}/{mean,std,max}` — the same KL per log2 bin of token staleness (`0`, `1`, `2-3`, `4-7`, …, `64+`). Bin `0` is the numerical trainer–inference mismatch alone; the rise across bins is the policy drift that staleness adds.
 - `entropy/{all,env}/mean` — too low means mode-collapse; too high means the model isn't committing.
 - `is_masked/mean` — fraction of tokens masked by the IPO trust region.
 - `optim/grad_norm` — spikes precede divergence; check the loss config or lower the LR.
@@ -138,6 +143,12 @@ Pulled from the console logs and mirrored to W&B.
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
 | orchestrator | `time/wait_for_policy` | **high → trainer bottleneck** |
+| orchestrator | `staleness/token/mean`, `staleness/token/masked` | mean token staleness of the shipped batch, and the share of its tokens masked past `max_staleness` |
+| orchestrator | `staleness/rollout/{mean,max}` | rollout staleness (max token staleness) of the shipped batch |
+| orchestrator | `staleness/rollout/{in_flight,in_queue}/{mean,max}` | in-flight and in-queue split of rollout staleness |
+| orchestrator | `staleness/rollout/dropped` | queued rollouts dropped because every token passed `max_staleness` |
+
+See [Async Training & Staleness](algorithms.md#async-training--staleness) for the token and rollout staleness definitions.
 
 The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window. This warning reports stale, errored, and no-signal counts.
 
@@ -195,9 +206,9 @@ clear_thinking = true
 
 The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
 
-**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
+**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
 
-**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class (currently Qwen3.5 dense and MoE).
+**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class: Qwen3.5 dense and MoE, and Qwen3.8 Flash Next (`qwen4_exp`, text and images). See the [multimodal examples](../examples/extra/vlm/README.md) for SFT and multi-node image RL configurations.
 
 See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 
@@ -211,7 +222,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
-`--monitors.prime` streams the run to the Prime Intellect platform — see [Platform Monitoring](#platform-monitoring).
+The run streams to the Prime Intellect platform by default — see [Prime](#prime).
 
 ### Online Evals
 
@@ -293,8 +304,10 @@ Pulled from the console log and mirrored to W&B.
 | Metric | Reading |
 |---|---|
 | `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
-| `perf/mfu` | MFU |
-| `perf/peak_memory` | peak GPU memory (GiB) |
+| `perf/mfu` | MFU, including attention FLOPs |
+| `perf/mfu_6dn` | MFU from the plain 6 x active params x tokens estimate (no attention FLOPs) |
+| `perf/peak_memory` | peak GPU memory from all sources, max over ranks (GiB) |
+| `perf/non_torch_memory` | GPU memory outside PyTorch's caching allocator (symmetric memory such as Mega MoE's buffers, NCCL, CUDA context), max over ranks (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Checkpointing
@@ -345,14 +358,43 @@ With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the tr
 uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
 
 curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
-# {"id": "3f2a...", "type": "pause", "state": "pending", "step": null}
+# {"id": "3f2a...", "type": "pause", "state": "pending", "step": null, "changes": null}
 curl localhost:8040/v1/actions/3f2a...
-# {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12}
+# {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12, "changes": null}
 curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
-# {"id": "9c41...", "type": "pause", "state": "pending", "step": 12}
+# {"id": "9c41...", "type": "pause", "state": "pending", "step": 12, "changes": null}
 ```
 
 Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
+
+### Updating the Config Live
+
+With `--orchestrator.control`, you can also resubmit the full orchestrator config while the run is going. Read the current config, edit it, and submit it back as an `update_config` action:
+
+```bash
+curl localhost:8041/v1/config > current.json
+# {"revision": 0, "step": 41, "config": {...}}
+jq '{type: "update_config", config: (.config | .max_staleness = 4 | .train.source[0].sampling.temperature = 0.8)}' current.json > update.json
+curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d @update.json
+# {"id": "7b0e...", "type": "update_config", "state": "pending", "step": null, "changes": [{"path": "train.source[0].sampling.temperature", "old": 1.0, "new": 0.8}, {"path": "max_staleness", "old": 8, "new": 4}]}
+curl localhost:8041/v1/actions/7b0e...
+# {"id": "7b0e...", "type": "update_config", "state": "applied", "step": 43, "changes": [...]}
+```
+
+The orchestrator validates the config and compares it with the running one when you submit it. A rejected update returns 422 with the changed fields that are frozen in `frozen`, and any validation `errors`. It returns 409 if another update is queued or the run is pausing. The update applies after the orchestrator ships its next step: rollouts dispatched from then on use the new config, while running rollouts, and groups that already started, keep their old settings. Nothing is cancelled. Each applied update bumps the config revision, is logged, and is written to `configs/attempt_<n>/resolved/updates/rev_<k>.json`. Checkpoints record the live config, so `--resume` continues with the updates that were in effect at the checkpoint. The rule is per field: if the launch config still has the value the checkpointed run was launched with, the live value is restored; if you changed the field in the launch config, your value wins. The orchestrator logs the restored fields and writes them to `updates/rev_<k>.json` of the new attempt.
+
+Only these fields are live; every other field is frozen:
+
+| Field | Effect |
+|---|---|
+| `batch_size`, `max_staleness` | The next batch uses the new size, and queued samples are checked against the new staleness bound. |
+| `concurrency.min_inflight`, `concurrency.max_inflight` | Moves the adaptive concurrency band. A lower limit cancels nothing; new rollouts wait until enough finish. A target set through the concurrency API stays in place. `concurrency.initial_inflight` only seeds the startup cap, so it may change (e.g. to stay below a lower `max_inflight`) without effect. |
+| `train.source[*].ratio` | Changes the env mix weights. |
+| `train.source[*].sampling` | Changes a source's `temperature`, `max_completion_tokens` and `extra_body`. `top_p`, `top_k` and `logprobs` are frozen: they decide sampling replay and top-logprob streams at launch. Set sampling per source: the group-level `train.sampling` is only a default for the sources and is frozen. |
+| `eval.source[*].interval` | Changes eval cadence from the next policy update. |
+| `train.source[*].algo.length_penalty` | Changes a GRPO source's length penalty: its weights, its type, or turning it on (a config) or off (`null`). It applies to every group scored from the next step on, including groups already running, since a group is scored when its last rollout finishes. Set it per source: the group-level `train.algo` is only a default for the sources and is frozen. |
+
+Frozen fields include the model, tokenizer, renderer, transports, monitors, logging, checkpointing, output directory, padding and the trainer topology, which are fixed at launch. `seq_len` and `max_steps` are frozen because the trainer depends on them. Group sizes, algorithms (except the length penalty), curricula, eval sampling and task selection are frozen, as are adding, removing, renaming or reordering sources and turning eval on or off. In the config, a live field is annotated with `Annotated[T, Live()]` (from `prime_rl.configs.diff`); every other field is frozen.
 
 ### Exporting Checkpoints
 
@@ -412,41 +454,46 @@ tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 
 A coding agent on the same machine can drive the open dashboard: `POST /api/view` with an on-disk address (`{"run", "tab", "step", "kind", "subset", "episode", "highlight": [...]}`) navigates every connected tab there and paints quote-anchored highlights in the trace viewer. Reports cite traces with `[^id]` markers whose JSON definitions carry the same address plus a verbatim quote; the dashboard re-checks each quote against the trace files and marks the citation verified or broken, so answers stay grounded in what is actually on disk. The `dashboard` skill documents the full contract.
 
+## Monitors
+
+Monitors receive the run's metrics and episodes. The file and Prime monitors are on by default; W&B is opt-in.
+
+### File
+
+The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream under `<run_dir>/monitors/file/`, and feeds the local [dashboard](#dashboard). Turn it off with `--no-monitors.file`.
+
 ### Weights & Biases
 
-W&B is off by default (the file monitor, which writes the metrics and the trace stream under the run's `monitors/file/` directory, is on by default):
+W&B is off by default:
 
 ```bash
 uv run rl @ rl.toml --monitors.wandb                      # default project, random name
 uv run rl @ rl.toml --monitors.wandb.project my-proj --monitors.wandb.name run-42
-uv run rl @ rl.toml --no-monitors.file                    # disable the local metric/trace files
 ```
 
 The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `monitors.wandb.offline = true`.
 
 prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, every training run (RL and SFT) gets an **auto-created `overview` saved view** curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
-### Platform Monitoring
+### Prime
 
-Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics and episodes to the platform dashboard. Bare flag uses defaults:
+Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers. Turn it off with `--no-monitors.prime`:
 
 ```bash
-uv run rl @ rl.toml --monitors.prime
-uv run sft @ sft.toml --monitors.prime   # same flag on the SFT trainer
+uv run rl @ rl.toml --no-monitors.prime
+uv run sft @ sft.toml --no-monitors.prime   # same flag on the SFT trainer
 ```
 
-Or set it in TOML:
+Name the Prime run in TOML:
 
 ```toml
 [monitors.prime]
 name = "my-experiment"
 ```
 
-The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. Finalization is best-effort SDK delivery: a process that exits without finishing is reported crashed when the SDK's atexit hook runs, but an abrupt kill (SIGKILL, OOM, node loss) skips the report and a lost finalize is not retried — the platform owns the terminal state of attached (`RUN_ID`) and managed runs. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
-
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
 
-Requires `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. A configured monitor must work: a missing key or a team outside the allowlist fails the launch. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 
 ## Rules of Thumb
 

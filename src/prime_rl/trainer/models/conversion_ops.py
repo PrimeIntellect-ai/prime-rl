@@ -35,6 +35,7 @@ Design constraints:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -50,6 +51,32 @@ class ConvOp(ABC):
 
     @abstractmethod
     def prime_to_hf(self, sd: StateDict) -> None: ...
+
+
+class ChunkedConvOp(ConvOp):
+    """Convert one runtime weight into independent, final HF-format packets.
+
+    The iterator must yield exactly ``shard_count`` entries, one per shard.
+    Ranks that do not receive the resolved rows yield ``None``.
+    The caller supplies row resolution, which may gather distributed rows.
+    Other conversion operations must not depend on or transform these packet keys.
+    """
+
+    runtime_weight: str
+    shard_count: int
+
+    @abstractmethod
+    def iter_prime_to_hf(
+        self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor | None]
+    ) -> Iterator[StateDict | None]: ...
+
+    def prime_to_hf(self, sd: StateDict) -> None:
+        if self.runtime_weight not in sd:
+            return
+        weight = sd.pop(self.runtime_weight)
+        for packet in self.iter_prime_to_hf(weight, lambda value, start, stop: value[start:stop]):
+            if packet is not None:
+                sd.update(packet)
 
 
 def apply_hf_to_prime(sd: StateDict, ops: list[ConvOp]) -> StateDict:
@@ -346,3 +373,29 @@ def routed_experts_op(
         Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{prime_experts}.down_proj"),
     ]
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)
+
+
+def view_mapping(ops: list[ConvOp], shapes: dict[str, torch.Size]) -> dict[str, dict] | None:
+    """Each HF tensor of the prime -> HF conversion of a state dict with these keys and shapes, as
+    ``{"from": prime_key, "index": [...]}``, meaning ``prime[from][*index]``. Found by playing the
+    real conversion on meta tensors. None when an HF tensor is not such a view (a concat, a value
+    transform)."""
+    prime = {key: torch.empty(shape, device="meta") for key, shape in shapes.items()}
+    tensor_id_to_key = {id(tensor): key for key, tensor in prime.items()}
+    views = {}
+    for name, tensor in apply_prime_to_hf(dict(prime), ops).items():
+        base = tensor if tensor._base is None else tensor._base
+        lead = base.dim() - tensor.dim()
+        if (
+            id(base) not in tensor_id_to_key
+            or lead < 0
+            or tensor.shape != base.shape[lead:]
+            or tensor.stride() != base.stride()[lead:]
+        ):
+            return None
+        index, offset = [], tensor.storage_offset()
+        for stride in base.stride()[:lead]:
+            index.append(offset // stride)
+            offset %= stride
+        views[name] = {"from": tensor_id_to_key[id(base)], "index": index}
+    return views
