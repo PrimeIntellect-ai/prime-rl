@@ -48,7 +48,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -57,11 +56,11 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
-    setup_processor,
     take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -162,18 +161,16 @@ def train(config: TrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
-    processor = None
-    mm_adapter = None
+    materialize_images = None
     if config.model.vlm is not None:
+        if not getattr(model, "supports_packed_multimodal_training", False):
+            raise ValueError("Packed multimodal training requires model support")
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
-        mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+        materialize_images = partial(model.materialize_images, processor=processor)
+    prepare = partial(prepare_micro_batch, materialize_images=materialize_images)
     micro_batch_workers = WorkerPool(config.data.num_workers)
-
-    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
-        raise ValueError("Packed multimodal training requires model support")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
@@ -463,7 +460,6 @@ def train(config: TrainerConfig):
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
                 mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
-            mm_forward_policy = micro_batch.pop("mm_forward_policy")
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -484,9 +480,8 @@ def train(config: TrainerConfig):
 
             if cp_enabled:
                 validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
-                defer_vlm_cp_to_model = bool(
-                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
-                )
+                # The VLM shards image inputs itself, after building their positions.
+                defer_vlm_cp_to_model = mm_kwargs is not None
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
                 seq_lens_are_pre_shard = True
@@ -524,7 +519,6 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
-                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,

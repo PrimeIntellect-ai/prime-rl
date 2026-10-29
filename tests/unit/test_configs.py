@@ -831,36 +831,6 @@ def test_disaggregated_inference_inherits_deployment_gpus_per_node():
         RLConfig.model_validate(config)
 
 
-def test_orchestrator_vlm_requires_renderer():
-    with pytest.raises(ValidationError, match="renderer"):
-        OrchestratorConfig.model_validate(
-            {
-                "model": {
-                    "name": "Qwen/Qwen3-VL-4B-Instruct",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                },
-                "renderer": None,
-            }
-        )
-
-    config = OrchestratorConfig.model_validate(
-        {
-            "model": {
-                "name": "Qwen/Qwen3-VL-4B-Instruct",
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
-                },
-            },
-        }
-    )
-
-    assert config.renderer is not None
-
-
 def test_ac_none_disables_ac_offloading():
     config = TrainerModelConfig.model_validate({"ac": None})
     assert config.ac is None

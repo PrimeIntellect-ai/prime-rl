@@ -30,7 +30,6 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     reshard_module,
-    setup_processor,
     setup_tokenizer,
     setup_model,
     take_moe_routing_stats,
@@ -60,6 +59,7 @@ from prime_rl.trainer.utils import (
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
@@ -260,7 +260,8 @@ def train(config: SFTConfig):
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
             validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
-            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+            # The VLM shards image inputs itself, after building their positions.
+            defer_vlm_cp_to_model = mm_kwargs is not None
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
             seq_lens_are_pre_shard = True
