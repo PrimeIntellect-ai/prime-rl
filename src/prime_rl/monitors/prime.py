@@ -162,7 +162,7 @@ class PrimeMonitor(Monitor):
         # The SFT online-eval process and the RL trainer log into the run their launcher registers.
         attaches = isinstance(config, (SFTOnlineEvalConfig, TrainerConfig))
         # The RL orchestrator outlives its trainer, so it finishes their shared run.
-        self.finisher = "orch" if isinstance(config, TrainerConfig) else producer
+        self.finisher = "orchestrator" if isinstance(config, TrainerConfig) else producer
         run_id = os.getenv("RUN_ID")
         if attaches and run_id is None and mode == "online":
             raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")

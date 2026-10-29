@@ -65,7 +65,7 @@ def test_trainer_and_orchestrator_share_the_launchers_run(sdk_runs, tmp_path, mo
     with launch_run(config.orchestrator, config.orchestrator.monitors.prime):
         launched = sdk_runs[0]
         asyncio.run(trainer.init(config=config.trainer, output_dir=tmp_path, producer="trainer"))
-        asyncio.run(orchestrator.init(config=config.orchestrator, output_dir=tmp_path, producer="orch"))
+        asyncio.run(orchestrator.init(config=config.orchestrator, output_dir=tmp_path, producer="orchestrator"))
         assert trainer.run.attached and orchestrator.run.attached
         assert trainer.run.id == orchestrator.run.id == launched.id == os.environ["RUN_ID"]
 
