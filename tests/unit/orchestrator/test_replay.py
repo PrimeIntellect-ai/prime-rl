@@ -74,18 +74,10 @@ def test_replay_batches_pack_recorded_train_rollouts_like_the_orchestrator(tmp_p
     asyncio.run(monitor.finalize())
     chunks = sorted(get_trace_stream(tmp_path).glob("*.jsonl*"))
     assert [chunk.suffix for chunk in chunks] == [".zst"]
-    unpinned_ids = {traces[1].id, traces[4].id}
-
-    def unpin_temperatures(records):
-        for record in records:
-            for trace in record["traces"]:
-                if trace["id"] in unpinned_ids:
-                    trace["agent"]["config"]["sampling"]["temperature"] = None
-            yield record
 
     steps = list(
         replay_batches(
-            unpin_temperatures(read_records(chunks)),
+            read_records(chunks),
             rollouts_per_step=3,
             seq_len=SEQ_LEN,
             num_train_workers=NUM_RANKS,
@@ -113,6 +105,9 @@ def test_replay_batches_pack_recorded_train_rollouts_like_the_orchestrator(tmp_p
                 stream = getattr(micro_batch, name)
                 assert stream is None or (stream.dtype == dtype and len(stream) == num_tokens), name
             assert micro_batch.payloads is None
+            np.testing.assert_array_equal(
+                micro_batch.temperatures[: num_tokens - micro_batch.padding], np.float32(TEMPERATURE)
+            )
             if micro_batch.trace_ids is None:
                 assert not micro_batch.loss_mask.any()
                 continue
@@ -127,8 +122,6 @@ def test_replay_batches_pack_recorded_train_rollouts_like_the_orchestrator(tmp_p
                 np.testing.assert_array_equal(micro_batch.input_ids[tokens], branch.token_ids)
                 np.testing.assert_array_equal(micro_batch.loss_mask[tokens], branch.sampled_mask)
                 np.testing.assert_array_equal(micro_batch.inference_logprobs[tokens], branch.logprobs)
-                expected_temperature = 1.0 if trace_id in unpinned_ids else TEMPERATURE
-                np.testing.assert_array_equal(micro_batch.temperatures[tokens], np.float32(expected_temperature))
                 advantage = np.float32(synthetic_advantage(trace_id))
                 expected_advantages = np.where(branch.sampled_mask, advantage, np.float32(0))
                 np.testing.assert_array_equal(micro_batch.advantages[tokens], expected_advantages)

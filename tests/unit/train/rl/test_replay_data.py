@@ -53,13 +53,12 @@ def world(monkeypatch):
     reset_world()
 
 
-@pytest.mark.parametrize("start_step,replayed_steps", [(1, [0, 1, 0]), (4, [1, 0, 1])])
-def test_replay_loader_returns_its_data_rank_of_each_step_and_cycles(replay_dir, world, start_step, replayed_steps):
+def test_replay_loader_returns_its_data_rank_of_each_step_and_cycles(replay_dir, world):
     directory, steps = replay_dir
-    loader = ReplayDataLoader(directory, start_step, SEQ_LEN, NUM_RANKS, 4)
+    loader = ReplayDataLoader(directory, SEQ_LEN, NUM_RANKS, 4)
     assert loader.dp_rank == 1
 
-    for step in replayed_steps:
+    for step in [0, 1, 0]:
         loader.wait_for_batch()
         batch = loader.get_batch()
         expected = steps[step][1]
@@ -94,7 +93,7 @@ def test_replay_loader_rejects_a_mismatched_topology(
     replay_dir, world, seq_len, dp_world_size, pad_to_multiple_of, message
 ):
     with pytest.raises(ValueError, match=message):
-        ReplayDataLoader(replay_dir[0], 1, seq_len, dp_world_size, pad_to_multiple_of)
+        ReplayDataLoader(replay_dir[0], seq_len, dp_world_size, pad_to_multiple_of)
 
 
 def test_replay_config_excludes_fake_data_score_centering_and_router_replay(tmp_path):

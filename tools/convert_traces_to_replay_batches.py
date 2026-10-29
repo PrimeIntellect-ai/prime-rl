@@ -36,12 +36,10 @@ from prime_rl.transports.batch.replay import ReplayMeta, write_replay_meta, writ
 from prime_rl.transports.batch.types import MicroBatch
 
 
-def flop_counter(model_name: str, trust_remote_code: bool) -> FlopCounter:
+def flop_counter(model_name: str) -> FlopCounter:
     """The orchestrator's bin cost: training FLOPs of the model, built on the meta device."""
     # The default sparse-attention backend refuses to build without a GPU. Backends select kernels, not modules.
-    model_config = ModelConfig(
-        name=model_name, attn="flash_attention_3", dsa_backend="tilelang", trust_remote_code=trust_remote_code
-    )
+    model_config = ModelConfig(name=model_name, attn="flash_attention_3", dsa_backend="tilelang")
     return FlopCounter(get_model(model_config, device=torch.device("meta")))
 
 
@@ -68,7 +66,6 @@ def main() -> None:
     parser.add_argument("--num-train-workers", type=int, default=1, help="trainer data parallel size")
     parser.add_argument("--pad-to-multiple-of", type=int, default=1, help="pad each micro batch to a multiple of this")
     parser.add_argument("--num-steps", type=int, help="stop after this many steps (default: all full steps)")
-    parser.add_argument("--trust-remote-code", action="store_true", help="trust remote code when building the model")
     args = parser.parse_args()
 
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
@@ -79,7 +76,7 @@ def main() -> None:
         rollouts_per_step=args.rollouts_per_step,
         seq_len=args.seq_len,
         num_train_workers=args.num_train_workers,
-        bin_cost=flop_counter(args.model, args.trust_remote_code),
+        bin_cost=flop_counter(args.model),
         pad_to_multiple_of=args.pad_to_multiple_of,
     )
     num_steps = 0

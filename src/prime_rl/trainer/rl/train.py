@@ -252,7 +252,6 @@ def train(config: TrainerConfig):
     elif config.data.replay:
         dataloader = ReplayDataLoader(
             config.data.replay,
-            progress.step,
             config.model.seq_len,
             parallel_dims.get_mesh("dp").size(),
             config.pad_to_multiple_of,
