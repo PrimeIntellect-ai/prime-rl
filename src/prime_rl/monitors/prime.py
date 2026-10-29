@@ -14,6 +14,7 @@ from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.monitors import PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import publish_link, register_links
@@ -158,21 +159,24 @@ class PrimeMonitor(Monitor):
         if isinstance(config, EvalConfig):
             await self._init_evaluations(config)
             return
-        online_eval = isinstance(config, SFTOnlineEvalConfig)
+        # The SFT online-eval process and the RL trainer log into the run their launcher registers.
+        attaches = isinstance(config, (SFTOnlineEvalConfig, TrainerConfig))
+        # The RL orchestrator outlives its trainer, so it finishes their shared run.
+        self.finisher = "orchestrator" if isinstance(config, TrainerConfig) else producer
         run_id = os.getenv("RUN_ID")
-        if online_eval and run_id is None and mode == "online":
-            raise RuntimeError(f"An online-eval process logs to its trainer's run: launch it with `sft`, or {OFF_HINT}")
+        if attaches and run_id is None and mode == "online":
+            raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")
         # The launcher registered the run (or a managed launch pre-created it) - attach
         # instead of registering a duplicate. The registering process owns the attached
         # run's failure marking; a clean finish() completes it.
-        train_config = None if online_eval else config
+        train_config = None if attaches else config
         self.run = await asyncio.to_thread(register, train_config, self.config.name, mode, run_id)
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to Prime run {self.run.id} ({self.run.url}){attached}")
         else:
             self.logger.info("Prime run disabled")
-        if not online_eval:
+        if not attaches:
             # Off the event loop: the flock retry must not stall it.
             await asyncio.to_thread(self._record_run)
 
@@ -227,7 +231,7 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
         if self.run is None:
             return
-        if paused or os.getenv(RUN_FINISHER_VAR, self.producer) != self.producer:
+        if paused or os.getenv(RUN_FINISHER_VAR, self.finisher) != self.producer:
             # Drain only: a paused run continues on resume, and a shared run is finished
             # by the process that outlives this one. A clean exit is not a crash.
             await asyncio.to_thread(self.run.flush, FINISH_TIMEOUT)
