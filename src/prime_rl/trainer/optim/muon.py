@@ -134,10 +134,15 @@ def _sinkhorn_task(param: Tensor, state: dict, group: dict, update_rms: float):
     yield
 
 
-def _segment_sum(values: Tensor, segments: Tensor, num_segments: int) -> Tensor:
-    """Sums ``values`` [B, rows, ...] over the rows of each segment: [B, num_segments, ...]."""
-    out = values.new_zeros(values.shape[0], num_segments, *values.shape[2:])
-    return out.index_add_(1, segments, values)
+def _segment_reduce(values: Tensor, sizes: list[int], reduce: str) -> Tensor:
+    """Sum or max of ``values`` [B, rows, ...] over consecutive row segments of ``sizes``: [B, len(sizes), ...].
+    Splits instead of index_add/scatter_reduce, whose CUDA kernels are not deterministic. The max assumes values
+    are nonnegative, so an empty segment is 0."""
+    pad = values.new_zeros(values.shape[0], 1, *values.shape[2:])
+    chunks = values.split(sizes, dim=1)
+    if reduce == "sum":
+        return torch.stack([chunk.sum(1) for chunk in chunks], 1)
+    return torch.stack([torch.cat([chunk, pad], 1).amax(1) for chunk in chunks], 1)
 
 
 def _all_reduce(tensor: Tensor, groups: list[ProcessGroup], op=dist.ReduceOp.SUM) -> Tensor:
@@ -167,17 +172,15 @@ class _DimuonShard:
             rank = dist.get_rank(group)
             segments = chunks[rank] if rank < len(chunks) else segments[:0]
         self.segments = segments.to(param.device)
+        self.local_sizes = torch.bincount(segments, minlength=len(sizes)).tolist()
         self.rows = torch.tensor(sizes, dtype=torch.float32, device=param.device)
 
     def conditioners(self, M: Tensor, damping: float) -> tuple[Tensor, Tensor]:
         """Row and column conditioners [B, m_local, 1], [B, m_local, n_local] (each row's own segment)."""
         energy = M.square()
         rows = _all_reduce(energy.sum(-1), self.col_groups)
-        row_peak = rows.new_zeros(rows.shape[0], len(self.rows)).scatter_reduce_(
-            1, self.segments.expand_as(rows), rows, "amax"
-        )
-        _all_reduce(row_peak, self.row_groups, dist.ReduceOp.MAX)
-        cols = _all_reduce(_segment_sum(energy, self.segments, len(self.rows)), self.row_groups)
+        row_peak = _all_reduce(_segment_reduce(rows, self.local_sizes, "max"), self.row_groups, dist.ReduceOp.MAX)
+        cols = _all_reduce(_segment_reduce(energy, self.local_sizes, "sum"), self.row_groups)
         col_peak = _all_reduce(cols.amax(-1, keepdim=True), self.col_groups, dist.ReduceOp.MAX)
         L = _conditioner(rows, row_peak[:, self.segments], damping).unsqueeze(-1)
         C = _conditioner(cols, col_peak, damping)[:, self.segments]
@@ -185,7 +188,7 @@ class _DimuonShard:
 
     def norms(self, D: Tensor) -> Tensor:
         """Frobenius norm of each matrix's update, per row [B, m_local, 1]."""
-        squares = _segment_sum(D.square().sum(-1), self.segments, len(self.rows))
+        squares = _segment_reduce(D.square().sum(-1), self.local_sizes, "sum")
         return _all_reduce(squares, self.row_groups + self.col_groups).sqrt()[:, self.segments].unsqueeze(-1)
 
 
@@ -286,6 +289,9 @@ class Muon(dion.Muon):
             state = self.state[p]
             if not state:
                 state["momentum"] = torch.zeros_like(p, dtype=torch.bfloat16 if self.bf16_momentum else None)
+            elif self.bf16_momentum and state["momentum"].dtype != torch.bfloat16:
+                # Optimizer.load_state_dict casts the loaded state to the parameter dtype
+                state["momentum"] = state["momentum"].to(torch.bfloat16)
             M = to_local(state["momentum"])
             G = to_local(p.grad).reshape(-1, *M.shape[-2:]).float()
             M_old = M.reshape(G.shape).float()
