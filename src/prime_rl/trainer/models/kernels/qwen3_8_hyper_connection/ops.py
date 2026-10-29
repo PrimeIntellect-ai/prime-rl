@@ -75,6 +75,7 @@ def _read_backward_fake(
 def _read_setup_context(ctx, inputs, output) -> None:
     streams, norm_weight, down_weight, up_weight, stream_count, eps = inputs
     _, _, rstd, projected = output
+    ctx.mark_non_differentiable(rstd, projected)
     ctx.save_for_backward(streams, norm_weight, down_weight, up_weight, rstd, projected)
     ctx.stream_count = stream_count
     ctx.eps = eps
@@ -224,6 +225,7 @@ def _write_read_backward_fake(
 def _write_read_setup_context(ctx, inputs, output) -> None:
     _, block_output, inject, norm_weight, down_weight, up_weight, stream_count, eps = inputs
     new_streams, _, _, rstd, projected = output
+    ctx.mark_non_differentiable(rstd, projected)
     ctx.save_for_backward(new_streams, block_output, inject, norm_weight, down_weight, up_weight, rstd, projected)
     ctx.stream_count = stream_count
     ctx.eps = eps
