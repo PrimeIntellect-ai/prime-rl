@@ -1,4 +1,4 @@
-"""Time the fused mHC pre-pass at the proxy's per-rank shape under each fp32 dot precision, against a copy of its input.
+"""Time the fused mHC pre-pass at the proxy's per-rank shape under each fp32 dot precision, and vLLM's DeepGEMM projection.
 
 Usage: uv run --no-sync python bench_mhc_pre.py [--tokens 31078] [--iters 20]
 """
@@ -41,6 +41,20 @@ def main():
     copy_ms = time_ms(lambda: x.detach().clone(), args.iters)
     print(f"tokens {args.tokens}: x {x_bytes / 1e9:.2f} GB, copy of x {copy_ms:.3f} ms ({2 * x_bytes / copy_ms / 1e6:.0f} GB/s)")
     print(f"forward roofline (read x, write collapsed) at copy bandwidth: {(x_bytes + collapsed_bytes) / (2 * x_bytes) * copy_ms:.3f} ms")
+
+    import deep_gemm
+
+    x_flat = x.detach().view(args.tokens, HC * D)
+    projection = torch.empty(1, args.tokens, N, device="cuda", dtype=torch.float32)
+    sqrsum = torch.empty(1, args.tokens, device="cuda", dtype=torch.float32)
+    prenorm_ms = time_ms(lambda: deep_gemm.tf32_hc_prenorm_gemm(x_flat, fn.detach(), projection, sqrsum, 1), args.iters)
+    exact = x_flat.double() @ fn.detach().double().T
+    prenorm_err = (projection[0].double() - exact).abs().max().item()
+    ieee_err = (x_flat.float() @ fn.detach().T - exact).abs().max().item()
+    print(
+        f"deep_gemm.tf32_hc_prenorm_gemm (projection + sum of squares only): {prenorm_ms:.3f} ms, "
+        f"max |projection - fp64| {prenorm_err:.2e} (fp32 matmul at highest: {ieee_err:.2e})"
+    )
 
     reference = None
     for precision in ["ieee", "tf32x3", "tf32"]:
