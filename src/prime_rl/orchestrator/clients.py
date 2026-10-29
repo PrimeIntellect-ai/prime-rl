@@ -220,6 +220,17 @@ class AdminPlane:
         resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
+    async def reset_weight_transfer(self, stale_trainer_instances: list[str]) -> None:
+        """Make every engine drop its NIXL transfer plan with a replaced trainer. The next update
+        pulls from a trainer table whose instance is not listed."""
+        await _post_all(
+            self.clients,
+            "/reset_weight_transfer",
+            json={"stale_trainer_instances": stale_trainer_instances},
+            timeout_s=ADMIN_TIMEOUT_S,
+            retry=False,
+        )
+
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()

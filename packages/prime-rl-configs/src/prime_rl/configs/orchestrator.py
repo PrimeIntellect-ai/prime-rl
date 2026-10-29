@@ -584,8 +584,6 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("orchestrator.trainer_recovery requires orchestrator.batch_journal = true")
         if self.rollout_transport.type != "zmq":
             raise ValueError("orchestrator.trainer_recovery requires the ZMQ rollout transport")
-        if self.weight_broadcast.type == "nixl":
-            raise ValueError("orchestrator.trainer_recovery does not support NIXL weight broadcast yet")
         if self.weight_broadcast.type == "nccl" and not self.weight_broadcast.recoverable:
             raise ValueError("orchestrator.trainer_recovery requires weight_broadcast.recoverable = true with NCCL")
         return self

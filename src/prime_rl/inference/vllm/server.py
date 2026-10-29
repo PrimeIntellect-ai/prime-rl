@@ -73,6 +73,18 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/reset_weight_transfer")
+async def reset_weight_transfer(request: Request):
+    """Drop the NIXL transfer plan with a replaced trainer (its staging buffers are gone)."""
+    data = await request.json()
+    async with request.app.state.weight_update_lock:
+        await engine_client(request).collective_rpc(
+            "reset_weight_transfer",
+            args=(data["stale_trainer_instances"],),
+        )
+    return {"status": "ok"}
+
+
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
     """Wrapper around vLLM's /v1/load_lora_adapter.

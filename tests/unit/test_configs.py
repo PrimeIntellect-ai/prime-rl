@@ -754,7 +754,8 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
 
 
 def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
-    """[trainer_recovery] reaches both sub-configs, journals batches and makes NCCL recoverable."""
+    """[trainer_recovery] reaches both sub-configs, journals batches, makes NCCL recoverable and
+    accepts NIXL."""
     import json
 
     base = {
@@ -772,6 +773,9 @@ def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
         )
     with pytest.raises(ValueError, match="batch_journal"):
         RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "orchestrator": {"batch_journal": False}})
+    nixl = RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "weight_broadcast": {"type": "nixl"}})
+    assert nixl.orchestrator.trainer_recovery == nixl.trainer.recovery
+    assert nixl.orchestrator.weight_broadcast.type == "nixl"
 
     config = RLConfig.model_validate({**base, "ckpt": {"interval": 5}})
     assert config.trainer.recovery.max_restarts == 2
