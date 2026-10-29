@@ -153,7 +153,8 @@ def bind_process_to_gpu_numa_node() -> None:
         bus_id = bus_id.decode()
     domain, rest = bus_id.split(":", 1)
     sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
-    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    numa_path = Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node")
+    numa_node = int(numa_path.read_text()) if numa_path.exists() else -1
     if numa_node < 0:
         logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
         return
