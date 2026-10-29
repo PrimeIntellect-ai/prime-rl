@@ -35,6 +35,10 @@ DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
     "TORCH_FR_DUMP_TEMP_FILE": f"/tmp/nccl_trace_{os.getuid()}_rank_",
 }
 
+# torchrun's c10d rendezvous shares one store across restarts unless this is set; workers then
+# key every restart's process group setup alike and can read a failed group's NCCL unique ID.
+RESTARTABLE_TORCHRUN_ENV_VARS: dict[str, str] = {"TORCH_DISABLE_SHARE_RDZV_TCP_STORE": "1"}
+
 DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
@@ -70,16 +74,27 @@ def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int], list[int]
 
 
 def torchrun_cmd(
-    module: str, config_path: Path, nproc_per_node: int, log_dir: Path, ranks_filter: list[int]
+    module: str,
+    config_path: Path,
+    nproc_per_node: int,
+    log_dir: Path,
+    ranks_filter: list[int],
+    max_restarts: int = 0,
 ) -> list[str]:
-    """Single-node torchrun command for a trainer module."""
+    """Single-node torchrun command for a trainer module. With ``max_restarts``, torchrun stops
+    every worker when one fails and starts a replacement group, up to that many times; run it
+    with ``RESTARTABLE_TORCHRUN_ENV_VARS``."""
     from prime_rl.utils.utils import get_free_port
 
+    # The static rendezvous serves every restart from one store without a per-attempt prefix, so
+    # a replacement rank can read the failed group's NCCL unique ID; c10d starts a fresh store.
+    restart_args = [f"--max-restarts={max_restarts}", "--rdzv-backend=c10d"] if max_restarts else []
     return [
         "torchrun",
         "--role=trainer",
         f"--rdzv-endpoint=localhost:{get_free_port()}",
         f"--rdzv-id={uuid.uuid4().hex}",
+        *restart_args,
         # Pipe all logs to file, and only master rank logs to stdout
         f"--log-dir={log_dir / 'trainer' / 'torchrun'}",
         f"--local-ranks-filter={','.join(map(str, ranks_filter))}",
