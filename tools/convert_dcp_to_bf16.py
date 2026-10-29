@@ -20,7 +20,8 @@ from transformers import PretrainedConfig
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
-from prime_rl.trainer.model import get_model, setup_processor, setup_tokenizer
+from prime_rl.trainer.model import get_model, setup_tokenizer
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
 from prime_rl.utils.weights import convert_state_dict_to_hf, group_by_layer, resolve_wire_dtype

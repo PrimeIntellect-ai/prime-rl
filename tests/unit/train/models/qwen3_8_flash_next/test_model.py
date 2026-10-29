@@ -13,7 +13,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
 )
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import HyperConnection
 from prime_rl.trainer.perf import FlopCounter
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder
+from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 
 
 @pytest.fixture(params=[False, True], ids=["text", "composite"])
