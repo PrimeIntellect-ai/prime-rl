@@ -110,14 +110,17 @@ def plan_replay(
             raise ValueError("Restored position does not follow the restored checkpoint")
         if len(checkpoint.batch.hashes) != data_world_size:
             raise ValueError("Restored checkpoint has a different data world size")
+        # The release marker names the last checkpoint whose batches were deleted. A newer commit
+        # may not have written it yet (the trainer failed in between); its batch is still retained.
         marker = journal.path / session / "checkpoint.json"
-        if marker.exists():
-            committed = msgspec.json.decode(marker.read_bytes(), type=BatchCheckpoint)
-            validate_checkpoint(committed)
-            if committed != checkpoint:
-                raise ValueError("Restored checkpoint does not match the journal's committed checkpoint")
-        elif journal.record(checkpoint.batch.batch_id) != checkpoint.batch:
-            raise ValueError("Restored checkpoint hashes do not match the journal")
+        committed = msgspec.json.decode(marker.read_bytes(), type=BatchCheckpoint) if marker.exists() else None
+        if committed != checkpoint:
+            try:
+                retained = journal.record(checkpoint.batch.batch_id)
+            except FileNotFoundError:
+                raise ValueError("Restored checkpoint is older than the journal's committed checkpoint") from None
+            if retained != checkpoint.batch:
+                raise ValueError("Restored checkpoint hashes do not match the journal")
     elif origin is None or SessionOrigin(group.start_step, checkpoint) != origin:
         raise ValueError(
             "Restored checkpoint is neither committed in this producer session nor the position it started from"

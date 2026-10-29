@@ -91,6 +91,23 @@ def test_replay_plan_starts_after_checkpoint(retained_batches):
     assert journal.read(records[2].batch_id) == [b"2:0", b"2:1"]
 
 
+def test_replay_plan_accepts_commit_before_release_marker(retained_batches):
+    """A trainer can fail after recording its checkpoint's batch but before the journal's
+    release marker names it; that checkpoint's batch is still retained."""
+    journal, session, group, records = retained_batches
+    path = journal.path.parent / "checkpoints" / "step_2" / "trainer"
+    path.mkdir(parents=True)
+    checkpoint = BatchCheckpoint(2, records[2])
+    (path / "batch.json").write_bytes(msgspec.json.encode(checkpoint))
+    replacement = TrainerGroup(uuid4().hex, 4, 3, checkpoint)
+    assert plan_replay(journal, replacement, session, None, through=3, data_world_size=2).batches == records[3:]
+    # The marker's checkpoint stays valid, but an older one lost its batches
+    assert plan_replay(journal, group, session, None, through=3, data_world_size=2).batches == records[2:]
+    older = TrainerGroup(uuid4().hex, 4, 1, BatchCheckpoint(0, records[0]))
+    with pytest.raises(ValueError, match="older"):
+        plan_replay(journal, older, session, None, through=3, data_world_size=2)
+
+
 @pytest.mark.parametrize("fault", ["missing", "corrupt", "foreign", "topology", "checkpoint", "no_checkpoint"])
 def test_replay_plan_fails_closed(retained_batches, fault):
     journal, session, group, records = retained_batches
