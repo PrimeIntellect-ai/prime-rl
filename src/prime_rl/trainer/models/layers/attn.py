@@ -30,7 +30,8 @@ except ImportError:
 try:
     from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
     from flash_attn.cute.interface import _flash_attn_bwd, _flash_attn_fwd
-except ImportError:
+except (ImportError, RuntimeError):
+    # RuntimeError: nvidia_cutlass_dsl refuses to load when the CUDA driver is older than its toolkit flavor
     flash_attn_4_varlen_func = None  # type: ignore
     _flash_attn_bwd = _flash_attn_fwd = None  # type: ignore
 
