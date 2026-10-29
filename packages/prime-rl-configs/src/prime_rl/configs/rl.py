@@ -1,4 +1,3 @@
-import math
 import uuid
 import warnings
 from pathlib import Path
@@ -24,9 +23,9 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
-    MXFP8Config,
     TokenizerConfig,
     TrainerConfig,
+    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import propagate_shared_fields
@@ -424,6 +423,16 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
+        if self.weight_broadcast.type == "modelexpress":
+            dynamo = self.orchestrator.model.client.dynamo
+            if dynamo is not None and dynamo.enabled:
+                raise ValueError(
+                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
+                )
+            if self.inference is not None:
+                extra = self.inference.vllm.model_extra or {}
+                if extra.get("speculative_config") is not None:
+                    raise ValueError("modelexpress does not support speculative decoding.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
@@ -590,10 +599,7 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        pad_to_multiple_of = self.trainer.model.cp
-        if isinstance(self.trainer.model.quantization, MXFP8Config):
-            # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
-            pad_to_multiple_of = math.lcm(pad_to_multiple_of, self.trainer.model.cp * 32)
+        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
         num_train_workers = self.orchestrator.num_train_workers
         env_server_replicas = self.orchestrator.env_server_replicas
         if self.deployment.type == "single_node":  # single-node
@@ -679,7 +685,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -688,11 +694,11 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+                assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         self.orchestrator = self.orchestrator.model_copy(
@@ -732,10 +738,10 @@ class RLConfig(BaseConfig):
             self.orchestrator = self.orchestrator.model_copy(
                 update={"inference_metrics_roles": role_order * self.deployment.num_infer_replicas}
             )
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self

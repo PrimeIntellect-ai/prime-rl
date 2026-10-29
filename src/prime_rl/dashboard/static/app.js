@@ -1512,7 +1512,7 @@ const PANEL_INFO = [
   ["progress/num_tokens", "total tokens", "tokens trained on so far"],
   ["perf/mfu", "MFU", "model FLOPs utilization of the trainer"],
   ["perf/throughput", "throughput", "trainer tokens per second"],
-  ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer"],
+  ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer from all sources, max over ranks"],
   ["time/step", "step time", "wall time of one training step"],
   ["time/wait_for_batch", "wait for batch", "time the trainer waited for the next batch"],
   ["time/wait_for_policy", "wait for policy", "time the orchestrator waited for the next policy"],
