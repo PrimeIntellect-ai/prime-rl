@@ -252,13 +252,15 @@ def _uses_deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor) -> bool:
 
 
 def _deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor, num_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """`x @ fn.T` and the per-token sum of squares, split over K like vLLM so short rows still fill the GPU."""
+    """`x @ fn.T` and the per-token sum of squares, split over K into 1, 4 or 16 parts like vLLM, so short rows
+    still fill the GPU and DeepGEMM JIT-compiles at most three variants."""
     import deep_gemm
 
     k = fn.shape[1]
     token_blocks = triton.cdiv(num_tokens, 64)
     sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
-    num_splits = max(1, min(sm_count // token_blocks, triton.cdiv(k, 64) // 4))
+    splits = max(1, min(sm_count // token_blocks, triton.cdiv(k, 64) // 4))
+    num_splits = 1 if splits == 1 else 4 if splits <= 4 else 16
     projection = x.new_empty(num_splits, num_tokens, fn.shape[0], dtype=torch.float32)
     sqrsum = x.new_empty(num_splits, num_tokens, dtype=torch.float32)
     deep_gemm.tf32_hc_prenorm_gemm(x.view(num_tokens, k), fn.float(), projection, sqrsum, num_splits)
