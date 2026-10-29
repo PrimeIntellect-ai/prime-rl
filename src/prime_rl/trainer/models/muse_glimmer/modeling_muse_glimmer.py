@@ -69,8 +69,10 @@ class MuseGlimmerAttention(FlashAttention):
         self.query_scale = config.query_scale
         self.gate_proj = nn.Linear(config.hidden_size, config.num_attention_heads * config.head_dim, bias=False)
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
-        partitions = super().muon_head_partitions(heads_per_block)
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = super().muon_head_partitions(heads_per_block, split_values)
         partitions[self.gate_proj.weight] = head_partitions(self.num_heads, (self.head_dim,), heads_per_block)
         return partitions
 

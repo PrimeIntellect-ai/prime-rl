@@ -119,8 +119,10 @@ class LagunaFlashAttention(FlashAttention):
             self.g_proj = nn.Linear(config.hidden_size, gate_size, bias=False)
         self.o_proj = nn.Linear(num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
-        partitions = super().muon_head_partitions(heads_per_block)
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = super().muon_head_partitions(heads_per_block, split_values)
         if self.gating:
             # A per-head gate is one row per head, which Newton-Schulz would only normalize
             gate = None if self.gate_per_head else head_partitions(self.num_heads, (self.head_dim,), heads_per_block)

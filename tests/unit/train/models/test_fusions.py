@@ -85,9 +85,11 @@ def test_per_head_muon_partitions_split_packed_qkv_by_heads():
     apply_model_fusions(fused, ["qkv"])
     q_heads, kv_heads = (HEAD_DIM,) * NUM_HEADS, (HEAD_DIM,) * NUM_KV_HEADS
     o_proj = {fused.o_proj.weight: None}
-    assert fused.muon_head_partitions(1) == {fused.qkv_proj.weight: q_heads + kv_heads + kv_heads} | o_proj
+    assert fused.muon_head_partitions(1, True) == {fused.qkv_proj.weight: q_heads + kv_heads + kv_heads} | o_proj
+    values = (NUM_KV_HEADS * HEAD_DIM,)
+    assert fused.muon_head_partitions(1, False) == {fused.qkv_proj.weight: q_heads + kv_heads + values} | o_proj
     blocks = (2 * HEAD_DIM,) * (NUM_HEADS // 2 + NUM_KV_HEADS)
-    assert fused.muon_head_partitions(2) == {fused.qkv_proj.weight: blocks} | o_proj
+    assert fused.muon_head_partitions(2, True) == {fused.qkv_proj.weight: blocks} | o_proj
     # MLA's kv_b_proj holds [W_UK; W_UV] per head
     assert head_partitions(2, (3, 5), 1) == (3, 5, 3, 5)
     assert head_partitions(4, (3, 5), 2) == (16, 16)

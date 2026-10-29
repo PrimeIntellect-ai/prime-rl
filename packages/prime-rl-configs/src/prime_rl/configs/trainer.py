@@ -470,6 +470,36 @@ class MuonConfig(BaseOptimizerConfig):
     heads_per_block: int | None = Field(None, ge=1)
     """Orthogonalize attention projections that hold heads along their rows in blocks of this many heads, each block on its own (per-head Muon; ``1`` = per head): query/key/value (GQA key/value by their own heads), per-channel output gates, and the MLA up-projections ``q_b_proj`` and ``kv_b_proj``. At ``1``, matrices packed in one head ([query; gate], MLA [W_UK; W_UV]) are split too. Output projections (heads along columns) and latent projections stay whole. If None, each projection is one matrix."""
 
+    split_values: bool = True
+    """With ``heads_per_block``, split value projections by head too. If False, only queries and keys (and output gates) are split, as in DeepSeek-V4.1: value projections stay whole, and so does MLA ``kv_b_proj``, which holds keys and values per head."""
+
+    update_rms: float = Field(0.2, gt=0)
+    """RMS of each Muon update matrix (and the Sinkhorn learning-rate correction), so Muon reuses the AdamW learning rate. DeepSeek-V4.1 uses 0.18."""
+
+    newton_schulz: Literal["default", "deepseek_v4"] = "default"
+    """Newton-Schulz schedule. ``default``: dion's 5 steps. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1."""
+
+    decay_bias_and_scales: bool = True
+    """If False, AdamW parameters that are biases (named ``*bias``) or are 1-D and not owned by a normalization module (scaling factors, gates, attention sinks) get no weight decay. Normalization weights are still decayed (DeepSeek-V4.1)."""
+
+    embedding_optimizer: Literal["adamw", "sinkhorn"] = "adamw"
+    """Optimizer for the token embeddings, the LM head and n-gram tables. ``sinkhorn``: Nesterov momentum with Sinkhorn balancing (DeepSeek-V4.1, Algorithm 1), no weight decay, one momentum buffer per parameter."""
+
+    sinkhorn_iters: int = Field(11, ge=1)
+    """Alternating row/column L2 normalizations of the Sinkhorn update. Must be odd, so the last one normalizes rows."""
+
+    sinkhorn_tau: float = Field(1e-3, ge=0)
+    """Rows of the Sinkhorn update whose L2 norm is at most ``sinkhorn_tau`` times the mean row norm are zeroed."""
+
+    ngram_lr_scale: float = Field(1.0, gt=0)
+    """Learning-rate multiplier for n-gram tables under the Sinkhorn update (DeepSeek-V4.1 uses 5 for Engram)."""
+
+    @model_validator(mode="after")
+    def sinkhorn_iters_odd(self):
+        if self.sinkhorn_iters % 2 == 0:
+            raise ValueError(f"optim.sinkhorn_iters must be odd, got {self.sinkhorn_iters}")
+        return self
+
 
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"

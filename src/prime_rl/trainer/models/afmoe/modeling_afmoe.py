@@ -85,8 +85,12 @@ class AfmoeAttentionBase(nn.Module):
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
-        partitions = qkv_head_partitions(self, self.num_heads, self.num_key_value_heads, self.head_dim, heads_per_block)
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = qkv_head_partitions(
+            self, self.num_heads, self.num_key_value_heads, self.head_dim, heads_per_block, split_values
+        )
         return partitions | {self.gate_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
 
     def attention_flops(self, seq_len: int) -> int:

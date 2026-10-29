@@ -51,9 +51,11 @@ class GptOssAttention(nn.Module):
         nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
         self.flash_attn = flash_attn_4_varlen_func
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
         return qkv_head_partitions(
-            self, self.num_attention_heads, self.num_key_value_heads, self.head_dim, heads_per_block
+            self, self.num_attention_heads, self.num_key_value_heads, self.head_dim, heads_per_block, split_values
         )
 
     def attention_flops(self, seq_len: int) -> int:

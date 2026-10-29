@@ -716,7 +716,9 @@ class DeepseekV4Attention(nn.Module):
 
         self.cp_context = CPContext()
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
         # kv_proj is one key/value head shared by all query heads, o_a_proj is partitioned by its groups, q_a_proj
         # and o_b_proj are latent, and the compressor's series are not heads
         whole = [self.q_a_proj, self.kv_proj, self.o_a_proj, self.o_b_proj, self.compressor]

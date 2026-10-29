@@ -50,9 +50,13 @@ class IndexedGatedAttention(nn.Module):
 
             self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
         # The sparse indexer is frozen
-        return qkv_head_partitions(self, self.num_heads, self.num_key_value_heads, self.head_dim, heads_per_block)
+        return qkv_head_partitions(
+            self, self.num_heads, self.num_key_value_heads, self.head_dim, heads_per_block, split_values
+        )
 
     def attention_flops(self, seq_len: int) -> int:
         # The indexer scores every compressed block, forward only (no_grad); attention reads `token_budget` tokens.
