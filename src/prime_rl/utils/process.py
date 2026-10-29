@@ -26,10 +26,6 @@ DEFAULT_COMMON_ENV_VARS: dict[str, str] = {
     "TRITON_CACHE_DIR": f"/tmp/triton-{os.getuid()}",
 }
 
-# The producer that finishes a run several processes log to, e.g. the SFT online-eval
-# process, which drains its final evals after the trainer exits.
-RUN_FINISHER_VAR = "PRL_RUN_FINISHER"
-
 DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     # NCCL flight recorder: on a collective timeout every rank dumps its last 2000 collectives
