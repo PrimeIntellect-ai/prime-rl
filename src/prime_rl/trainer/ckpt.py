@@ -184,6 +184,14 @@ class CheckpointManager:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
 
+    def latest_committed_step(self) -> int | None:
+        """Newest checkpoint whose batch record was written after every rank finished saving it.
+        A step directory alone may hold an interrupted save or only the orchestrator's state."""
+        steps = [
+            step for step in get_all_ckpt_steps(self.ckpt_dir) if (self.get_ckpt_path(step) / "batch.json").exists()
+        ]
+        return max(steps, default=None)
+
     def save_to_path(
         self,
         path: Path,
