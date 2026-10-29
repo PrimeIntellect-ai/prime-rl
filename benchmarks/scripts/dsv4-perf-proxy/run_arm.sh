@@ -19,9 +19,12 @@ fi
 mkdir -p "$LOG_DIR/trainer"
 git -C "$WORKTREE" rev-parse HEAD > "$RUN_DIR/commit.txt"
 git -C "$WORKTREE" status --short > "$RUN_DIR/git_status.txt"
-printf '%q ' "$@" > "$RUN_DIR/overrides.txt"
+OVERRIDES=""
+if (($# > 0)); then
+    OVERRIDES=$(printf '%q ' "$@")
+fi
+echo "$OVERRIDES" > "$RUN_DIR/overrides.txt"
 
-OVERRIDES=$(printf '%q ' "$@")
 srun --jobid="$JOBID" --overlap -N1 -n1 --gres=gpu:8 bash -c "
 set -euo pipefail
 cd $WORKTREE
