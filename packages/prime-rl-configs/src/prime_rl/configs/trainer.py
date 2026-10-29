@@ -576,12 +576,28 @@ class FakeDataLoaderConfig(BaseConfig):
     """Generate separate samples and pack them into a single micro-batch instead of using random tensors."""
 
     doc_len: int | None = Field(None, ge=1)
-    """Length of each generated sample, the last one cut to fill the micro batch. If None, lengths are random up to a micro batch's length / 8. Requires generate_samples."""
+    """Length of each generated sample, the last one cut to fill the micro batch. If None and doc_len_range is None, lengths are random up to a micro batch's length / 8. Requires generate_samples."""
+
+    doc_len_range: tuple[int, int] | None = None
+    """Inclusive range each generated sample's length is drawn from uniformly. A sample that does not fit ends the micro batch instead of being cut, so micro batch lengths vary. Requires generate_samples."""
 
     @model_validator(mode="after")
     def doc_len_requires_generate_samples(self):
         if self.doc_len is not None and not self.generate_samples:
             raise ValueError("data.fake.doc_len requires data.fake.generate_samples")
+        return self
+
+    @model_validator(mode="after")
+    def validate_doc_len_range(self):
+        if self.doc_len_range is None:
+            return self
+        if not self.generate_samples:
+            raise ValueError("data.fake.doc_len_range requires data.fake.generate_samples")
+        if self.doc_len is not None:
+            raise ValueError("data.fake.doc_len and data.fake.doc_len_range are mutually exclusive")
+        min_len, max_len = self.doc_len_range
+        if not 1 <= min_len <= max_len:
+            raise ValueError(f"data.fake.doc_len_range must satisfy 1 <= min <= max, got {self.doc_len_range}")
         return self
 
 

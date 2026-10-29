@@ -73,7 +73,7 @@ class TensorMicroBatch(TypedDict):
 
 
 class FakeDataLoader:
-    def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
+    def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int, pad_to_multiple_of: int = 1):
         self.world = get_world()
         self.dp_world_size = dp_world_size
         self.non_dp_world_size = self.world.world_size // self.dp_world_size
@@ -84,6 +84,8 @@ class FakeDataLoader:
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
         self.doc_len = config.doc_len
+        self.doc_len_range = config.doc_len_range
+        self.pad_to_multiple_of = pad_to_multiple_of
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
@@ -113,7 +115,12 @@ class FakeDataLoader:
         sequence_lengths = []
 
         while total_seq_len < self.seq_len:
-            if self.doc_len is not None:
+            if self.doc_len_range is not None:
+                min_len, max_len = self.doc_len_range
+                seq_len_to_generate = torch.randint(min_len, max_len + 1, (1,), generator=generator).item()
+                if sequence_lengths and seq_len_to_generate + total_seq_len > self.seq_len:
+                    break
+            elif self.doc_len is not None:
                 seq_len_to_generate = self.doc_len
             else:
                 # Generate reasonably long documents
@@ -128,9 +135,18 @@ class FakeDataLoader:
             input_ids.append(tmp_input_ids)
             position_ids.append(tmp_position_ids)
 
+        # Loss-masked padding folded into the last sample, as the orchestrator pads real micro batches
+        padding = -total_seq_len % self.pad_to_multiple_of
+        if padding > 0:
+            input_ids.append(torch.randint(0, 120000, (padding,), generator=generator).long())
+            position_ids.append(torch.arange(padding).long())
+            sequence_lengths[-1] += padding
+
         input_ids = torch.cat(input_ids, dim=0)
         position_ids = torch.cat(position_ids, dim=0)
         loss_mask = torch.ones(input_ids.shape[0], dtype=torch.bool)
+        if padding > 0:
+            loss_mask[-padding:] = False
         advantages = torch.randn(input_ids.shape[0], generator=generator)
         inference_logprobs = torch.randn(input_ids.shape[0], generator=generator)
 
@@ -143,7 +159,7 @@ class FakeDataLoader:
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "env_names": ["fake"] * len(sequence_lengths),
             "sequence_lengths": sequence_lengths,
-            "padding": 0,
+            "padding": padding,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
