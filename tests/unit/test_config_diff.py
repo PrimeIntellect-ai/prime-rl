@@ -1,7 +1,7 @@
 from typing import Annotated
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from prime_rl.configs.diff import Frozen, Live, diff_config, frozen_raw_changes, merge_resumed_config
 from prime_rl.configs.orchestrator import OrchestratorConfig

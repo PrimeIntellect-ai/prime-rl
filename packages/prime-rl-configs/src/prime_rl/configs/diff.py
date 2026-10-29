@@ -8,7 +8,7 @@ change to an unmarked field is frozen. A sub-config annotated with ``Frozen()`` 
 with everything below it, live fields included."""
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
