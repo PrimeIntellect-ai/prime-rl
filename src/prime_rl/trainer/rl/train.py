@@ -75,6 +75,7 @@ from prime_rl.trainer.utils import (
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
     get_ckpt_disk_metrics,
+    get_peak_memory_across_ranks,
     prepare_gradient_offload,
     scale_gradients_,
     setup_full_cpu_optimizer_offload,
@@ -731,13 +732,7 @@ def train(config: TrainerConfig):
         mfu_6dn = perf_counter.get_step_mfu(
             perf_counter.flop_counter.flops_per_token_6dn * num_tokens, forward_backward_time
         )
-        # Includes memory outside the caching allocator (symmetric memory, NCCL buffers, CUDA context)
-        free_device_memory, total_device_memory = torch.cuda.mem_get_info()
-        non_torch_memory = (total_device_memory - free_device_memory - torch.cuda.memory_reserved()) / 1024**3
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
-        memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
-        dist.all_reduce(memory, op=dist.ReduceOp.MAX)
-        peak_memory, non_torch_memory = memory.tolist()  # GiB, max over ranks
+        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
