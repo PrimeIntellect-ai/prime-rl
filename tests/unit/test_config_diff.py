@@ -1,7 +1,9 @@
+from typing import Annotated
+
 import pytest
 from pydantic import BaseModel, Field
 
-from prime_rl.configs.diff import FROZEN, LIVE, diff_config, frozen_raw_changes, merge_resumed_config
+from prime_rl.configs.diff import Frozen, Live, diff_config, frozen_raw_changes, merge_resumed_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import ResumeConfig
 
@@ -17,23 +19,23 @@ class OtherLeaf(BaseModel):
 
 class Source(BaseModel):
     name: str
-    weight: float = Field(1.0, json_schema_extra=LIVE)
+    weight: Annotated[float, Live] = 1.0
 
 
 class Algo(BaseModel):
     kind: str = "grpo"
-    penalty: Leaf | None = Field(None, json_schema_extra=LIVE)
+    penalty: Annotated[Leaf | None, Live] = None
 
 
 class Root(BaseModel):
-    live: Leaf = Field(Leaf(), json_schema_extra=LIVE)
+    live: Annotated[Leaf, Live] = Leaf()
     frozen: Leaf = Leaf()
     swappable: Leaf | OtherLeaf = Leaf()
     optional: Leaf | None = None
-    live_optional: Leaf | None = Field(None, json_schema_extra=LIVE)
+    live_optional: Annotated[Leaf | None, Live] = None
     source: list[Source] = [Source(name="math"), Source(name="code")]
     algo: Algo = Algo()
-    default_algo: Algo = Field(Algo(), json_schema_extra=FROZEN)
+    default_algo: Annotated[Algo, Frozen] = Algo()
 
 
 @pytest.mark.parametrize(
