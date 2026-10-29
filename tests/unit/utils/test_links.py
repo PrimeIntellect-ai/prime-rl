@@ -1,11 +1,13 @@
 import asyncio
+import os
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from prime_rl.configs.monitors import PrimeTrainMonitorConfig
-from prime_rl.monitors.prime import PrimeTrainMonitor
+import prime_rl.monitors.prime as prime_module
+from prime_rl.configs.monitors import PrimeMonitorConfig
+from prime_rl.monitors.prime import PrimeMonitor, launch_run
 from prime_rl.utils.links import ATTEMPT_VAR, publish_link, register_links, wait_for_links
 
 
@@ -54,8 +56,8 @@ def test_prime_monitor_without_credentials_runs_disabled(tmp_path, attempt, monk
     if prime_mode is not None:
         monkeypatch.setenv("PRIME_RUNS_MODE", prime_mode)
     warnings: list[str] = []
-    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
-    monitor.logger = SimpleNamespace(warning=warnings.append, info=print)
+    monkeypatch.setattr(prime_module, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    monitor = PrimeMonitor(PrimeMonitorConfig())
     asyncio.run(monitor.init(config=None, output_dir=tmp_path))
     asyncio.run(monitor.finalize())
     assert monitor.run.url is None
@@ -63,7 +65,16 @@ def test_prime_monitor_without_credentials_runs_disabled(tmp_path, attempt, monk
     assert wait_for_links(tmp_path, attempt, ["prime"], lambda: False, timeout=0.0) == {"prime": {}}
 
 
+def test_launch_without_credentials_disables_its_components(monkeypatch, no_prime_key):
+    """The launcher warns once, and its components run the monitor disabled instead
+    of attaching to a run that does not exist."""
+    monkeypatch.setattr(prime_module, "get_logger", lambda: SimpleNamespace(warning=lambda _: None))
+    with launch_run(None, PrimeMonitorConfig()):
+        assert os.environ["PRIME_RUNS_MODE"] == "disabled"
+        assert "RUN_ID" not in os.environ
+
+
 def test_attached_prime_monitor_without_credentials_fails(tmp_path, monkeypatch, no_prime_key):
     monkeypatch.setenv("RUN_ID", "launcher-run")
     with pytest.raises(Exception, match="API key"):
-        asyncio.run(PrimeTrainMonitor(PrimeTrainMonitorConfig()).init(config=None, output_dir=tmp_path))
+        asyncio.run(PrimeMonitor(PrimeMonitorConfig()).init(config=None, output_dir=tmp_path))

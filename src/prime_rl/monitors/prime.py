@@ -3,18 +3,25 @@ from __future__ import annotations
 import asyncio
 import atexit
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import prime_runs as pr
 
-from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
+from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.configs.monitors import PrimeMonitorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
+from prime_rl.utils.links import publish_link, register_links
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_platform_run_path
-from prime_rl.utils.record import read_record, update_record, write_record
+from prime_rl.utils.process import RUN_FINISHER_VAR
+from prime_rl.utils.record import update_record
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -28,40 +35,7 @@ EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 FINISH_TIMEOUT = 60.0
 
 
-def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
-    """Leave the run's platform identity in the run directory for the dashboard's
-    "View on Prime" link."""
-    write_record(get_platform_run_path(output_dir), record)
-
-
-def read_platform_record(output_dir: Path) -> dict[str, Any] | None:
-    return read_record(get_platform_run_path(output_dir))
-
-
-def _merge_platform_record(
-    output_dir: Path,
-    merge: Callable[[dict[str, Any]], dict[str, Any]],
-) -> None:
-    """Locked read-modify-write of the platform record: the trainer and the
-    online-eval process merge into the SAME run.json. Best-effort, see
-    ``update_record``."""
-    update_record(get_platform_run_path(output_dir), merge)
-
-
-def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
-    """Best-effort locked read-modify-write of the platform record: `update`
-    overlays the current record (preserving keys it doesn't set). Use for
-    every writer that shares the file — a naive overwrite drops concurrent
-    writers' keys."""
-    _merge_platform_record(output_dir, lambda record: {**record, **update})
-
-
 OFF_HINT = "turn the monitor off with --no-monitors.prime"
-
-
-def prime_mode() -> str:
-    """$PRIME_RUNS_MODE when set, else online."""
-    return os.getenv(pr.MODE_ENV) or "online"
 
 
 def _base_url() -> str | None:
@@ -71,8 +45,101 @@ def _base_url() -> str | None:
     return base.rstrip("/").removesuffix("/rft") if base else None
 
 
-class PrimeTrainMonitor(Monitor):
+def register(
+    config: OrchestratorConfig | SFTConfig | None, name: str | None, mode: str, id: str | None = None
+) -> pr.Run:
+    """Attach to the platform run ``id``, or register ``config``'s training run."""
+    init_kwargs: dict[str, Any]
+    if id is not None:
+        init_kwargs = {"id": id}
+    elif config is None:
+        # The RFT API requires a base model.
+        init_kwargs = {"name": name, "model": "unknown"}
+    else:
+        wandb_project = config.monitors.wandb.project if config.monitors.wandb else None
+        if isinstance(config, SFTConfig):
+            # SFT trains on a dataset, not on environments, and has no rollouts.
+            environments = []
+            training = pr.TrainingSpec(
+                max_steps=config.max_steps or 0,
+                batch_size=config.data.batch_size,
+                seq_len=config.data.seq_len,
+                wandb_project=wandb_project,
+            )
+        else:
+            environments = [env.env_id for env in config.train.source]
+            training = pr.TrainingSpec(
+                max_steps=config.max_steps or 0,
+                batch_size=config.batch_size,
+                rollouts_per_example=max(
+                    (source.group_size for source in config.train.source), default=config.train.group_size
+                ),
+                seq_len=config.seq_len,
+                wandb_project=wandb_project,
+            )
+        init_kwargs = dict(
+            name=name,
+            model=config.model.name,
+            environments=environments,
+            training=training,
+            config=config.model_dump(exclude_none=True, mode="json"),
+        )
+    try:
+        return pr.init(kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs)
+    except (pr.ConfigurationError, pr.APIError) as e:
+        # An attached run's error is the launcher's to explain.
+        if id is not None:
+            raise
+        if "needs an API key" in str(e):
+            get_logger().warning(
+                "No Prime API key found - the run is not logged to Prime. Authenticate with "
+                f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
+            )
+            return pr.init(kind="train", mode="disabled", finish_timeout=FINISH_TIMEOUT, **init_kwargs)
+        # Registering fails without a team, or for a team outside the external-runs allowlist.
+        raise RuntimeError(
+            f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
+            f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
+        ) from e
+
+
+@contextmanager
+def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
+    """Register the launch's Prime run around starting its components, which attach to
+    it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
+    run failed - the SDK leaves an attached run's failure to the process that
+    registered it. A run a managed launch pre-created (``$RUN_ID``) is the platform's.
+    Without a Prime API key, the components run the monitor disabled."""
+    if prime is None or os.getenv("RUN_ID") or (os.getenv(pr.MODE_ENV) or "online") != "online":
+        yield
+        return
+    run = register(config, prime.name, "online")
+    if run.mode == "disabled":
+        # register already warned; the components need not warn again each.
+        os.environ[pr.MODE_ENV] = "disabled"
+        yield
+        return
+    os.environ["PRL_RUN_ID"] = os.environ["RUN_ID"] = run.id
+    try:
+        yield
+    except BaseException as e:
+        # A failed component exits the launcher with a SystemExit chained to its error.
+        run.fail(e.__cause__ or e, timeout=FINISH_TIMEOUT)
+        raise
+    # The finisher component completes the run; this process only exits.
+    atexit.unregister(run._atexit_hook)
+
+
+class PrimeMonitor(Monitor):
     """Logs metrics and episodes to the Prime platform through ``prime_runs``.
+
+    A training run's processes log to one Prime training run: the ``rl`` or ``sft``
+    launcher registers it (``launch_run``) and its components attach through ``$RUN_ID``.
+    A component started without a launcher registers its own.
+    ``$PRL_RUN_FINISHER`` names the process that finishes a shared run; the others
+    only flush. A standalone eval instead opens one evaluation per env and epoch when
+    the epoch starts (``log_eval_plan``), streams its episodes into it, and finishes
+    it with the epoch's aggregates (``log_eval_epoch``).
 
     The run handle owns the RFT lifecycle (register or attach, finalize), the
     per-step metrics POSTs, the episode uploads to Prime Traces, and the
@@ -88,91 +155,51 @@ class PrimeTrainMonitor(Monitor):
     and backpressure, so they never stall the loop.
     """
 
-    config: PrimeTrainMonitorConfig
-    run: pr.Run
+    config: PrimeMonitorConfig
 
-    async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
-        init_kwargs: dict[str, Any]
-        if run_id := os.getenv("RUN_ID"):
-            # A managed launch pre-created the platform run and injected its id -
-            # attach instead of registering a duplicate. The platform owns the
-            # attached run's failure/completion marking; a clean finish() is
-            # delivered best-effort and does not by itself mark it completed.
-            init_kwargs = {"id": run_id}
-        elif isinstance(config, SFTConfig):
-            # SFT trains on a dataset, not on environments, and has no rollouts - the
-            # platform run is registered without both.
-            init_kwargs = dict(
-                name=self.config.name,
-                model=config.model.name,
-                environments=[],
-                training=pr.TrainingSpec(
-                    max_steps=config.max_steps or 0,
-                    batch_size=config.data.batch_size,
-                    seq_len=config.data.seq_len,
-                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
-                ),
-                config=config.model_dump(exclude_none=True, mode="json"),
-            )
-        elif config is not None:
-            init_kwargs = dict(
-                name=self.config.name,
-                model=config.model.name,
-                environments=[env.env_id for env in config.train.source],
-                training=pr.TrainingSpec(
-                    max_steps=config.max_steps or 0,
-                    batch_size=config.batch_size,
-                    rollouts_per_example=max(
-                        (source.group_size for source in config.train.source), default=config.train.group_size
-                    ),
-                    seq_len=config.seq_len,
-                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
-                ),
-                config=config.model_dump(exclude_none=True, mode="json"),
-            )
-        else:
-            # The RFT API requires a base model; "unknown" is what the
-            # pre-SDK register sent for a config-less init.
-            init_kwargs = {"name": self.config.name, "model": "unknown"}
-
-        def init_run(mode: str) -> pr.Run:
-            return pr.init(kind="train", mode=mode, base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs)
-
-        try:
-            self.run = await asyncio.to_thread(init_run, prime_mode())
-        except (pr.ConfigurationError, pr.APIError) as e:
-            # An attached run's error is the launcher's to explain.
-            if "id" in init_kwargs:
-                raise
-            if "needs an API key" not in str(e):
-                # Registering fails without a team, or for a team outside the external-runs allowlist.
-                raise RuntimeError(
-                    f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
-                    f"`prime switch` (or set PRIME_TEAM_ID), or {OFF_HINT}"
-                ) from e
-            self.logger.warning(
-                "No Prime API key found - the run is not logged to Prime. Authenticate with "
-                f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
-            )
-            self.run = await asyncio.to_thread(init_run, "disabled")
+    async def init(self, config: BaseConfig | None, output_dir: Path, producer: str | None = None) -> None:
+        self.output_dir = output_dir
+        self.producer = producer
+        self.mode = mode = os.getenv(pr.MODE_ENV) or "online"
+        self.run: pr.Run | None = None
+        # (env, step) -> its open evaluation; None once opening it failed, so the epoch's
+        # episodes do not retry the platform on every arrival
+        self.runs: dict[tuple[str, int], pr.Run | None] = {}
+        if isinstance(config, EvalConfig):
+            await self._init_evaluations(config)
+            return
+        # The SFT online-eval process and the RL trainer log into the run their launcher registers.
+        attaches = isinstance(config, (SFTOnlineEvalConfig, TrainerConfig))
+        # The RL orchestrator outlives its trainer, so it finishes their shared run.
+        self.finisher = "orchestrator" if isinstance(config, TrainerConfig) else producer
+        run_id = os.getenv("RUN_ID")
+        if attaches and run_id is None and mode == "online":
+            raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")
+        # The launcher registered the run (or a managed launch pre-created it) - attach
+        # instead of registering a duplicate. The registering process owns the attached
+        # run's failure marking; a clean finish() completes it.
+        train_config = None if attaches else config
+        self.run = await asyncio.to_thread(register, train_config, self.config.name, mode, run_id)
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to Prime run {self.run.id} ({self.run.url}){attached}")
         else:
             self.logger.info("Prime run disabled")
-        if output_dir is not None:
+        if not attaches:
             # Off the event loop: the flock retry must not stall it.
-            await asyncio.to_thread(self._record, output_dir)
+            await asyncio.to_thread(self._record_run)
 
-    def _record(self, output_dir: Path) -> None:
-        register_links(output_dir, PRIME_LINKS, 1 if self.run.url else 0)
+    def _record_run(self) -> None:
+        register_links(self.output_dir, "prime", 1 if self.run.url else 0)
         if self.run.url:
-            # Merge, not overwrite: a concurrent eval process (SFT online evals share
-            # the trainer's run dir) may already have written its evaluations record.
-            update_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
-            publish_link(output_dir, PRIME_LINKS, "run", self.run.url)
+            record = {"kind": "train", "id": self.run.id, "url": self.run.url}
+            update_record(get_platform_run_path(self.output_dir), lambda _: record)
+            publish_link(self.output_dir, "prime", "run", self.run.url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        # A standalone eval's evaluations carry their own aggregates (``log_eval_epoch``).
+        if self.run is None:
+            return
         # The SDK also drops non-finite values, but silently; sanitize first so
         # the dropped paths are named in the log.
         metrics, dropped = sanitize(metrics)
@@ -189,41 +216,45 @@ class PrimeTrainMonitor(Monitor):
         stamps at emit time."""
         if subset != "all" or not episodes:
             return
-        # A queue put that can block briefly under backpressure - off the loop.
-        await asyncio.to_thread(self.run.log_episodes, episodes)
+        if self.run is not None:
+            # A queue put that can block briefly under backpressure - off the loop.
+            await asyncio.to_thread(self.run.log_episodes, episodes)
+            return
+        by_env: dict[str, list[vf.Episode]] = {}
+        for episode in episodes:
+            if episode.env.name is not None:
+                by_env.setdefault(episode.env.name, []).append(episode)
+        for env_name, batch in by_env.items():
+            run = await self.run_for(env_name, step)
+            if run is not None:
+                await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
 
     async def finalize(self, paused: bool = False) -> None:
-        # Drains queued uploads so the final step's metrics and episodes land,
-        # then finalizes (idempotent on the platform side); an attached run's
-        # failure marking stays with the launcher. A paused run only drains and
-        # stays open: it continues on resume, and its owner sets its status.
-        await asyncio.to_thread(self.run.flush if paused else self.run.finish)
+        # An epoch the run did not finish leaves its evaluation open: close it as cancelled.
+        for (env_name, step), run in self.runs.items():
+            if run is None or run.finished:
+                continue
+            try:
+                await asyncio.to_thread(run.finish, status=pr.RunStatus.CANCELLED, error="interrupted")
+            except Exception as e:
+                self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
+        if self.run is None:
+            return
+        if paused or os.getenv(RUN_FINISHER_VAR, self.finisher) != self.producer:
+            # Drain only: a paused run continues on resume, and a shared run is finished
+            # by the process that outlives this one. A clean exit is not a crash.
+            await asyncio.to_thread(self.run.flush, FINISH_TIMEOUT)
+            atexit.unregister(self.run._atexit_hook)
+            return
+        # Drains queued uploads so the final step's metrics and episodes land, then
+        # finalizes (idempotent on the platform side); an attached run's failure
+        # marking stays with the launcher.
+        await asyncio.to_thread(self.run.finish)
 
-
-class PrimeEvalMonitor(Monitor):
-    """Streams each eval epoch to the Prime platform through ``prime_runs``: one
-    evaluation per env and step, opened when the epoch starts (``log_eval_plan``), fed
-    every episode as it lands (``log_episodes``) and finished with the epoch's aggregates
-    (``log_eval_epoch``), so the platform page follows the run from its first episode.
-
-    Under a managed launch ($RUN_ID) the epoch's ``eval/{env}/...`` metrics ALSO go to
-    the parent training run, which is what the run dashboard groups into its `eval`
-    section. The orchestrator's in-process evals reach it through the train monitor, but
-    an eval process of its own (SFT online evals) has no other way there, so without
-    this the run shows every metric group except the one its evals produced."""
-
-    config: PrimeEvalMonitorConfig
-
-    async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
-        self.mode = prime_mode()
-        self.model: str = config.model if config is not None else "unknown"
-        self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
+    async def _init_evaluations(self, config: EvalConfig) -> None:
+        self.model: str = config.model
+        self.sources = {source.resolved_name: source for source in config.source}
         self.run_id = os.getenv("PRL_RUN_ID")
-        self.output_dir = output_dir
-        # (env, step) -> its open evaluation; None once opening it failed, so the epoch's
-        # episodes do not retry the platform on every arrival
-        self.runs: dict[tuple[str, int], pr.Run | None] = {}
-        self.parent: pr.Run | None = None
         self._lock = asyncio.Lock()
         self.evaluation_id = os.getenv(EVAL_ID_VAR)
         if self.evaluation_id and len(self.sources) != 1:
@@ -231,62 +262,17 @@ class PrimeEvalMonitor(Monitor):
                 f"${EVAL_ID_VAR} names one platform evaluation, so the run needs "
                 f"exactly one eval source (got {len(self.sources)})"
             )
-        if self.mode == "online":
-            self.logger.info("Streaming eval epochs to the Prime platform")
-            self.parent = await asyncio.to_thread(self._attach_parent)
-            if output_dir is not None:
-                # Merge, not overwrite: when the eval process shares the
-                # trainer's run dir (SFT online evals), the train record's
-                # platform link (kind/id/url) must survive; a standalone
-                # eval keeps the plain eval-shaped record. Locked RMW.
-                def _eval_init_update(record: dict[str, Any]) -> dict[str, Any]:
-                    if record.get("kind") == "train":
-                        record.setdefault("evaluations", {})
-                        record["run_id"] = self.run_id
-                        return record
-                    return {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
+        online = self.mode == "online"
+        self.logger.info("Streaming eval epochs to the Prime platform" if online else "Prime evaluations disabled")
 
-                # Off the event loop: the flock retry must not stall it.
-                await asyncio.to_thread(_merge_platform_record, output_dir, _eval_init_update)
-        else:
-            self.logger.info("Prime evaluations disabled")
-        if output_dir is not None:
-            expected = len(self.sources) if self.mode == "online" else 0
-            await asyncio.to_thread(register_links, output_dir, PRIME_EVAL_LINKS, expected)
+        def record() -> None:
+            if online:
+                record = {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
+                update_record(get_platform_run_path(self.output_dir), lambda _: record)
+            register_links(self.output_dir, "prime", len(self.sources) if online else 0)
 
-    def _attach_parent(self) -> pr.Run | None:
-        """The parent training run this eval process belongs to, for metrics only.
-        Blocking: runs in a worker thread.
-
-        Attaching is a local handle, not a request, so a run that turns out to be
-        unreachable costs the eval nothing. The caller owns the run's lifecycle: we
-        drop the SDK's atexit crash hook, because an eval process that exits while the
-        trainer is still going would otherwise report the WHOLE run failed."""
-        run_id = os.getenv("RUN_ID")
-        if not run_id:
-            return None
-        run = pr.init(
-            kind="train",
-            mode=self.mode,
-            base_url=_base_url(),
-            id=run_id,
-            finish_timeout=FINISH_TIMEOUT,
-        )
-        atexit.unregister(run._atexit_hook)  # the SDK's own unregister handle
-        self.logger.info(f"Logging eval metrics to parent training run {run.id}")
-        return run
-
-    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
-        """An epoch's aggregates (``eval/{env}/...``) onto the parent training run.
-        Only there: a standalone eval has no parent, and the per-epoch evaluation
-        carries its own aggregates through ``log_eval_epoch``."""
-        if self.parent is None:
-            return
-        metrics, dropped = sanitize(metrics)
-        if dropped:
-            self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        # A queue put that can block briefly under backpressure - off the loop.
-        await asyncio.to_thread(self.parent.log_metrics, metrics, step=step)
+        # Off the event loop: the flock retry must not stall it.
+        await asyncio.to_thread(record)
 
     def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
         """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
@@ -334,19 +320,17 @@ class PrimeEvalMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to open the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
                 self.runs[key] = None
-                if self.output_dir is not None:
-                    await asyncio.to_thread(publish_link, self.output_dir, PRIME_EVAL_LINKS, env_name, None)
+                await asyncio.to_thread(publish_link, self.output_dir, "prime", env_name, None)
                 return None
             self.runs[key] = run
         if run.url:
             attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
             self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
-        if self.output_dir is not None:
-            # Off the event loop: the flock retry must not stall it.
-            await asyncio.to_thread(self._record, env_name, step, run)
+        # Off the event loop: the flock retry must not stall it.
+        await asyncio.to_thread(self._record_evaluation, env_name, step, run)
         return run
 
-    def _record(self, env_name: str, step: int, run: pr.Run) -> None:
+    def _record_evaluation(self, env_name: str, step: int, run: pr.Run) -> None:
         if run.url:
 
             def update(record: dict[str, Any]) -> dict[str, Any]:
@@ -355,26 +339,16 @@ class PrimeEvalMonitor(Monitor):
                 record.setdefault("evaluations", {})[env_name] = {"step": step, "id": run.id, "url": run.url}
                 return record
 
-            _merge_platform_record(self.output_dir, update)
-        publish_link(self.output_dir, PRIME_EVAL_LINKS, env_name, run.url)
+            update_record(get_platform_run_path(self.output_dir), update)
+        publish_link(self.output_dir, "prime", env_name, run.url)
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
-        await self.run_for(env_name, step, expected)
-
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """Every eval episode as it lands (the ``all`` subset is the arrival stream)."""
-        if kind != "eval" or subset != "all":
-            return
-        by_env: dict[str, list[vf.Episode]] = {}
-        for episode in episodes:
-            if episode.env.name is not None:
-                by_env.setdefault(episode.env.name, []).append(episode)
-        for env_name, batch in by_env.items():
-            run = await self.run_for(env_name, step)
-            if run is not None:
-                await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
+        if self.run is None:
+            await self.run_for(env_name, step, expected)
 
     async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+        if self.run is not None:
+            return
         run = await self.run_for(env_name, step)
         if run is None:
             return
@@ -384,17 +358,3 @@ class PrimeEvalMonitor(Monitor):
             self.logger.warning(f"Failed to finish the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
             return
         self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {run.url}")
-
-    async def finalize(self, paused: bool = False) -> None:
-        # An epoch the run did not finish leaves its evaluation open: close it as cancelled.
-        for (env_name, step), run in self.runs.items():
-            if run is None or run.finished:
-                continue
-            try:
-                await asyncio.to_thread(run.finish, status=pr.RunStatus.CANCELLED, error="interrupted")
-            except Exception as e:
-                self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
-        if self.parent is not None:
-            # Drain only. The parent run belongs to the trainer and the platform: an
-            # eval process must never report its status, not even a clean completion.
-            await asyncio.to_thread(self.parent.flush, FINISH_TIMEOUT)
