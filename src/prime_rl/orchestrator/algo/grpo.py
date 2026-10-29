@@ -54,6 +54,9 @@ class GRPOAlgorithm(Algorithm):
         self.length_weighted_baseline = config.length_weighted_baseline
         self.loss_aggregation = config.loss_aggregation
 
+    def reconfigure(self, config: GRPOAlgoConfig) -> None:
+        self.length_penalty = config.length_penalty
+
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
 

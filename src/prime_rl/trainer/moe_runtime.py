@@ -81,7 +81,7 @@ def _resolve_mega_moe_compute(
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
             "Mega MoE dispatch needs `model.moe.dispatch.max_tokens_per_rank`; the trainer configs derive it from "
-            "the micro batch, set it explicitly when configuring the model on its own."
+            "the micro batch and model.cp, set it explicitly when configuring the model on its own."
         )
     return MegaMoEExpertCompute(
         num_experts=moe.experts.num_experts,
