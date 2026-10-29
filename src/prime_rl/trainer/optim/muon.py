@@ -81,14 +81,14 @@ def _shard_groups(param: Tensor, dim: int) -> list[ProcessGroup]:
     ]
 
 
-def _sinkhorn_task(param: Tensor, state: dict, group: dict):
+def _sinkhorn_task(param: Tensor, state: dict, group: dict, update_rms: float):
     sinkhorn_update(
         to_local(param),
         to_local(param.grad),
         to_local(state["momentum"]),
-        lr=group["lr"],
+        lr=group["lr"] * group["lr_scale"],
         momentum=group["mu"],
-        update_rms=group["update_rms"],
+        update_rms=update_rms,
         tau=group["tau"],
         epsilon=group["epsilon"],
         iters=group["iters"],
@@ -100,7 +100,13 @@ def _sinkhorn_task(param: Tensor, state: dict, group: dict):
 
 
 class Muon(dion.Muon):
-    """dion's Muon with one more algorithm: ``sinkhorn`` groups take the Sinkhorn-balanced momentum update."""
+    """dion's Muon with an update RMS of ``update_rms`` and one more algorithm: ``sinkhorn`` groups take the
+    Sinkhorn-balanced momentum update, with their lr times ``lr_scale``. Both scales apply inside the step, so the
+    groups' lr stays the scheduled lr."""
+
+    def __init__(self, *args, update_rms: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.update_rms = update_rms
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -112,14 +118,17 @@ class Muon(dion.Muon):
         for group in self.param_groups:
             group["step"] += 1
             groups[group["algorithm"]].append(group)
+        # dion scales Muon updates to RMS 0.2 and decays weights by the group lr: rescale the lr, keep lr * weight_decay
+        scale = self.update_rms / 0.2
+        muon_groups = [
+            dict(group, lr=group["lr"] * scale, weight_decay=group["weight_decay"] / scale) for group in groups["muon"]
+        ]
         sinkhorn_tasks = (
-            AsyncTask(_sinkhorn_task(p, self._get_or_initialize_state(p, "sinkhorn"), group))
+            AsyncTask(_sinkhorn_task(p, self._get_or_initialize_state(p, "sinkhorn"), group, self.update_rms))
             for group in groups["sinkhorn"]
             for p in group["params"]
             if p.grad is not None
         )
-        tasks = chain(
-            self._create_muon_tasks(groups["muon"]), self._create_adamw_tasks(groups["adamw"]), sinkhorn_tasks
-        )
+        tasks = chain(self._create_muon_tasks(muon_groups), self._create_adamw_tasks(groups["adamw"]), sinkhorn_tasks)
         AsyncRuntime(tasks, max_concurrent_tasks=3).run()
         return loss

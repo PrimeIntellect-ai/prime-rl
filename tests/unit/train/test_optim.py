@@ -5,11 +5,12 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch import nn
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.optim import muon_param_groups
-from prime_rl.trainer.optim.muon import newton_schulz_deepseek_v4, sinkhorn_update
+from prime_rl.trainer.optim.muon import Muon, newton_schulz_deepseek_v4, sinkhorn_update
 
 SINKHORN = dict(lr=0.1, momentum=0.9, update_rms=0.18, tau=1e-3, epsilon=1e-20, iters=11)
 
@@ -86,8 +87,41 @@ def test_muon_param_groups_route_dsv41_recipe():
     assert groups() == [("muon", 1.0, 0.1, [(8, 8)]), ("adamw", 1.0, 0.1, adamw_shapes)]
     recipe = groups(update_rms=0.18, decay_bias_and_scales=False, embedding_optimizer="sinkhorn")
     assert recipe == [
-        ("muon", pytest.approx(0.9), pytest.approx(0.1 / 0.9), [(8, 8)]),
+        ("muon", 1.0, 0.1, [(8, 8)]),
         ("adamw", 1.0, 0.1, [(8,)]),  # the norm weight
         ("adamw", 1.0, 0.0, [(2,), (8,)]),  # the sinks and the bias
         ("sinkhorn", 1.0, 0.0, [(32, 8), (32, 8)]),
     ]
+
+
+def test_update_scales_hold_at_the_schedule_floor():
+    def final_step(update_rms, lr_scale):
+        torch.manual_seed(0)
+        weight, embedding = nn.Parameter(torch.randn(16, 8)), nn.Parameter(torch.randn(32, 8))
+        groups = [
+            dict(params=[weight], algorithm="muon", weight_decay=0.1),
+            dict(params=[embedding], algorithm="sinkhorn", weight_decay=0.0, lr_scale=lr_scale, tau=1e-3, iters=11),
+        ]
+        optimizer = Muon(
+            groups,
+            lr=1.0,
+            update_rms=update_rms,
+            fsdp_mesh_dim=0,
+            world_mesh=None,
+            adjust_lr="rms_norm",
+            newton_schulz_func=newton_schulz_deepseek_v4,
+        )
+        scheduler = CosineAnnealingLR(optimizer, T_max=4, eta_min=0.1)
+        for _ in range(4):
+            scheduler.step()
+        assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([0.1, 0.1])
+        before = weight.detach().clone(), embedding.detach().clone()
+        weight.grad, embedding.grad = torch.randn(16, 8), torch.randn(32, 8)
+        optimizer.step()
+        return before[0], weight.detach() - before[0], embedding.detach() - before[1]
+
+    weight, weight_delta, embedding_delta = final_step(0.2, 1.0)
+    _, scaled_weight_delta, scaled_embedding_delta = final_step(0.1, 5.0)
+    decay = -0.1 * 0.1 * weight  # lr * weight_decay does not depend on update_rms
+    torch.testing.assert_close(scaled_weight_delta - decay, 0.5 * (weight_delta - decay))
+    torch.testing.assert_close(scaled_embedding_delta, 2.5 * embedding_delta)

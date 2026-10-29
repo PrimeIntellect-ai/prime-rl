@@ -474,13 +474,13 @@ class MuonConfig(BaseOptimizerConfig):
     """With ``heads_per_block``, split value projections by head too. If False, only queries and keys (and output gates) are split, as in DeepSeek-V4.1: value projections stay whole, and so does MLA ``kv_b_proj``, which holds keys and values per head."""
 
     update_rms: float = Field(0.2, gt=0)
-    """RMS of each Muon update matrix (and the Sinkhorn learning-rate correction), so Muon reuses the AdamW learning rate. DeepSeek-V4.1 uses 0.18."""
+    """RMS of each Muon update matrix (and the Sinkhorn learning-rate correction), so Muon reuses the AdamW learning rate. Applied in the optimizer step, so it holds through the learning-rate schedule. DeepSeek-V4.1 uses 0.18."""
 
     newton_schulz: Literal["default", "deepseek_v4"] = "default"
     """Newton-Schulz schedule. ``default``: dion's 5 steps. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1."""
 
     decay_bias_and_scales: bool = True
-    """If False, AdamW parameters that are biases (named ``*bias``) or are 1-D and not owned by a normalization module (scaling factors, gates, attention sinks) get no weight decay. Normalization weights are still decayed (DeepSeek-V4.1)."""
+    """If False, AdamW parameters that are biases (named ``*bias``) or are 1-D and not owned by a normalization module (a module whose class name contains ``Norm``), such as scaling factors, gates and attention sinks, get no weight decay. Normalization weights are still decayed (DeepSeek-V4.1)."""
 
     embedding_optimizer: Literal["adamw", "sinkhorn"] = "adamw"
     """Optimizer for the token embeddings, the LM head and n-gram tables. ``sinkhorn``: Nesterov momentum with Sinkhorn balancing (DeepSeek-V4.1, Algorithm 1), no weight decay, one momentum buffer per parameter."""
@@ -492,7 +492,7 @@ class MuonConfig(BaseOptimizerConfig):
     """Rows of the Sinkhorn update whose L2 norm is at most ``sinkhorn_tau`` times the mean row norm are zeroed."""
 
     ngram_lr_scale: float = Field(1.0, gt=0)
-    """Learning-rate multiplier for n-gram tables under the Sinkhorn update (DeepSeek-V4.1 uses 5 for Engram)."""
+    """Learning-rate multiplier for n-gram tables under the Sinkhorn update (DeepSeek-V4.1 uses 5 for Engram). Applied in the optimizer step, so it holds through the learning-rate schedule."""
 
     @model_validator(mode="after")
     def sinkhorn_iters_odd(self):

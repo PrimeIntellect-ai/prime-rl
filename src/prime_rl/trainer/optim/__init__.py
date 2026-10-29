@@ -177,6 +177,7 @@ def _create_muon_optimizer(
         epsilon=config.eps,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
+        update_rms=config.update_rms,
         newton_schulz_func=torch.compile(newton_schulz_deepseek_v4, fullgraph=True)
         if config.newton_schulz == "deepseek_v4"
         else None,
@@ -256,12 +257,7 @@ def muon_param_groups(
         else:
             no_decay_params.append(p)
 
-    # dion scales Muon updates to RMS 0.2 and decays weights by the group lr, so scale the lr to the update RMS and
-    # keep lr * weight_decay
-    muon_scale = config.update_rms / 0.2
-    muon_group = dict(
-        algorithm="muon", lr=lr * muon_scale, weight_decay=config.weight_decay / muon_scale, adjust_lr="rms_norm"
-    )
+    muon_group = dict(algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
     param_groups = [dict(params=muon_params, **muon_group)]
     if expert_params:
         experts_mesh_name = "dp_shard_mod_ep" if ep_enabled else None
@@ -274,16 +270,12 @@ def muon_param_groups(
         param_groups.append(dict(params=no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0))
 
     sinkhorn_group = dict(
-        algorithm="sinkhorn",
-        weight_decay=0.0,
-        update_rms=config.update_rms,
-        tau=config.sinkhorn_tau,
-        iters=config.sinkhorn_iters,
+        algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=config.sinkhorn_tau, iters=config.sinkhorn_iters
     )
     if embedding_params:
-        param_groups.append(dict(params=embedding_params, lr=lr, **sinkhorn_group))
+        param_groups.append(dict(params=embedding_params, lr_scale=1.0, **sinkhorn_group))
     if ngram_params:
-        param_groups.append(dict(params=ngram_params, lr=lr * config.ngram_lr_scale, **sinkhorn_group))
+        param_groups.append(dict(params=ngram_params, lr_scale=config.ngram_lr_scale, **sinkhorn_group))
     return param_groups
 
 
