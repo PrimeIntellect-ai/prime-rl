@@ -1,19 +1,15 @@
-# Nemotron 3.5 Super — 200-step real-data RL on 10 nodes (80 H200 GPUs).
-# Next-run recipe: checkpoint every 20 steps, full 150-rollout validation every 40 steps,
-# standard sampling with zero-advantage gating, BEST+LATEST retention, and final HF exports.
-# 4 trainer nodes (CP16/EP16) + 6 inference replicas (TP2/DP4, EP8).
-# Do not launch until source_ref names a pushed commit containing PRL_CRASH_DIAGNOSTICS support.
-# Logs per trainer rank: <run_dir>/diagnostics/trainer-*.log (prime-rl),
-# python-*.log (Torch/stdlib), and events-*.jsonl (EP/chunk/resources).
-# Native/C++ output remains in torchrun's existing per-rank stdout/stderr logs under
-# <run_dir>/logs/attempt_*/trainer/torchrun/; hosted CLI rank filtering does not erase them.
-# Hosted run: prime train configs/advanced/nemotron-3-super/cyberstrike-hosted.toml --volume nemotron-training -y
+# Nemotron 3.5 Super — 200-step real-data RL on 12 nodes (96 H200 GPUs).
+# Checkpoint every 20 steps; 150-rollout validation at step 0 and every 40 steps.
+# Standard sampling, zero-advantage gating, BEST+LATEST retention, final HF export.
+# 4 trainer nodes (CP16/EP16) + 8 one-node inference replicas (TP2/DP4, EP8).
+# Per-rank diagnostics: <run_dir>/diagnostics/; native output remains in torchrun logs.
+# Launch fresh: prime train configs/advanced/nemotron-3-super/cyberstrike-next-run.toml --volume nemotron-training -y
 
 # Base image + source overlay: image provides the heavy wheels (lockfile matches the
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "3e97392c16d38e7a87b4181773c4d3174400d080"
+source_ref = "c307fabab2761c3c29d291582905ad651f7666f0"
 gpu_type = "H200_141GB"
 
 max_steps = 200
@@ -38,12 +34,11 @@ level = "debug"
 [deployment]
 type = "multi_node"
 gpus_per_node = 8
-# Four trainer nodes (32 GPUs) plus six one-node inference replicas (48 GPUs).
-# TP2/DP4 gives four DP schedulers per inference node, 24 total. Keep the proven
-# CP16/EP16 trainer layout; no two-node trainer reduction.
+# Four trainer nodes (32 GPUs) plus eight one-node inference replicas (64 GPUs).
+# TP2/DP4 gives four DP schedulers per inference node, 32 total.
 num_train_nodes = 4
 num_infer_nodes = 1
-num_infer_replicas = 4
+num_infer_replicas = 8
 orchestrator_on_inference = true
 
 [monitors.wandb]
@@ -80,14 +75,10 @@ enable_router_replay = false
 
 [trainer.model]
 attn = "flash_attention_3"
-# cp 8->16 (2026-10-25): trainer was OOM-crash-looping (exit-137 host-RAM OOM from activation
-# offload) at seq_len=655360 on BOTH 2 and 4 nodes -- activation memory is cp-bound, so node
-# count didn't help. cp=16 shards the 640K seq 16-way (40K tok/rank vs 80K) -> ~halves per-rank
-# activation + host-RAM offload, keeping full seq_len. On 32 GPUs: dp_shard=32/(cp16)=2; ep MUST
-# be a multiple of cp (parallel_dims) so ep 8->16 (ep=16 divides dp_shard*cp=32). Risk: dp_shard=2
-# may raise param/optim GPU memory -- verify trainer stays alive (no exit-137) at bring-up.
-cp = 8
-ep = 8
+# CP16 halves the sequence shard to 40,960 tokens/rank, reducing activation offload.
+# EP must be a multiple of CP. Persistent states remain 32-way sharded in this branch.
+cp = 16
+ep = 16
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -695,20 +686,19 @@ keys = [
 idx = [566]
 
 [orchestrator.concurrency]
-# AIMD observes KV, running requests, queue depth, and preemptions. Six inference
-# replicas x DP4 = 24 DP schedulers. initial 512 averages ~21 episodes/scheduler;
-# max 800 averages ~33. This follows the 600->700 probe based on low measured
-# KV, zero waiting, and unsaturated env gates, not a claimed safe ceiling.
+# AIMD observes KV, running requests, queue depth, and preemptions.
+# Eight inference replicas x DP4 = 32 DP schedulers; keep the initial pool at 800
+# and permit growth to 1500. This ceiling is not a measured safe capacity.
 min_inflight = 384
 initial_inflight = 800
-max_inflight = 1200
+max_inflight = 1500
 
 [orchestrator.renderer]
 name = "nemotron-3.5"
 truncate_history_thinking = false
 
 [orchestrator.eval]
-# Run the base-policy eval for comparison, then full 300-rollout evals at
+# Run the base-policy eval for comparison, then full 150-rollout evals at
 # steps 40/80/120/160/200. Completed valid epochs are deduplicated on resume.
 interval = 40
 skip_first_step = false
