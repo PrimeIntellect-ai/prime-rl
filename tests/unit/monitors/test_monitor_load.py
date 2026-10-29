@@ -261,7 +261,7 @@ async def _wandb(tmp_path, monkeypatch):
 # TODO: fix and drop this mark. The SDK uploads one episode at a time, at about 16 ms
 # each here. A thousand episodes logged at once fill its queue, and log() then waits for
 # room (up to 5 s, then drops) - on the orchestrator's arrival path.
-SDK_BACKPRESSURE = pytest.mark.skip(reason="prime_runs blocks log() while its upload queue is full")
+SDK_BACKPRESSURE = pytest.mark.xfail(reason="prime_runs blocks log() while its upload queue is full", strict=True)
 
 
 @pytest.mark.parametrize(
