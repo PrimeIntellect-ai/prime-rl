@@ -1,5 +1,6 @@
 import asyncio
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,3 +48,14 @@ def test_prime_monitor_without_credentials_fails_informatively(tmp_path, monkeyp
     monkeypatch.setenv("HOME", str(tmp_path))
     with pytest.raises(RuntimeError, match=r"prime login.*--no-monitors\.prime"):
         asyncio.run(PrimeMonitor(PrimeMonitorConfig()).init(config=None, output_dir=tmp_path))
+
+
+def test_eval_prime_monitor_without_credentials_fails_at_launch(tmp_path, monkeypatch):
+    monkeypatch.delenv("PRIME_API_KEY", raising=False)
+    monkeypatch.delenv("PRIME_RUNS_MODE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monitor = PrimeMonitor(PrimeMonitorConfig())
+    monitor.output_dir, monitor.mode, monitor.runs = tmp_path, "online", {}
+    eval_config = SimpleNamespace(model="m", source=[])
+    with pytest.raises(RuntimeError, match=r"prime login.*--no-monitors\.prime"):
+        asyncio.run(monitor._init_evaluations(eval_config))
