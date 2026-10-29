@@ -6,11 +6,14 @@ module runs the recorded train episodes through the orchestrator's own sample bu
 (document lengths, packing, token ids) without inference or an orchestrator.
 
 Token ids, loss masks, inference logprobs, branch identity and env names come from the records,
-and temperatures from each trace's recorded sampling config (1.0 if it has none). Records are
-written before scoring, so they carry no advantages: every trace gets one scalar advantage drawn
-from a standard normal seeded by its trace id, spread over its sampled tokens like the
-orchestrator's rollout scalar. The arrays env servers kept for the trainer (routing, sampling
-masks, top logprobs) are not recorded, so replayed batches carry none.
+and temperatures from each trace's recorded sampling config (1.0 if it has none), which can
+differ from the env-level temperature the live orchestrator uses when a trainable seat overrides
+temperature. Records are written before scoring, so they carry no advantages: every trace gets one
+scalar advantage drawn from a standard normal seeded by its trace id, spread over its sampled
+tokens like the orchestrator's rollout scalar. The arrays env servers kept for the trainer
+(routing, sampling masks, top logprobs) are not recorded, so replayed batches carry none.
+Replayed samples always use the RL loss, so algorithms whose ``action_loss_type`` is ``ce`` or
+``ref_kl`` are not supported.
 """
 
 from collections.abc import Callable, Iterable, Iterator, Sequence

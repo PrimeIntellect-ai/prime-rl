@@ -16,7 +16,9 @@ Usage (from the prime-rl repo):
 its training FLOPs, like the orchestrator does. Match `--num-train-workers` to the trainer's data
 parallel size and `--pad-to-multiple-of` to the orchestrator's (the rl entrypoint sets it to
 `model.cp`, or `32 * model.cp` with MXFP8 quantization). A run that set
-`orchestrator.pad_to_seq_len` is reproduced with `--pad-to-multiple-of <seq_len>`.
+`orchestrator.pad_to_seq_len` is reproduced with `--pad-to-multiple-of <seq_len>`. Replayed samples
+always use the RL loss, so runs whose algorithm has `action_loss_type` `ce` or `ref_kl` are not
+supported.
 """
 
 import argparse

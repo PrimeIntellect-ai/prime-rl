@@ -204,7 +204,7 @@ class ReplayDataLoader:
     """Replays packed micro batches recorded on disk (``tools/convert_traces_to_replay_batches.py``),
     cycling through the recorded steps."""
 
-    def __init__(self, directory: Path, seq_len: int, dp_world_size: int, pad_to_multiple_of: int):
+    def __init__(self, directory: Path, start_step: int, seq_len: int, dp_world_size: int, pad_to_multiple_of: int):
         self.world = get_world()
         non_dp_world_size = self.world.world_size // dp_world_size
         self.dp_rank = self.world.rank // non_dp_world_size
@@ -227,7 +227,7 @@ class ReplayDataLoader:
                 f"trainer requires a multiple of {pad_to_multiple_of}. Convert it again with --pad-to-multiple-of "
                 f"{pad_to_multiple_of}."
             )
-        self.batch_counter = 0
+        self.batch_counter = start_step - 1
 
     def wait_for_batch(self) -> None:
         return
