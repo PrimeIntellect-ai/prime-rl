@@ -2,7 +2,7 @@ import math
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -11,6 +11,8 @@ from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightB
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
+    BaseMultiNodeDeploymentConfig,
+    BaseSingleNodeDeploymentConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
@@ -104,20 +106,7 @@ class SharedModelConfig(BaseConfig):
     """VLM configuration. Set this to enable vision-language model support."""
 
 
-class BaseDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
-    """GPUs per node."""
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: int = 1
-    """GPUs allocated to the trainer."""
-
-    num_infer_gpus: int = 1
-    """GPUs allocated to inference."""
-
+class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
         total = self.num_train_gpus + self.num_infer_gpus
@@ -129,20 +118,12 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: int
-    """Training nodes."""
-
+class MultiNodeDeploymentConfig(BaseMultiNodeDeploymentConfig):
     num_infer_nodes: int | None = Field(None, ge=0)
     """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
 
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
-
-    nodes_per_fsdp_group: int | None = None
-    """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
@@ -627,16 +608,6 @@ class RLConfig(BaseConfig):
             num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             if self.deployment.total_infer_nodes > 0:
                 env_server_replicas = self.deployment.total_infer_nodes
-
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.trainer.model.dp_replicate = (
-                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-                )
 
             if (
                 self.inference is not None

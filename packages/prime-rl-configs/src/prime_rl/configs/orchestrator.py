@@ -12,7 +12,7 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
-from prime_rl.configs.diff import LIVE_INSIDE
+from prime_rl.configs.diff import FROZEN, LIVE
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -38,27 +38,27 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0, le=2.0)
+    temperature: float = Field(1.0, ge=0, le=2.0, json_schema_extra=LIVE)
     """Sampling temperature."""
 
-    top_p: float = Field(1.0, gt=0, le=1.0, frozen=True)
+    top_p: float = Field(1.0, gt=0, le=1.0)
     """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
     distribution; the ``rl`` entrypoint auto-enables sampling replay so trainer and
     rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
 
-    top_k: int | None = Field(None, ge=1, frozen=True)
+    top_k: int | None = Field(None, ge=1)
     """Top-k sampling for train rollouts. Truncation triggers sampling replay; top-p alone needs no
     top-k — see docs/inference.md (Sampling Replay)."""
 
-    max_completion_tokens: int | None = None
+    max_completion_tokens: int | None = Field(None, json_schema_extra=LIVE)
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
-    logprobs: int | None = Field(None, ge=1, frozen=True)
+    logprobs: int | None = Field(None, ge=1)
     """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
-    extra_body: dict[str, Any] = {}
+    extra_body: dict[str, Any] = Field({}, json_schema_extra=LIVE)
     """Extra body forwarded with each request to the inference server."""
 
     def truncates_distribution(self) -> bool:
@@ -90,16 +90,16 @@ class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
     runs, ``serve`` — how it's hosted) plus this orchestrator's own per-env knobs."""
 
-    env: SerializeAsAny[vf.EnvConfig] = Field(vf.SingleAgentEnvConfig(), frozen=True)
+    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: vf.ServeConfig = Field(vf.ServeConfig(), frozen=True)
+    serve: vf.ServeConfig = vf.ServeConfig()
     """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config; an unset ``address`` means the spawned server binds an OS-assigned port and publishes it for the orchestrator. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
 
-    name: str | None = Field(None, frozen=True)
+    name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
-    select: vf.SelectConfig = Field(vf.SelectConfig(), frozen=True)
+    select: vf.SelectConfig = vf.SelectConfig()
     """Which of the taskset's tasks this source uses: ``include``/``exclude`` by ``idx``, ``ids``, ``keys`` or ``names``, then ``shuffle``, ``skip`` and ``limit``, applied in that order."""
 
     @model_validator(mode="before")
@@ -230,20 +230,20 @@ class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    ratio: float = Field(1.0, gt=0)
+    ratio: float = Field(1.0, gt=0, json_schema_extra=LIVE)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
-    group_size: int = Field(1, ge=1, frozen=True)
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages. Overrides the
     train group's ``group_size`` for this env, so envs can use different sizes."""
 
-    algo: AlgoConfig = Field(GRPOAlgoConfig(), frozen=True, json_schema_extra=LIVE_INSIDE)
+    algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm for this env: sampling plus the per-token training signal
     (credit assignment and loss routing, fused — its ``type`` names the algorithm).
     Setting only some params keeps the group's algorithm; a different ``type`` is
     this env's own algorithm. Frozen except its live fields (the GRPO ``length_penalty``)."""
 
-    curriculum: CurriculumConfig | None = Field(None, frozen=True)
+    curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
 
@@ -280,17 +280,17 @@ class TrainSourceConfig(EnvConfig):
 
 
 class EvalSourceConfig(EnvConfig):
-    sampling: vf.SamplingConfig = Field(vf.SamplingConfig(), frozen=True)
+    sampling: vf.SamplingConfig = vf.SamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
-    group_size: int = Field(1, ge=1, frozen=True)
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""
 
-    interval: int = Field(100, ge=1)
+    interval: int = Field(100, ge=1, json_schema_extra=LIVE)
     """Step interval at which to evaluate this env."""
 
 
@@ -309,7 +309,7 @@ class SourceGroupConfig(BaseConfig):
     A field the group leaves unset is not passed on, so each group field must default
     to the same value as the source field it feeds."""
 
-    env: vf.SharedEnvConfig = Field(vf.SharedEnvConfig(), frozen=True)
+    env: vf.SharedEnvConfig = vf.SharedEnvConfig()
     """Env knobs that every source inherits: the fields every env and taskset has, such
     as ``retries`` and ``timeout``."""
 
@@ -341,17 +341,17 @@ class TrainConfig(SourceGroupConfig):
     source: list[TrainSourceConfig] = Field(default_factory=list)
     """Training sources."""
 
-    sampling: TrainSamplingConfig = Field(TrainSamplingConfig(), frozen=True)
+    sampling: TrainSamplingConfig = Field(TrainSamplingConfig(), json_schema_extra=FROZEN)
     """Sampling that every training source inherits."""
 
-    select: vf.SelectConfig = Field(vf.SelectConfig(), frozen=True)
+    select: vf.SelectConfig = vf.SelectConfig()
     """Task selection that every training source inherits."""
 
-    group_size: int = Field(1, ge=1, frozen=True)
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example that every training source inherits unless it
     sets its own. ``batch_size`` must be divisible by every source's group size."""
 
-    algo: AlgoConfig = Field(GRPOAlgoConfig(), frozen=True)
+    algo: AlgoConfig = Field(GRPOAlgoConfig(), json_schema_extra=FROZEN)
     """Training algorithm that every training source inherits. Defaults to ``grpo``."""
 
     @model_validator(mode="after")
@@ -371,14 +371,14 @@ class EvalSourcesConfig(SourceGroupConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
-    sampling: vf.SamplingConfig = Field(default_factory=vf.SamplingConfig, frozen=True)
+    sampling: vf.SamplingConfig = Field(default_factory=vf.SamplingConfig)
     """Sampling that every eval source inherits; can differ from training sampling."""
 
-    select: vf.SelectConfig = Field(vf.SelectConfig(), frozen=True)
+    select: vf.SelectConfig = vf.SelectConfig()
     """Task selection that every eval source inherits, e.g. ``limit = 128`` to evaluate
     128 tasks of each taskset."""
 
-    group_size: int = Field(1, ge=1, frozen=True)
+    group_size: int = Field(1, ge=1)
     """Rollouts per example that every eval source inherits."""
 
     @model_validator(mode="after")
@@ -407,14 +407,14 @@ class ScheduledEvalConfig(EvalSourcesConfig):
     source: list[OnlineEvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources, each with its own step interval."""
 
-    interval: int = Field(100, ge=1, frozen=True)
+    interval: int = Field(100, ge=1)
     """Step interval that every eval source inherits."""
 
-    skip_first_step: bool = Field(False, frozen=True)
+    skip_first_step: bool = False
     """If True, skip the startup eval that otherwise runs before any
     train rollouts."""
 
-    retrigger_on_resume: bool = Field(False, frozen=True)
+    retrigger_on_resume: bool = False
     """If True, re-trigger evals at the checkpoint step on resume (e.g. after a
     crash that left in-flight evals unfinished). By default, assumes a clean
     exit where all evals already completed."""
@@ -440,13 +440,13 @@ class ConcurrencyConfig(BaseConfig):
     in-flight episode cap from engine KV pressure; these fields only bound and
     seed it."""
 
-    initial_inflight: int | None = Field(None, ge=1)
+    initial_inflight: int | None = Field(None, ge=1, json_schema_extra=LIVE)
     """Optional initial in-flight episodes to start from. Set it when a good value is known to skip the initial ramp; otherwise auto-derive a pessimistic bound at runtime."""
 
-    min_inflight: int = Field(1, ge=1)
+    min_inflight: int = Field(1, ge=1, json_schema_extra=LIVE)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: int | None = Field(1024, ge=1)
+    max_inflight: int | None = Field(1024, ge=1, json_schema_extra=LIVE)
     """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
     @model_validator(mode="after")
@@ -465,7 +465,7 @@ class OrchestratorControlConfig(ControlConfig):
 
 
 class OrchestratorConfig(BaseConfig):
-    model: ModelConfig = Field(ModelConfig(), frozen=True)
+    model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
     vLLM deployment (``[orchestrator.model] name = ...`` with
     ``[orchestrator.model.client]``). Algorithm components reference it as
@@ -473,9 +473,9 @@ class OrchestratorConfig(BaseConfig):
 
     train: TrainConfig = TrainConfig()
 
-    tokenizer: TokenizerConfig = Field(TokenizerConfig(), frozen=True)
+    tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = Field(AutoRendererConfig(), frozen=True)
+    renderer: RendererConfig = AutoRendererConfig()
     """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
     training is renderer-only. Defaults to ``"auto"``, which resolves from
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
@@ -484,79 +484,79 @@ class OrchestratorConfig(BaseConfig):
     eval: RLOnlineEvalConfig | None = None
     """Evaluation configuration."""
 
-    log: LogConfig = Field(LogConfig(), frozen=True)
+    log: LogConfig = LogConfig()
 
-    env_vars: EnvVars = Field({}, frozen=True)
+    env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    monitors: TrainMonitorsConfig = Field(TrainMonitorsConfig(), frozen=True)
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
-    collect_inference_metrics: bool = Field(True, frozen=True)
+    collect_inference_metrics: bool = True
     """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
-    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = Field(None, frozen=True)
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
     """P/D role of each policy admin client: labels inference metrics, and prefill engines pause before decode engines on weight updates."""
 
-    ckpt: CheckpointConfig | None = Field(None, frozen=True)
+    ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
 
-    resume: ResumeConfig | None = Field(None, frozen=True)
+    resume: ResumeConfig | None = None
     """Resume the orchestrator from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
 
-    weight_broadcast: WeightBroadcastConfig = Field(FileSystemWeightBroadcastConfig(), frozen=True)
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
-    rollout_transport: TransportConfig = Field(ZMQTransportConfig(), frozen=True)
+    rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
-    env_server_replicas: int | None = Field(None, ge=1, frozen=True)
+    env_server_replicas: int | None = Field(None, ge=1)
     """Replicas of each launcher-managed env server, each publishing its address to
     ``<name>.<replica>.address``; the orchestrator spreads each source's episodes over them,
     least loaded first. None means one server publishing to ``<name>.address``. Set by the
     ``rl`` launcher: multi-node runs start one replica per inference node, so env-server
     memory spreads over all of them."""
 
-    output_dir: Path = Field(default_factory=default_output_dir, frozen=True)
+    output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    dispatch_per_minute: int | None = Field(None, ge=1, frozen=True)
+    dispatch_per_minute: int | None = Field(None, ge=1)
     """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
-    batch_size: int = Field(128, ge=1)
+    batch_size: int = Field(128, ge=1, json_schema_extra=LIVE)
     """Samples to train on per step."""
 
-    constant_trainer_batch_size: bool = Field(True, frozen=True)
+    constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 
-    gc: GCConfig | None = Field(GCConfig(), frozen=True)
+    gc: GCConfig | None = GCConfig()
     """Garbage collection config. Freezes the startup heap, turns off automatic full collections (each one holds the GIL and stalls the event loop for as long as it takes to walk every held episode) and runs one every N steps instead. Young collections still run. Set to null to use Python's default GC behavior."""
 
-    seq_len: int = Field(2048, frozen=True)
+    seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
 
-    num_train_workers: int = Field(1, ge=1, frozen=True)
+    num_train_workers: int = Field(1, ge=1)
     """Trainer data-parallel world size (trainer world size // cp). The orchestrator packs one micro-batch list per DP rank, so this must match the trainer topology. Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs."""
 
-    pad_to_multiple_of: int = Field(1, ge=1, frozen=True)
+    pad_to_multiple_of: int = Field(1, ge=1)
     """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
 
-    pad_to_seq_len: bool = Field(False, frozen=True)
+    pad_to_seq_len: bool = False
     """Pad every packed micro batch to ``seq_len`` instead of to a multiple of ``pad_to_multiple_of``. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
 
-    max_steps: int | None = Field(None, frozen=True)
+    max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    max_staleness: int = Field(8, ge=0)
+    max_staleness: int = Field(8, ge=0, json_schema_extra=LIVE)
     """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
 
-    heartbeat: HeartbeatConfig | None = Field(None, frozen=True)
+    heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
-    control: OrchestratorControlConfig | None = Field(None, frozen=True)
+    control: OrchestratorControlConfig | None = None
     """Serve the orchestrator's control API (pause at a step the trainer accepted, update the
     config live). If None, it takes no control requests."""
 
