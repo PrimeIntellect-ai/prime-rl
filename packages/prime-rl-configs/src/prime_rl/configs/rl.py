@@ -1,4 +1,3 @@
-import math
 import uuid
 import warnings
 from pathlib import Path
@@ -24,9 +23,9 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
-    MXFP8Config,
     TokenizerConfig,
     TrainerConfig,
+    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import propagate_shared_fields
@@ -580,10 +579,7 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        pad_to_multiple_of = self.trainer.model.cp
-        if isinstance(self.trainer.model.quantization, MXFP8Config):
-            # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
-            pad_to_multiple_of = math.lcm(pad_to_multiple_of, self.trainer.model.cp * 32)
+        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
         num_train_workers = self.orchestrator.num_train_workers
         env_server_replicas = self.orchestrator.env_server_replicas
         if self.deployment.type == "single_node":  # single-node

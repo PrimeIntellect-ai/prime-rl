@@ -376,6 +376,47 @@ def test_invalid_moe_runtime_configs_fail(model, message):
         TrainerModelConfig.model_validate(model)
 
 
+@pytest.mark.parametrize(("cp", "expected"), [(1, 262144), (8, 32768)])
+def test_mega_moe_buffer_defaults_to_a_cp_shard(cp, expected):
+    mega_moe = {"type": "mega_moe", "precision": "mxfp8"}
+    rl = TrainerConfig.model_validate({"model": {"seq_len": 262144, "cp": cp, "moe": {"dispatch": mega_moe}}})
+    sft = SFTConfig.model_validate(
+        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"type": "fake", "seq_len": 262144}}
+    )
+
+    assert rl.model.moe.dispatch.max_tokens_per_rank == expected
+    assert sft.model.moe.dispatch.max_tokens_per_rank == expected
+
+
+def test_mega_moe_buffer_covers_mxfp8_padding():
+    # A 10000-token pack pads to 10240 (a multiple of cp * 32), 1280 tokens per rank
+    config = TrainerConfig.model_validate(
+        {
+            "model": {
+                "seq_len": 10000,
+                "cp": 8,
+                "quantization": {"type": "mxfp8"},
+                "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8"}},
+            }
+        }
+    )
+
+    assert config.model.moe.dispatch.max_tokens_per_rank == 1280
+
+
+def test_mega_moe_buffer_smaller_than_a_cp_shard_fails():
+    with pytest.raises(ValidationError, match="must be at least the tokens a rank holds"):
+        TrainerConfig.model_validate(
+            {
+                "model": {
+                    "seq_len": 262144,
+                    "cp": 8,
+                    "moe": {"dispatch": {"type": "mega_moe", "max_tokens_per_rank": 16384}},
+                }
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "removed",
     [
