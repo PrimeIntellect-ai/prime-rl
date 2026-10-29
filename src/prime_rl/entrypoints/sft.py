@@ -212,7 +212,6 @@ def write_slurm_script(
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
             prl_run_id=prl_run_id,
-            prime_run_id=os.environ.get("RUN_ID"),
             wandb_shared=wandb_shared,
             run_name=config.run.name,
             online_eval=online_eval,
@@ -474,11 +473,13 @@ def sft(config: SFTConfig):
 
     from prime_rl.monitors.prime import launch_run
 
+    # On SLURM the job registers the run: the in-job `sft` (single node) or the
+    # batch script's run owner (multi node), so that a live process owns its status.
+    if config.slurm is not None:
+        sft_slurm(config)
+        return
     with launch_run(config, None if config.dry_run else config.monitors.prime):
-        if config.slurm is not None:
-            sft_slurm(config)
-        else:
-            sft_local(config)
+        sft_local(config)
 
 
 def main():

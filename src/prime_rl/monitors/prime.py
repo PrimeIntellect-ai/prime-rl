@@ -107,7 +107,9 @@ def launch_run(config: OrchestratorConfig | SFTConfig, prime: PrimeMonitorConfig
     """Register the launch's Prime run around starting its components, which attach to
     it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
     run failed - the SDK leaves an attached run's failure to the process that
-    registered it. A run a managed launch pre-created (``$RUN_ID``) is the platform's."""
+    registered it, so that process supervises the launch: the local ``rl`` or ``sft``
+    launcher, or a multi-node SLURM job's ``run_owner``. A run a managed launch pre-created
+    (``$RUN_ID``) is the platform's."""
     if prime is None or os.getenv("RUN_ID") or (os.getenv(pr.MODE_ENV) or "online") != "online":
         yield
         return
