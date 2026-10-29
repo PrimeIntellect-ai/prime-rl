@@ -101,6 +101,17 @@ def test_frozen_raw_changes_skips_live_fields(field, algo, frozen):
     assert frozen_raw_changes(root, root.model_dump(), raw) == frozen
 
 
+def test_annotated_live_and_frozen_are_the_same_alias():
+    """``Annotated`` compares metadata by identity, so ``Annotated[T, Live]`` used twice is
+    one alias. Copying a field's annotation keeps the marker."""
+    from typing import Annotated, get_args
+
+    marker = Annotated[int, Live]
+    assert marker is Annotated[int, Live]
+    assert marker.__metadata__[0] is Live
+    assert get_args(marker)[1] is Live
+
+
 def test_frozen_fields_accept_assignment():
     """A launcher may fill in a field that cannot change live, e.g. hosted training
     sets ``resume`` on the parsed config."""
