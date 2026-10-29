@@ -9,7 +9,6 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputL
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.ngram import NGramEmbeddings, NGramTable
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
-from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
@@ -26,6 +25,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen3_8Flash
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
 from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel
+from prime_rl.trainer.models.qwen_vl import materialize_qwen_vl_images
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -346,8 +346,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
 
-    # Same Qwen-VL image processor and placeholder count as Qwen3.5.
-    materialize_images = staticmethod(Qwen3_5ForCausalLM.materialize_images)
+    materialize_images = staticmethod(materialize_qwen_vl_images)
 
     def num_active_params(self) -> int:
         if not self.is_vlm:

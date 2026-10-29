@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
+from prime_rl.trainer.models.qwen_vl import materialize_qwen_vl_images
 from prime_rl.transports.batch import MMImageRef, MMRefs
 
 _IMAGE_URL = (
@@ -27,6 +27,6 @@ def test_qwen_images_materialize_and_validate_expansion():
             }
 
     processor = SimpleNamespace(image_processor=ImageProcessor())
-    assert set(Qwen3_5ForCausalLM.materialize_images(_refs(2), processor)) == {"pixel_values", "image_grid_thw"}
+    assert set(materialize_qwen_vl_images(_refs(2), processor)) == {"pixel_values", "image_grid_thw"}
     with pytest.raises(ValueError, match="placeholder lengths differ"):
-        Qwen3_5ForCausalLM.materialize_images(_refs(1), processor)
+        materialize_qwen_vl_images(_refs(1), processor)

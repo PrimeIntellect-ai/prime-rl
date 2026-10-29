@@ -1,7 +1,11 @@
 """VLMs are the ``_CUSTOM_VLM_MAPPING`` models. They keep the vision encoder at ``model.model.visual``
 and the decoder at ``model.model.language_model``; text models keep the decoder at ``model.model``."""
 
+import base64
+from io import BytesIO
+
 import torch.nn as nn
+from PIL import Image
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.utils.logger import get_logger
@@ -18,6 +22,14 @@ def get_language_model(model: nn.Module) -> nn.Module:
 def get_layer_prefix(model: nn.Module) -> str:
     """Weight key prefix of the decoder layers."""
     return "model.language_model.layers." if hasattr(model.model, "language_model") else "model.layers."
+
+
+def load_image(data_url: str) -> Image.Image:
+    header, separator, payload = data_url.partition(",")
+    if not separator or not header.startswith("data:image/") or ";base64" not in header:
+        raise ValueError("Multimodal training requires base64 data image URLs")
+    with Image.open(BytesIO(base64.b64decode(payload, validate=True))) as image:
+        return image.convert("RGB")
 
 
 def setup_processor(config: ModelConfig):
