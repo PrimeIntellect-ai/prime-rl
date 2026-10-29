@@ -39,6 +39,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.utils import get_free_port
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -103,12 +104,6 @@ def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, time
         time.sleep(0.5)
 
 
-def free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> None:
     """Start a run-scoped ModelExpress server backed by its own Redis."""
     server, redis = MODELEXPRESS_BIN_DIR / "modelexpress-server", MODELEXPRESS_BIN_DIR / "redis-server"
@@ -119,7 +114,7 @@ def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> Non
     state_dir = log_dir / "modelexpress"
     (state_dir / "cache").mkdir(parents=True, exist_ok=True)
 
-    redis_port = free_port()
+    redis_port = get_free_port()
     processes.start(
         "redis",
         [
@@ -385,7 +380,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     )
     modelexpress_vars = {
         "use_nixl_broadcast": mx_broadcast is not None and mx_broadcast.type == "nixl",
-        "use_modelexpress": mx_broadcast is not None,
+        "uses_modelexpress_server": mx_broadcast is not None,
         "launch_modelexpress": mx_broadcast is not None and config.slurm.launch_modelexpress,
         "modelexpress_host": mx_broadcast.host if mx_broadcast is not None else "",
         "modelexpress_port": mx_broadcast.port if mx_broadcast is not None else 0,
