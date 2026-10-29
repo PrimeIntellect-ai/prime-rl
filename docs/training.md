@@ -357,6 +357,8 @@ With `rollouts = true` in the shared `[ckpt]` block (`orchestrator.ckpt.rollouts
 
 The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the rollouts of an env no longer configured are dropped.
 
+A forked process writes the checkpoint, so the orchestrator goes on sampling and training while it is written. Each in-queue rollout and in-flight restore point gets its own file under `checkpoints/step_{n}/orchestrator/rollouts/`. An in-queue rollout that a newer checkpoint still holds is linked from the older checkpoint, not written again.
+
 The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its in-flight and in-queue rollouts need to `checkpoints/step_{n}/orchestrator/arrays/`: those of the in-queue rollouts, and those of each in-flight rollout up to its restore point. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
 
 #### Rollout checkpointing
