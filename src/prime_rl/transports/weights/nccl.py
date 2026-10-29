@@ -265,6 +265,14 @@ class NCCLWeightReceiver(WeightReceiver):
             recoverable=self.config.recoverable,
         )
 
+    # The trainer sends its group's NCCL ID once: joining again would abort the communicators of
+    # workers that already joined.
+    reconnect_retryable = False
+
+    async def reconnect(self) -> None:
+        # Each worker aborts its communicator with the replaced trainer and joins a fresh one.
+        await self.initialize()
+
     async def receive(self, step: int) -> None:
         await self.admin_plane.update_weights(
             self.step_dir(step),
