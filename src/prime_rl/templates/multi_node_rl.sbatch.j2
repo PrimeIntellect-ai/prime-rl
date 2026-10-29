@@ -80,7 +80,6 @@ rm -f "$TRAINER_DONE"{% if num_infer_nodes > 0 %} "$ORCHESTRATOR_DONE"{% endif %
 
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 export PRL_RUN_NAME={{ run_name }}
-export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 
 # Networking
@@ -233,11 +232,16 @@ CLEANUP_SH
 # quoted delimiter passes the script through verbatim, so apostrophes and quotes
 # (including in the shared _launch_*.sh.j2 includes) need no escaping. Nothing in
 # the body reads stdin, which would otherwise eat the rest of the script.
-srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+#
+# The run owner registers the Prime run around the step and fails it when the
+# step fails; every component attaches through the $RUN_ID it exports.
+python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/orchestrator.json srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.
     set -o pipefail
+    # The run owner set $PRL_RUN_ID to the Prime run's id.
+    export WANDB_RUN_ID=$PRL_RUN_ID
 
     # Source environment
     cd $PROJECT_DIR
