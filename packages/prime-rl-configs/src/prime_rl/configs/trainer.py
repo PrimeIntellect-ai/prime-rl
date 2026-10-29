@@ -235,6 +235,14 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
+def rl_micro_batch_multiple(model: "ModelConfig") -> int:
+    """RL micro batches are padded to a multiple of this: one shard per CP rank, and MXFP8 linears quantize
+    grad_output in 32-token blocks per CP rank."""
+    if isinstance(model.quantization, MXFP8Config):
+        return model.cp * 32
+    return model.cp
+
+
 def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int, cp: int) -> int:
     """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
     buffer must hold the rank's full share of the micro batch. Context parallelism splits every micro
@@ -728,10 +736,13 @@ class TrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
-        """RL micro batches are one packed sequence of ``model.seq_len`` tokens, split over the CP ranks."""
+        """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
+        ``rl_micro_batch_multiple`` and split over the CP ranks."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
+            multiple = rl_micro_batch_multiple(self.model)
+            micro_batch_tokens = -(-self.model.seq_len // multiple) * multiple
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, self.model.seq_len, self.model.cp
+                dispatch.max_tokens_per_rank, micro_batch_tokens, self.model.cp
             )
         return self
