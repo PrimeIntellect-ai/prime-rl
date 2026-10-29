@@ -75,6 +75,8 @@ class TensorMicroBatch(TypedDict):
 
 
 class FakeDataLoader:
+    last_batch_id: str | None = None
+
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
         self.world = get_world()
         self.dp_world_size = dp_world_size
@@ -229,6 +231,8 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
 class DataLoader:
     """Receives packed micro batches from the orchestrator, one stream per DP rank."""
 
+    last_batch_id: str | None = None
+
     def __init__(
         self,
         output_dir: Path,
@@ -262,6 +266,10 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        batch_ids = {mb.journal_batch_id for mb in micro_batches}
+        if len(batch_ids) != 1:
+            raise ValueError("Expected one journal batch identity across all micro batches")
+        self.last_batch_id = batch_ids.pop()
         start = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
         get_logger().debug(

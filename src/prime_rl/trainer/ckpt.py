@@ -36,6 +36,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
+from prime_rl.transports.batch.journal import BatchJournal
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
@@ -165,12 +166,19 @@ class AppState(Stateful):
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
+    def __init__(
+        self,
+        output_dir: Path,
+        config: CheckpointConfig,
+        resume: ResumeConfig | None = None,
+        batch_output_dir: Path | None = None,
+    ):
         self.config = config
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
+        self.batch_journal = BatchJournal(batch_output_dir or output_dir)
 
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
         if resume is not None and resume.step is not None:
@@ -298,6 +306,7 @@ class CheckpointManager:
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
+        batch_id: str | None = None,
     ) -> None:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
@@ -305,9 +314,14 @@ class CheckpointManager:
         # re-raise FileExistsError on a parallel FS (see save_to_path).
         if self.world.is_master:
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            (ckpt_path / "batch.json").unlink(missing_ok=True)
         torch.distributed.barrier(group=get_dcp_group())
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        if batch_id is not None:
+            torch.distributed.barrier(group=get_dcp_group())
+            if self.world.is_master:
+                self.batch_journal.commit_checkpoint(ckpt_path, step, batch_id)
         bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
@@ -353,4 +367,4 @@ def setup_ckpt_manager(
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume, batch_output_dir=output_dir)

@@ -187,3 +187,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (None if it has none). The trainer fetches them into ``routed_experts``,
     # ``sampling_mask`` and ``top_logprobs``; None if no sequence has arrays.
     payloads: list[PayloadSlice | None] | None = None
+    journal_batch_id: str | None = None

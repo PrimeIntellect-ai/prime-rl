@@ -41,7 +41,7 @@ class ZMQBatchSender(BatchSender):
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
 
-        buffers = [await asyncio.to_thread(self.encode, micro_batch_list) for micro_batch_list in micro_batch_grid]
+        buffers = await asyncio.to_thread(self.encode_batch, micro_batch_grid, self.current_step)
         identity_to_request = await self._wait_for_requests()
         send_start = time.perf_counter()
         for identity, request in identity_to_request.items():
