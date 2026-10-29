@@ -254,6 +254,7 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            config.pad_to_multiple_of,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 

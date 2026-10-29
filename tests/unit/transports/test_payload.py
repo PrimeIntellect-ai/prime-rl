@@ -171,7 +171,7 @@ def test_fetched_micro_batches_hold_each_branchs_arrays():
 
 def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
     """Explicit values: a top-k head, a mask with sampler logprobs and a plain mask reach
-    the trainer cut to their slices, packed together and padded."""
+    the trainer cut to their slices, packed together and padded by the trainer."""
     server = PayloadServer("127.0.0.1")
 
     def sample(key: str | None, fields: list[str], **arrays) -> TrainingSample:
@@ -215,11 +215,17 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
         np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.ids, np.int32), [5])
         np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.logprobs, np.float32), [0.0])
 
-        [[packed]] = prepare_batch(samples, seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16)
+        [[packed]] = prepare_batch(samples, seq_len=16, num_train_workers=1, bin_cost=sum)
         packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
+        assert sum(packed.sequence_lengths) == 4 * 4
+        DataLoader._pad(SimpleNamespace(pad_to_multiple_of=32), packed)
         assert resolve_payloads([packed], pool)[0] == []
     assert len(packed.top_logprobs.ids) == 3 * 4
+    assert packed.padding == 16
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    for name in ("input_ids", "position_ids", "advantages", "inference_logprobs", "loss_mask", "temperatures"):
+        assert tensor[name].shape == (1, 32)
+    assert not tensor["loss_mask"][0, 16:].any()
     ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
     assert ids.shape == values.shape
     assert ids.shape[0] == sum(packed.sequence_lengths)

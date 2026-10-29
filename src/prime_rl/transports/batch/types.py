@@ -136,6 +136,12 @@ MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
 }
 
 
+# Backfill value per component weight stream when a packed sample doesn't
+# carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
+# means no component (weight 0.0).
+STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
+
+
 def encode_array(value: object) -> memoryview:
     """msgspec ``enc_hook``: a numpy array as its raw bytes."""
     if isinstance(value, np.ndarray):

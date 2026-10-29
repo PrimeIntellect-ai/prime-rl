@@ -1039,10 +1039,15 @@ def test_rl_pad_to_seq_len_requires_a_padding_multiple(seq_len, valid):
         "orchestrator": {"renderer": {"name": "default"}, "pad_to_seq_len": True},
     }
     if valid:
-        assert RLConfig.model_validate(config).orchestrator.pad_to_multiple_of == 32
+        RLConfig.model_validate(config)
     else:
         with pytest.raises(ValidationError, match=r"orchestrator.seq_len \(100\) must be a multiple of 32"):
             RLConfig.model_validate(config)
+
+
+def test_orchestrator_pad_to_multiple_of_is_not_a_field():
+    with pytest.raises(ValidationError, match="pad_to_multiple_of"):
+        OrchestratorConfig.model_validate({"pad_to_multiple_of": 8})
 
 
 def test_shared_and_sub_seq_len_conflict_raises():

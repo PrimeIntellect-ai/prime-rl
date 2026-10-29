@@ -552,11 +552,8 @@ class OrchestratorConfig(BaseConfig):
     num_train_workers: int = Field(1, ge=1)
     """Trainer data-parallel world size (trainer world size // cp). The orchestrator packs one micro-batch list per DP rank, so this must match the trainer topology. Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs."""
 
-    pad_to_multiple_of: int = Field(1, ge=1)
-    """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
-
     pad_to_seq_len: bool = False
-    """Pad every packed micro batch to ``seq_len`` instead of to a multiple of ``pad_to_multiple_of``. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
+    """Pad every packed micro batch to ``seq_len``. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding. Otherwise the trainer pads each micro batch to the multiple its CP degree and quantization need (``pad_to_multiple_of`` on the trainer config)."""
 
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""

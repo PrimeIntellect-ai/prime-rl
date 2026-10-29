@@ -19,6 +19,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.batch.padding import pad_micro_batch
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
@@ -235,8 +236,10 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        pad_to_multiple_of: int,
     ):
         self.world = get_world()
+        self.pad_to_multiple_of = pad_to_multiple_of
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
@@ -262,6 +265,8 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        for micro_batch in micro_batches:
+            self._pad(micro_batch)
         start = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
         get_logger().debug(
@@ -274,6 +279,15 @@ class DataLoader:
         read them has fetched them."""
         delete_payloads(self.payload_urls)
         self.payload_urls = []
+
+    def _pad(self, micro_batch: MicroBatch) -> None:
+        """Pad a received micro batch to the multiple this trainer's CP degree and quantization need. Runs before
+        payloads resolve, so the fetched arrays are extended over the padding too."""
+        for name, dtype in MICRO_BATCH_DTYPES.items():
+            values = getattr(micro_batch, name)
+            if values is not None:
+                setattr(micro_batch, name, np.frombuffer(values, dtype))
+        pad_micro_batch(micro_batch, self.pad_to_multiple_of)
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""

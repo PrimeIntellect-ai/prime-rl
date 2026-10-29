@@ -697,7 +697,6 @@ class RLConfig(BaseConfig):
 
         self.orchestrator = self.orchestrator.model_copy(
             update={
-                "pad_to_multiple_of": self.trainer.pad_to_multiple_of,
                 "num_train_workers": num_train_workers,
                 "env_server_replicas": env_server_replicas,
             }

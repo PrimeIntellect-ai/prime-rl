@@ -3,10 +3,10 @@ import pytest
 
 from prime_rl.orchestrator.batch import (
     _is_multimodal_sample,
-    pad_micro_batch,
     prepare_batch,
     prepare_sample,
 )
+from prime_rl.transports.batch.padding import pad_micro_batch
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, PayloadSlice, TrainingSample
 
 SAMPLE_DTYPES = {
