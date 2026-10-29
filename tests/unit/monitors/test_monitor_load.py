@@ -18,7 +18,6 @@ import wandb
 from prime_runs.sinks import RftMetricsSink, TracesSink
 from prime_runs.worker import UploadWorker
 from prime_traces import TracesClient
-from prime_traces.core.client import GZIP_LEVEL
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
 from verifiers.v1.types import AssistantMessage, Usage, UserMessage
@@ -183,7 +182,7 @@ class FakeTracesAPI:
 
     def upload_batch(self, body, idempotency_key, *, line_format, schema_version=1, context=None, compress=True):
         if compress:
-            gzip.compress(body, compresslevel=GZIP_LEVEL, mtime=0)
+            gzip.compress(body, mtime=0)
         self.lines += body.count(b"\n") + (not body.endswith(b"\n"))
         return {"upload_id": idempotency_key.split(":", 1)[1], "status": "committed"}
 
@@ -258,9 +257,9 @@ async def _wandb(tmp_path, monkeypatch):
     return monitor, lambda: (None, steps)
 
 
-# TODO: fix and drop this mark. The SDK uploads one episode at a time, at about 16 ms
-# each here. A thousand episodes logged at once fill its queue, and log() then waits for
-# room (up to 5 s, then drops) - on the orchestrator's arrival path.
+# TODO: fix and drop this mark. The SDK uploads one episode at a time, and gzips each
+# at level 9 (about 70 ms here). A thousand episodes logged at once fill its queue, and
+# log() then waits for room (up to 5 s) on the orchestrator's arrival path, then drops.
 SDK_BACKPRESSURE = pytest.mark.xfail(reason="prime_runs blocks log() while its upload queue is full", strict=True)
 
 

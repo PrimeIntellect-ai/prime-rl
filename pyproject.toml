@@ -158,9 +158,8 @@ override-dependencies = [
     "nvidia-cutlass-dsl==4.8.0",
     "torch>=2.13.0",
     "openenv-core",
-    # TODO: PyPI release of prime-traces with PrimeIntellect-ai/prime#1109 (orjson records) and
-    # PrimeIntellect-ai/prime#1129 (gzip level 1) asap.
-    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@fce799d75bebf27b6668cdff472288046f8824b6#subdirectory=packages/prime-traces",
+    # TODO: PyPI release of prime-traces with PrimeIntellect-ai/prime#1109 (orjson records) asap.
+    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#subdirectory=packages/prime-traces",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new

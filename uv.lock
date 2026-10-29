@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -164,7 +164,7 @@ overrides = [
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = "==4.8.0" },
     { name = "openenv-core" },
-    { name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=fce799d75bebf27b6668cdff472288046f8824b6" },
+    { name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" },
     { name = "tilelang", specifier = "==0.1.12" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu130" },
@@ -5516,8 +5516,8 @@ wheels = [
 
 [[package]]
 name = "prime-traces"
-version = "0.0.11"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=fce799d75bebf27b6668cdff472288046f8824b6#fce799d75bebf27b6668cdff472288046f8824b6" }
+version = "0.0.10"
+source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
