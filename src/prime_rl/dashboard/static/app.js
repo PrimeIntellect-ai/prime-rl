@@ -441,7 +441,7 @@ function rowsChartHere() {
 const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
 const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
-const PERFORMANCE_METRICS = ["perf/mfu", "time/trainer_step", "time/orchestrator_step", "time/wait_for_batch", "time/wait_for_policy"];
+const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
 // max_vio only exists on MoE models: a regex panel stays away on dense ones
 const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
@@ -1514,14 +1514,10 @@ const PANEL_INFO = [
   ["perf/throughput", "throughput", "trainer tokens per second"],
   ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer from all sources, max over ranks"],
   ["time/step", "step time", "wall time of one training step"],
-  ["time/trainer_step", "trainer step time", "wall time of one RL trainer step"],
-  ["time/orchestrator_step", "orchestrator step time", "wall time of one orchestrator step"],
   ["time/wait_for_batch", "wait for batch", "time the trainer waited for the next batch"],
   ["time/wait_for_policy", "wait for policy", "time the orchestrator waited for the next policy"],
   ["time/forward_backward", "forward / backward", "time of the step's forward and backward passes"],
   ["time/save_ckpt", "checkpoint time", "time spent saving the checkpoint"],
-  ["time/trainer_save_ckpt", "trainer checkpoint time", "time the RL trainer spent saving the checkpoint"],
-  ["time/orchestrator_save_ckpt", "orchestrator checkpoint time", "time the orchestrator spent saving the checkpoint"],
   ["inference/agg/kv_cache_usage_perc/mean", "KV cache usage", "share of the KV cache in use, mean / min / max over the engines"],
   ["inference/agg/num_preemptions_total:rate/sum", "preemptions", "preemptions per second, sum / max over the engines"],
   ["inference/agg/num_requests_running/mean", "running requests", "requests running per engine, mean / min / max"],
@@ -2273,7 +2269,7 @@ function trainTilesHtml() {
     trendTiles("progress/num_tokens", () => "total tokens", fmtCompact, { delta: false });
     trendTiles("perf/throughput", () => "throughput", (v) => (v == null ? "n/a" : `${fmtCompact(Math.round(v))} tok/s`), { delta: false });
     trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
-  } else trendTiles("time/orchestrator_step", () => "step time", fmtDuration, { delta: false });
+  } else trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
   return tiles.length ? `<div class="eval-sec"><div class="eval-sec-title">summary</div><div class="stat-grid sum-grid">${tiles.join("")}</div></div>` : "";
 }
 
