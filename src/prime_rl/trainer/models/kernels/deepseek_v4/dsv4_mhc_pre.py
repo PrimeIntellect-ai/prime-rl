@@ -245,7 +245,6 @@ def _uses_deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor) -> bool:
     return (
         torch.cuda.get_device_capability(x.device)[0] in (9, 10)
         and x.dtype == torch.bfloat16
-        and fn.dtype == torch.float32
         and fn.shape[0] <= 32
         and fn.shape[0] % 8 == 0
         and fn.shape[1] % 64 == 0
@@ -260,9 +259,9 @@ def _deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor, num_tokens: int) ->
     token_blocks = triton.cdiv(num_tokens, 64)
     sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
     num_splits = max(1, min(sm_count // token_blocks, triton.cdiv(k, 64) // 4))
-    projection = fn.new_empty(num_splits, num_tokens, fn.shape[0])
-    sqrsum = fn.new_empty(num_splits, num_tokens)
-    deep_gemm.tf32_hc_prenorm_gemm(x.view(num_tokens, k), fn, projection, sqrsum, num_splits)
+    projection = x.new_empty(num_splits, num_tokens, fn.shape[0], dtype=torch.float32)
+    sqrsum = x.new_empty(num_splits, num_tokens, dtype=torch.float32)
+    deep_gemm.tf32_hc_prenorm_gemm(x.view(num_tokens, k), fn.float(), projection, sqrsum, num_splits)
     return projection.sum(0), sqrsum.sum(0)
 
 
