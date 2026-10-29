@@ -136,7 +136,14 @@ echo "ADMIN_URLS=${ADMIN_URLS}"
 echo "HOSTNAMES=${HOSTNAMES[*]}"
 echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
 
+{% if trainer_max_restarts -%}
+# Trainer recovery restarts every trainer node through torchrun's c10d rendezvous, which ranks
+# nodes by --local-addr (their SLURM node names), not --node-rank. Global rank 0 hosts the
+# weight-broadcast store that inference dials, so MASTER_ADDR is the first trainer node name.
+export MASTER_ADDR=$(printf '%s\n' "${TRAIN_HOSTS[@]}" | LC_ALL=C sort | head -n 1)
+{% else -%}
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
+{% endif -%}
 export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
@@ -534,6 +541,11 @@ else
             --node-rank=$TRAIN_NODE_RANK \
             --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
             --rdzv-id=job_$SLURM_JOB_ID \
+{%- if trainer_max_restarts %}
+            --rdzv-backend=c10d \
+            --local-addr=$SLURMD_NODENAME \
+            --max-restarts={{ trainer_max_restarts }} \
+{%- endif %}
             --log-dir=$LOG_DIR/trainer/torchrun \
             --tee=3 \
             --redirects=3 \

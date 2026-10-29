@@ -32,6 +32,7 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
+    RESTARTABLE_TORCHRUN_ENV_VARS,
     ProcessGroup,
     partition_gpus,
     set_proc_title,
@@ -226,6 +227,11 @@ def rl_local(config: RLConfig):
             log_path=log_dir / "orchestrator.log",
         )
 
+        if config.trainer_recovery is not None:
+            logger.info(
+                f"Trainer recovery on: a failed trainer group is replaced up to "
+                f"{config.trainer_recovery.max_restarts} times while the orchestrator and inference keep running"
+            )
         logger.info(f"Starting trainer on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
         processes.start(
             "trainer",
@@ -235,6 +241,7 @@ def rl_local(config: RLConfig):
                 len(trainer_gpu_ids),
                 log_dir,
                 config.trainer.log.ranks_filter,
+                max_restarts=config.trainer_recovery.max_restarts if config.trainer_recovery else 0,
             ),
             env={
                 **os.environ,
@@ -243,6 +250,7 @@ def rl_local(config: RLConfig):
                 "LOGURU_FORCE_COLORS": "1",
                 "WANDB_PROGRAM": "uv run rl",
                 "WANDB_ARGS": json.dumps(start_command),
+                **(RESTARTABLE_TORCHRUN_ENV_VARS if config.trainer_recovery else {}),
                 **config.env_vars,
                 **config.trainer.env_vars,
                 **wandb_shared_env,
@@ -279,6 +287,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     trainer_env_vars = {
         **DEFAULT_COMMON_ENV_VARS,
         **DEFAULT_TRAINER_ENV_VARS,
+        **(RESTARTABLE_TORCHRUN_ENV_VARS if config.trainer_recovery else {}),
         **config.env_vars,
         **config.trainer.env_vars,
     }
@@ -364,6 +373,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            trainer_max_restarts=config.trainer_recovery.max_restarts if config.trainer_recovery else 0,
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
@@ -403,6 +413,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            trainer_max_restarts=config.trainer_recovery.max_restarts if config.trainer_recovery else 0,
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,

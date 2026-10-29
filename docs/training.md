@@ -20,6 +20,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Batch Journal](#batch-journal)
+  - [Trainer Recovery](#trainer-recovery)
   - [Resuming a Run](#resuming-a-run)
   - [Pausing a Live Run](#pausing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
@@ -350,27 +351,49 @@ After all trainer ranks complete their checkpoint writes, the trainer records th
 
 There is no journal disk-size cap. Without trainer checkpoints, entries accumulate; checkpoint frequency determines normal retention. Monitor `time/write_batch_journal` for payload fetching, encoding and persistence time and `dispatcher/queued/results` for result-queue occupancy. That time is excluded from `time/wait_for_policy`.
 
-The journal records delivered batches and their checkpoint boundary; it does not automatically replay them or restart the trainer.
+With ZMQ, trainer ranks first announce a shared attempt UUID, their rank and data rank, their starting step, and the batch record from the checkpoint they successfully restored. A background task in the orchestrator answers these handshakes as soon as the batch sender exists, independent of batch production. The orchestrator accepts the first group only after all distinct ranks agree and its starting step matches its next batch, and records that position as the producer session's origin. Requests and responses carry the accepted attempt and step; a different connection cannot impersonate an accepted rank. Orchestrator and trainer must use the same protocol revision.
 
-With ZMQ, trainer ranks first announce a shared attempt UUID, their rank and data rank, their starting step, and the batch record from the checkpoint they successfully restored. The orchestrator accepts a startup group only after all distinct ranks agree and its starting step matches the pending batch. Requests and responses carry the accepted attempt and step; a different connection cannot impersonate an accepted rank. Orchestrator and trainer must use the same protocol revision.
+A later group replaces the accepted one only with [trainer recovery](#trainer-recovery) or an explicit `authorize_recovery(previous_attempt, replacement_attempt)` call on the sender's event loop. The orchestrator validates a replay plan from the replacement's restored position through the last batch it delivered: a checkpoint committed in this producer session (matching the journal's record) or the session origin, continuous retained batches, matching data-world size, and valid payload hashes, streamed one file at a time in a worker thread. A replacement cannot change the trainer world size. Without authorization, a valid plan returns `recovery_required` and the trainer raises `RecoveryRequired`; invalid attempts are rejected. Neither displaces the accepted group.
 
-A replacement group is not automatically accepted. When journaling is enabled, the orchestrator validates a replay plan from the restored checkpoint through the prepared batch awaiting delivery. This requires a matching producer session and checkpoint record, continuous retained batches, matching data-world size, and valid payload hashes. Hash verification runs in a worker thread and streams one file at a time. A replacement cannot change the active trainer world's size.
-
-Without explicit authorization, successful validation returns `recovery_required` with the ordered batch records; the trainer raises `RecoveryRequired`. Invalid recovery attempts receive a rejection. Neither response delivers the pending live batch or replaces the accepted trainer group. Checkpoints without `batch.json` still support coordinated restart at a matching step, but cannot establish a journal replay plan.
-
-The ZMQ sender exposes `authorize_recovery(previous_attempt, replacement_attempt)` for a recovery coordinator running on its event loop. The caller must first terminate the old trainer group, including its checkpoint writers. Authorization checks the expected active attempt and fences its batch requests immediately. Once all replacement ranks agree and the replay plan validates, the sender delivers the saved bytes from the restored checkpoint through the pending batch, then continues with new batches. It preserves the producer's session and batch IDs, rechecks payload hashes during delivery, and does not advance the orchestrator's batch position for replayed history. A second crash during replay can recover from the latest committed checkpoint in the same way.
-
-Only one replay batch is loaded at a time, alongside the pending live batch. Reads run in a worker thread. A disconnected destination during journaled delivery fences that attempt and leaves the sender waiting for an authorized replacement; other transport errors propagate. Logs identify the replacement and each replayed batch. Delivery is not an optimizer-step acknowledgement: a later crash still restores the checkpoint and replays its uncovered batches.
-
-This is a transport-level recovery API, not an automatic restart flag or control endpoint. Production trainer-only recovery also requires weight-channel reconnection, policy identity after rollback, and launcher supervision that preserves the orchestrator and inference. The trainer's startup weight broadcast still precedes its batch handshake. Ordinary `rl --resume` remains a coordinated restart.
+An admitted replacement receives the recorded bytes of every batch after its restored position, rechecked against their hashes, then the live batch from memory, then new batches. Replays keep the producer's session and batch IDs and do not advance the orchestrator's batch position. Only one replay batch is loaded at a time. A disconnected destination during journaled delivery fences that attempt and retains the batch; other transport errors propagate. Delivery is not an optimizer-step acknowledgement: a later crash restores the latest committed checkpoint and replays its uncovered batches again.
 
 #### Recoverable NCCL weight transfers
 
-`[weight_broadcast] recoverable = true` opts NCCL publishers and receivers into nonblocking NCCL calls with error polling and per-operation deadlines from `weight_broadcast.timeout`. It leaves inference/model-parallel communicators alone. A failed or timed-out weight collective aborts its communicator; the existing `/init_broadcaster` operation can then join surviving inference workers to a replacement publisher using a fresh rendezvous. Every participant must use the same `recoverable` setting. The default remains `false`; polling and waiting for each packet adds transfer overhead.
+`[weight_broadcast] recoverable = true` opts NCCL publishers and receivers into nonblocking NCCL calls with error polling and per-operation deadlines from `weight_broadcast.timeout`. It leaves inference/model-parallel communicators alone. A failed, timed-out or cancelled weight collective aborts its communicator; the existing `/init_broadcaster` operation can then join surviving inference workers to a replacement publisher using a fresh rendezvous. Every participant must use the same `recoverable` setting. The default remains `false`; polling and waiting for each packet adds transfer overhead.
+
+Receivers of a broadcast generally do not observe a dead publisher as an NCCL error, neither over P2P or shared memory within a node nor over InfiniBand between nodes; they would wait out the operation deadline. Each update therefore passes an abort path (`<broadcast step>/.aborted`) that the receivers check every 0.5 s; the orchestrator creates it when it replaces the publisher.
 
 Weight updates leave engines paused on errors or cancellation. Collective updates are not blindly retried after an HTTP failure: the original operation may still be running. The vLLM server rejects `/resume` after a failed update until a complete replacement reload succeeds. Interrupted layerwise reloads discard deferred tensors and restore the model's original tensor references. This preserves storage references, not old values: some weights may already have changed, so a complete reload is required.
 
-This option provides weight-channel recovery primitives, not automatic trainer recovery. A coordinator must fence the old publisher, reconcile journal replay and policy identity, reconnect all receivers, and complete a full replacement reload before resuming inference. It must also handle outstanding RPCs after an HTTP timeout. NIXL and filesystem transfer remain available; this option does not add NIXL agent reconnection or change LoRA's filesystem requirement.
+[Trainer recovery](#trainer-recovery) turns this on for NCCL and drives the reconnection. NIXL agent reconnection is not supported; LoRA still requires filesystem transfer.
+
+### Trainer Recovery
+
+A trainer failure need not end the run. With trainer recovery the orchestrator, inference servers and environments keep running; a replacement trainer group restores the latest committed checkpoint, replays the batches after it, and continues:
+
+```toml
+[ckpt]
+interval = 25
+
+[trainer_recovery]
+max_restarts = 3
+```
+
+`[trainer_recovery]` enables the [batch journal](#batch-journal) and, for NCCL, [recoverable weight transfers](#recoverable-nccl-weight-transfers). It requires periodic checkpoints and the ZMQ rollout transport, and does not support NIXL weight transfer.
+
+The `rl` launcher runs the trainer under `torchrun --max-restarts`: when any trainer rank fails, torchrun stops every rank and starts a new group, up to `max_restarts` times. Multi-node SLURM runs use torchrun's c10d rendezvous, so the agents on every trainer node replace their ranks together. Another supervisor (for example a Kubernetes controller) can replace the trainer instead: it must stop every rank of the failed group, including its checkpoint writers, then start the trainer with `--resume`. With recovery enabled, a replacement attempt or a bare `--resume` restores the newest checkpoint with a committed `batch.json` (a newer step directory may hold an interrupted save). The ranks decide collectively, because torchrun restarts the ranks of a healthy node without counting the restart and a recreated node starts its count at zero; a supervisor that recreates every trainer process should therefore pass a bare `--resume`.
+
+A failed trainer stops requesting batches, so the orchestrator stops shipping them. Rollouts continue on the current policy until the dispatcher's lead over inference (`TARGET_LAG`) and `orchestrator.concurrency.max_inflight` bound the pipeline; nothing in flight is discarded. The orchestrator admits a complete replacement group once every connection of the failed group is gone; ZMTP heartbeats drop the connections of a lost host within about 30 seconds. While a failed group's process is alive but hung, the replacement waits.
+
+Before admitting the replacement, the orchestrator reconciles the weight channel:
+
+- It ends the failed trainer's last weight update. A filesystem transfer waiting on a dead publisher is abandoned without touching inference. An in-flight NCCL transfer is cancelled through its abort marker and leaves the engines paused with possibly incomplete weights.
+- It discards every offered broadcast and, for NCCL, joins the inference workers to the replacement's new transfer group.
+- It tells the replacement the policy version inference serves. The replacement recomputes the policies up to that version from replayed batches without publishing them, then publishes as usual. Policy versions never move backwards: if an interrupted update left inference with incomplete weights, the engines stay paused while the replacement recomputes that version and publishes it complete; if inference serves a policy older than the restored checkpoint, the replacement publishes its restored policy first.
+
+Replayed steps log again under their original step numbers. A second failure during replay recovers the same way from the latest committed checkpoint. Training continues from the restored checkpoint on the same batches, so replayed steps reproduce the original ones up to kernel nondeterminism (which RL can amplify over a few steps); rollouts generated during the outage keep their policy versions and are subject to `orchestrator.max_staleness` as usual. If an update leaves inference with incomplete weights and no trainer publishes a complete policy within `weight_broadcast.timeout`, the orchestrator fails the run.
+
+With NCCL, a trainer failure after it joined the orchestrator's session but before its first transfer group formed is not recovered: the orchestrator waits in the initial rendezvous until `weight_broadcast.timeout` and then ends the run. A failure of the orchestrator or an inference server also ends the run.
 
 ### Resuming a Run
 
