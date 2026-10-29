@@ -85,7 +85,7 @@ class FakeDataLoader:
         self.generate_samples = config.generate_samples
         self.doc_len = config.doc_len
         self.doc_len_range = config.doc_len_range
-        self.pad_to_multiple_of = pad_to_multiple_of
+        self.pad_to_multiple_of = seq_len if config.pad_to_seq_len else pad_to_multiple_of
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:

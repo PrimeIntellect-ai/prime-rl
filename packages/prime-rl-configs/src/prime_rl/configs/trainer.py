@@ -581,10 +581,15 @@ class FakeDataLoaderConfig(BaseConfig):
     doc_len_range: tuple[int, int] | None = None
     """Inclusive range each generated sample's length is drawn from uniformly. A sample that does not fit ends the micro batch instead of being cut, so micro batch lengths vary. Requires generate_samples."""
 
+    pad_to_seq_len: bool = False
+    """Pad each generated micro batch to seq_len with loss-masked tokens folded into the last sample. Requires generate_samples."""
+
     @model_validator(mode="after")
     def doc_len_requires_generate_samples(self):
         if self.doc_len is not None and not self.generate_samples:
             raise ValueError("data.fake.doc_len requires data.fake.generate_samples")
+        if self.pad_to_seq_len and not self.generate_samples:
+            raise ValueError("data.fake.pad_to_seq_len requires data.fake.generate_samples")
         return self
 
     @model_validator(mode="after")
