@@ -18,7 +18,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig, rl_micro_batch_multiple
 from prime_rl.trainer.rl.data import (
     DataLoader,
     FakeDataLoader,
@@ -245,7 +245,12 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing data loader ({config.data})")
     t0 = time.perf_counter()
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
+        dataloader = FakeDataLoader(
+            config.data.fake,
+            config.model.seq_len,
+            parallel_dims.get_mesh("dp").size(),
+            rl_micro_batch_multiple(config.model),
+        )
     else:
         dataloader = DataLoader(
             config.output_dir,
