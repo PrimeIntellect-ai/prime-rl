@@ -15,6 +15,7 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     ResumeConfig,
     TrainerLogConfig,
+    TrainerRecoveryConfig,
     TransportConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
@@ -718,6 +719,11 @@ class TrainerConfig(BaseTrainerConfig):
 
     resume: ResumeConfig | None = None
     """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
+
+    recovery: TrainerRecoveryConfig | None = None
+    """Replace a failed trainer group within the live run. A replacement attempt (a torchrun
+    restart) resumes from the latest committed checkpoint and replays the orchestrator's batch
+    journal; it requires the ZMQ rollout transport and checkpointing."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""

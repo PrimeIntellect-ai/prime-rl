@@ -8,7 +8,6 @@ from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
-from prime_rl.utils.pathing import wait_for_path
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -67,7 +66,7 @@ class FileSystemWeightReceiver(WeightReceiver):
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
         self._ack(step)
-        await wait_for_path(weights_dir / FINISHED_MARKER)
+        await self._wait_for(weights_dir / FINISHED_MARKER)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:

@@ -22,7 +22,7 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.journal import BatchCheckpoint
-from prime_rl.transports.batch.recovery import TrainerGroup
+from prime_rl.transports.batch.recovery import PolicyState, TrainerGroup
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
@@ -80,6 +80,7 @@ class TensorMicroBatch(TypedDict):
 
 class FakeDataLoader:
     last_batch_id: str | None = None
+    policy: PolicyState | None = None
 
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
         self.world = get_world()
@@ -271,6 +272,15 @@ class DataLoader:
             transport=config,
             trainer_group=group,
         )
+        # Join the orchestrator's session before publishing any weights: a replacement for a
+        # failed trainer learns which policy inference serves and replays the batch journal.
+        reply = self.receiver.connect()
+        self.policy: PolicyState | None = reply.policy if reply is not None else None
+        if reply is not None and reply.plan is not None:
+            get_logger().warning(
+                f"Replacing a failed trainer attempt: replaying {len(reply.plan.batches)} journaled batches "
+                f"from step {start_step}"
+            )
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
