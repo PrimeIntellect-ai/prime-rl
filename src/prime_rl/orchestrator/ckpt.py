@@ -1,14 +1,21 @@
-"""Checkpoint manager for orchestrator progress, train-source state and the open train
-work. Layout: ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``, and next to
-it ``arrays/``, the training arrays the in-flight and in-queue rollouts need (``persist_arrays``)."""
+"""Checkpoint manager for orchestrator progress, train-source state and the in-flight and
+in-queue rollouts. Layout: ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``,
+and next to it ``rollouts/``, a file per in-queue rollout and in-flight restore point
+(``write_rollouts``), and ``arrays/``, the training arrays they need (``persist_arrays``)."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-import copy
+import dataclasses
+import gc
 import os
+import pickle
+import shutil
 import tempfile
 import time
+import traceback
+import warnings
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +25,7 @@ from typing import Any
 
 import torch
 import verifiers.v1 as vf
+from verifiers.v1.serve import RestoreRequest
 from verifiers.v1.serve.delta import dump
 
 from prime_rl.configs.orchestrator import CheckpointConfig
@@ -33,6 +41,9 @@ class CheckpointManager:
     def __init__(self, output_dir: Path, config: CheckpointConfig) -> None:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
+        self.last_rollouts: Path | None = None
+        """The ``rollouts/`` of the last checkpoint written or loaded: a new checkpoint
+        links the in-queue rollouts it still holds from there."""
 
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
@@ -48,13 +59,15 @@ class CheckpointManager:
         self.save_state(build_state(progress, train_source, config_state, open_work), step)
 
     def save_state(self, state: dict, step: int) -> None:
-        """Save a ``build_state`` snapshot as the checkpoint of ``step``."""
+        """Save a ``build_state`` snapshot as the checkpoint of ``step``. It changes the
+        snapshot's rollouts, so it runs on a copy (``save_forked``)."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
         if state.get("open_work") is not None:
             persist_arrays(state["open_work"], (ckpt_path / ARRAYS_DIR).resolve())
-            state = {**state, "open_work": _map_episodes(state["open_work"], dump_episode)}
+            rollouts = write_rollouts(state["open_work"], ckpt_path / ROLLOUTS_DIR, self.last_rollouts)
+            state = {**state, "open_work": rollouts}
         # Save to a temporary file and do an atomic rename, to avoid corrupting the last
         # file if the process gets killed while writing
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
@@ -69,6 +82,37 @@ class CheckpointManager:
         get_logger().debug(
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
+
+    async def save_forked(self, state: dict, step: int) -> None:
+        """Save ``state`` from a forked child, which holds the process's memory as of the
+        fork: the caller goes on changing it meanwhile, with no copy to take. Raises if
+        the child fails."""
+        # Frozen objects are not traversed by the collector, so neither process writes
+        # to the shared pages just to collect.
+        gc.freeze()
+        try:
+            with warnings.catch_warnings():
+                # The child runs no thread, takes no lock another thread may hold, and
+                # leaves with os._exit.
+                warnings.simplefilter("ignore", DeprecationWarning)
+                pid = os.fork()
+            if pid == 0:
+                code = 1
+                try:
+                    gc.disable()
+                    self.save_state(state, step)
+                    code = 0
+                except BaseException:
+                    traceback.print_exc()
+                finally:
+                    os._exit(code)
+            _, status = await asyncio.to_thread(os.waitpid, pid, 0)
+        finally:
+            gc.unfreeze()
+        if (code := os.waitstatus_to_exitcode(status)) != 0:
+            raise RuntimeError(f"Orchestrator checkpoint writer for step {step} exited with {code}")
+        if state.get("open_work") is not None:
+            self.last_rollouts = self.get_ckpt_path(step) / ROLLOUTS_DIR
 
     def read_state(self, step: int, path: Path | None = None) -> dict:
         """``path`` overrides where the checkpoint is read from (an external run's
@@ -103,16 +147,23 @@ class CheckpointManager:
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
         work = state.get("open_work")
         if work is not None:
-            work = _map_episodes(work, vf.WireEpisode.model_validate)
+            # The rollouts make many objects at once and free none: a collection while
+            # reading them back only scans them.
+            gc.disable()
+            try:
+                work = read_rollouts(work, ckpt_path / ROLLOUTS_DIR)
+            finally:
+                gc.enable()
             resolve_arrays(work, (ckpt_path / ARRAYS_DIR).resolve())
+            self.last_rollouts = ckpt_path / ROLLOUTS_DIR
         return work
 
 
 def build_state(
     progress: Progress, train_source: TrainSource, config_state: dict, open_work: dict | None = None
 ) -> dict:
-    """A snapshot of the orchestrator's checkpointed state, independent of later changes.
-    ``config_state`` holds the launch config (``base``), the config that applies from the
+    """The orchestrator's checkpointed state. It holds the live rollouts, not copies:
+    write it at once or from a fork (``CheckpointManager.save_forked``). ``config_state`` holds the launch config (``base``), the config that applies from the
     resume step on (``applied``) and its ``revision``, all dumped to JSON-ready dicts.
     ``open_work`` holds the in-flight and in-queue rollouts a resumed run picks up where
     this one left them: the open groups with their in-flight rollouts' restore points,
@@ -120,10 +171,11 @@ def build_state(
     state = {"progress": progress, "train_source": train_source.state_dict(), "config": config_state}
     if open_work is not None:
         state["open_work"] = open_work
-    return copy.deepcopy(state)
+    return state
 
 
 ARRAYS_DIR = "arrays"
+ROLLOUTS_DIR = "rollouts"
 PERSISTED_URL = "checkpoint"
 """Where a persisted blob's URL points in the saved state: the checkpoint's own
 ``arrays/``, wherever a resumed run finds it (``resolve_arrays``)."""
@@ -135,20 +187,81 @@ def dump_episode(episode: Any) -> dict:
     return dump(episode, context={"token_arrays": True})
 
 
-def _map_episodes(work: dict, fn: Callable[[Any], Any]) -> dict:
-    """``work`` with ``fn`` applied to each of its episodes. A served episode's type is a
-    parametrized generic, which pickle cannot find by name, so the checkpoint file holds
-    the episodes dumped."""
+def _map_episodes(work: dict, fn: Callable[[Any, str], Any]) -> dict:
+    """``work`` with ``fn(episode, place)`` applied to each of its in-queue episodes, where
+    ``place`` is where the episode waits: ``queued`` (``out_q``), ``group`` (a sink group
+    still collecting) or ``batch`` (the unshipped batch)."""
     sink = work["sink"]
     return {
         **work,
         "sink": {
             **sink,
-            "pending_groups": {gid: [fn(e) for e in group] for gid, group in sink["pending_groups"].items()},
-            "episode_by_trace": {tid: fn(e) for tid, e in sink["episode_by_trace"].items()},
+            "pending_groups": {gid: [fn(e, "group") for e in group] for gid, group in sink["pending_groups"].items()},
+            "episode_by_trace": {tid: fn(e, "batch") for tid, e in sink["episode_by_trace"].items()},
         },
-        "results": [r if isinstance(r, DispatchFailure | GroupCancellation) else fn(r) for r in work["results"]],
+        "results": [
+            r if isinstance(r, DispatchFailure | GroupCancellation) else fn(r, "queued") for r in work["results"]
+        ],
     }
+
+
+def write_rollouts(work: dict, directory: Path, previous: Path | None) -> dict:
+    """Write each in-queue episode and in-flight restore point of ``work`` to its own file
+    in ``directory``, one at a time, and return ``work`` with the file names in their
+    place. An episode does not change while it waits in one place, so a file of that
+    name in the ``previous`` checkpoint's directory is linked, not written again. A
+    served episode's type is a parametrized generic, which pickle cannot find by name,
+    so the files hold the episodes dumped."""
+    directory.mkdir(parents=True, exist_ok=True)
+
+    def write_episode(episode: Any, place: str) -> str:
+        name = f"{episode.id}.{place}"
+        if previous is None or not _link(previous / name, directory / name):
+            _write(directory / name, dump_episode(episode))
+        return name
+
+    groups = []
+    for group in work["groups"]:
+        names = []
+        for restore in group.restores:
+            name = f"{restore.trace['id']}.restore"
+            _write(directory / name, restore.model_dump())
+            names.append(name)
+        groups.append(dataclasses.replace(group, restores=names))
+    return {**_map_episodes(work, write_episode), "groups": groups}
+
+
+def read_rollouts(work: dict, directory: Path) -> dict:
+    """``work`` with the files ``write_rollouts`` named read back."""
+
+    def read(name: str) -> Any:
+        with open(directory / name, "rb") as f:
+            return pickle.load(f)
+
+    groups = [
+        dataclasses.replace(group, restores=[RestoreRequest.model_validate(read(name)) for name in group.restores])
+        for group in work["groups"]
+    ]
+    work = _map_episodes(work, lambda name, _: vf.WireEpisode.model_validate(read(name)))
+    return {**work, "groups": groups}
+
+
+def _write(path: Path, obj: Any) -> None:
+    with open(path, "wb") as f:
+        pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _link(source: Path, target: Path) -> bool:
+    """Link ``source`` to ``target``; False when there is no ``source``."""
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        pass
+    except FileNotFoundError:
+        return False
+    except OSError:
+        shutil.copyfile(source, target)
+    return True
 
 
 def _work_episodes(work: dict) -> list[Any]:

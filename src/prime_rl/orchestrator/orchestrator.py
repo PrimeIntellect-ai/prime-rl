@@ -1025,8 +1025,6 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Snapshot on the event loop, so the dispatcher cannot mutate the state mid-copy;
-        # write off it: the env servers persisting the rollouts' arrays take a while.
         await self.save_state(self.checkpoint_state(), step)
         return time.perf_counter() - t
 
@@ -1041,12 +1039,12 @@ class Orchestrator:
         return build_state(self.progress, self.train_source, self.config_state(), open_work)
 
     async def save_state(self, state: dict, step: int) -> None:
-        """Write a ``build_state`` snapshot off the event loop. Its box snapshots are held
-        from the start: sweeps go on during the write. The last checkpoint's stay held
-        until this one is written."""
+        """Write a ``build_state`` of the run as it is now from a forked writer, while the
+        loop goes on. Its box snapshots are held from the start: sweeps go on during the
+        write. The last checkpoint's stay held until this one is written."""
         groups = state["open_work"]["groups"] if "open_work" in state else []
         self.dispatcher.hold_snapshots(groups, release=False)
-        await asyncio.to_thread(self.ckpt_manager.save_state, state, step)
+        await self.ckpt_manager.save_forked(state, step)
         self.dispatcher.hold_snapshots(groups)
 
     def open_work(self) -> dict:

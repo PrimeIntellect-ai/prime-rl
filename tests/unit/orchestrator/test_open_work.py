@@ -303,3 +303,49 @@ def test_a_checkpoint_holds_open_work_only_when_it_saves_rollouts():
     for rollouts in (False, True):
         orchestrator.config = SimpleNamespace(ckpt=CheckpointConfig(interval=5, rollouts=rollouts))
         assert ("open_work" in orchestrator.checkpoint_state()) is rollouts
+
+
+def test_a_forked_checkpoint_links_the_rollouts_it_still_holds(tmp_path):
+    """The forked writer saves the run as of the fork, and the next checkpoint links
+    the in-queue rollouts the last one wrote."""
+    from prime_rl.configs.orchestrator import CheckpointConfig
+    from prime_rl.orchestrator.ckpt import ROLLOUTS_DIR, CheckpointManager, build_state
+
+    s = sink(["a"])
+    queued = wire(member("a", "gb"))
+    manager = CheckpointManager(tmp_path, CheckpointConfig())
+
+    def save(step: int) -> None:
+        work = {"groups": [], "sink": s.state_dict(), "results": [queued], "snapshots": {}}
+        asyncio.run(
+            manager.save_forked(build_state(Progress(step=step), TrainSource([train_env("a")]), {}, work), step)
+        )
+
+    save(6)
+    asyncio.run(s.add(wire(member("a", "ga"))))
+    save(7)
+
+    first, second = (manager.get_ckpt_path(step) / ROLLOUTS_DIR for step in (6, 7))
+    name = f"{queued.id}.queued"
+    assert (first / name).stat().st_ino == (second / name).stat().st_ino
+    assert manager.last_rollouts == second
+    loaded = manager.load(Progress(), TrainSource([train_env("a")]), step=7)
+    assert loaded["results"][0].id == queued.id
+    (pending,) = loaded["sink"]["pending_groups"]["ga"]
+    assert isinstance(pending, vf.WireEpisode)
+
+
+def test_a_failed_checkpoint_writer_raises(tmp_path):
+    import pytest
+
+    from prime_rl.configs.orchestrator import CheckpointConfig
+    from prime_rl.orchestrator.ckpt import CheckpointManager
+
+    manager = CheckpointManager(tmp_path, CheckpointConfig())
+
+    def fail(state, step):
+        raise OSError("disk full")
+
+    manager.save_state = fail
+    with pytest.raises(RuntimeError, match="exited with 1"):
+        asyncio.run(manager.save_forked({}, 6))
