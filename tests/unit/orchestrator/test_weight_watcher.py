@@ -28,8 +28,8 @@ class Receiver:
     def clear_abort(self) -> None:
         self.aborted.clear()
 
-    def clear_offers(self) -> None:
-        pass
+    def clear_offers(self, after=None, through=None) -> None:
+        self.cleared = (after, through)
 
     def next_version(self, current: int) -> int:
         return max(current, 4)
@@ -112,3 +112,28 @@ def test_stop_ends_a_rejoin_with_a_dead_trainer(retryable):
         assert watcher.reconnecting is None
 
     asyncio.run(run())
+
+
+def test_reconciliation_drops_offers_the_listing_still_hides(tmp_path, monkeypatch):
+    """A shared filesystem's listing can lag behind the step directory the failed trainer created last;
+    reconciliation drops its offers by name up to the last step it could have published."""
+    import prime_rl.transports.weights.base as weights_base
+    from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
+    from prime_rl.transports.weights.base import SENDER_READY_MARKER
+    from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver
+
+    receiver = FileSystemWeightReceiver(tmp_path, FileSystemWeightBroadcastConfig(), SimpleNamespace(), "model")
+    for step in (3, 4, 5):
+        receiver.step_dir(step).mkdir(parents=True)
+        (receiver.step_dir(step) / SENDER_READY_MARKER).touch()
+    monkeypatch.setattr(weights_base, "get_all_ckpt_steps", lambda path: [3])
+    watcher = WeightWatcher(receiver, policy=Policy(version=3, model_name="model"), observers=[], trainer_recovery=True)
+    watcher.ckpt_step, watcher.weights_valid = 3, True
+
+    async def run():
+        await watcher.reconcile_replacement(3, offered_through=6)
+        await watcher.stop()
+
+    asyncio.run(run())
+    assert not any(receiver.step_dir(step).exists() for step in (3, 4, 5))
+    assert receiver.next_version(watcher.ckpt_step) == 3

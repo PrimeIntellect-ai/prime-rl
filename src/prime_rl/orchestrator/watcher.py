@@ -79,8 +79,9 @@ class WeightWatcher:
             self.weights_valid = True
             await self._notify_update(step)
 
-    async def reconcile_replacement(self, restored_step: int) -> PolicyState:
-        """Prepare the weight channel for a replacement trainer that restored ``restored_step``.
+    async def reconcile_replacement(self, restored_step: int, offered_through: int | None = None) -> PolicyState:
+        """Prepare the weight channel for a replacement trainer that restored ``restored_step``. The
+        replaced trainer offered no version beyond ``offered_through``.
 
         Waits out the replaced trainer's last update, drops its offers and returns the policy
         inference serves. The replacement recomputes policies up to that version without
@@ -91,7 +92,7 @@ class WeightWatcher:
             self.receiver.clear_abort()
             if self.reconnecting is not None:
                 await safe_cancel(self.reconnecting)
-            await asyncio.to_thread(self.receiver.clear_offers)
+            await asyncio.to_thread(self.receiver.clear_offers, self.ckpt_step, offered_through)
             served = self.policy.version
             reload = not self.weights_valid or served < restored_step
             # Rolling inference back to the restored policy would end in-flight rollouts' policy

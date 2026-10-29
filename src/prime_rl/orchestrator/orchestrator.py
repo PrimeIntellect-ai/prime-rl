@@ -1151,7 +1151,8 @@ class Orchestrator:
             f"Trainer attempt {group.attempt_id} replaces the failed trainer from checkpoint step "
             f"{group.start_step - 1}; continuing the live pipeline at step {self.progress.step}"
         )
-        return await self.watcher.reconcile_replacement(group.start_step - 1)
+        # The failed trainer cannot have published a policy beyond the batches it was sent.
+        return await self.watcher.reconcile_replacement(group.start_step - 1, self.sender.current_step + 1)
 
     async def on_policy_update(self, _step: int) -> None:
         """Refresh policy-dependent state after inference applies new weights."""
