@@ -58,8 +58,6 @@ ln -sfn inference/node_0.log $LOG_DIR/inference.log
 export TRAINER_DONE=$LAUNCHER_DIR/.sft_trainer_done_$SLURM_JOB_ID
 {% if online_eval -%}
 export EVAL_DONE=$LAUNCHER_DIR/.sft_eval_done_$SLURM_JOB_ID
-# The online-eval process outlives the trainer, so it finishes the shared Prime run.
-export PRL_RUN_FINISHER=online-eval
 {%- endif %}
 mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}

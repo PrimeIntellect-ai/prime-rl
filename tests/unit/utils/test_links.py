@@ -69,6 +69,8 @@ def test_launch_without_credentials_disables_its_components(monkeypatch, no_prim
     """The launcher warns once, and its components run the monitor disabled instead
     of attaching to a run that does not exist."""
     monkeypatch.setattr(prime_module, "get_logger", lambda: SimpleNamespace(warning=lambda _: None))
+    # Unset reads as online; registering it lets monkeypatch undo what launch_run exports.
+    monkeypatch.setenv("PRIME_RUNS_MODE", "")
     with launch_run(None, PrimeMonitorConfig()):
         assert os.environ["PRIME_RUNS_MODE"] == "disabled"
         assert "RUN_ID" not in os.environ
