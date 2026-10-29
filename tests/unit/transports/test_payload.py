@@ -16,7 +16,7 @@ from verifiers.v1.types import SamplingMask, TopLogprobs, TurnTokens
 
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.trainer.rl.data import DataLoader
+from prime_rl.trainer.rl.data import DataLoader, pad_received_micro_batch
 from prime_rl.transports import payload
 from prime_rl.transports.batch import types as wire
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, MicroBatch, PayloadSlice, TrainingSample, encode_array
@@ -218,7 +218,7 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
         [[packed]] = prepare_batch(samples, seq_len=16, num_train_workers=1, bin_cost=sum)
         packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
         assert sum(packed.sequence_lengths) == 4 * 4
-        DataLoader._pad(SimpleNamespace(pad_to_multiple_of=32), packed)
+        pad_received_micro_batch(packed, 32)
         assert resolve_payloads([packed], pool)[0] == []
     assert len(packed.top_logprobs.ids) == 3 * 4
     assert packed.padding == 16

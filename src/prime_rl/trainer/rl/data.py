@@ -200,6 +200,16 @@ class FakeDataLoader:
         }
 
 
+def pad_received_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> None:
+    """Pad a received micro batch to the multiple this trainer's CP degree and quantization need. Runs before
+    payloads resolve, so the fetched arrays are extended over the padding too."""
+    for name, dtype in MICRO_BATCH_DTYPES.items():
+        values = getattr(micro_batch, name)
+        if values is not None:
+            setattr(micro_batch, name, np.frombuffer(values, dtype))
+    pad_micro_batch(micro_batch, pad_to_multiple_of)
+
+
 class ReplayDataLoader:
     """Replays packed micro batches recorded on disk (``tools/convert_traces_to_replay_batches.py``),
     cycling through the recorded steps."""
@@ -210,6 +220,7 @@ class ReplayDataLoader:
         self.dp_rank = self.world.rank // non_dp_world_size
         self.dp_world_size = dp_world_size
         self.directory = directory
+        self.pad_to_multiple_of = pad_to_multiple_of
         self.meta = read_replay_meta(directory)
         if self.meta.num_train_workers != dp_world_size:
             raise ValueError(
@@ -221,12 +232,6 @@ class ReplayDataLoader:
                 f"Replay data in {directory} was packed for seq_len {self.meta.seq_len}, but model.seq_len is "
                 f"{seq_len}. Convert it again with --seq-len {seq_len}."
             )
-        if self.meta.pad_to_multiple_of % pad_to_multiple_of != 0:
-            raise ValueError(
-                f"Replay data in {directory} was padded to a multiple of {self.meta.pad_to_multiple_of}, but the "
-                f"trainer requires a multiple of {pad_to_multiple_of}. Convert it again with --pad-to-multiple-of "
-                f"{pad_to_multiple_of}."
-            )
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
@@ -236,6 +241,8 @@ class ReplayDataLoader:
         step = self.batch_counter % self.meta.num_steps
         micro_batches = read_replay_step(self.directory, step, self.dp_rank)
         self.batch_counter += 1
+        for micro_batch in micro_batches:
+            pad_received_micro_batch(micro_batch, self.pad_to_multiple_of)
         return [DataLoader.micro_batch_to_tensor(micro_batch) for micro_batch in micro_batches]
 
 
@@ -306,7 +313,7 @@ class DataLoader:
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
         for micro_batch in micro_batches:
-            self._pad(micro_batch)
+            pad_received_micro_batch(micro_batch, self.pad_to_multiple_of)
         start = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
         get_logger().debug(
@@ -319,15 +326,6 @@ class DataLoader:
         read them has fetched them."""
         delete_payloads(self.payload_urls)
         self.payload_urls = []
-
-    def _pad(self, micro_batch: MicroBatch) -> None:
-        """Pad a received micro batch to the multiple this trainer's CP degree and quantization need. Runs before
-        payloads resolve, so the fetched arrays are extended over the padding too."""
-        for name, dtype in MICRO_BATCH_DTYPES.items():
-            values = getattr(micro_batch, name)
-            if values is not None:
-                setattr(micro_batch, name, np.frombuffer(values, dtype))
-        pad_micro_batch(micro_batch, self.pad_to_multiple_of)
 
     @staticmethod
     def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:

@@ -30,14 +30,12 @@ def sample(length: int, first_id: int) -> TrainingSample:
 @pytest.fixture
 def replay_dir(tmp_path):
     steps = [
-        prepare_batch([sample(n, 100 * i) for i, n in enumerate(lengths)], SEQ_LEN, NUM_RANKS, sum, 8)
+        prepare_batch([sample(n, 100 * i) for i, n in enumerate(lengths)], SEQ_LEN, NUM_RANKS, sum)
         for lengths in ([20, 12, 9, 30], [17, 5, 26])
     ]
     for step, grid in enumerate(steps):
         write_replay_step(tmp_path, step, grid)
-    write_replay_meta(
-        tmp_path, ReplayMeta(num_steps=len(steps), seq_len=SEQ_LEN, num_train_workers=NUM_RANKS, pad_to_multiple_of=8)
-    )
+    write_replay_meta(tmp_path, ReplayMeta(num_steps=len(steps), seq_len=SEQ_LEN, num_train_workers=NUM_RANKS))
     return tmp_path, steps
 
 
@@ -55,7 +53,7 @@ def world(monkeypatch):
 
 def test_replay_loader_returns_its_data_rank_of_each_step_and_cycles(replay_dir, world):
     directory, steps = replay_dir
-    loader = ReplayDataLoader(directory, SEQ_LEN, NUM_RANKS, 4)
+    loader = ReplayDataLoader(directory, SEQ_LEN, NUM_RANKS, 8)
     assert loader.dp_rank == 1
 
     for step in [0, 1, 0]:
@@ -65,35 +63,30 @@ def test_replay_loader_returns_its_data_rank_of_each_step_and_cycles(replay_dir,
         assert len(batch) == len(expected)
         for tensors, micro_batch in zip(batch, expected):
             num_tokens = len(micro_batch.input_ids)
-            assert tensors["input_ids"].shape == (1, num_tokens) and tensors["input_ids"].dtype == torch.int64
-            torch.testing.assert_close(tensors["input_ids"][0], torch.from_numpy(micro_batch.input_ids).long())
-            torch.testing.assert_close(tensors["position_ids"][0], torch.from_numpy(micro_batch.position_ids).long())
-            torch.testing.assert_close(tensors["loss_mask"][0], torch.from_numpy(micro_batch.loss_mask))
-            torch.testing.assert_close(tensors["advantages"][0], torch.from_numpy(micro_batch.advantages))
-            torch.testing.assert_close(
-                tensors["inference_logprobs"][0], torch.from_numpy(micro_batch.inference_logprobs)
-            )
-            torch.testing.assert_close(tensors["temperatures"][0], torch.from_numpy(micro_batch.temperatures))
-            assert tensors["seq_lens"].tolist() == micro_batch.seq_lens
-            assert tensors["sequence_lengths"] == micro_batch.sequence_lengths
-            assert tensors["padding"] == micro_batch.padding
+            padding = -num_tokens % 8
+            assert tensors["input_ids"].shape == (1, num_tokens + padding) and tensors["input_ids"].dtype == torch.int64
+            assert not tensors["loss_mask"][0, num_tokens:].any()
+            for name in ("input_ids", "position_ids", "loss_mask", "advantages", "inference_logprobs", "temperatures"):
+                written = torch.from_numpy(getattr(micro_batch, name)).to(tensors[name].dtype)
+                torch.testing.assert_close(tensors[name][0, :num_tokens], written)
+            padded_lengths = micro_batch.sequence_lengths[:-1] + [micro_batch.sequence_lengths[-1] + padding]
+            assert tensors["seq_lens"].tolist() == padded_lengths
+            assert tensors["sequence_lengths"] == padded_lengths
+            assert tensors["padding"] == padding
             assert tensors["trace_ids"] == micro_batch.trace_ids
             assert tensors["routed_experts"] is None and tensors["top_logprobs_ids"] is None
 
 
 @pytest.mark.parametrize(
-    "seq_len,dp_world_size,pad_to_multiple_of,message",
+    "seq_len,dp_world_size,message",
     [
-        (SEQ_LEN, 1, 8, "packed for 2 data ranks, but the trainer has 1"),
-        (64, NUM_RANKS, 8, "packed for seq_len 32"),
-        (SEQ_LEN, NUM_RANKS, 16, "padded to a multiple of 8, but the trainer requires a multiple of 16"),
+        (SEQ_LEN, 1, "packed for 2 data ranks, but the trainer has 1"),
+        (64, NUM_RANKS, "packed for seq_len 32"),
     ],
 )
-def test_replay_loader_rejects_a_mismatched_topology(
-    replay_dir, world, seq_len, dp_world_size, pad_to_multiple_of, message
-):
+def test_replay_loader_rejects_a_mismatched_topology(replay_dir, world, seq_len, dp_world_size, message):
     with pytest.raises(ValueError, match=message):
-        ReplayDataLoader(replay_dir[0], seq_len, dp_world_size, pad_to_multiple_of)
+        ReplayDataLoader(replay_dir[0], seq_len, dp_world_size, 8)
 
 
 def test_replay_config_excludes_fake_data_score_centering_and_router_replay(tmp_path):

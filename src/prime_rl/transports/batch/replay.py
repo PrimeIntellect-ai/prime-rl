@@ -18,7 +18,6 @@ class ReplayMeta(msgspec.Struct):
     num_steps: int
     seq_len: int
     num_train_workers: int
-    pad_to_multiple_of: int
 
 
 def get_replay_meta_path(directory: Path) -> Path:
