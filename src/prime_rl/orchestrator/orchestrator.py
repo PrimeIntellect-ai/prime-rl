@@ -75,6 +75,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.batch.recovery import PolicyState, TrainerGroup
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
@@ -164,6 +165,7 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        self.watcher_ready = asyncio.Event()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -272,7 +274,12 @@ class Orchestrator:
             self.progress.step,
             config.rollout_transport,
             journal=config.batch_journal,
+            auto_recover=config.trainer_recovery is not None,
         )
+        if config.trainer_recovery is not None:
+            self.sender.on_replacement = self.on_trainer_replacement
+        # Answer the trainer's handshake right away: it joins the session before its startup broadcast.
+        self.sender.start()
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
         # the last things before the main loop starts.
@@ -382,7 +389,9 @@ class Orchestrator:
             policy=self.policy,
             observers=[self.dispatcher],
             ckpt_step=sync_version,
+            trainer_recovery=config.trainer_recovery is not None,
         )
+        self.watcher_ready.set()
         if self.eval_source is not None:
             self.watcher.on_update(self.trigger_eval)
         self.watcher.on_update(self.on_policy_update)
@@ -420,6 +429,8 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        if (serve_task := getattr(self.sender, "serve_task", None)) is not None:
+            self.component_tasks.append(serve_task)
         if config.control is not None:
             loop = asyncio.get_running_loop()
             self.controller = Controller(
@@ -1034,6 +1045,16 @@ class Orchestrator:
             if not was_set:
                 get_logger().info(f"Resuming dispatcher (policy v{self.policy.version})")
             gate.set()
+
+    async def on_trainer_replacement(self, group: TrainerGroup) -> PolicyState:
+        """Reconcile inference's policy with a replacement trainer group. The batch sender fenced
+        the failed attempt and replays the journal after this returns; rollouts keep running."""
+        await self.watcher_ready.wait()
+        get_logger().warning(
+            f"Trainer attempt {group.attempt_id} replaces the failed trainer from checkpoint step "
+            f"{group.start_step - 1}; continuing the live pipeline at step {self.progress.step}"
+        )
+        return await self.watcher.reconcile_replacement(group.start_step - 1)
 
     async def on_policy_update(self, _step: int) -> None:
         """Refresh policy-dependent state after inference applies new weights."""

@@ -6,12 +6,13 @@ from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender, prune_broadcasts_beyond
+from prime_rl.transports.weights.base import BroadcastAborted, WeightReceiver, WeightSender, prune_broadcasts_beyond
 from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
 from prime_rl.transports.weights.nccl import NCCLWeightReceiver, NCCLWeightSender
 from prime_rl.transports.weights.nixl import NIXLWeightReceiver, NIXLWeightSender
 
 __all__ = [
+    "BroadcastAborted",
     "WeightReceiver",
     "WeightSender",
     "prune_broadcasts_beyond",
