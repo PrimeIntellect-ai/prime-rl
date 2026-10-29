@@ -133,12 +133,26 @@ class AppState(Stateful):
             # value.to(param.dtype, param.device) and would allocate a fresh GPU
             # copy of every state tensor — undoing the in-place CPU load and
             # detaching optim.state from the tensors we just populated. So we only
-            # apply the model side here and flip the wrappers to initialized so
-            # subsequent steps take the steady-state path.
+            # apply the model side and the param groups here and flip the wrappers
+            # to initialized so subsequent steps take the steady-state path.
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
+            # The template's param groups are copies (full offload's checkpoint optimizer copies
+            # its groups too), so apply the loaded lr, step, betas, ... to the live groups.
+            # Muon's distributed_mesh_name names a mesh of this run's layout (whether expert
+            # parallelism is on), not of the saved run's, so the live value is kept.
+            param_groups = [param_group for optimizer in self.optimizers for param_group in optimizer.param_groups]
+            loaded_param_groups = state_dict["optimizers"]["param_groups"]
+            for param_group, loaded_param_group in zip(param_groups, loaded_param_groups, strict=True):
+                param_group.update(
+                    {
+                        key: value
+                        for key, value in loaded_param_group.items()
+                        if key not in ("params", "distributed_mesh_name")
+                    }
+                )
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
