@@ -48,7 +48,7 @@ STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mea
 PERFORMANCE_METRICS = [
     "perf/mfu",
     "time/trainer_step",
-    "time/orch_step",
+    "time/orchestrator_step",
     "time/wait_for_batch",
     "time/wait_for_policy",
 ]

@@ -307,7 +307,7 @@ Pulled from the console log and mirrored to W&B.
 | `perf/mfu` | MFU, including attention FLOPs |
 | `perf/mfu_6dn` | MFU from the plain 6 x active params x tokens estimate (no attention FLOPs) |
 | `perf/peak_memory` | peak GPU memory (GiB) |
-| `time/trainer_step`, `time/orch_step`, `time/forward_backward`, `time/trainer_save_ckpt`, `time/orch_save_ckpt` (RL); `time/step`, `time/forward_backward`, `time/save_ckpt` (SFT) | step breakdown |
+| `time/trainer_step`, `time/orchestrator_step`, `time/forward_backward`, `time/trainer_save_ckpt`, `time/orchestrator_save_ckpt` (RL); `time/step`, `time/forward_backward`, `time/save_ckpt` (SFT) | step breakdown |
 
 ## Checkpointing
 
