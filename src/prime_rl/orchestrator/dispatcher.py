@@ -617,7 +617,8 @@ class Dispatcher:
         groups: dict[uuid.UUID, GroupState] = {}
         for group_id, group in self.groups.items():
             if group.kind == "train":
-                groups[group_id] = dataclasses.replace(group, restores=list(group.restores))
+                # A fresh group's id is only its key here.
+                groups[group_id] = dataclasses.replace(group, group_id=group_id, restores=list(group.restores))
         for meta in self.inflight.values():
             group = groups.get(meta.group_id)
             if meta.kind != "train" or group is None:

@@ -121,10 +121,12 @@ def dispatcher(names: list[str]) -> Dispatcher:
 def test_open_work_holds_each_open_groups_inflight_and_unscheduled_members():
     d = dispatcher(["a", "b"])
     a, b = group("a", to_schedule=1, emitted=1), group("b", to_schedule=0, emitted=3)
-    d.groups = {a.group_id: a, b.group_id: b}
+    # A fresh group has no id of its own; the dispatcher keys it.
+    a_id, a.group_id = a.group_id, None
+    d.groups = {a_id: a, b.group_id: b}
     d.inflight = {
-        object(): inflight("a", a.group_id, streamed(["t1"])),
-        object(): inflight("a", a.group_id, streamed(["t2"], restore=False)),
+        object(): inflight("a", a_id, streamed(["t1"])),
+        object(): inflight("a", a_id, streamed(["t2"], restore=False)),
         object(): inflight("b", b.group_id, streamed(["t3"])),
     }
     work = {g.env_name: g for g in d.open_work()}
@@ -138,7 +140,7 @@ def test_open_work_holds_each_open_groups_inflight_and_unscheduled_members():
 
     resumed = dispatcher(["a", "c"])
     resumed.resume_open_work(list(work.values()), {})
-    assert [g.env_name for g in resumed.groups.values()] == ["a"]
+    assert list(resumed.groups) == [a_id]
 
 
 def sink(names: list[str], group_size: int = 2) -> TrainSink:
