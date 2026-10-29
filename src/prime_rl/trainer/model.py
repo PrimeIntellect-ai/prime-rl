@@ -606,12 +606,15 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.to_empty(device=device)
     torch.distributed.barrier()
 
-    # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
-    model.init_buffers_post_meta()
-
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        model.initialize_weights()
+
+    # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
+    model.init_buffers_post_meta()
+
+    if config.debug.random_init:
         return
 
     if not Path(config.name).exists():

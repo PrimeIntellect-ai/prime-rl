@@ -59,6 +59,10 @@ class KimiDeltaAttention(nn.Module):
 
         self.cp_context = CPContext()
 
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.A_log)
+        nn.init.zeros_(self.dt_bias)
+
     def _depthwise_conv(self) -> nn.Conv1d:
         return nn.Conv1d(
             self.projection_size,

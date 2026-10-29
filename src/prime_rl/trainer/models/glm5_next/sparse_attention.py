@@ -114,6 +114,10 @@ class KPoolIndexer(nn.Module):
 
         self.cp_context = CPContext()
 
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.index_kpool_compress_ape)
+        nn.init.zeros_(self.index_kpool_compress_gate)
+
     @property
     def output_width(self) -> int:
         width = self.token_budget + self.pool_size - 1

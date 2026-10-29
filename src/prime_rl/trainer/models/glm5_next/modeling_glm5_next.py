@@ -173,8 +173,6 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
         init_std = getattr(self.config, "text_config", self.config).initializer_range
         if isinstance(module, DeepseekV4HyperConnection):
             module.init_weights(init_std)
-        elif isinstance(module, MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
 
 
 class Glm5NextTextModel(Glm5NextPreTrainedModel):

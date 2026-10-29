@@ -175,6 +175,27 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return state_dict
 
+    def _initialize_weights(self, module: nn.Module, is_custom_code: bool = False) -> None:
+        # As custom code, HF would skip modules without parameters or buffers of their own, but some
+        # PrimeRL layers init their children's parameters (e.g. a zero-initialized convolution).
+        super()._initialize_weights(module, is_custom_code=False)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        """Extend HF's init, which knows only torch layers and norms, to the parameters of PrimeRL layers.
+
+        HF runs this through ``initialize_weights``, also on a model materialized from the meta device,
+        where the inits in the layers' constructors did not run.
+        """
+        super()._init_weights(module)
+        init_std = self.config.get_text_config().initializer_range
+        if isinstance(module, MoE):
+            module.init_weights(init_std, module.tokens_per_expert.device)
+        elif isinstance(module, NGramTable):
+            module.init_weights(init_std)
+        reset_parameters = getattr(type(module), "reset_parameters", None)
+        if reset_parameters is not None and not reset_parameters.__module__.startswith("torch."):
+            module.reset_parameters()
+
     def init_buffers_post_meta(self) -> None:
         """
         Initialize buffers that are not in the state dict after loading with meta device.
