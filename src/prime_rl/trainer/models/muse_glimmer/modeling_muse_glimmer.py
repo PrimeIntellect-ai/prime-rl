@@ -26,7 +26,12 @@ class MuseGlimmerRMSNorm(nn.Module):
         self.eps = eps
         self.weight_offset = weight_offset
         self.output_scale = output_scale
-        self.weight = nn.Parameter(torch.zeros(dim) if weight_offset else torch.ones(dim)) if dim else None
+        self.weight = nn.Parameter(torch.empty(dim)) if dim else None
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        if self.weight is not None:
+            nn.init.constant_(self.weight, 0.0 if self.weight_offset else 1.0)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         out = hidden_states.float()

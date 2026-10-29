@@ -11,6 +11,7 @@ import math
 import torch
 import torch.distributed as dist
 from torch import nn
+from torch.distributed.tensor import DTensor, distribute_tensor
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
@@ -104,9 +105,12 @@ class NemotronHMamba2(nn.Module):
             padding=config.conv_kernel - 1,
             bias=config.use_conv_bias,
         )
+        self.time_step_min = config.time_step_min
+        self.time_step_max = config.time_step_max
+        self.time_step_floor = config.time_step_floor
         self.dt_bias = nn.Parameter(torch.empty(self.num_heads))
-        self.A_log = nn.Parameter(torch.arange(1, self.num_heads + 1, dtype=torch.get_default_dtype()).log())
-        self.D = nn.Parameter(torch.ones(self.num_heads))
+        self.A_log = nn.Parameter(torch.empty(self.num_heads))
+        self.D = nn.Parameter(torch.empty(self.num_heads))
         self.norm = GatedRMSNorm(
             self.intermediate_size,
             group_size=self.intermediate_size // self.num_groups,
@@ -117,15 +121,23 @@ class NemotronHMamba2(nn.Module):
         self.prepare_sequence_ids = prepare_sequence_ids
         self.scan = mamba_chunk_scan_combined
 
-        time_steps = torch.exp(
-            torch.rand(self.num_heads, dtype=torch.float32)
-            * (math.log(config.time_step_max) - math.log(config.time_step_min))
-            + math.log(config.time_step_min)
-        ).clamp(min=config.time_step_floor)
-        with torch.no_grad():
-            self.dt_bias.copy_((time_steps + torch.log(-torch.expm1(-time_steps))).to(self.dt_bias.dtype))
+        self.reset_parameters()
 
         self.cp_context = CPContext()
+
+    @torch.no_grad()
+    def reset_parameters(self) -> None:
+        # Also runs on FSDP-sharded (DTensor) parameters, so dt_bias is transformed in place
+        time_steps = nn.init.uniform_(self.dt_bias)
+        log_min, log_max = math.log(self.time_step_min), math.log(self.time_step_max)
+        time_steps.mul_(log_max - log_min).add_(log_min).exp_().clamp_(min=self.time_step_floor)
+        # dt_bias is the inverse softplus of the time step
+        self.dt_bias.add_(torch.log(-torch.expm1(-time_steps)))
+        A = torch.arange(1, self.num_heads + 1, dtype=torch.float32, device=self.A_log.device)
+        if isinstance(self.A_log, DTensor):
+            A = distribute_tensor(A, self.A_log.device_mesh, self.A_log.placements)
+        self.A_log.copy_(A.log())
+        nn.init.ones_(self.D)
 
     def attention_flops(self, seq_len: int) -> int:
         # Per token and head, the state update (x outer B) and the readout (state @ C) are two
