@@ -4,13 +4,23 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from dion.muon import zeropower_via_newtonschulz5
 from torch import nn
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.tensor import Shard, distribute_tensor
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.optim import muon_param_groups
-from prime_rl.trainer.optim.muon import Muon, newton_schulz_deepseek_v4, sinkhorn_update
+from prime_rl.trainer.optim.muon import (
+    POLAR_EXPRESS,
+    Muon,
+    newton_schulz_deepseek_v4,
+    polar_express,
+    polar_express_step3p5,
+    sinkhorn_update,
+)
 
 SINKHORN = dict(lr=0.1, momentum=0.9, update_rms=0.18, tau=1e-3, epsilon=1e-20, iters=11)
 
@@ -58,11 +68,151 @@ def test_sharded_sinkhorn_update_matches_reference(tmp_path, shard_dim):
     mp.spawn(sharded_sinkhorn, args=(2, tmp_path / "init", shard_dim, (W, G, M), expected), nprocs=2)
 
 
-def test_deepseek_v4_newton_schulz_pins_singular_values():
+# Polar Express (arXiv 2505.16932, Appendix A) before the 1.01 safety factor
+REFERENCE_POLAR_EXPRESS = [
+    (8.28721201814563, -23.595886519098837, 17.300387312530933),
+    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
+    (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
+    (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
+    (1.875, -1.25, 0.375),
+]
+
+
+def test_polar_express_coefficients():
+    safe = [(a / 1.01, b / 1.01**3, c / 1.01**5) for a, b, c in REFERENCE_POLAR_EXPRESS[:-1]]
+    assert POLAR_EXPRESS == safe + REFERENCE_POLAR_EXPRESS[-1:]
+
+
+@pytest.mark.parametrize(
+    "orthogonalize, tolerance",
+    [(newton_schulz_deepseek_v4, 0.02), (polar_express, 0.25), (polar_express_step3p5, 0.02)],
+)
+def test_orthogonalization_singular_values(orthogonalize, tolerance):
     torch.manual_seed(0)
     for shape in [(64, 32), (32, 96)]:
-        singular_values = torch.linalg.svdvals(newton_schulz_deepseek_v4(torch.randn(shape)).float())
-        assert (singular_values - 1).abs().max() < 0.02
+        singular_values = torch.linalg.svdvals(orthogonalize(torch.randn(shape)).float())
+        assert (singular_values - 1).abs().max() < tolerance
+
+
+def reference_dimuon(W, grads, lr, beta, update_rms):
+    """Dimuon (github.com/anpaure/dimuon, dimuon.py) on one matrix in float64, with our update norm."""
+    M = torch.zeros_like(W)
+
+    def conditioner(energy):
+        return (energy / energy.max() + 1e-4) ** -0.25 if energy.max() > 0 else torch.ones_like(energy)
+
+    for G in grads:
+        L, C = conditioner(M.square().sum(1))[:, None], conditioner(M.square().sum(0))[None, :]
+        M = beta * M + (1 - beta) * G
+        X = L * M * C
+        transpose = X.shape[0] > X.shape[1]
+        X = X.T if transpose else X
+        X = X / (1.01 * X.norm())
+        for a, b, c in REFERENCE_POLAR_EXPRESS[:5]:
+            A = X @ X.T
+            X = a / 1.01 * X + (b / 1.01**3 * A + c / 1.01**5 * A @ A) @ X
+        D = L * (X.T if transpose else X) * C
+        W = W - lr * update_rms * math.sqrt(W.numel()) * D / D.norm()
+    return W
+
+
+def reference_muown(W, grads, lr, momentum, betas, eps, weight_decay):
+    """Muown (github.com/kcc-lion/muown, optim/muown.py) on one matrix, with dion's Newton-Schulz."""
+    g = v_norm = W.norm(dim=1, keepdim=True)
+    m_v, m_g, v_g = torch.zeros_like(W), torch.zeros_like(g), torch.zeros_like(g)
+    for step, grad in enumerate(grads, 1):
+        u = W / g
+        v = u * v_norm
+        grad_g = (grad * u).sum(dim=1, keepdim=True)
+        grad_v = (g / v_norm) * (grad - u * grad_g)
+        m_v = momentum * m_v + grad_v
+        update = zeropower_via_newtonschulz5(grad_v + momentum * m_v).float()
+        v_new = v - lr * 0.2 * max(W.shape) ** 0.5 * update
+        m_g = betas[0] * m_g + (1 - betas[0]) * grad_g
+        v_g = betas[1] * v_g + (1 - betas[1]) * grad_g**2
+        g = g - lr * (m_g / (1 - betas[0] ** step)) / ((v_g / (1 - betas[1] ** step)).sqrt() + eps)
+        v_norm = v_new.norm(dim=1, keepdim=True)
+        W = g * v_new / v_norm - lr * weight_decay * W
+        g = W.norm(dim=1, keepdim=True)
+    return W
+
+
+def run_variant(variant, params, grads, partitions=None, mesh=None, **kwargs):
+    optimizer = Muon(
+        [dict(params=params, algorithm="muon", weight_decay=0.1 if variant == "muown" else 0.0)],
+        lr=0.01,
+        mu=0.9,
+        nesterov=variant == "muown",
+        betas=(0.9, 0.95),
+        epsilon=1e-8,
+        update_rms=0.2,
+        variant=variant,
+        fsdp_mesh_dim=0,
+        world_mesh=mesh,
+        distributed_mesh=mesh,
+        adjust_lr="rms_norm",
+        matrix_partitions=partitions,
+        **kwargs,
+    )
+    for step_grads in grads:
+        for p, grad in zip(params, step_grads):
+            p.grad = grad
+        optimizer.step()
+    return params
+
+
+@pytest.mark.parametrize("bf16_momentum", [False, True])
+def test_dimuon_matches_reference(bf16_momentum):
+    torch.manual_seed(0)
+    W = torch.randn(24, 16)
+    grads = torch.randn(3, 24, 16)
+    (whole,) = run_variant("dimuon", [nn.Parameter(W.clone())], grads[:, None], bf16_momentum=bf16_momentum)
+    # a packed parameter trains like its matrices on their own
+    packed = nn.Parameter(W.clone())
+    run_variant("dimuon", [packed], grads[:, None], {packed: (16, 8)}, bf16_momentum=bf16_momentum)
+    for result, row_blocks in [(whole, [slice(None)]), (packed, [slice(0, 16), slice(16, 24)])]:
+        for rows in row_blocks:
+            expected = reference_dimuon(W[rows].double(), grads[:, rows].double(), 0.01, 0.9, 0.2)
+            delta, expected_delta = result[rows].detach() - W[rows], expected.float() - W[rows]
+            assert (delta - expected_delta).norm() < 0.03 * expected_delta.norm()
+
+
+def test_muown_matches_reference():
+    torch.manual_seed(0)
+    W = torch.randn(24, 8)
+    grads = torch.randn(3, 24, 8)
+    params = [nn.Parameter(W.clone())]
+    run_variant("muown", params, grads[:, None], {params[0]: (8, 8, 8)})
+    expected = torch.cat(
+        [reference_muown(W[i : i + 8], grads[:, i : i + 8], 0.01, 0.9, (0.9, 0.95), 1e-8, 0.1) for i in (0, 8, 16)]
+    )
+    delta, expected_delta = params[0].detach() - W, expected - W
+    assert (delta - expected_delta).norm() < 0.01 * expected_delta.norm()
+
+
+def sharded_variants(rank, world_size, init_file, weights, grads):
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size)
+    mesh = init_device_mesh("cpu", (world_size,))
+    for variant in ["dimuon", "muown"]:
+        expected = [nn.Parameter(w.clone()) for w in weights]
+        run_variant(variant, expected, grads, {expected[0]: (16, 9), expected[1]: (16, 9)})
+        sharded = [nn.Parameter(distribute_tensor(w.clone(), mesh, [Shard(0)])) for w in weights]
+        sharded_grads = [[distribute_tensor(g, mesh, [Shard(0)]) for g in step] for step in grads]
+        run_variant(variant, sharded, sharded_grads, {sharded[0]: (16, 9), sharded[1]: (16, 9)}, mesh=mesh)
+        for actual, full in zip(sharded, expected):
+            torch.testing.assert_close(actual.full_tensor(), full.detach(), rtol=1e-4, atol=1e-6)
+    dist.destroy_process_group()
+
+
+def test_sharded_variants_match_unsharded(tmp_path):
+    """Two packed matrices with uneven row shards and one batch of experts sharded by expert."""
+    torch.manual_seed(0)
+    weights = [torch.randn(25, 12), torch.randn(25, 12), torch.randn(2, 12, 8)]
+    grads = [[torch.randn_like(w) for w in weights] for _ in range(3)]
+    mp.spawn(sharded_variants, args=(2, tmp_path / "init", weights, grads), nprocs=2)
 
 
 class TinyModel(nn.Module):

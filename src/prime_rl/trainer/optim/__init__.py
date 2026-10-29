@@ -10,7 +10,7 @@ from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
-from prime_rl.trainer.optim.muon import Muon, newton_schulz_deepseek_v4
+from prime_rl.trainer.optim.muon import Muon, newton_schulz_deepseek_v4, polar_express, polar_express_step3p5
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -20,6 +20,13 @@ from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+
+NEWTON_SCHULZ = {
+    "default": None,
+    "deepseek_v4": torch.compile(newton_schulz_deepseek_v4, fullgraph=True),
+    "polar_express": torch.compile(polar_express, fullgraph=True),
+    "step3p5": torch.compile(polar_express_step3p5, fullgraph=True),
+}
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
@@ -178,9 +185,9 @@ def _create_muon_optimizer(
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
         update_rms=config.update_rms,
-        newton_schulz_func=torch.compile(newton_schulz_deepseek_v4, fullgraph=True)
-        if config.newton_schulz == "deepseek_v4"
-        else None,
+        variant=config.muon_variant,
+        bf16_momentum=config.bf16_momentum,
+        newton_schulz_func=NEWTON_SCHULZ[config.newton_schulz],
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
