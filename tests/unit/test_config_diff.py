@@ -1,7 +1,9 @@
-import pytest
-from pydantic import BaseModel, Field
+from typing import Annotated
 
-from prime_rl.configs.diff import FROZEN, LIVE, diff_config, frozen_raw_changes, merge_resumed_config
+import pytest
+from pydantic import BaseModel
+
+from prime_rl.configs.diff import Frozen, Live, diff_config, frozen_raw_changes, merge_resumed_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import ResumeConfig
 
@@ -17,23 +19,23 @@ class OtherLeaf(BaseModel):
 
 class Source(BaseModel):
     name: str
-    weight: float = Field(1.0, json_schema_extra=LIVE)
+    weight: Annotated[float, Live()] = 1.0
 
 
 class Algo(BaseModel):
     kind: str = "grpo"
-    penalty: Leaf | None = Field(None, json_schema_extra=LIVE)
+    penalty: Annotated[Leaf | None, Live()] = None
 
 
 class Root(BaseModel):
-    live: Leaf = Field(Leaf(), json_schema_extra=LIVE)
+    live: Annotated[Leaf, Live()] = Leaf()
     frozen: Leaf = Leaf()
     swappable: Leaf | OtherLeaf = Leaf()
     optional: Leaf | None = None
-    live_optional: Leaf | None = Field(None, json_schema_extra=LIVE)
+    live_optional: Annotated[Leaf | None, Live()] = None
     source: list[Source] = [Source(name="math"), Source(name="code")]
     algo: Algo = Algo()
-    default_algo: Algo = Field(Algo(), json_schema_extra=FROZEN)
+    default_algo: Annotated[Algo, Frozen()] = Algo()
 
 
 @pytest.mark.parametrize(
@@ -97,6 +99,15 @@ def test_frozen_raw_changes_skips_live_fields(field, algo, frozen):
     raw = root.model_dump() | {field: algo}
 
     assert frozen_raw_changes(root, root.model_dump(), raw) == frozen
+
+
+def test_markers_are_value_objects():
+    """Markers compare by value and a copy of a field's metadata still decides live/frozen."""
+    from dataclasses import replace
+
+    assert Live() == Live() and Frozen() == Frozen() and Live() != Frozen()
+    assert replace(Live()).live is True
+    assert replace(Frozen()).live is False
 
 
 def test_frozen_fields_accept_assignment():

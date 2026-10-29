@@ -1,12 +1,11 @@
 """Compare two configs for a live update: what changed, and which changes are frozen.
 
-A field is frozen unless it is marked ``Field(json_schema_extra=LIVE)``. A LIVE field
-changes freely with everything below it, including swapping its value for None or for
-another config class. An unmarked sub-config is compared field by field, and so is an
-unmarked list of sub-configs of the same length, by position: LIVE fields below them stay
-live. Any other change to an unmarked field is frozen. A sub-config marked
-``Field(json_schema_extra=FROZEN)`` is frozen with everything below it, LIVE fields
-included."""
+A field is frozen unless it is ``Annotated`` with ``Live()``. A live field changes freely
+with everything below it, including swapping its value for None or for another config
+class. An unmarked sub-config is compared field by field, and so is an unmarked list of
+sub-configs of the same length, by position: live fields below them stay live. Any other
+change to an unmarked field is frozen. A sub-config annotated with ``Frozen()`` is frozen
+with everything below it, live fields included."""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,20 +14,32 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
-LIVE = {"live": True}
-"""``json_schema_extra`` marker for a field that may change while a run is going."""
 
-FROZEN = {"live": False}
-"""``json_schema_extra`` marker for a sub-config whose fields stay frozen, LIVE ones
-included: e.g. a default that only seeds other fields when the config loads."""
+@dataclass(frozen=True)
+class Live:
+    """``Annotated`` marker for a field that may change while a run is going."""
+
+    live: bool = True
+
+
+@dataclass(frozen=True)
+class Frozen:
+    """``Annotated`` marker for a sub-config whose fields stay frozen, live ones included:
+    e.g. a default that only seeds other fields when the config loads."""
+
+    live: bool = False
 
 
 def _live(info: FieldInfo, live: bool | None) -> bool | None:
     """Whether a field below a field whose state is ``live`` is live: True, False, or
     None while no marker has decided it."""
-    if live is not None or not isinstance(info.json_schema_extra, dict):
+    if live is not None:
         return live
-    return info.json_schema_extra.get("live")
+    for metadata in info.metadata:
+        marked = getattr(metadata, "live", None)
+        if marked is not None:
+            return marked
+    return None
 
 
 class ConfigChange(BaseModel):
