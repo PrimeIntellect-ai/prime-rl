@@ -14,7 +14,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.base import ABORTED_MARKER, WeightReceiver, WeightSender
 from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
@@ -275,4 +275,5 @@ class NCCLWeightReceiver(WeightReceiver):
             transport="nccl",
             step=step,
             on_paused=lambda: self._ack(step),
+            abort_path=self.step_dir(step) / ABORTED_MARKER,
         )

@@ -195,8 +195,10 @@ class AdminPlane:
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        abort_path: Path | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport."""
+        """Update every inference engine through its configured weight transport. A recoverable
+        NCCL transfer stops waiting on its publisher once ``abort_path`` exists."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
         pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
@@ -205,7 +207,11 @@ class AdminPlane:
         transfer_times = await _post_all(
             self.clients,
             "/update_weights",
-            json={"weight_dir": weight_dir_posix, "weight_version": step},
+            json={
+                "weight_dir": weight_dir_posix,
+                "weight_version": step,
+                **({"abort_path": abort_path.as_posix()} if abort_path is not None else {}),
+            },
             timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             retry=False,
         )
@@ -415,14 +421,20 @@ async def _admin_post(
 
 
 async def _post_all(admin_clients: list[AsyncClient], path: str, **kwargs) -> list[float]:
-    """POST ``path`` to every engine concurrently; returns each engine's request time."""
+    """POST ``path`` to every engine concurrently; returns each engine's request time. Raises the
+    first failure only once every request has finished: a caller that moves on after one engine
+    failed (e.g. clears a transfer's abort marker) must not race the others."""
 
     async def post(client: AsyncClient) -> float:
         start = time.perf_counter()
         await _admin_post(client, path, **kwargs)
         return time.perf_counter() - start
 
-    return await asyncio.gather(*[post(client) for client in admin_clients])
+    results = await asyncio.gather(*[post(client) for client in admin_clients], return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return results
 
 
 async def _pause_engines(

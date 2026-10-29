@@ -62,7 +62,11 @@ async def update_weights(request: Request):
     client = engine_client(request)
     async with request.app.state.weight_update_lock:
         request.app.state.weights_valid = False
-        await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+        await client.collective_rpc(
+            "update_weights_from_path",
+            args=(data.get("weight_dir"),),
+            kwargs={"abort_path": data["abort_path"]} if data.get("abort_path") else {},
+        )
         # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
         await client.update_weight_version(str(data["weight_version"]))
         request.app.state.weights_valid = True
