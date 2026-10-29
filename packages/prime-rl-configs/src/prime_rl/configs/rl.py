@@ -17,6 +17,7 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     RunConfig,
     SlurmConfig,
+    TrainerRecoveryConfig,
     TransportConfig,
     VLMConfig,
     WeightBroadcastConfig,
@@ -225,6 +226,9 @@ class RLConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
+
+    trainer_recovery: TrainerRecoveryConfig | None = None
+    """Replace a failed trainer group without restarting the orchestrator, inference or environments. Journals batches until trainer checkpoints commit (``orchestrator.batch_journal``), restarts the trainer up to ``max_restarts`` times, and makes NCCL weight transfers recoverable. Requires ``[ckpt]`` with an interval and the ZMQ rollout transport. Propagated to ``trainer.recovery`` and ``orchestrator.trainer_recovery``."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
@@ -446,6 +450,27 @@ class RLConfig(BaseConfig):
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_trainer_recovery(self):
+        """Recovery replays journaled batches from the latest committed checkpoint, so it needs
+        periodic checkpoints, and NCCL transfers that surviving inference workers can escape."""
+        if self.trainer_recovery is None:
+            return self
+        if self.trainer.ckpt is None or not self.trainer.ckpt.interval:
+            raise ValueError(
+                "trainer_recovery requires periodic trainer checkpoints ([ckpt] with interval): a replacement "
+                "replays every journaled batch since the last committed checkpoint"
+            )
+        broadcast = self.weight_broadcast
+        if broadcast.type == "nixl":
+            raise ValueError("trainer_recovery does not support NIXL weight broadcast yet")
+        if broadcast.type == "nccl":
+            if "recoverable" in broadcast.model_fields_set and not broadcast.recoverable:
+                raise ValueError("trainer_recovery requires weight_broadcast.recoverable = true with NCCL")
+            for config in (broadcast, self.trainer.weight_broadcast, self.orchestrator.weight_broadcast):
+                config.recoverable = True
         return self
 
     @model_validator(mode="after")

@@ -108,6 +108,18 @@ class ControlConfig(BaseConfig):
     """Port the control API listens on."""
 
 
+class TrainerRecoveryConfig(BaseConfig):
+    """Keep the orchestrator, inference and environments running when the trainer fails.
+
+    The orchestrator journals every batch until a trainer checkpoint covers it. A replacement
+    trainer group restores the latest committed checkpoint, replays the journaled batches after
+    it in order and then continues with new ones; it publishes weights again once it has
+    recomputed the policy inference already serves."""
+
+    max_restarts: int = Field(3, ge=1)
+    """Times the ``rl`` launcher replaces a failed trainer group (``torchrun --max-restarts``)."""
+
+
 class ResumeConfig(BaseConfig):
     """Resume the run from a checkpoint. A bare ``--resume`` (or empty ``[resume]`` block)
     resumes from the latest checkpoint."""

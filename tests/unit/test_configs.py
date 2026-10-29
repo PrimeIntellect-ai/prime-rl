@@ -753,6 +753,36 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     assert reloaded == config
 
 
+def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
+    """[trainer_recovery] reaches both sub-configs, journals batches and makes NCCL recoverable."""
+    import json
+
+    base = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {},
+        "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        "trainer_recovery": {"max_restarts": 2},
+    }
+    with pytest.raises(ValueError, match="periodic trainer checkpoints"):
+        RLConfig.model_validate(base)
+    with pytest.raises(ValueError, match="recoverable"):
+        RLConfig.model_validate(
+            {**base, "ckpt": {"interval": 5}, "weight_broadcast": {"type": "nccl", "recoverable": False}}
+        )
+    with pytest.raises(ValueError, match="batch_journal"):
+        RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "orchestrator": {"batch_journal": False}})
+
+    config = RLConfig.model_validate({**base, "ckpt": {"interval": 5}})
+    assert config.trainer.recovery.max_restarts == 2
+    assert config.orchestrator.trainer_recovery == config.trainer.recovery
+    assert config.orchestrator.batch_journal
+    assert config.trainer.weight_broadcast.recoverable and config.orchestrator.weight_broadcast.recoverable
+    path = tmp_path / "rl.json"
+    path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
+    assert cli(RLConfig, args=["@", str(path)]) == config
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
