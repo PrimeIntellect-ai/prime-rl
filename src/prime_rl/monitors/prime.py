@@ -20,6 +20,7 @@ from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import publish_link, register_links
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.record import update_record
 from prime_rl.utils.utils import sanitize
@@ -37,7 +38,8 @@ FINISH_TIMEOUT = 60.0
 
 OFF_HINT = "turn the monitor off with --no-monitors.prime"
 NO_KEY = (
-    f"The prime monitor found no Prime API key. Authenticate with `prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
+    "No Prime API key found - the run is not logged to Prime. Authenticate with "
+    f"`prime login` (or set PRIME_API_KEY), or {OFF_HINT}"
 )
 
 
@@ -97,7 +99,8 @@ def register(
         if id is not None:
             raise
         if "needs an API key" in str(e):
-            raise RuntimeError(NO_KEY) from e
+            get_logger().warning(NO_KEY)
+            return pr.init(kind="train", mode="disabled", finish_timeout=FINISH_TIMEOUT, **init_kwargs)
         # Registering fails without a team, or for a team outside the external-runs allowlist.
         raise RuntimeError(
             f"Failed to register the Prime run ({type(e).__name__}: {e}). Select a team with "
@@ -112,11 +115,18 @@ def launch_run(config: RLConfig | SFTConfig, prime: PrimeMonitorConfig | None) -
     run failed, and one that ends cleanly finishes it once every component exited - the
     components only flush their attached run. So the process that registers the run
     supervises the launch: the local ``rl`` or ``sft`` launcher, or a multi-node SLURM
-    job's ``run_owner``. A run a managed launch pre-created (``$RUN_ID``) is the platform's."""
+    job's ``run_owner``. A run a managed launch pre-created (``$RUN_ID``) is the platform's.
+    Without a Prime API key, the components run the monitor disabled."""
     if prime is None or os.getenv("RUN_ID") or (os.getenv(pr.MODE_ENV) or "online") != "online":
         yield
         return
     run = register(config, prime.name, "online")
+    if run.mode == "disabled":
+        # register already warned; the components need not warn again each.
+        os.environ[pr.MODE_ENV] = "disabled"
+        atexit.unregister(run._atexit_hook)
+        yield
+        return
     os.environ["PRL_RUN_ID"] = os.environ["RUN_ID"] = run.id
     try:
         yield
@@ -256,9 +266,10 @@ class PrimeMonitor(Monitor):
                 f"exactly one eval source (got {len(self.sources)})"
             )
         online = self.mode == "online"
-        # Evaluations open lazily, when their epoch starts; fail at launch instead.
+        # Evaluations open lazily, when their epoch starts; decide at launch instead.
         if online and not Config().api_key:
-            raise RuntimeError(NO_KEY)
+            self.logger.warning(NO_KEY)
+            self.mode, online = "disabled", False
         self.logger.info("Streaming eval epochs to the Prime platform" if online else "Prime evaluations disabled")
 
         def record() -> None:

@@ -129,7 +129,9 @@ def sdk_runs(monkeypatch):
     runs = []
 
     def fake_init(**kwargs):
-        run = SimpleNamespace(id=kwargs.get("id", "run-123"), url="https://x/run-123", attached="id" in kwargs)
+        run = SimpleNamespace(
+            id=kwargs.get("id", "run-123"), url="https://x/run-123", attached="id" in kwargs, mode=kwargs["mode"]
+        )
         run.kwargs, run.finished, run.flushed, run.failed = kwargs, False, False, None
         run._atexit_hook = lambda: None
         run.finish = lambda *a, **k: setattr(run, "finished", True)

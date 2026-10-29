@@ -150,9 +150,9 @@ def run_links(
     run_dir: Path, attempt_log_dir: Path, monitors: "MonitorsConfig", stop: Callable[[], bool]
 ) -> Callable[[], dict[str, dict[str, str]]] | None:
     """The ``links`` argument of ``log_run_links``: waits for every monitor in
-    ``monitors`` that is on and can open a page, keyed by its config field. A monitor turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline
-    or disabled ``$WANDB_MODE``) opens none; one without credentials fails its
-    component, which ends the wait through ``stop``."""
+    ``monitors`` that is on and can open a page, keyed by its config field. A monitor
+    turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline or disabled
+    ``$WANDB_MODE``) opens none, and so does one without credentials."""
     from prime_rl.utils.links import wait_for_links
 
     opens_pages = {
