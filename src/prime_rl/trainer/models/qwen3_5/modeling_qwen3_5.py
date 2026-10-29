@@ -22,7 +22,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     Qwen3_5RotaryEmbedding,
     build_qwen3_5_mrope_position_ids,
 )
-from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
+from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel, materialize_qwen_vl_images
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -236,19 +236,15 @@ class Qwen3_5VLMModel(nn.Module):
             # Every rank must retain the vision graph so FSDP collectives stay symmetric.
             inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
-        if position_ids is None:
-            if image_grid_thw is None:
-                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-            else:
-                if mm_token_type_ids is None:
-                    raise ValueError("mm_token_type_ids are required with Qwen3.5 image inputs")
-                position_ids = build_qwen3_5_mrope_position_ids(
-                    input_ids=input_ids,
-                    mm_token_type_ids=mm_token_type_ids,
-                    image_grid_thw=image_grid_thw,
-                    spatial_merge_size=self.config.vision_config.spatial_merge_size,
-                    seq_lens=seq_lens,
-                )
+        if image_grid_thw is not None:
+            # Image inputs get MRoPE positions; text-only inputs keep the caller's positions.
+            position_ids = build_qwen3_5_mrope_position_ids(
+                input_ids=input_ids,
+                mm_token_type_ids=mm_token_type_ids,
+                image_grid_thw=image_grid_thw,
+                spatial_merge_size=self.config.vision_config.spatial_merge_size,
+                seq_lens=seq_lens,
+            )
         return inputs_embeds, position_ids
 
     def forward(
@@ -307,6 +303,8 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
 
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
+
+    materialize_images = staticmethod(materialize_qwen_vl_images)
 
     def num_active_params(self) -> int:
         # The vision encoder runs per image, not per text token.
