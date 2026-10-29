@@ -194,7 +194,7 @@ def train(config: SFTConfig):
         processor=processor,
         multimodal=multimodal,
     )
-    dataloader = setup_dataloader(dataset, config.data, config.model.cp)
+    dataloader = setup_dataloader(dataset, config.data, config.pad_to_multiple_of)
 
     val_raw_dataset = None
     if config.val is not None:
@@ -334,7 +334,7 @@ def train(config: SFTConfig):
             processor=processor,
             multimodal=multimodal,
         )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
+        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.pad_to_multiple_of)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count = run_eval_loop(val_dataloader)

@@ -396,6 +396,55 @@ def test_mega_moe_buffer_covers_mxfp8_padding():
     assert config.model.moe.dispatch.max_tokens_per_rank == 1280
 
 
+def test_sft_mega_moe_buffer_covers_mxfp8_padding():
+    # A 10000-token row pads to 10240 (a multiple of cp * 32), 1280 tokens per rank
+    config = SFTConfig.model_validate(
+        {
+            "model": {
+                "cp": 8,
+                "quantization": {"type": "mxfp8"},
+                "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8"}},
+            },
+            "data": {"type": "fake", "seq_len": 10000},
+        }
+    )
+
+    assert config.model.moe.dispatch.max_tokens_per_rank == 1280
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+@pytest.mark.parametrize(("quantization", "expected"), [(None, 2), ({"type": "mxfp8"}, 64)])
+def test_pad_to_multiple_of_is_cp_or_mxfp8_blocks_per_cp_rank(config_cls, quantization, expected):
+    config = config_cls.model_validate({"model": {"cp": 2, "quantization": quantization}})
+
+    assert config.pad_to_multiple_of == expected
+
+
+@pytest.mark.parametrize(("seq_len", "valid"), [(100, False), (128, True)])
+def test_sft_pad_to_seq_len_requires_a_padding_multiple(seq_len, valid):
+    config = {
+        "model": {"quantization": {"type": "mxfp8"}},
+        "data": {"type": "fake", "seq_len": seq_len, "pad_to_seq_len": True},
+    }
+    if valid:
+        SFTConfig.model_validate(config)
+    else:
+        with pytest.raises(
+            ValidationError, match=r"data.seq_len \* data.micro_batch_size \(100\) must be a multiple of 32"
+        ):
+            SFTConfig.model_validate(config)
+
+
+@pytest.mark.parametrize(("seq_len", "valid"), [(100, False), (128, True)])
+def test_fake_rl_data_requires_a_padding_multiple(seq_len, valid):
+    config = {"model": {"seq_len": seq_len, "quantization": {"type": "mxfp8"}}, "data": {"fake": {}}}
+    if valid:
+        TrainerConfig.model_validate(config)
+    else:
+        with pytest.raises(ValidationError, match=r"model.seq_len \(100\) must be a multiple of 32 with data.fake"):
+            TrainerConfig.model_validate(config)
+
+
 def test_mega_moe_buffer_smaller_than_a_cp_shard_fails():
     with pytest.raises(ValidationError, match="must be at least the tokens a rank holds"):
         TrainerConfig.model_validate(
@@ -980,6 +1029,20 @@ def test_shared_seq_len_propagates_to_subconfigs():
     )
     assert config.trainer.model.seq_len == 4096
     assert config.orchestrator.seq_len == 4096
+
+
+@pytest.mark.parametrize(("seq_len", "valid"), [(100, False), (128, True)])
+def test_rl_pad_to_seq_len_requires_a_padding_multiple(seq_len, valid):
+    config = {
+        "seq_len": seq_len,
+        "trainer": {"model": {"quantization": {"type": "mxfp8"}}},
+        "orchestrator": {"renderer": {"name": "default"}, "pad_to_seq_len": True},
+    }
+    if valid:
+        assert RLConfig.model_validate(config).orchestrator.pad_to_multiple_of == 32
+    else:
+        with pytest.raises(ValidationError, match=r"orchestrator.seq_len \(100\) must be a multiple of 32"):
+            RLConfig.model_validate(config)
 
 
 def test_shared_and_sub_seq_len_conflict_raises():

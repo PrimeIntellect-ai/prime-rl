@@ -25,7 +25,6 @@ from prime_rl.configs.shared import (
 from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
-    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import propagate_shared_fields
@@ -376,6 +375,12 @@ class RLConfig(BaseConfig):
                 f"trainer.model.seq_len ({trainer.model.seq_len}) must be >= orchestrator.seq_len "
                 f"({orchestrator.seq_len}) so the trainer can handle every sequence the orchestrator produces."
             )
+        if orchestrator.pad_to_seq_len and orchestrator.seq_len % trainer.pad_to_multiple_of != 0:
+            raise ValueError(
+                f"orchestrator.seq_len ({orchestrator.seq_len}) must be a multiple of {trainer.pad_to_multiple_of} "
+                "with orchestrator.pad_to_seq_len, so padded micro batches split evenly over the CP ranks and "
+                "into MXFP8 blocks."
+            )
         if (trainer.ckpt is None) != (orchestrator.ckpt is None):
             raise ValueError(
                 "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
@@ -589,7 +594,6 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
         num_train_workers = self.orchestrator.num_train_workers
         env_server_replicas = self.orchestrator.env_server_replicas
         if self.deployment.type == "single_node":  # single-node
@@ -693,7 +697,7 @@ class RLConfig(BaseConfig):
 
         self.orchestrator = self.orchestrator.model_copy(
             update={
-                "pad_to_multiple_of": pad_to_multiple_of,
+                "pad_to_multiple_of": self.trainer.pad_to_multiple_of,
                 "num_train_workers": num_train_workers,
                 "env_server_replicas": env_server_replicas,
             }

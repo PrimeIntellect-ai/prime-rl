@@ -40,9 +40,9 @@ class BaseDataConfig(BaseConfig):
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
     pad_to_seq_len: bool = False
-    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
-    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
-    at the cost of extra padding."""
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``pad_to_multiple_of``
+    (``model.cp``, times 32 under MXFP8). Rows then have one static shape, which avoids recompilation on dynamic
+    sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -453,13 +453,30 @@ class SFTConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_pad_to_seq_len(self):
+        data_configs = {"data": self.data} | ({"val.data": self.val.data} if self.val is not None else {})
+        for name, data in data_configs.items():
+            row_len = data.seq_len * data.micro_batch_size
+            if data.pad_to_seq_len and row_len % self.pad_to_multiple_of != 0:
+                raise ValueError(
+                    f"{name}.seq_len * {name}.micro_batch_size ({row_len}) must be a multiple of "
+                    f"{self.pad_to_multiple_of} with {name}.pad_to_seq_len, so padded rows split evenly over the CP "
+                    "ranks and into MXFP8 blocks."
+                )
+        return self
+
+    @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
+        """Packed rows hold up to ``micro_batch_size * seq_len`` tokens, padded to ``pad_to_multiple_of`` and split
+        over the CP ranks."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
             data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            multiple = self.pad_to_multiple_of
+            row_tokens = max(data.micro_batch_size * data.seq_len for data in data_configs)
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank,
-                max(data.micro_batch_size * data.seq_len for data in data_configs),
+                -(-row_tokens // multiple) * multiple,
                 self.model.cp,
             )
         return self

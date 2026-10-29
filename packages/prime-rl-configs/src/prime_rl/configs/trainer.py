@@ -235,14 +235,6 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
-def rl_micro_batch_multiple(model: "ModelConfig") -> int:
-    """RL micro batches are padded to a multiple of this: one shard per CP rank, and MXFP8 linears quantize
-    grad_output in 32-token blocks per CP rank."""
-    if isinstance(model.quantization, MXFP8Config):
-        return model.cp * 32
-    return model.cp
-
-
 def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int, cp: int) -> int:
     """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
     buffer must hold the rank's full share of the micro batch. Context parallelism splits every micro
@@ -704,6 +696,14 @@ class BaseTrainerConfig(BaseConfig):
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
+    @property
+    def pad_to_multiple_of(self) -> int:
+        """Packed micro batches are padded to a multiple of this: one shard per CP rank, and MXFP8 linears quantize
+        grad_output in 32-token blocks per CP rank."""
+        if isinstance(self.model.quantization, MXFP8Config):
+            return self.model.cp * 32
+        return self.model.cp
+
 
 class TrainerConfig(BaseTrainerConfig):
     # RL keeps the pretrained router.
@@ -746,12 +746,21 @@ class TrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
         """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
-        ``rl_micro_batch_multiple`` and split over the CP ranks."""
+        ``pad_to_multiple_of`` and split over the CP ranks."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
-            multiple = rl_micro_batch_multiple(self.model)
+            multiple = self.pad_to_multiple_of
             micro_batch_tokens = -(-self.model.seq_len // multiple) * multiple
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank, micro_batch_tokens, self.model.cp
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_fake_data_seq_len(self):
+        if self.data.fake is not None and self.model.seq_len % self.pad_to_multiple_of != 0:
+            raise ValueError(
+                f"model.seq_len ({self.model.seq_len}) must be a multiple of {self.pad_to_multiple_of} with "
+                "data.fake: fake micro batches hold exactly seq_len tokens and are not padded."
             )
         return self

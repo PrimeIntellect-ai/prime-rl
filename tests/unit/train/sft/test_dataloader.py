@@ -19,7 +19,7 @@ def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
         seed=config.seed,
         non_dp_size=non_dp_size,
     )
-    return dataset, setup_dataloader(dataset, config, cp=1)
+    return dataset, setup_dataloader(dataset, config, pad_to_multiple_of=1)
 
 
 def test_fake_dataset_single_rank_state():
@@ -88,7 +88,7 @@ def test_fake_dataset_single_rank_resume():
 
     # Reload dataloader
     state_dict = dataloader.state_dict()
-    dataloader = setup_dataloader(dataset, config, cp=1)
+    dataloader = setup_dataloader(dataset, config, pad_to_multiple_of=1)
     dataloader.load_state_dict(state_dict)
     dataiter = iter(dataloader)
 
@@ -187,7 +187,7 @@ def test_dataloader_shards_across_ranks_and_workers(
                 seq_len=config.seq_len,
                 non_dp_size=non_dp_size,
             )
-            return setup_dataloader(dataset, config, cp=1)
+            return setup_dataloader(dataset, config, pad_to_multiple_of=1)
 
         dataloader = setup_epoch_dataloader()
         dataiter = iter(dataloader)
