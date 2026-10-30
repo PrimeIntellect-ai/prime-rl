@@ -3,7 +3,7 @@ matmul_precision = "highest"
 dist_timeout_seconds = 14400
 
 [model]
-name = "PrimeIntellect/INTELLECT-4-SFT-v8-3000-bf16"
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 seq_len = 262144
 cp = 8
 ep = 8
