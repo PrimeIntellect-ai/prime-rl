@@ -10,7 +10,7 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, max_sparse_attn_slots
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
-from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.layers.fp8_linear import (
@@ -908,4 +908,28 @@ def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
     _assert_frobenius_relative(collapsed, ref_collapsed, 1e-2, "collapsed")
     _assert_frobenius_relative(logits, ref_logits, 1e-2, "logits")
     for name, fused, reference in zip(("x", "fn", "scale", "base"), fused_inputs, reference_inputs):
+        _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
+
+
+@pytest.mark.parametrize("num_tokens", [1, 37])
+@pytest.mark.parametrize("hc", [2, 4])
+@pytest.mark.parametrize("hidden", [96, 512])
+def test_fused_post_bda_matches_reference(num_tokens, hc, hidden):
+    """Output and every gradient of the fused mHC write-back `comb.T @ residual + post * y`, across hidden blocks."""
+    comb = torch.rand(1, num_tokens, hc, hc, device="cuda")
+    residual = torch.randn(1, num_tokens, hc, hidden, device="cuda").to(torch.bfloat16)
+    post = 2 * torch.rand(1, num_tokens, hc, device="cuda")
+    y = torch.randn(1, num_tokens, hidden, device="cuda").to(torch.bfloat16)
+    grad_out = torch.randn(1, num_tokens, hc, hidden, device="cuda").to(torch.bfloat16)
+    fused_inputs = _leaves(comb, residual, post, y)
+    reference_inputs = _leaves(comb.double(), residual.double(), post.double(), y.double())
+
+    out = dsv4_mhc.fused_post_bda(*fused_inputs)
+    out.backward(grad_out)
+    comb_ref, residual_ref, post_ref, y_ref = reference_inputs
+    ref_out = torch.einsum("btji,btjd->btid", comb_ref, residual_ref) + post_ref.unsqueeze(-1) * y_ref.unsqueeze(-2)
+    ref_out.backward(grad_out.double())
+
+    _assert_frobenius_relative(out, ref_out, 1e-2, "out")
+    for name, fused, reference in zip(("comb", "residual", "post", "y"), fused_inputs, reference_inputs):
         _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
