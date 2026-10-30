@@ -561,6 +561,9 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
+    per_episode_cache_salt: bool = False
+    """Give each train rollout its own prefix-cache salt (``"<run attempt>-<policy version>-<episode id>"``) instead of one per group (``"<run attempt>-<policy version>"``). Rollouts of a group then never share prefix-cache blocks, so a cached block's stored MoE routing rows always come from the episode that recomputes it (required by ``inference.forced_routing``). Costs the cross-rollout reuse of the first prompt's prefill. Eval rollouts keep the shared salt."""
+
     max_staleness: Annotated[int, Live()] = Field(8, ge=0)
     """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
 

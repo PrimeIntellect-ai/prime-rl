@@ -141,9 +141,11 @@ class Dispatcher:
         run_name: str | None,
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
+        per_episode_cache_salt: bool = False,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
+        self.per_episode_cache_salt = per_episode_cache_salt
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -491,6 +493,15 @@ class Dispatcher:
             group_id=uuid.UUID(request.group_id) if request.group_id else None,
         )
 
+    def _cache_salt(self, group: GroupState) -> str:
+        """One episode's prefix-cache salt: the run attempt and the group's policy version (a new episode never
+        reuses KV from older weights or an earlier attempt), plus a fresh episode id for train rollouts with
+        ``per_episode_cache_salt`` (rollouts of a group never share cached blocks or their stored routing rows)."""
+        salt = f"{self.cache_salt_prefix}-{group.policy_version_at_start}"
+        if self.per_episode_cache_salt and group.kind == "train":
+            return f"{salt}-{uuid.uuid4().hex[:16]}"
+        return salt
+
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
         """Dispatch one ``run`` task for this group.
 
@@ -516,7 +527,7 @@ class Dispatcher:
         env = env_collection.get(group.env_name)
         # Only endpoints receiving policy weight updates need a cache salt.
         if live_sourced and self.policy_weights_change:
-            cache_salt = f"{self.cache_salt_prefix}-{group.policy_version_at_start}"
+            cache_salt = self._cache_salt(group)
         else:
             cache_salt = None
 
