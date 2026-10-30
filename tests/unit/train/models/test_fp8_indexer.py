@@ -2,7 +2,13 @@ import pytest
 import torch
 
 import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, per_token_group_quant_fp8, select_topk
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+from prime_rl.trainer.models.kernels.fp8_indexer import (
+    VLLM_INDEXER_FP8_AMAX_FLOOR,
+    fp8_indexer,
+    per_token_group_quant_fp8,
+    select_topk,
+)
 
 pytestmark = [
     pytest.mark.gpu,
@@ -177,6 +183,49 @@ def test_deep_select_matches_torch_topk(topk, monkeypatch):
     unique_boundary = (ranked[:, topk - 1] != ranked[:, topk]) | (ke <= topk)
     assert unique_boundary.any() and not unique_boundary.all()
     assert torch.equal(picked_set(deep_select_picks)[unique_boundary], picked_set(torch_picks)[unique_boundary])
+
+
+def test_fused_rope_quant_is_bit_for_bit_with_the_unfused_pair(monkeypatch):
+    """The one-kernel q RoPE + quant writes exactly what the unfused pair writes, vLLM's kernel or the fallback.
+
+    A quantized value or folded scale that moved by a bit could move a pick at a top-k boundary, so both
+    branches of `_indexer_q_rope_quant` are checked bit for bit, then their picks through `fp8_indexer`.
+    """
+    ks, ke = ranges(SEGMENTS[0])
+    k = torch.randn(NUM_K, DIM, device="cuda").bfloat16()
+    q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()
+    w = torch.randn(NUM_Q, HEADS, device="cuda").bfloat16()
+    positions = torch.arange(NUM_Q, device="cuda")
+    cos_sin = torch.randn(int(positions.max()) + 1, 64, device="cuda")
+
+    def unfused():
+        rot = dsv4_rope(q, cos_sin, positions)
+        q_fp8, q_scales = per_token_group_quant_fp8(rot.reshape(-1, DIM), group_size=DIM, eps=VLLM_INDEXER_FP8_AMAX_FLOOR)
+        return q_fp8.view(NUM_Q, HEADS, DIM), w * q_scales.view(NUM_Q, HEADS)
+
+    expected_q, expected_w = unfused()
+    fused_q, fused_w = fp8_indexer_module._indexer_q_rope_quant(q, cos_sin, positions, w, VLLM_INDEXER_FP8_AMAX_FLOOR)
+    assert torch.equal(fused_q.view(torch.uint8), expected_q.view(torch.uint8))
+    assert torch.equal(fused_w, expected_w)
+
+    monkeypatch.setattr(fp8_indexer_module, "_vllm_fused_indexer_q_rope_quant", lambda: None)
+    fallback_q, fallback_w = fp8_indexer_module._indexer_q_rope_quant(q, cos_sin, positions, w, VLLM_INDEXER_FP8_AMAX_FLOOR)
+    assert torch.equal(fallback_q.view(torch.uint8), expected_q.view(torch.uint8))
+    assert torch.equal(fallback_w, expected_w)
+
+    expected_picks = fp8_indexer(dsv4_rope(q, cos_sin, positions), k, w, ks.int(), ke.int(), TOPK)
+    fused_picks = fp8_indexer(
+        q,
+        k,
+        w,
+        ks.int(),
+        ke.int(),
+        TOPK,
+        amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
+        cos_sin_cache=cos_sin,
+        position_ids=positions,
+    )
+    assert torch.equal(fused_picks, expected_picks)
 
 
 @pytest.mark.parametrize("segments", SEGMENTS, ids=SEGMENT_IDS)
