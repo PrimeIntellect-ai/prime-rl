@@ -1271,6 +1271,18 @@ def test_forced_routing_requires_router_replay_and_per_episode_salts():
         RLConfig.model_validate({**config, "orchestrator": {}})
     with pytest.raises(ValidationError, match="enable_router_replay"):
         RLConfig.model_validate({**config, "trainer": {}})
+    # a single node fills the inference GPUs with DP ranks, which forced routing cannot bind to
+    dp = {"deployment": {"type": "single_node", "num_train_gpus": 2, "num_infer_gpus": 6}}
+    tp2 = {"inference": {"forced_routing": {"enabled": True}, "vllm": {"tensor_parallel_size": 2}}}
+    with pytest.raises(ValidationError, match="single tensor-parallel engine"):
+        RLConfig.model_validate({**config, **dp, **tp2})
+    multi_node = {
+        "deployment": {"type": "multi_node", "gpus_per_node": 8, "num_train_nodes": 1, "num_infer_nodes": 2},
+        "slurm": {},
+    }
+    router = {"type": "vllm-router", "policy": "round_robin"}
+    with pytest.warns(UserWarning, match="session-affine router policy"):
+        RLConfig.model_validate({**config, **multi_node, "inference": {**config["inference"], "router": router}})
 
 
 def test_setup_vllm_env_writes_the_forced_routing_switch(monkeypatch):

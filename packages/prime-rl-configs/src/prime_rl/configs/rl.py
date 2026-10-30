@@ -521,18 +521,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_forced_routing(self):
-        """Forced routing only pays off when the trainer replays the routing, and is only correct when no two rollouts
-        share prefix-cache blocks (a shared block's stored routing comes from whichever rollout computed it first)."""
-        if self.inference is None or not self.inference.forced_routing.enabled:
-            return self
-        if not self.trainer.enable_router_replay:
-            raise ValueError("inference.forced_routing requires trainer.enable_router_replay.")
-        if not self.orchestrator.per_episode_cache_salt:
-            raise ValueError("inference.forced_routing requires orchestrator.per_episode_cache_salt = true.")
-        return self
-
-    @model_validator(mode="after")
     def validate_multi_node_requires_router(self):
         if self.deployment.type == "multi_node" and self.inference is not None and self.inference.router is None:
             raise ValueError("Multi-node deployments require inference.router to front the per-rank engines.")
@@ -720,6 +708,38 @@ class RLConfig(BaseConfig):
                 "env_server_replicas": env_server_replicas,
             }
         )
+        return self
+
+    @model_validator(mode="after")
+    def validate_forced_routing(self):
+        """Forced routing only pays off when the trainer replays the routing. The per-episode salt keeps the rollouts
+        of a group from sharing prefix-cache blocks, whose stored routing would come from whichever rollout computed
+        them first. It separates episodes, not the concurrent traces of one episode; the server does not force blocks
+        those traces computed differently. Runs after ``auto_setup_deployment``, which fills a single node's
+        inference GPUs with DP ranks."""
+        if self.inference is None or not self.inference.forced_routing.enabled:
+            return self
+        if not self.trainer.enable_router_replay:
+            raise ValueError("inference.forced_routing requires trainer.enable_router_replay.")
+        if not self.orchestrator.per_episode_cache_salt:
+            raise ValueError("inference.forced_routing requires orchestrator.per_episode_cache_salt = true.")
+        if self.deployment.type == "single_node" and self.inference.vllm.data_parallel_size > 1:
+            raise ValueError(
+                "inference.forced_routing needs a single tensor-parallel engine: set "
+                "inference.vllm.tensor_parallel_size = deployment.num_infer_gpus."
+            )
+        router = self.inference.router
+        if (
+            self.deployment.type == "multi_node"
+            and router is not None
+            and router.type == "vllm-router"
+            and router.policy not in ("sticky_least_loaded", "consistent_hash")
+        ):
+            warnings.warn(
+                f"inference.forced_routing needs a session-affine router policy, not {router.policy!r}: a turn "
+                "served by another engine has neither the KV cache nor the stored routing rows.",
+                stacklevel=2,
+            )
         return self
 
     @model_validator(mode="after")
