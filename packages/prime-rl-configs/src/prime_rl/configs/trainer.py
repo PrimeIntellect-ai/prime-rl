@@ -346,12 +346,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(compute, MXFP8MoEComputeConfig):
-                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
-        elif dispatch.transport == "mxfp8":
+        if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self

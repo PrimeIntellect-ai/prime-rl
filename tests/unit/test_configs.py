@@ -293,6 +293,13 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
                 "dispatch": {"type": "torch", "transport": "mxfp8"},
             },
         },
+        {
+            "ep": 2,
+            "moe": {
+                "compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"},
+                "dispatch": {"type": "deepep"},
+            },
+        },
     ],
 )
 def test_supported_moe_runtime_configs(model):
@@ -350,16 +357,6 @@ def test_moe_compute_apply_to_cli(selection, selected):
                 },
             },
             "MXFP8 transport requires",
-        ),
-        (
-            {
-                "ep": 2,
-                "moe": {
-                    "compute": {"type": "mxfp8"},
-                    "dispatch": {"type": "deepep"},
-                },
-            },
-            "does not support DeepEP",
         ),
     ],
 )
