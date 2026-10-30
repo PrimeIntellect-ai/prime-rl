@@ -310,6 +310,7 @@ def get_model(
         model_config.kv_precision = config.dsv4_kv_precision
         model_config.cudnn_sink_grad = config.dsv4_cudnn_sink_grad
         model_config.compressor_backend = config.dsv4_compressor_backend
+        model_config.cp_kv_exchange = config.dsv4_cp_kv_exchange
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
