@@ -339,7 +339,7 @@ With prefix caching, every turn after the first recomputes part of the earlier c
 - **Tail stash.** The store never holds a request's partial last block. When a request finishes or is preempted, TP rank 0 keeps that block's rows, keyed by the hash of the block before it and checked token by token. The next turn of the episode (`routed_experts_prompt_start = known_end`) takes its partial known block `[known_end // B * B, known_end)` from there. `B` is the hash block size.
 - **Client rows** sent in `sampling_params.extra_args.routed_experts_replay` (`{start, data, shape, dtype, version}`) override both. prime-rl does not send them.
 
-On a request's first chunk, TP rank 0 looks the rows up and broadcasts them to every rank. The router uses the known expert ids, and the combine weights come from this forward's gate scores at those ids. A block whose known positions were not all forced when it was computed is marked tainted and is never forced later. Decode steps are never forced, and decode-only CUDA graphs are captured without the forcing ops.
+On a request's first chunk, TP rank 0 looks the rows up and broadcasts them to every rank. The router uses the known expert ids, and the combine weights come from this forward's gate scores at those ids. A block whose known positions were not all forced when it was computed is marked tainted and is never forced later. So is a block that two requests published with different rows, and a stashed tail that has such a twin. Decode steps are never forced, and decode-only CUDA graphs are captured without the forcing ops.
 
 Enable it for multi-turn MoE RL with router replay:
 
@@ -358,12 +358,13 @@ enabled = true
 ```
 
 - It needs routed-experts capture, which is enabled automatically, and the V2 model runner.
-- It binds only to plain tensor-parallel engines. Data or expert parallelism, P/D disaggregation, speculative decoding and DBO make the server fail at startup.
+- It binds only to plain tensor-parallel engines. Data or expert parallelism, P/D disaggregation, speculative decoding and DBO make the server fail at startup. On a single node, set `inference.vllm.tensor_parallel_size` to `deployment.num_infer_gpus`; `rl` rejects a config that would fill the inference GPUs with data-parallel ranks.
 - The `rl` entrypoint requires `trainer.enable_router_replay` and `orchestrator.per_episode_cache_salt`. With a salt shared by the rollouts of a group, a block's stored rows come from whichever rollout computed it first. The per-episode salt costs the reuse of the first prompt's prefill across the group.
-- Keep a session-affine router policy (the default `sticky_least_loaded`): a turn served by another replica finds neither the KV cache nor the rows.
-- The `inference` entrypoint sets `PRIME_RL_FORCED_ROUTING` from the config. A bare `vllm serve` with prime-rl installed enables it with `PRIME_RL_FORCED_ROUTING=1`, without the stats endpoint.
+- The salt separates episodes, not the traces of one episode. Envs that run several trainable traces at once in one episode (best-of-n) share a salt across them. Blocks those traces both computed are detected when their rows differ, counted in `store_conflicts` and `stash_conflicts`, and recomputed without forcing.
+- Keep a session-affine router policy (the default `sticky_least_loaded`, or `consistent_hash`): a turn served by another replica finds neither the KV cache nor the rows. Multi-node `rl` warns on other policies.
+- The `inference` entrypoint sets `PRIME_RL_FORCED_ROUTING` from the config. A bare `vllm serve --enable-return-routed-experts` with prime-rl installed enables it with `PRIME_RL_FORCED_ROUTING=1`, without the stats endpoint. Without routed-experts capture, or on the V1 model runner, the workers fail at startup.
 
-**Counters.** All counters are cumulative; compare two readings. TP rank 0 logs them every `log_interval_s` (`Forced routing: N prompt tokens forced (...)`, then a `Forced routing drift` line), and `GET /forced_routing/stats` on each prime-rl engine port returns them as JSON. The admission timings in the response are the maximum over TP ranks.
+**Counters.** All counters are cumulative; compare two readings (for the drift table, see below). TP rank 0 logs them every `log_interval_s` (`Forced routing: N prompt tokens forced (...)`, then a `Forced routing drift` line), and `GET /forced_routing/stats` on each prime-rl engine port returns them as JSON. The admission timings in the response are the maximum over TP ranks.
 
 | Counter | Meaning | Healthy |
 |---|---|---|
@@ -373,6 +374,7 @@ enabled = true
 | `store_hits`, `store_misses` | Stored full blocks found or missing in the known range | hits ≫ misses |
 | `stash_hits`, `stash_misses`, `stash_evictions`, `stash_entries`, `stash_bytes` | Tail stash lookups and occupancy | misses ≪ hits; evictions only under memory pressure |
 | `store_tainted`, `stash_tainted`, `store_published_tainted` | Lookups that found tainted rows (not forced), and tainted blocks published | 0 |
+| `store_conflicts`, `stash_conflicts` | Blocks two requests published with different rows (tainted), and stash lookups that found tails with the same tokens and other rows (not forced) | 0 unless an env runs several traces per episode |
 | `store_evicted`, `store_slots_used`, `store_slots` | Store evictions (published minus resident) and occupancy | slots < 100%; raise `[inference.vllm.aux_output_config] max_bytes` if evictions come with `known_unforced` |
 | `disagree` | Positions where a later source overwrote different ids | 0 |
 | `in_decode_graphs` | Positions with rows that ran in a decode-only CUDA graph, unforced (their blocks are tainted) | 0 |
@@ -381,7 +383,7 @@ enabled = true
 | `weight_version`, `weight_versions_set` | The policy version the workers last received, and how many updates they saw | the trainer step; +1 per update |
 | `rejected_requests` | Client payloads rejected as malformed | 0 |
 
-**Routing drift.** With `drift = true`, every forced (token, MoE layer) pair is compared with the top-k the router picks in the same forward. `drift` maps `<source>/age<k>` to `[pairs, sets differ, ids differ]`. `<k>` is how many weight updates old the rows are (`unknown` before the first update), and `drift_by_layer` splits the totals by layer. Read `sets differ / pairs`. Two prefill passes at the same weights already differ in about 20% of sets, and a recompute against first-pass decode rows in 30 to 45%. Policy drift is the rise of that ratio with age. A stored block carries the weight version of the step that completed it, and stashed rows that of the request's last sampled step, so rows computed across an update count as one update younger than their oldest part. A ratio above 0.6 at age unknown or 0 logs a warning: forced and natural rows are misaligned.
+**Routing drift.** With `drift = true`, every forced (token, MoE layer) pair is compared with the top-k the router picks in the same forward. `drift` maps `<source>/age<k>` to `[pairs, sets differ, ids differ]`. `<k>` is how many weight updates old the rows are (`unknown` before the first update), and `drift_by_layer` splits the totals by layer. Read `sets differ / pairs`. Two prefill passes at the same weights already differ in about 20% of sets, and a recompute against first-pass decode rows in 30 to 45%. Policy drift is the rise of that ratio with age. A stored block carries the weight version of the step that completed it, and stashed rows that of the request's last sampled step, so rows computed across an update count as one update younger than their oldest part. A ratio above 0.6 at age unknown or 0 logs a warning: forced and natural rows are misaligned. On a GPU, `/forced_routing/stats` does not wait for the device: its `drift` and `drift_by_layer` are the copy started by the previous poll (a stats call or a log line), and `drift_snapshot_age_s` gives that copy's age. To diff an arm, read the endpoint twice at each end and use the second reading.
 
 ### Sampling Replay
 
