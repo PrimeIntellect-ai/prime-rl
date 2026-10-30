@@ -710,6 +710,11 @@ class DeepseekV4Attention(nn.Module):
                 else ""
             )
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}.{hint}")
+        self.cudnn_sink_grad = getattr(config, "cudnn_sink_grad", False)
+        if self.cudnn_sink_grad and self.dsa_backend != "cudnn_flashmla":
+            raise ValueError(
+                f"`model.dsv4_cudnn_sink_grad` needs the cudnn_flashmla sparse-attention backend, not {self.dsa_backend!r}"
+            )
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
@@ -808,6 +813,7 @@ class DeepseekV4Attention(nn.Module):
             self.scaling,
             backend=self.dsa_backend,
             max_slots=self.max_slots,
+            cudnn_sink_grad=self.cudnn_sink_grad,
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output

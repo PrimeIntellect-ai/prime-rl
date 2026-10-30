@@ -332,6 +332,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_cudnn_sink_grad: bool = False
+    """Let the cuDNN backward of DeepSeek V4's ``cudnn_flashmla`` sparse attention form the attention-sink gradient from FlashMLA's sink-free LSE, instead of a separate TileLang pass over the output and its gradient. Needs ``dsa_backend = "cudnn_flashmla"``."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 

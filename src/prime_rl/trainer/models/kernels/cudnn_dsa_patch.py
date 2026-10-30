@@ -4,7 +4,8 @@ Out of the box, cuDNN compiles a new kernel for every number of key slots per qu
 that number changes with sequence length and document packing. The kernel only uses it as an upper limit, so
 when a call passes `topk_length` we compile once with a fixed limit that covers every call. Calls without
 `topk_length` are left alone. On SM100 this applies to the `generic_m64` kernel only, and the number of key slots
-must be a multiple of 64. This patches private cuDNN frontend internals and raises if they change.
+must be a multiple of 64. On SM90 it can also return the preprocess's `rowsum(out * dout)`, which the frontend
+computes but does not return. This patches private cuDNN frontend internals and raises if they change.
 """
 
 import math
@@ -94,25 +95,56 @@ class ExecutorCache(dict):
         get_logger().info(f"Compiled the cuDNN DSA backward {self.kernel} kernel{max_topk} in {seconds:.2f}s")
 
 
+class PreprocessCache(ExecutorCache):
+    """The SM90 preprocess cache, which also keeps the `dpsum` buffer, `rowsum(out * dout)`, of the latest launch."""
+
+    def __init__(self) -> None:
+        super().__init__("preprocess")
+        self.dpsum: torch.Tensor | None = None
+
+    def __getitem__(self, key):
+        launch = super().__getitem__(key)
+
+        def launch_keeping_dpsum(out, dout, dpsum, *args):
+            self.dpsum = dpsum
+            return launch(out, dout, dpsum, *args)
+
+        return launch_keeping_dpsum
+
+
 def patch_sm90_compile_cache() -> None:
     if kernel_sm90.FlashAttentionDSABackwardSm90.__init__ is _init_with_clamped_max_topk:
         return
     kernel_sm90.FlashAttentionDSABackwardSm90.__init__ = _init_with_clamped_max_topk
     bwd = interface_sm90.flash_attn_bwd_sm90
-    bwd.compile_cache_pre = ExecutorCache("preprocess")
+    bwd.compile_cache_pre = PreprocessCache()
     bwd.compile_cache = ExecutorCache("main", main_kernel_key, max_topk_position=-1)
     bwd.compile_cache_post = ExecutorCache("postprocess")
 
 
-def flash_attn_bwd_sm90(*args, max_slots: int | None = None, **kwargs) -> tuple[torch.Tensor, ...]:
-    """The frontend's `flash_attn_bwd_sm90`; a call with `topk_length` serves widths up to `max_slots`."""
+def flash_attn_bwd_sm90(
+    *args, max_slots: int | None = None, return_dpsum: bool = False, **kwargs
+) -> tuple[torch.Tensor, ...]:
+    """The frontend's `flash_attn_bwd_sm90`; a call with `topk_length` serves widths up to `max_slots`.
+
+    With `return_dpsum`, the gradients are followed by the preprocess's `rowsum(out * dout)`, `(total_S_q, nheads)` float32.
+    """
     global _topk_clamp
     patch_sm90_compile_cache()
     if kwargs.get("topk_length") is not None:
         if max_slots is None:
             raise ValueError("a cuDNN DSA backward call with topk_length needs max_slots, its widest slot width")
         _topk_clamp = topk_clamp(max_slots)
-    return interface_sm90.flash_attn_bwd_sm90(*args, **kwargs)
+    cache = interface_sm90.flash_attn_bwd_sm90.compile_cache_pre
+    cache.dpsum = None
+    grads = interface_sm90.flash_attn_bwd_sm90(*args, **kwargs)
+    dpsum, cache.dpsum = cache.dpsum, None
+    if not return_dpsum:
+        return grads
+    total_s_q, num_heads, _ = args[0].shape
+    if dpsum is None or dpsum.dtype != torch.float32 or dpsum.shape[0] != 1 or dpsum.shape[2] != num_heads:
+        raise RuntimeError("the cuDNN SM90 DSA preprocess no longer passes dpsum as its third argument")
+    return *grads, dpsum[0, :total_s_q]
 
 
 def sm100_main_kernel_key(key: tuple) -> tuple:
