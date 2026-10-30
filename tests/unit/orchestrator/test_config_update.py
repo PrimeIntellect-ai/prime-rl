@@ -64,7 +64,7 @@ def test_example_config_frozen_changes_are_rejected(example):
     assert error.value.detail["frozen"] == [
         "train.source[0].sampling.logprobs",
         "train.source[0].group_size",
-        "train.sampling",
+        "train.sampling.temperature",
         "seq_len",
     ]
 
@@ -87,7 +87,10 @@ def test_example_config_rest_of_algo_is_frozen(example):
     with pytest.raises(InvalidConfigError) as error:
         validate_update(example, raw)
 
-    assert error.value.detail["frozen"] == ["train.source[0].algo", "train.algo"]
+    assert error.value.detail["frozen"] == [
+        "train.source[0].algo.length_weighted_baseline",
+        "train.algo.length_penalty",
+    ]
 
 
 def test_example_config_frozen_change_that_fails_validation_is_reported_frozen(example):

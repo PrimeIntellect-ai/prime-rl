@@ -37,6 +37,7 @@ WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
 }
 
 
@@ -72,6 +73,15 @@ async def prefetch_weights(request: Request):
     await client.collective_rpc("prefetch_weights_from_path", args=(data.get("weight_dir"),))
     while not all(await client.collective_rpc("prefetch_weights_done")):
         await asyncio.sleep(0.05)
+    return {"status": "ok"}
+
+
+@router.post("/update_weights_from_modelexpress")
+async def update_weights_from_modelexpress(request: Request):
+    data = await request.json()
+    client = engine_client(request)
+    await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
+    await client.update_weight_version(str(data["weight_version"]))
     return {"status": "ok"}
 
 
@@ -130,10 +140,10 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     session_id = data.get("session_id", "default")
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, session_id),
-    )
+    args = (host, port, rank_offset, inference_world_size, timeout, session_id)
+    if "staging_buffer_bytes" in data:
+        args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
+    await engine_client(request).collective_rpc("init_broadcaster", args=args)
     return {"status": "ok"}
 
 

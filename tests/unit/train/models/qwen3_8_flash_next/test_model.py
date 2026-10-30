@@ -1,15 +1,19 @@
+import copy
+
 import pytest
 import torch
 
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.kernels.qwen3_8_hyper_connection import launch
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
     Qwen3_8FlashNextVisionConfig,
 )
+from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import HyperConnection
 from prime_rl.trainer.perf import FlopCounter
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder
+from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 
 
 @pytest.fixture(params=[False, True], ids=["text", "composite"])
@@ -97,3 +101,45 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     assert converted.keys() == original.keys()
     for name, value in original.items():
         torch.testing.assert_close(converted[name], value, rtol=0, atol=0)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    "stream_count, hidden_size, low_rank, tokens", [(4, 2560, 320, 300), (4, 1024, 128, 1000), (3, 200, 24, 777)]
+)
+@pytest.mark.parametrize("with_residual_injection", [True, False])
+@pytest.mark.parametrize("pending_combine", [False, True])
+def test_fused_hyper_connection_matches_eager(
+    monkeypatch, stream_count, hidden_size, low_rank, tokens, with_residual_injection, pending_combine
+):
+    """Fused CUDA bf16 against eager CPU fp32, forward and backward: a mix, optionally combining a pending block output
+    first, and its combine. The backward walks the tokens in several chunks, the last one partial."""
+    monkeypatch.setattr(launch, "CHUNK_TOKENS", 256)
+    torch.manual_seed(0)
+    eager = HyperConnection(
+        hidden_size=hidden_size,
+        stream_count=stream_count,
+        low_rank=low_rank,
+        norm_eps=1e-6,
+        with_residual_injection=with_residual_injection,
+    )
+    for parameter in eager.parameters():
+        torch.nn.init.normal_(parameter, std=0.1 if parameter.dim() == 1 else parameter.shape[-1] ** -0.5)
+    fused = copy.deepcopy(eager).to("cuda", torch.bfloat16)
+    x = torch.randn(2, tokens, stream_count * hidden_size)
+    pending = (torch.randn(2, tokens, hidden_size), 2 * torch.rand(2, tokens, stream_count))
+    block = torch.randn(hidden_size)
+    grad = torch.randn(2, tokens, stream_count * hidden_size if with_residual_injection else hidden_size)
+
+    def run(module, x, pending_output, pending_injection, block, grad):
+        leaves = [tensor.clone().requires_grad_() for tensor in (x, pending_output, pending_injection)]
+        block_input, residual_state = module.mix(leaves[0], tuple(leaves[1:]) if pending_combine else None)
+        out = module.combine(block_input * block, residual_state) if with_residual_injection else block_input
+        out.backward(grad)
+        grads = [leaf.grad for leaf in leaves[: 3 if pending_combine else 1]]
+        return [out, *grads, *(parameter.grad for parameter in module.parameters())]
+
+    expected = run(eager, x, *pending, block, grad)
+    actual = run(fused, *(tensor.to("cuda", torch.bfloat16) for tensor in (x, *pending, block, grad)))
+    for fused_value, eager_value in zip(actual, expected, strict=True):
+        assert (fused_value.float().cpu() - eager_value).norm() / eager_value.norm() < 1e-2
