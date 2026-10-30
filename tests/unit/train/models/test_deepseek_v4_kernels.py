@@ -656,6 +656,17 @@ def _rope_table(n_rows: int) -> torch.Tensor:
     return torch.cat([freqs.cos(), freqs.sin()], dim=-1).cuda()
 
 
+def _q_norm_rope_fp64(q: torch.Tensor, cos_sin: torch.Tensor, positions: torch.Tensor, eps: float) -> torch.Tensor:
+    """`dsv4_q_norm_rope` in fp64 with torch ops, for `q` of shape `(..., tokens, heads, head_dim)`."""
+    normed = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + eps)
+    table = cos_sin.double()[positions][:, None]
+    cos, sin = table.chunk(2, dim=-1)
+    rope = normed[..., -ROPE_DIM:]
+    x1, x2 = rope[..., 0::2], rope[..., 1::2]
+    rotated = torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+    return torch.cat([normed[..., :-ROPE_DIM], rotated], dim=-1)
+
+
 @pytest.mark.parametrize("inverse", [False, True], ids=["forward", "inverse"])
 def test_dsv4_rope_matches_vllm_bit_for_bit(inverse):
     """The kernel and vLLM's in-place `rotary_embedding` op agree on every bit, nope channels included.
@@ -679,10 +690,10 @@ def test_dsv4_rope_matches_vllm_bit_for_bit(inverse):
 
 
 def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
-    """q matches vLLM's fused prefill q norm + RoPE to the last ulp, and the kv rotation bit for bit.
+    """q and the kv rotation match vLLM's fused prefill q norm + RoPE bit for bit.
 
-    vLLM rounds q to bf16 once after an fp32 RMSNorm and rotation, as `dsv4_q_norm_rope` does. The norm's
-    reduction order differs, so a few elements per million land one ulp apart.
+    `dsv4_q_norm_rope` runs the out-of-place variant of the kernel vLLM serves with, so this pins its
+    arguments to those of the in-place serving call.
     """
     pytest.importorskip("vllm._custom_ops")
     positions = _rope_positions()
@@ -699,17 +710,16 @@ def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
     )
     rotated_q = dsv4_q_norm_rope(q, cos_sin, positions, eps)
 
-    assert (rotated_q != expected_q).float().mean() < 1e-5
-    _assert_relative(rotated_q, expected_q, torch.finfo(torch.bfloat16).eps, "q")
+    assert torch.equal(rotated_q, expected_q)
     rotated_kv = dsv4_rope(kv.clone().unsqueeze(1), cos_sin, positions)
     assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
 
 
 def test_q_norm_rope_matches_the_composed_norm_and_rotation():
-    """Bit for bit with an fp32 RMSNorm, the rotation and one bf16 cast, eager and compiled.
+    """Matches an fp32 RMSNorm, the rotation and one bf16 cast, and compiles to the same bits as eager.
 
-    Gradients agree with the composed ops to bf16 precision rather than bit for bit: the composed
-    backward carries an fp32 gradient through the rotation, where `dsv4_q_norm_rope` keeps it in bf16.
+    The norm's reduction order differs from the composed ops', so a few elements per million land one
+    ulp apart. The gradient is as close to an fp64 reference as rounding that reference to bf16 is.
     """
     positions = _rope_positions()
     cos_sin = _rope_table(int(positions.max()) + 1)
@@ -730,10 +740,19 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
         (out.float() * weight).sum().backward()
 
     assert fused.dtype == torch.bfloat16
-    assert torch.equal(fused, expected)
+    assert (fused != expected).float().mean() < 1e-5
+    _assert_relative(fused, expected, torch.finfo(torch.bfloat16).eps, "q")
     assert torch.equal(compiled, fused)
     assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
     _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
+
+    reference_leaf = leaf.double().requires_grad_(True)
+    reference_out = _q_norm_rope_fp64(reference_leaf, cos_sin, positions, eps)
+    (reference_out * weight.to(torch.bfloat16).double()).sum().backward()
+    reference_grad = reference_leaf.grad
+    rounding_floor = (reference_grad.to(torch.bfloat16).double() - reference_grad).square().mean().sqrt()
+    fused_error = (fused_leaf.grad.double() - reference_grad).square().mean().sqrt()
+    assert fused_error <= 1.01 * rounding_floor, f"gradient rms error {fused_error} vs rounding {rounding_floor}"
 
 
 O_GROUPS = V4FLASH_MODEL["o_groups"]
