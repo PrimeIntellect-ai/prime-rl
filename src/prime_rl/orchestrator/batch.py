@@ -289,11 +289,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
 
 
-def _is_multimodal_sample(sample: MicroBatch) -> bool:
-    """Check if a sample contains multimodal data (images)."""
-    return sample.mm_refs is not None
-
-
 def _has_routing(sample: MicroBatch) -> bool:
     """Whether the sample's arrays, kept by an env server, include routing rows."""
     return any(payload is not None and "routed_experts" in payload.fields for payload in sample.payloads or [])
@@ -675,8 +670,8 @@ def prepare_batch(
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks
-    mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]
-    text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
+    mm_batches = [b for b in micro_batches if b.mm_refs is not None]
+    text_batches = [b for b in micro_batches if b.mm_refs is None]
 
     # Pad each group independently so its count is divisible by num_train_workers
     mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
