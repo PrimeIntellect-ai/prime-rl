@@ -1,8 +1,14 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
+from prime_rl.trainer.models.kernels.fp8_torch_quant import quant_1x128, quant_128x1_tp, quant_grouped_128x1_kmajor
 from prime_rl.trainer.models.kernels.fp8_utils import (
+    GROUP_ALIGNMENT,
+    build_grouped_layout,
+    ceil_div,
     grouped_per_block_cast_to_fp8_triton,
+    grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
     per_token_cast_to_fp8_tp_triton,
@@ -96,3 +102,102 @@ def test_block_cast_matches_vllm_online_quant(rows, cols, input_scale, transpose
         assert s[group].shape == ref_s.shape
         assert torch.equal(s[group], ref_s)
         assert torch.equal(q[group].view(torch.uint8), ref_q.view(torch.uint8))
+
+
+# Two token counts per quantizer, so the compiled quantizers run one dynamic-shape graph on both. The dense
+# counts are not multiples of 128, which the 128x1 cast pads. Each grouped case has empty groups and a tail
+# past `offs[-1]`.
+EXACT_QUANT_TOKENS = (1000, 1537)
+EXACT_QUANT_GROUP_COUNTS = ([256, 0, 384, 128, 0, 512], [128, 640, 0, 256, 128, 0])
+EXACT_QUANT_TAIL_ROWS = 128
+BELOW_AMAX_FLOOR = 1e-14
+
+
+def _exact_quant_input(tokens: int, channels: int) -> torch.Tensor:
+    """bf16 spanning 1e-4 to 1e4 across tokens, with the first 128 tokens all zero and the next 128 below the amax floor."""
+    generator = torch.Generator(device="cuda").manual_seed(tokens + channels)
+    magnitudes = torch.logspace(-4, 4, tokens, device="cuda").unsqueeze(-1)
+    x = torch.randn(tokens, channels, device="cuda", generator=generator) * magnitudes
+    x[:GROUP_ALIGNMENT] = 0
+    x[GROUP_ALIGNMENT : 2 * GROUP_ALIGNMENT] = (
+        torch.randn(GROUP_ALIGNMENT, channels, device="cuda", generator=generator) * BELOW_AMAX_FLOOR
+    )
+    return x.to(torch.bfloat16)
+
+
+def _exact_torch_1x128(x: torch.Tensor, offs: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+    return quant_1x128(x, "exact")
+
+
+def _triton_1x128(x: torch.Tensor, offs: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+    return per_token_cast_to_fp8_triton(x, False)
+
+
+def _exact_torch_128x1_tp(x: torch.Tensor, offs: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+    return quant_128x1_tp(x, "exact")
+
+
+def _triton_128x1_tp(x: torch.Tensor, offs: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+    padded_tokens = ceil_div(x.size(0), GROUP_ALIGNMENT) * GROUP_ALIGNMENT
+    return per_token_cast_to_fp8_tp_triton(F.pad(x, (0, 0, 0, padded_tokens - x.size(0))), False)
+
+
+def _exact_torch_grouped_128x1_kmajor(x: torch.Tensor, offs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    return quant_grouped_128x1_kmajor(x, offs, "exact")
+
+
+def _triton_grouped_128x1_kmajor(x: torch.Tensor, offs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    _, block_to_group, ks_tensor, starts, actual_ms, block_starts = build_grouped_layout(offs, x.size(0))
+    grouped_rows = int(ks_tensor.sum())
+    return grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
+        x,
+        grouped_rows,
+        block_to_group[: grouped_rows // GROUP_ALIGNMENT],
+        starts,
+        actual_ms,
+        ks_tensor,
+        block_starts,
+        False,
+    )
+
+
+# The torch-op quantizer, the Triton kernel it replaces, and the channel count. 130 channels pad the 128x1
+# scales to DeepGEMM's TMA alignment.
+EXACT_QUANTIZERS = {
+    "1x128": (_exact_torch_1x128, _triton_1x128, 384),
+    "128x1_tp": (_exact_torch_128x1_tp, _triton_128x1_tp, 130),
+    "grouped_128x1_kmajor": (_exact_torch_grouped_128x1_kmajor, _triton_grouped_128x1_kmajor, 256),
+}
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids=["eager", "compiled"])
+@pytest.mark.parametrize("layout", list(EXACT_QUANTIZERS))
+def test_exact_torch_quant_matches_triton(layout, compiled):
+    """The torch-op quantizers with correctly rounded divisions are *bit-identical* to the Triton kernels, eager and compiled with dynamic tokens."""
+    quantize, reference, channels = EXACT_QUANTIZERS[layout]
+    if layout.startswith("grouped"):
+        cases = [
+            (
+                _exact_quant_input(sum(counts) + EXACT_QUANT_TAIL_ROWS, channels),
+                torch.tensor(counts, device="cuda").cumsum(0).to(torch.int32),
+            )
+            for counts in EXACT_QUANT_GROUP_COUNTS
+        ]
+    else:
+        cases = [(_exact_quant_input(tokens, channels), None) for tokens in EXACT_QUANT_TOKENS]
+    if compiled:
+        torch._dynamo.reset()
+        torch._dynamo.mark_dynamic(cases[0][0], 0)
+        quantize = torch.compile(quantize, fullgraph=True)
+
+    for call, (x, offs) in enumerate(cases):
+        with torch._dynamo.config.patch(error_on_recompile=call > 0):
+            fp8, scale = quantize(x, offs)
+        ref_fp8, ref_scale = reference(x, offs)
+
+        # The grouped torch-op cast also covers the rows past `offs[-1]`, which the Triton kernel leaves out.
+        fp8 = fp8.reshape(-1)[: ref_fp8.numel()]
+        scale = scale[:, : ref_scale.size(1)]
+        assert scale.shape == ref_scale.shape and scale.stride() == ref_scale.stride()
+        assert torch.equal(fp8.view(torch.uint8), ref_fp8.reshape(-1).view(torch.uint8))
+        assert torch.equal(scale.view(torch.int32), ref_scale.view(torch.int32))

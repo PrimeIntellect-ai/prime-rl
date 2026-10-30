@@ -5,30 +5,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 from quant_torch import AMAX_FLOOR, BLOCK, FP8_MAX, TMA_ALIGNMENT_FP32
-from torch._inductor.lowering import make_pointwise, register_lowering
-from torch._inductor.virtualized import ops
 
-
-def same_device_div(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """ATen CUDA divides by a CPU scalar as a reciprocal multiply, so a CPU divisor would not round correctly."""
-    torch._check(a.device == b.device, lambda: f"div_rn needs same-device tensors, got {a.device} and {b.device}")
-    return torch.div(a, b)
-
-
-@torch.library.custom_op("prime_rl::div_rn", mutates_args=())
-def div_rn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """IEEE round-to-nearest `a / b`, lowered by Inductor to a fusable pointwise `div_rn`."""
-    return same_device_div(a, b)
-
-
-@div_rn.register_fake
-def _(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    return same_device_div(a, b)
-
-
-@register_lowering(torch.ops.prime_rl.div_rn.default, broadcast=True, type_promotion_kind=None)
-def _div_rn_lowering(a, b):
-    return make_pointwise(lambda numerator, denominator: ops.div_rn(numerator, denominator))(a, b)
+from prime_rl.trainer.models.kernels.fp8_torch_quant import div_rn
 
 
 def fp8_max_like(t: torch.Tensor) -> torch.Tensor:

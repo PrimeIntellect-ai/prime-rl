@@ -777,7 +777,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, rms_norm_back
     backend = "inductor"
     fp8_quant_pass = compile_config.fp8_quant_pass
     if fp8_quant_pass is not None:
-        options["post_grad_custom_pre_pass"] = Fp8QuantPass(fp8_quant_pass.wgrad_quant, fp8_quant_pass.targets)
+        options["post_grad_custom_pre_pass"] = Fp8QuantPass(
+            fp8_quant_pass.wgrad_quant, fp8_quant_pass.targets, fp8_quant_pass.division
+        )
         if fp8_quant_pass.persistent_group_reductions:
             backend = InductorChoicesBackend(Fp8GroupQuantChoices)
     language_model = get_language_model(model)

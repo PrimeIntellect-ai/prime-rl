@@ -29,6 +29,7 @@ DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 RMSNormBackend: TypeAlias = Literal["quack", "torch"]
 FP8WgradQuant: TypeAlias = Literal["triton", "torch"]
 FP8QuantPassTarget: TypeAlias = Literal["linear", "grouped_gemm"]
+FP8QuantDivision: TypeAlias = Literal["approximate", "exact_scale", "exact"]
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -60,6 +61,9 @@ class FP8QuantPassConfig(BaseConfig):
 
     wgrad_quant: FP8WgradQuant = "triton"
     """Quantizer for the weight gradient's 128-token casts of the output gradient and the input. ``triton`` keeps the Triton kernels inside the weight-gradient op; ``torch`` emits torch ops that Inductor fuses into their producers."""
+
+    division: FP8QuantDivision = "approximate"
+    """Rounding of the torch-op quantizers' two fp32 divisions, the group amax by 448 into the scale and each element by its scale. ``approximate`` keeps Inductor's lowering, which multiplies by the reciprocal of 448 and divides elements approximately. ``exact_scale`` rounds the scale division correctly. ``exact`` rounds both correctly, which makes the casts bitwise equal to the Triton quantizers given the same bfloat16 input, at extra cost. When Inductor fuses a cast into its producer, the cast sees the same bfloat16 input only under the Inductor option ``emulate_precision_casts``, which rounds the producer's output to bfloat16 first."""
 
     persistent_group_reductions: bool = False
     """Compile each FP8 group quantization kernel (an Inductor kernel that stores FP8 and whose only reductions are 128-element amaxes) as a persistent reduction, which reads its input once, with a fixed launch config tuned on H200. Other kernels keep Inductor's heuristics. Inductor's default keeps strided reductions of more than 64 elements, such as the 128-token casts, as looped reductions that read their input twice."""

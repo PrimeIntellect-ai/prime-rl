@@ -19,7 +19,7 @@ from torch._inductor.dependencies import MemoryDep
 from torch._inductor.pattern_matcher import Arg, CallFunction, Match, PatternMatcherPass, register_graph_pattern
 from torch._inductor.virtualized import V
 
-from prime_rl.configs.trainer import FP8QuantPassTarget, FP8WgradQuant
+from prime_rl.configs.trainer import FP8QuantDivision, FP8QuantPassTarget, FP8WgradQuant
 from prime_rl.trainer.models.kernels import fp8_torch_quant
 from prime_rl.trainer.models.kernels.fp8_torch_quant import (
     BLOCK,
@@ -30,7 +30,7 @@ from prime_rl.trainer.models.kernels.fp8_torch_quant import (
 from prime_rl.trainer.models.layers import fp8_grouped_gemm, fp8_linear
 from prime_rl.utils.logger import get_logger
 
-PatternRegistrar = Callable[[PatternMatcherPass, FP8WgradQuant], None]
+PatternRegistrar = Callable[[PatternMatcherPass, FP8WgradQuant, FP8QuantDivision], None]
 
 FP8_MM = torch.ops.prime_rl.fp8_blockwise_mm.default
 FP8_MM_BACKWARD = torch.ops.prime_rl.fp8_blockwise_mm_backward.default
@@ -43,7 +43,9 @@ FP8_GROUP_QUANT_LAUNCH_CONFIGS = {
 }
 
 
-def register_fp8_linear_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant) -> None:
+def register_fp8_linear_patterns(
+    patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant, division: FP8QuantDivision
+) -> None:
     """Register rewrites of `prime_rl::fp8_blockwise_mm` and its backward into torch-op quants and pre-quantized GEMMs."""
 
     @register_graph_pattern(CallFunction(FP8_MM, Arg(), Arg(), Arg()), pass_dict=patterns)
@@ -51,7 +53,7 @@ def register_fp8_linear_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8W
         assert block_size == BLOCK, f"the torch-op quantizers use {BLOCK}-element groups, got block_size={block_size}"
 
         def replacement(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-            x_fp8, x_scale = quant_1x128(x.reshape(-1, x.shape[-1]))
+            x_fp8, x_scale = quant_1x128(x.reshape(-1, x.shape[-1]), division)
             out = torch.ops.prime_rl.fp8_blockwise_mm_prequant(x_fp8, x_scale, weight, block_size)
             return out.reshape(*x.shape[:-1], weight.shape[0])
 
@@ -76,13 +78,13 @@ def register_fp8_linear_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8W
             x_2d = x.reshape(-1, x.shape[-1])
             grad_x = grad_weight = None
             if needs_grad_x:
-                grad_output_fp8, grad_output_scale = quant_1x128(grad_output_2d)
+                grad_output_fp8, grad_output_scale = quant_1x128(grad_output_2d, division)
                 grad_x = torch.ops.prime_rl.fp8_blockwise_mm_dgrad_prequant(
                     grad_output_fp8, grad_output_scale, weight, block_size
                 ).reshape(x.shape)
             if needs_grad_weight and wgrad_quant == "torch":
-                grad_output_t_fp8, grad_output_t_scale = quant_128x1_tp(grad_output_2d)
-                x_t_fp8, x_t_scale = quant_128x1_tp(x_2d)
+                grad_output_t_fp8, grad_output_t_scale = quant_128x1_tp(grad_output_2d, division)
+                x_t_fp8, x_t_scale = quant_128x1_tp(x_2d, division)
                 grad_weight = torch.ops.prime_rl.fp8_blockwise_mm_wgrad_prequant(
                     grad_output_t_fp8, grad_output_t_scale, x_t_fp8, x_t_scale, weight
                 )
@@ -93,13 +95,15 @@ def register_fp8_linear_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8W
         match.replace_by_example(replacement, [grad_output, x, weight])
 
 
-def register_fp8_grouped_gemm_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant) -> None:
+def register_fp8_grouped_gemm_patterns(
+    patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant, division: FP8QuantDivision
+) -> None:
     """Register rewrites of `prime_rl::grouped_fp8_gemm` and its backward into torch-op quants and pre-quantized grouped GEMMs."""
 
     @register_graph_pattern(CallFunction(GROUPED_FP8_GEMM, Arg(), Arg(), Arg()), pass_dict=patterns)
     def rewrite_grouped_fp8_gemm(match: Match, x: torch.fx.Node, weight: torch.fx.Node, offs: torch.fx.Node) -> None:
         def replacement(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-            x_fp8, x_scale = quant_1x128(x)
+            x_fp8, x_scale = quant_1x128(x, division)
             return torch.ops.prime_rl.grouped_fp8_gemm_prequant(x_fp8, x_scale, weight, offs)
 
         match.replace_by_example(replacement, [x, weight, offs])
@@ -123,13 +127,13 @@ def register_fp8_grouped_gemm_patterns(patterns: PatternMatcherPass, wgrad_quant
             grad_x = torch.empty_like(x)
             grad_weight = torch.empty_like(weight)
             if needs_grad_x:
-                grad_output_fp8, grad_output_scale = quant_1x128(grad_output)
+                grad_output_fp8, grad_output_scale = quant_1x128(grad_output, division)
                 grad_x = torch.ops.prime_rl.grouped_fp8_gemm_dgrad_prequant(
                     grad_output_fp8, grad_output_scale, weight, offs
                 )
             if needs_grad_weight and wgrad_quant == "torch":
-                x_t_fp8, x_t_scale = quant_grouped_128x1_kmajor(x, offs)
-                grad_output_t_fp8, grad_output_t_scale = quant_grouped_128x1_kmajor(grad_output, offs)
+                x_t_fp8, x_t_scale = quant_grouped_128x1_kmajor(x, offs, division)
+                grad_output_t_fp8, grad_output_t_scale = quant_grouped_128x1_kmajor(grad_output, offs, division)
                 grad_weight = torch.ops.prime_rl.grouped_fp8_gemm_wgrad_prequant(
                     x_t_fp8, x_t_scale, grad_output_t_fp8, grad_output_t_scale, weight, offs, grad_weight_transposed
                 )
@@ -150,10 +154,12 @@ REWRITTEN_OPS = (FP8_MM, FP8_MM_BACKWARD, GROUPED_FP8_GEMM, GROUPED_FP8_GEMM_BAC
 
 
 @functools.cache
-def _patterns(wgrad_quant: FP8WgradQuant, targets: tuple[FP8QuantPassTarget, ...]) -> PatternMatcherPass:
-    patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{wgrad_quant}_{'_'.join(targets)}")
+def _patterns(
+    wgrad_quant: FP8WgradQuant, targets: tuple[FP8QuantPassTarget, ...], division: FP8QuantDivision
+) -> PatternMatcherPass:
+    patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{wgrad_quant}_{'_'.join(targets)}_{division}")
     for target in targets:
-        PATTERN_REGISTRARS[target](patterns, wgrad_quant)
+        PATTERN_REGISTRARS[target](patterns, wgrad_quant, division)
     return patterns
 
 
@@ -185,29 +191,35 @@ def _dedupe(graph: torch.fx.Graph, candidates: set[torch.fx.Node]) -> int:
 class Fp8QuantPass(CustomGraphPass):
     """Rewrites FP8 GEMM ops into torch-op quants, which Inductor fuses into their producers, and pre-quantized GEMMs."""
 
-    def __init__(self, wgrad_quant: FP8WgradQuant, targets: Sequence[FP8QuantPassTarget]) -> None:
+    def __init__(
+        self, wgrad_quant: FP8WgradQuant, targets: Sequence[FP8QuantPassTarget], division: FP8QuantDivision
+    ) -> None:
         self.wgrad_quant = wgrad_quant
         self.targets = tuple(sorted(set(targets)))
+        self.division = division
 
     def __call__(self, graph: torch.fx.Graph) -> None:
         nodes_before = set(graph.nodes)
         ops_before = Counter(
             str(node.target) for node in graph.nodes if node.op == "call_function" and node.target in REWRITTEN_OPS
         )
-        rewritten = _patterns(self.wgrad_quant, self.targets).apply(graph)
+        rewritten = _patterns(self.wgrad_quant, self.targets, self.division).apply(graph)
         if not rewritten:
             return
         deduped = _dedupe(graph, set(graph.nodes) - nodes_before)
         graph.eliminate_dead_code()
         get_logger().info(
-            f"FP8 quant pass ({self.wgrad_quant} wgrad quant, targets {list(self.targets)}) rewrote {rewritten} ops "
+            f"FP8 quant pass ({self.wgrad_quant} wgrad quant, targets {list(self.targets)}, {self.division} division) "
+            f"rewrote {rewritten} ops "
             f"{dict(ops_before)}, deduplicated {deduped} repeated quant nodes"
         )
 
     def uuid(self) -> bytes:
         source_files = {__file__, fp8_torch_quant.__file__, fp8_linear.__file__, fp8_grouped_gemm.__file__}
         source_files.update(inspect.getfile(register) for register in PATTERN_REGISTRARS.values())
-        return get_hash_for_files(tuple(sorted(source_files)), extra=f"{self.wgrad_quant}-{'-'.join(self.targets)}")
+        return get_hash_for_files(
+            tuple(sorted(source_files)), extra=f"{self.wgrad_quant}-{'-'.join(self.targets)}-{self.division}"
+        )
 
 
 def _fp8_group_quant_layout(
