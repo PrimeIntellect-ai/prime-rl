@@ -62,14 +62,12 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         *,
         packed: PackedContext,
     ) -> torch.Tensor:
-        post, comb, collapsed = self.attn_hc(mhc_states)
-        attn_output, _ = self.self_attn(self.input_layernorm(collapsed), packed=packed)
+        post, comb, collapsed = self.attn_hc(mhc_states, self.input_layernorm.weight)
+        attn_output, _ = self.self_attn(collapsed, packed=packed)
         mhc_states = self.attn_hc.update_states(post, comb, attn_output, mhc_states)
 
-        post, comb, collapsed = self.ffn_hc(mhc_states)
-        mlp_output = self.mlp(
-            self.post_attention_layernorm(collapsed), input_ids=input_ids, routed_experts=routed_experts
-        )
+        post, comb, collapsed = self.ffn_hc(mhc_states, self.post_attention_layernorm.weight)
+        mlp_output = self.mlp(collapsed, input_ids=input_ids, routed_experts=routed_experts)
         return self.ffn_hc.update_states(post, comb, mlp_output, mhc_states)
 
 

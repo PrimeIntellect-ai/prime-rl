@@ -911,6 +911,43 @@ def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
         _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
 
 
+def _mhc_pre_norm_reference(x, fn, scale, base, weight, norm_eps, hc_eps, out_eps):
+    flat = x.flatten(-2)
+    logits = (flat * torch.rsqrt(flat.square().mean(-1, keepdim=True) + norm_eps)) @ fn.T * scale + base
+    pre = torch.sigmoid(logits[..., : x.shape[-2]]) + hc_eps
+    collapsed = (pre.unsqueeze(-1) * x).sum(-2)
+    normed = collapsed * torch.rsqrt(collapsed.square().mean(-1, keepdim=True) + out_eps)
+    return normed * weight, logits
+
+
+@pytest.mark.parametrize("num_tokens", [1, 37])
+@pytest.mark.parametrize("hidden", [96, 512])
+def test_fused_mhc_pre_norm_matches_reference(num_tokens, hidden):
+    """Output and every gradient of the fused mHC input side with the sublayer's RMSNorm folded in."""
+    hc = 4
+    outputs = 24
+    x = torch.randn(1, num_tokens, hc, hidden, device="cuda") * torch.rand(1, num_tokens, 1, 1, device="cuda") * 4
+    x = x.to(torch.bfloat16)
+    fn = (torch.randn(outputs, hc * hidden, device="cuda") * 0.05).to(torch.bfloat16)
+    scale = torch.rand(outputs, device="cuda") + 0.5
+    base = torch.randn(outputs, device="cuda") * 0.5
+    weight = (1 + 0.1 * torch.randn(hidden, device="cuda")).to(torch.bfloat16)
+    fused_inputs = _leaves(x, fn, scale, base, weight)
+    reference_inputs = _leaves(x.double(), fn.double(), scale.double(), base.double(), weight.double())
+    grad_collapsed = torch.randn(1, num_tokens, hidden, device="cuda")
+    grad_logits = torch.randn(1, num_tokens, outputs, device="cuda")
+
+    collapsed, logits = fused_mhc_pre(*fused_inputs[:4], 1e-6, 1e-6, norm_weight=fused_inputs[4], out_eps=1e-6)
+    ((collapsed.float() * grad_collapsed).sum() + (logits * grad_logits).sum()).backward()
+    ref_collapsed, ref_logits = _mhc_pre_norm_reference(*reference_inputs, 1e-6, 1e-6, 1e-6)
+    ((ref_collapsed * grad_collapsed.double()).sum() + (ref_logits * grad_logits.double()).sum()).backward()
+
+    _assert_frobenius_relative(collapsed, ref_collapsed, 1e-2, "collapsed")
+    _assert_frobenius_relative(logits, ref_logits, 1e-2, "logits")
+    for name, fused, reference in zip(("x", "fn", "scale", "base", "weight"), fused_inputs, reference_inputs):
+        _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
+
+
 @pytest.mark.parametrize("num_tokens", [1, 37])
 @pytest.mark.parametrize("hc", [2, 4])
 @pytest.mark.parametrize("hidden", [96, 512])

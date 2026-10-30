@@ -40,6 +40,8 @@ class DeepseekV4HyperConnection(nn.Module):
 
     The norm, projection, gates and collapse are one fused op (`fused_mhc_pre`). The projection
     and the Sinkhorn iterations run in fp32; only `collapsed` is cast back to the input dtype.
+    Passing the sublayer's norm weight folds the sublayer's RMSNorm into the op, so `collapsed`
+    is the sublayer's normalized input, with vLLM's serving numerics.
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -54,10 +56,15 @@ class DeepseekV4HyperConnection(nn.Module):
         # One scale per gate: `pre`, `post`, `comb`.
         self.scale = nn.Parameter(torch.empty(3))
 
-    def forward(self, mhc_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, mhc_states: torch.Tensor, norm_weight: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hc = self.hc_mult
         scale = torch.cat([self.scale[0].expand(hc), self.scale[1].expand(hc), self.scale[2].expand(hc * hc)])
-        collapsed, logits = fused_mhc_pre(mhc_states, self.fn, scale, self.base, self.norm_eps, self.hc_eps)
+        collapsed, logits = fused_mhc_pre(
+            mhc_states, self.fn, scale, self.base, self.norm_eps, self.hc_eps,
+            norm_weight=norm_weight, out_eps=self.norm_eps,
+        )  # fmt: skip
         post = 2 * torch.sigmoid(logits[..., hc : 2 * hc])
         comb_logits = logits[..., 2 * hc :].unflatten(-1, (hc, hc))
         comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
