@@ -10,15 +10,20 @@ and per-column `scale` and `base` of shape `(N,)`:
     collapsed = sum_i pre[:, i] * x[:, i, :]                          (T, D), x.dtype
 
 The RMS norm is folded into the projection, so the fp32 normalized streams are never built.
-Autograd keeps `x`, `mixes` and `rstd`. Each direction is one kernel over the tokens that reads the
-streams twice (projection, then collapse or input gradient); the weight gradient is a second kernel
-that sums fixed split-token partials. On SM90 and SM100 the forward projection and sum of squares come
-from DeepGEMM's TF32 `tf32_hc_prenorm_gemm`, the kernel vLLM runs for mHC, and the forward kernel only
-collapses. Elsewhere, and in the backward, the projection follows `torch.get_float32_matmul_precision`
-(TF32 unless it is "highest"), like the fp32 `F.linear` it replaces.
+Autograd keeps `x`, `mixes` and `rstd`. The forward is one kernel over the tokens that reads the
+streams twice (projection, then collapse). On SM90 and SM100 the projection and sum of squares come
+from DeepGEMM's TF32 `tf32_hc_prenorm_gemm`, the kernel vLLM runs for mHC, with `fn` zero-padded to
+its multiple of 8 rows, and the forward kernel only collapses. The backward also reads the streams
+twice: a token-blocked kernel reduces the collapse gradient against them into the gate gradients, then
+a kernel over hidden slices writes the input gradient and accumulates the weight gradient over fixed
+token splits. Off DeepGEMM, and in the backward, the projection follows
+`torch.get_float32_matmul_precision` (TF32 unless it is "highest"), like the fp32 `F.linear` it replaces.
 """
 
+import os
+
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -113,33 +118,32 @@ def _fwd_kernel(
         )
 
 
-@triton.autotune(configs=_configs(), key=["HC", "D", "N", "PRECISION", "HAS_GRAD_LOGITS"])
+@triton.autotune(configs=_configs(), key=["HC", "D", "N", "HAS_GRAD_LOGITS"])
 @triton.jit
-def _bwd_kernel(
+def _bwd_gate_kernel(
     x_ptr,
-    w_ptr,
     scale_ptr,
     base_ptr,
     mixes_ptr,
     rstd_ptr,
     grad_logits_ptr,
     grad_collapsed_ptr,
-    grad_x_ptr,
     grad_z_ptr,
     grad_proj_ptr,
+    pre_ptr,
+    coef_ptr,
     T,
     hc_eps,
     HC: tl.constexpr,
     D: tl.constexpr,
     N: tl.constexpr,
-    PRECISION: tl.constexpr,
     HAS_GRAD_LOGITS: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
-    """Writes `grad_x`, the logits' total gradient `grad_z` (T, N) and `grad_proj = grad_z * scale * rstd`
-    (T, BLOCK_N, zero-padded), the operand of the weight gradient."""
+    """Writes the logits' total gradient `grad_z` (T, N), `grad_proj = grad_z * scale * rstd` (T, BLOCK_N,
+    zero-padded), the gates `pre` (T, HC) and the coefficient `coef` (T,) of `x` in the input gradient."""
     K: tl.constexpr = HC * D
     rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
     row_mask = rows < T
@@ -169,68 +173,147 @@ def _bwd_kernel(
     tl.store(grad_z_ptr + rows64[:, None] * N + offs_n[None, :], grad_z, mask=out_mask)
     grad_mixes = grad_z * scale[None, :]
     # rstd's dependence on x contributes `coef * x`.
-    coef = -rstd * rstd * tl.sum(grad_mixes * mixes, axis=1) / K
-    grad_proj = grad_mixes * rstd[:, None]
-    tl.store(grad_proj_ptr + rows64[:, None] * BLOCK_N + offs_n[None, :], grad_proj, mask=row_mask[:, None])
+    tl.store(coef_ptr + rows, -rstd * rstd * tl.sum(grad_mixes * mixes, axis=1) / K, mask=row_mask)
+    tl.store(
+        grad_proj_ptr + rows64[:, None] * BLOCK_N + offs_n[None, :], grad_mixes * rstd[:, None], mask=row_mask[:, None]
+    )
+    pre_mask = row_mask[:, None] & (offs_n < HC)[None, :]
+    tl.store(pre_ptr + rows64[:, None] * HC + offs_n[None, :], sig + hc_eps, mask=pre_mask)
 
-    pre = sig + hc_eps
-    for d0 in range(0, D, BLOCK_D):
-        d = d0 + offs_d
-        d_mask = d < D
-        mask = row_mask[:, None] & d_mask[None, :]
-        grad_c = tl.load(grad_collapsed_ptr + rows64[:, None] * D + d[None, :], mask=mask, other=0.0).to(tl.float32)
-        for i in tl.static_range(HC):
-            k = i * D + d
-            pre_i = tl.sum(tl.where(offs_n[None, :] == i, pre, 0.0), axis=1)
-            x = tl.load(x_ptr + rows64[:, None] * K + k[None, :], mask=mask, other=0.0).to(tl.float32)
-            w = tl.load(w_ptr + offs_n[:, None] * K + k[None, :], mask=n_mask[:, None] & d_mask[None, :], other=0.0)
-            grad_x = tl.dot(grad_proj, w.to(tl.float32), input_precision=PRECISION)
-            grad_x += pre_i[:, None] * grad_c + coef[:, None] * x
-            tl.store(grad_x_ptr + rows64[:, None] * K + k[None, :], grad_x.to(grad_x_ptr.dtype.element_ty), mask=mask)
+
+@triton.jit
+def _round_to_tf32(x):
+    """Round to nearest (ties away) at TF32's 10 mantissa bits, so the MMA's truncation does not bias the dot."""
+    return (x.to(tl.int32, bitcast=True) + 0x1000).to(tl.float32, bitcast=True)
+
+
+@triton.jit
+def _bwd_stream(
+    x_ptr,
+    w_ptr,
+    pre_ptr,
+    grad_x_ptr,
+    rows,
+    row_mask,
+    mask,
+    w_mask,
+    d,
+    grad_proj,
+    grad_c,
+    coef,
+    acc,
+    I: tl.constexpr,
+    HC: tl.constexpr,
+    D: tl.constexpr,
+    PRECISION: tl.constexpr,
+    ROUND_TF32: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    """One stream's slice of `grad_x` (stored) and of the weight gradient (returned, accumulated onto `acc`).
+    Streams `I >= HC` do not exist and leave `acc` unchanged."""
+    if I < HC:
+        K: tl.constexpr = HC * D
+        k = I * D + d
+        offs_n = tl.arange(0, BLOCK_N)
+        pre = tl.load(pre_ptr + rows * HC + I, mask=row_mask, other=0.0)
+        x = tl.load(x_ptr + rows[:, None] * K + k[None, :], mask=mask, other=0.0).to(tl.float32)
+        w = tl.load(w_ptr + offs_n[:, None] * K + k[None, :], mask=w_mask, other=0.0).to(tl.float32)
+        if ROUND_TF32:
+            w = _round_to_tf32(w)
+        grad_x = tl.dot(grad_proj, w, input_precision=PRECISION) + pre[:, None] * grad_c + coef[:, None] * x
+        tl.store(grad_x_ptr + rows[:, None] * K + k[None, :], grad_x.to(grad_x_ptr.dtype.element_ty), mask=mask)
+        acc = tl.dot(tl.trans(grad_proj), x, acc, input_precision=PRECISION)
+    return acc
 
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_M": bm, "BLOCK_K": bk}, num_warps=nw, num_stages=ns)
+        triton.Config({"BLOCK_M": bm, "BLOCK_D": bd}, num_warps=nw, num_stages=ns)
         for bm in (32, 64)
-        for bk in (64, 128)
+        for bd in (64, 128)
         for nw in (4, 8)
         for ns in (2, 3)
     ],
-    key=["K", "BLOCK_N", "PRECISION"],
+    key=["D", "BLOCK_N", "PRECISION", "ROUND_TF32", "SPLITS"],
 )
 @triton.jit
-def _bwd_weight_kernel(
+def _bwd_input_weight_kernel(
     x_ptr,
+    w_ptr,
+    grad_collapsed_ptr,
     grad_proj_ptr,
+    pre_ptr,
+    coef_ptr,
+    grad_x_ptr,
     partial_ptr,
     T,
-    K: tl.constexpr,
+    N,
+    HC: tl.constexpr,
+    D: tl.constexpr,
     PRECISION: tl.constexpr,
+    ROUND_TF32: tl.constexpr,
     BLOCK_N: tl.constexpr,
     SPLITS: tl.constexpr,
     BLOCK_M: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    BLOCK_D: tl.constexpr,
 ):
-    """Grid: (cdiv(K, BLOCK_K), SPLITS). `partial[split] = grad_proj[tokens].T @ x[tokens]` over one split's tokens."""
-    k = tl.program_id(0) * BLOCK_K + tl.arange(0, BLOCK_K)
-    k_mask = k < K
+    """Grid: (cdiv(D, BLOCK_D), SPLITS). For one hidden slice of every stream (at most 4) over one split's tokens,
+    writes `grad_x = grad_proj @ fn + pre * grad_collapsed + coef * x` and `partial[split] = grad_proj.T @ x`, so the
+    streams are read once for both gradients."""
+    tl.static_assert(HC <= 4)
+    K: tl.constexpr = HC * D
+    d = tl.program_id(0) * BLOCK_D + tl.arange(0, BLOCK_D)
+    d_mask = d < D
     split = tl.program_id(1)
     offs_n = tl.arange(0, BLOCK_N)
+    w_mask = (offs_n < N)[:, None] & d_mask[None, :]
     m_tiles = tl.cdiv(T, BLOCK_M)
     per_split = tl.cdiv(m_tiles, SPLITS)
-    acc = tl.zeros((BLOCK_N, BLOCK_K), dtype=tl.float32)
+    acc0 = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
+    acc1 = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
+    acc2 = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
+    acc3 = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
     for m_tile in range(split * per_split, tl.minimum((split + 1) * per_split, m_tiles)):
         rows = (m_tile * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
         row_mask = rows < T
-        g = tl.load(grad_proj_ptr + rows[:, None] * BLOCK_N + offs_n[None, :], mask=row_mask[:, None], other=0.0)
-        x = tl.load(x_ptr + rows[:, None] * K + k[None, :], mask=row_mask[:, None] & k_mask[None, :], other=0.0)
-        acc = tl.dot(tl.trans(g), x.to(tl.float32), acc, input_precision=PRECISION)
-    tl.store(partial_ptr + (split * BLOCK_N + offs_n[:, None]) * K + k[None, :], acc, mask=k_mask[None, :])
+        mask = row_mask[:, None] & d_mask[None, :]
+        grad_proj = tl.load(
+            grad_proj_ptr + rows[:, None] * BLOCK_N + offs_n[None, :], mask=row_mask[:, None], other=0.0
+        )
+        grad_c = tl.load(grad_collapsed_ptr + rows[:, None] * D + d[None, :], mask=mask, other=0.0).to(tl.float32)
+        coef = tl.load(coef_ptr + rows, mask=row_mask, other=0.0)
+        if ROUND_TF32:
+            grad_proj = _round_to_tf32(grad_proj)
+        acc0 = _bwd_stream(x_ptr, w_ptr, pre_ptr, grad_x_ptr, rows, row_mask, mask, w_mask, d, grad_proj, grad_c, coef, acc0,
+                           0, HC, D, PRECISION, ROUND_TF32, BLOCK_N)  # fmt: skip
+        acc1 = _bwd_stream(x_ptr, w_ptr, pre_ptr, grad_x_ptr, rows, row_mask, mask, w_mask, d, grad_proj, grad_c, coef, acc1,
+                           1, HC, D, PRECISION, ROUND_TF32, BLOCK_N)  # fmt: skip
+        acc2 = _bwd_stream(x_ptr, w_ptr, pre_ptr, grad_x_ptr, rows, row_mask, mask, w_mask, d, grad_proj, grad_c, coef, acc2,
+                           2, HC, D, PRECISION, ROUND_TF32, BLOCK_N)  # fmt: skip
+        acc3 = _bwd_stream(x_ptr, w_ptr, pre_ptr, grad_x_ptr, rows, row_mask, mask, w_mask, d, grad_proj, grad_c, coef, acc3,
+                           3, HC, D, PRECISION, ROUND_TF32, BLOCK_N)  # fmt: skip
+    out = partial_ptr + (split * BLOCK_N + offs_n[:, None]) * K + d[None, :]
+    tl.store(out, acc0, mask=d_mask[None, :])
+    if HC > 1:
+        tl.store(out + D, acc1, mask=d_mask[None, :])
+    if HC > 2:
+        tl.store(out + 2 * D, acc2, mask=d_mask[None, :])
+    if HC > 3:
+        tl.store(out + 3 * D, acc3, mask=d_mask[None, :])
 
 
 def _precision() -> str:
     return "ieee" if torch.get_float32_matmul_precision() == "highest" else "tf32"
+
+
+def _backward_precision() -> str:
+    """`PRIME_RL_DSV4_MHC_BWD_PRECISION` (a `tl.dot` input precision) overrides the matmul precision for the
+    backward's dots."""
+    return os.environ.get("PRIME_RL_DSV4_MHC_BWD_PRECISION") or _precision()
+
+
+def _rounds_to_tf32(precision: str) -> bool:
+    return precision == "tf32"
 
 
 def _block_n(n: int) -> int:
@@ -246,25 +329,27 @@ def _uses_deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor) -> bool:
         torch.cuda.get_device_capability(x.device)[0] in (9, 10)
         and x.dtype == torch.bfloat16
         and fn.shape[0] <= 32
-        and fn.shape[0] % 8 == 0
         and fn.shape[1] % 64 == 0
     )
 
 
 def _deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor, num_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
     """`x @ fn.T` and the per-token sum of squares, split over K into 1, 4 or 16 parts like vLLM, so short rows
-    still fill the GPU and DeepGEMM JIT-compiles at most three variants."""
+    still fill the GPU and DeepGEMM JIT-compiles at most three variants. `fn` is zero-padded to the kernel's
+    multiple of 8 rows, as DeepSeek's TileKernels does for `hc_head`."""
     import deep_gemm
 
-    k = fn.shape[1]
+    n, k = fn.shape
+    padded_n = triton.cdiv(n, 8) * 8
+    weight = F.pad(fn.float(), (0, 0, 0, padded_n - n)) if padded_n != n else fn.float()
     token_blocks = triton.cdiv(num_tokens, 64)
     sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
     splits = max(1, min(sm_count // token_blocks, triton.cdiv(k, 64) // 4))
     num_splits = 1 if splits == 1 else 4 if splits <= 4 else 16
-    projection = x.new_empty(num_splits, num_tokens, fn.shape[0], dtype=torch.float32)
+    projection = x.new_empty(num_splits, num_tokens, padded_n, dtype=torch.float32)
     sqrsum = x.new_empty(num_splits, num_tokens, dtype=torch.float32)
-    deep_gemm.tf32_hc_prenorm_gemm(x.view(num_tokens, k), fn.float(), projection, sqrsum, num_splits)
-    return projection.sum(0), sqrsum.sum(0)
+    deep_gemm.tf32_hc_prenorm_gemm(x.view(num_tokens, k), weight, projection, sqrsum, num_splits)
+    return projection.sum(0)[:, :n].contiguous(), sqrsum.sum(0)
 
 
 @torch.library.custom_op("prime_rl::dsv4_mhc_pre", mutates_args=())
@@ -312,19 +397,21 @@ def _mhc_pre_backward(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     hc, hidden = x.shape[-2:]
     num_tokens, n = mixes.shape
-    block_n, precision = _block_n(n), _precision()
-    grad_x = torch.empty_like(x)
+    block_n, precision = _block_n(n), _backward_precision()
     grad_z = torch.empty_like(mixes)
     grad_proj = mixes.new_empty(num_tokens, block_n)
-    _bwd_kernel[_grid(num_tokens)](
-        x, fn, scale, base, mixes, rstd, grad_logits, grad_collapsed, grad_x, grad_z, grad_proj, num_tokens, hc_eps,
-        HC=hc, D=hidden, N=n, PRECISION=precision, HAS_GRAD_LOGITS=grad_logits is not None, BLOCK_N=block_n,
+    pre = mixes.new_empty(num_tokens, hc)
+    coef = mixes.new_empty(num_tokens)
+    _bwd_gate_kernel[_grid(num_tokens)](
+        x, scale, base, mixes, rstd, grad_logits, grad_collapsed, grad_z, grad_proj, pre, coef, num_tokens, hc_eps,
+        HC=hc, D=hidden, N=n, HAS_GRAD_LOGITS=grad_logits is not None, BLOCK_N=block_n,
     )  # fmt: skip
-    k = hc * hidden
-    partial = mixes.new_empty(DW_SPLITS, block_n, k)
-    _bwd_weight_kernel[lambda meta: (triton.cdiv(k, meta["BLOCK_K"]), DW_SPLITS)](
-        x, grad_proj, partial, num_tokens, K=k, PRECISION=precision, BLOCK_N=block_n, SPLITS=DW_SPLITS
-    )
+    grad_x = torch.empty_like(x)
+    partial = mixes.new_empty(DW_SPLITS, block_n, hc * hidden)
+    _bwd_input_weight_kernel[lambda meta: (triton.cdiv(hidden, meta["BLOCK_D"]), DW_SPLITS)](
+        x, fn, grad_collapsed, grad_proj, pre, coef, grad_x, partial, num_tokens, n,
+        HC=hc, D=hidden, PRECISION=precision, ROUND_TF32=_rounds_to_tf32(precision), BLOCK_N=block_n, SPLITS=DW_SPLITS,
+    )  # fmt: skip
     grad_fn = partial.sum(0)[:n].to(fn.dtype)
     grad_scale = (grad_z * mixes).sum(0).to(scale.dtype)
     grad_base = grad_z.sum(0).to(base.dtype)
