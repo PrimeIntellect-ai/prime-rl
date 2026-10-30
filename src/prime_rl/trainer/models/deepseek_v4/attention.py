@@ -133,6 +133,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Unwei
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_compressor_pool import (
+    cudnn_pooling_max_docs,
     cudnn_pooling_supported,
     dsv4_compressor_pool,
 )
@@ -522,7 +523,12 @@ class DeepseekV4Compressor(nn.Module):
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         layout = packed.compression_layouts[self.compress_rate]
-        pool = self._pool_cudnn if self.cudnn_pooling and hidden_states.dtype == torch.bfloat16 else self._pool_torch
+        use_cudnn = (
+            self.cudnn_pooling
+            and hidden_states.dtype == torch.bfloat16
+            and layout.cu_seqlens.shape[0] - 1 <= cudnn_pooling_max_docs(self.compress_rate)
+        )
+        pool = self._pool_cudnn if use_cudnn else self._pool_torch
         compressed = self.kv_norm(pool(hidden_states, layout, cp_group, cp_world_size))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate

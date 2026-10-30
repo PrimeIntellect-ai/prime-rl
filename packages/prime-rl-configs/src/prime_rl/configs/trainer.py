@@ -333,7 +333,7 @@ class ModelConfig(BaseModelConfig):
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
     dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
-    """Kernels of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` runs the cuDNN frontend's fused CSA/HCA compressor, one kernel per direction with fp32 softmax weights and products, on SM90 and newer GPUs for bf16 activations and the compress rates it covers (2, 4, and 128 at head_dim 128 or 512), and the torch ops everywhere else. ``torch`` always runs the torch ops, which round the softmax weights to bf16."""
+    """Kernels of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` runs the cuDNN frontend's fused CSA/HCA compressor, one kernel per direction with fp32 softmax weights and products, on SM90 and newer GPUs for bf16 activations, the compress rates it covers (2, 4, and 128 at head_dim 128 or 512) and rows of at most 256 documents (512 at rate 128, where the kernels' per-document scan stops paying), and the torch ops everywhere else. ``torch`` always runs the torch ops, which round the softmax weights to bf16."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""

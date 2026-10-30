@@ -18,6 +18,16 @@ from torch import Tensor
 MIN_CAPABILITY_MAJOR = 9
 
 
+def cudnn_pooling_max_docs(compress_rate: int) -> int:
+    """The most documents per packed row at which the cuDNN kernels still beat the torch path.
+
+    Each kernel thread finds its entry's document by scanning every document in the row, so the kernels slow down
+    linearly with the document count. On H200 at 262144 tokens a CSA layer (rate 4) breaks even near 350 documents
+    and an HCA layer (rate 128) near 1000.
+    """
+    return 512 if compress_rate == 128 else 256
+
+
 def cudnn_pooling_supported(compress_rate: int, head_dim: int) -> bool:
     """Whether the cuDNN kernels cover this compressor shape on the current GPU."""
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < MIN_CAPABILITY_MAJOR:
