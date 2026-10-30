@@ -398,7 +398,7 @@ Frozen fields include the model, tokenizer, renderer, transports, monitors, logg
 
 ### Exporting Checkpoints
 
-Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected. LoRA SFT runs write the final PEFT adapter to `<run_dir>/adapter` instead.
 
 ```bash
 # single process (1 GPU)

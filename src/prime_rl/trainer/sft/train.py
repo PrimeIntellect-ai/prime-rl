@@ -18,7 +18,7 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp, validate_cp_seq_lens
-from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.lora import get_lora_state, save_lora_adapter
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -674,6 +674,11 @@ def train(config: SFTConfig):
             controller.mark_saved(progress.step)
         else:
             ckpt_manager.maybe_clean()
+
+    if config.model.lora is not None and not paused:
+        adapter_dir = config.run_dir / "adapter"
+        logger.info(f"Exporting final LoRA adapter to {adapter_dir}")
+        save_lora_adapter(model, adapter_dir, config.model.lora)
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.
