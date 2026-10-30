@@ -62,27 +62,41 @@ def _fp8_blockwise_mm_backward(
         grad_x = grad_x_2d.reshape(x.shape)
 
     if needs_grad_weight:
-        # DeepGEMM's (1, 1, 128) recipe requires the token dimension to be aligned.
-        num_tokens = grad_output_2d.size(0)
-        padded_tokens = (num_tokens + block_size - 1) // block_size * block_size
-        if padded_tokens != num_tokens:
-            pad_rows = padded_tokens - num_tokens
-            grad_output_2d = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
-            x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
-        grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
-        x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
-        grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
-        deep_gemm.fp8_gemm_nt(
-            grad_output_t_fp8,
-            x_t_fp8,
-            grad_weight_fp32,
-            c=grad_weight_fp32,
-            recipe=(1, 1, 128),
-            compiled_dims="mn",
-        )
-        grad_weight = grad_weight_fp32.to(weight.dtype)
+        grad_weight = _fp8_wgrad(grad_output_2d, x_2d, weight, block_size, use_ue8m0)
 
     return grad_x, grad_weight
+
+
+def _fp8_wgrad_gemm(
+    grad_output_t: tuple[torch.Tensor, torch.Tensor], x_t: tuple[torch.Tensor, torch.Tensor], weight: torch.Tensor
+) -> torch.Tensor:
+    import deep_gemm
+
+    grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
+    deep_gemm.fp8_gemm_nt(
+        grad_output_t,
+        x_t,
+        grad_weight_fp32,
+        c=grad_weight_fp32,
+        recipe=(1, 1, 128),
+        compiled_dims="mn",
+    )
+    return grad_weight_fp32.to(weight.dtype)
+
+
+def _fp8_wgrad(
+    grad_output_2d: torch.Tensor, x_2d: torch.Tensor, weight: torch.Tensor, block_size: int, use_ue8m0: bool
+) -> torch.Tensor:
+    # DeepGEMM's (1, 1, 128) recipe requires the token dimension to be aligned.
+    num_tokens = grad_output_2d.size(0)
+    padded_tokens = (num_tokens + block_size - 1) // block_size * block_size
+    if padded_tokens != num_tokens:
+        pad_rows = padded_tokens - num_tokens
+        grad_output_2d = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
+        x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
+    grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
+    x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
+    return _fp8_wgrad_gemm(grad_output_t_fp8, x_t_fp8, weight)
 
 
 @_fp8_blockwise_mm_backward.register_fake
@@ -121,6 +135,90 @@ _fp8_blockwise_mm.register_autograd(
     _fp8_blockwise_mm_autograd_backward,
     setup_context=_fp8_blockwise_mm_setup_context,
 )
+
+
+PREQUANT_SM90_ONLY = "the torch-op quantizers emit fp32 scales, which DeepGEMM accepts on SM90 only"
+
+
+@torch.library.custom_op("prime_rl::fp8_blockwise_mm_prequant", mutates_args=())
+def _fp8_blockwise_mm_prequant(
+    x_fp8: torch.Tensor, x_scale: torch.Tensor, weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    """`prime_rl::fp8_blockwise_mm` of a 2D input already cast to FP8 in 1x128 groups."""
+    import deep_gemm
+
+    assert not ue8m0_for_device(weight.device), PREQUANT_SM90_ONLY
+    weight_fp8 = per_block_cast_to_fp8_triton(weight, False, block_size)
+    out = torch.empty((x_fp8.size(0), weight.size(0)), device=x_fp8.device, dtype=torch.bfloat16)
+    deep_gemm.fp8_gemm_nt((x_fp8, x_scale), weight_fp8, out)
+    return out
+
+
+@_fp8_blockwise_mm_prequant.register_fake
+def _fp8_blockwise_mm_prequant_fake(
+    x_fp8: torch.Tensor, x_scale: torch.Tensor, weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    return x_fp8.new_empty((x_fp8.shape[0], weight.shape[0]), dtype=torch.bfloat16)
+
+
+@torch.library.custom_op("prime_rl::fp8_blockwise_mm_dgrad_prequant", mutates_args=())
+def _fp8_blockwise_mm_dgrad_prequant(
+    grad_output_fp8: torch.Tensor, grad_output_scale: torch.Tensor, weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    """Input gradient of `prime_rl::fp8_blockwise_mm` from a 2D output gradient already cast to FP8 in 1x128 groups."""
+    import deep_gemm
+
+    assert not ue8m0_for_device(weight.device), PREQUANT_SM90_ONLY
+    weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, False, block_size)
+    grad_x = torch.empty((grad_output_fp8.size(0), weight.size(1)), device=weight.device, dtype=torch.bfloat16)
+    deep_gemm.fp8_gemm_nt((grad_output_fp8, grad_output_scale), weight_dx_fp8, grad_x)
+    return grad_x
+
+
+@_fp8_blockwise_mm_dgrad_prequant.register_fake
+def _fp8_blockwise_mm_dgrad_prequant_fake(
+    grad_output_fp8: torch.Tensor, grad_output_scale: torch.Tensor, weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    return grad_output_fp8.new_empty((grad_output_fp8.shape[0], weight.shape[1]), dtype=torch.bfloat16)
+
+
+@torch.library.custom_op("prime_rl::fp8_blockwise_mm_wgrad_prequant", mutates_args=())
+def _fp8_blockwise_mm_wgrad_prequant(
+    grad_output_t_fp8: torch.Tensor,
+    grad_output_t_scale: torch.Tensor,
+    x_t_fp8: torch.Tensor,
+    x_t_scale: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    """Weight gradient of `prime_rl::fp8_blockwise_mm` from output gradient and input already cast in 128x1 groups."""
+    assert not ue8m0_for_device(weight.device), PREQUANT_SM90_ONLY
+    return _fp8_wgrad_gemm((grad_output_t_fp8, grad_output_t_scale), (x_t_fp8, x_t_scale), weight)
+
+
+@_fp8_blockwise_mm_wgrad_prequant.register_fake
+def _fp8_blockwise_mm_wgrad_prequant_fake(
+    grad_output_t_fp8: torch.Tensor,
+    grad_output_t_scale: torch.Tensor,
+    x_t_fp8: torch.Tensor,
+    x_t_scale: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    return weight.new_empty(weight.shape)
+
+
+@torch.library.custom_op("prime_rl::fp8_blockwise_mm_wgrad", mutates_args=())
+def _fp8_blockwise_mm_wgrad(
+    grad_output: torch.Tensor, x: torch.Tensor, weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    """Weight gradient of `prime_rl::fp8_blockwise_mm` from 2D bf16 tensors, with the Triton 128x1 quantizers inside."""
+    return _fp8_wgrad(grad_output, x, weight, block_size, ue8m0_for_device(weight.device))
+
+
+@_fp8_blockwise_mm_wgrad.register_fake
+def _fp8_blockwise_mm_wgrad_fake(
+    grad_output: torch.Tensor, x: torch.Tensor, weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    return weight.new_empty(weight.shape)
 
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_bmm", mutates_args=())

@@ -34,9 +34,11 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
+    RMSNormBackend,
     TokenizerConfig,
 )
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.fp8_quant_pass import Fp8QuantPass, InductorChoicesBackend, PersistentGroupReductionChoices
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -58,6 +60,7 @@ from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.models.layers.norms import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.ngram_runtime import configure_ngram_runtime
@@ -194,6 +197,18 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
         f"Forced balanced routing on {num_routers} MoE layers (debug.force_balanced_routing=True). "
         "Expert assignment is round-robin; gradient flow through the router is broken."
     )
+
+
+def apply_rms_norm_backend(model: nn.Module, backend: RMSNormBackend) -> None:
+    """Switch every shared `RMSNorm` layer of `model` to `backend`."""
+    norms = [module for module in model.modules() if isinstance(module, RMSNorm)]
+    if not norms:
+        raise ValueError(
+            f"rms_norm_backend={backend!r} found no RMSNorm layers. Does this model use the shared RMSNorm?"
+        )
+    for norm in norms:
+        norm.backend = backend
+    get_logger().info(f"Switched {len(norms)} RMSNorm layers to the {backend} backend")
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
@@ -751,15 +766,29 @@ def mark_dynamic_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, rms_norm_backend: RMSNormBackend = "quack"):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_args()
+    inductor_options = dict(compile_config.inductor_options)
+    if rms_norm_backend == "torch":
+        inductor_options.setdefault("triton.mix_order_reduction_non_strict_mode", True)
+    # One options dict, pass and backend shared by every layer, so Dynamo's backend guard matches across layers.
+    options = dict(inductor_options)
+    backend = "inductor"
+    fp8_quant_pass = compile_config.fp8_quant_pass
+    if fp8_quant_pass is not None:
+        options["post_grad_custom_pre_pass"] = Fp8QuantPass(fp8_quant_pass.wgrad_quant)
+        if fp8_quant_pass.persistent_group_reductions:
+            backend = InductorChoicesBackend(PersistentGroupReductionChoices)
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(
+            backend=backend, fullgraph=compile_config.fullgraph, mode=compile_config.mode, options=options or None
+        )
     get_logger().info(
-        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
+        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode}, "
+        f"fp8_quant_pass=({fp8_quant_pass}), inductor_options={inductor_options})"
     )
 
 
@@ -886,6 +915,9 @@ def setup_model(
 
     apply_quantization(model, config)
 
+    if config.rms_norm_backend != "quack":
+        apply_rms_norm_backend(model, config.rms_norm_backend)
+
     frozen_vision_encoder = configure_trainable_parameters(model, config)
 
     if config.freeze_moe_router:
@@ -914,7 +946,7 @@ def setup_model(
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        apply_compile(model, config.compile, config.rms_norm_backend)
 
     setup_fsdp(model, config, parallel_dims)
 

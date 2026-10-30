@@ -1,4 +1,4 @@
-"""Compile a DeepSeek V4 shared-expert toy block with and without the FP8 quant pass, then compare outputs, kernels and times."""
+"""Compile DeepSeek V4 shared-expert toy blocks through the trainer's apply_ac and apply_compile, with and without the FP8 quant pass, then compare outputs, kernels and times."""
 
 from __future__ import annotations
 
@@ -8,52 +8,74 @@ import copy
 import json
 import re
 import statistics
-import sys
+import threading
+from collections import Counter
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch._inductor import config as inductor_config
 from torch._inductor.graph import GraphLowering
 from torch._inductor.virtualized import V
 from torch.autograd import DeviceType
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fp8_quant_pass import PASS_RECORDS, Fp8QuantPass, PersistentGroupReductionChoices  # noqa: E402
-
-from prime_rl.configs.trainer import ActivationCheckpointConfig  # noqa: E402
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper  # noqa: E402
-from prime_rl.trainer.models.layers.activations import ClampedSilu  # noqa: E402
-from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear  # noqa: E402
-from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig  # noqa: E402
+import prime_rl.trainer.model as trainer_model
+from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, FP8QuantPassConfig
+from prime_rl.trainer.fp8_quant_pass import FP8_MM, FP8_MM_BACKWARD, Fp8QuantPass
+from prime_rl.trainer.model import apply_ac, apply_compile, apply_rms_norm_backend
+from prime_rl.trainer.models.layers.activations import ClampedSilu
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
+from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
 HIDDEN = 4096
 INTERMEDIATE = 2048
 SWIGLU_LIMIT = 10.0
 EPS = 1e-6
-ARMS = {"nopass": None, "pass-torch": "torch", "pass-triton": "triton"}
+ARMS = {"nopass": None, "pass-triton": "triton", "pass-torch": "torch"}
+PREQUANT_OPS = (
+    torch.ops.prime_rl.fp8_blockwise_mm_prequant.default,
+    torch.ops.prime_rl.fp8_blockwise_mm_dgrad_prequant.default,
+    torch.ops.prime_rl.fp8_blockwise_mm_wgrad_prequant.default,
+    torch.ops.prime_rl.fp8_blockwise_mm_wgrad.default,
+)
+PASS_RECORDS: list[dict] = []
 
 
-class TorchRMSNorm(nn.Module):
-    """RMSNorm in plain torch ops, visible to Inductor, with the weight multiply in fp32."""
+def count_targets(graph: torch.fx.Graph, targets: tuple) -> Counter:
+    return Counter(str(node.target) for node in graph.nodes if node.op == "call_function" and node.target in targets)
 
-    def __init__(self, hidden_size: int, eps: float) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.eps = eps
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        x = hidden_states.float()
-        x = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + self.eps)
-        return (x * self.weight.float()).to(hidden_states.dtype)
+class RecordingFp8QuantPass(Fp8QuantPass):
+    """The trainer's pass, plus a record of what it rewrote and the compile context it ran in."""
+
+    def __call__(self, graph: torch.fx.Graph) -> None:
+        before = count_targets(graph, (FP8_MM, FP8_MM_BACKWARD))
+        amax = (torch.ops.aten.amax.default,)
+        super().__call__(graph)
+        PASS_RECORDS.append(
+            {
+                "graph": "backward" if before[str(FP8_MM_BACKWARD)] else "forward",
+                "thread": threading.current_thread().name,
+                "ops_before": dict(before),
+                "ops_after": dict(count_targets(graph, (FP8_MM, FP8_MM_BACKWARD) + PREQUANT_OPS)),
+                "amax_after_dedupe": count_targets(graph, amax)["aten.amax.default"],
+                "inductor_choices": type(V.choices).__name__,
+                "mix_order_reduction_non_strict_mode": inductor_config.triton.mix_order_reduction_non_strict_mode,
+                "emulate_precision_casts": inductor_config.emulate_precision_casts,
+            }
+        )
+
+
+trainer_model.Fp8QuantPass = RecordingFp8QuantPass
 
 
 class SharedExpertBlock(nn.Module):
     """Pre-norm gated MLP with a residual, shaped like a DeepSeek V4 shared expert."""
 
-    def __init__(self, norm: str) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.norm = RMSNorm(RMSNormConfig(HIDDEN, EPS)) if norm == "quack" else TorchRMSNorm(HIDDEN, EPS)
+        self.norm = RMSNorm(RMSNormConfig(HIDDEN, EPS))
         self.gate_proj = Float8BlockwiseLinear(HIDDEN, INTERMEDIATE, bias=False)
         self.up_proj = Float8BlockwiseLinear(HIDDEN, INTERMEDIATE, bias=False)
         self.down_proj = Float8BlockwiseLinear(INTERMEDIATE, HIDDEN, bias=False)
@@ -66,8 +88,22 @@ class SharedExpertBlock(nn.Module):
         return hidden_states + self.down_proj(self.activation.apply(gate, up))
 
 
-def build_block(norm: str) -> SharedExpertBlock:
-    block = SharedExpertBlock(norm).cuda()
+class ToyModel(nn.Module):
+    """Stack of toy blocks under `model.layers`, where the trainer's `get_language_model` finds decoder layers."""
+
+    def __init__(self, blocks: list[SharedExpertBlock]) -> None:
+        super().__init__()
+        self.model = nn.Module()
+        self.model.layers = nn.ModuleList(blocks)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        for layer in self.model.layers:
+            hidden_states = layer(hidden_states)
+        return hidden_states
+
+
+def build_block() -> SharedExpertBlock:
+    block = SharedExpertBlock().cuda()
     with torch.no_grad():
         for linear in (block.gate_proj, block.up_proj, block.down_proj):
             nn.init.trunc_normal_(linear.weight, std=0.02)
@@ -75,24 +111,36 @@ def build_block(norm: str) -> SharedExpertBlock:
     return block.to(torch.bfloat16)
 
 
-def fp32_reference(block: SharedExpertBlock, x: torch.Tensor, grad_output: torch.Tensor) -> dict[str, torch.Tensor]:
-    params = {name: param.detach().float().requires_grad_() for name, param in block.named_parameters()}
+def fp32_reference(model: ToyModel, x: torch.Tensor, grad_output: torch.Tensor) -> dict[str, torch.Tensor]:
+    params = {name: param.detach().float().requires_grad_() for name, param in model.named_parameters()}
     x = x.detach().float().requires_grad_()
-    normed = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + EPS) * params["norm.weight"]
-    gate = F.linear(normed, params["gate_proj.weight"])
-    up = F.linear(normed, params["up_proj.weight"])
-    out = x + F.linear(ClampedSilu(SWIGLU_LIMIT).apply(gate, up), params["down_proj.weight"])
-    out.backward(grad_output.float())
-    return {"out": out.detach(), "x.grad": x.grad} | {f"{name}.grad": p.grad for name, p in params.items()}
+    hidden = x
+    for index in range(len(model.model.layers)):
+        prefix = f"model.layers.{index}."
+        normed = hidden * torch.rsqrt(hidden.square().mean(-1, keepdim=True) + EPS) * params[prefix + "norm.weight"]
+        gate = F.linear(normed, params[prefix + "gate_proj.weight"])
+        up = F.linear(normed, params[prefix + "up_proj.weight"])
+        hidden = hidden + F.linear(ClampedSilu(SWIGLU_LIMIT).apply(gate, up), params[prefix + "down_proj.weight"])
+    hidden.backward(grad_output.float())
+    return {"out": hidden.detach(), "x.grad": x.grad} | {f"{name}.grad": p.grad for name, p in params.items()}
 
 
-def compile_block(block: SharedExpertBlock, pass_mode: str | None, options: dict) -> nn.Module:
-    wrapped = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode="full"))(block)
-    options = dict(options)
-    if pass_mode is not None:
-        options["post_grad_custom_pre_pass"] = Fp8QuantPass(wgrad_quant=pass_mode)
-    wrapped.compile(fullgraph=True, options=options)
-    return wrapped
+def compile_config(args: argparse.Namespace, wgrad_quant: str | None) -> CompileConfig:
+    fp8_quant_pass = None
+    if wgrad_quant is not None:
+        fp8_quant_pass = FP8QuantPassConfig(
+            wgrad_quant=wgrad_quant, persistent_group_reductions=args.persistent_group_reductions
+        )
+    return CompileConfig(fullgraph=True, fp8_quant_pass=fp8_quant_pass, inductor_options=args.options)
+
+
+def build_model(args: argparse.Namespace, base: ToyModel, wgrad_quant: str | None) -> ToyModel:
+    model = copy.deepcopy(base)
+    if args.norm == "torch":
+        apply_rms_norm_backend(model, "torch")
+    apply_ac(model, ActivationCheckpointConfig(mode="full"))
+    apply_compile(model, compile_config(args, wgrad_quant), args.norm)
+    return model
 
 
 def make_inputs(num_tokens: int, dynamic: bool) -> tuple[torch.Tensor, torch.Tensor]:
@@ -114,9 +162,7 @@ def run_step(module: nn.Module, x: torch.Tensor, grad_output: torch.Tensor) -> t
 
 
 def collect(module: nn.Module, x: torch.Tensor, out: torch.Tensor) -> dict[str, torch.Tensor]:
-    grads = {
-        f"{name.removeprefix('_checkpoint_wrapped_module.')}.grad": p.grad for name, p in module.named_parameters()
-    }
+    grads = {f"{name.replace('._checkpoint_wrapped_module', '')}.grad": p.grad for name, p in module.named_parameters()}
     return {"out": out.detach(), "x.grad": x.grad} | grads
 
 
@@ -150,6 +196,11 @@ def kernel_launches(code: str) -> list[dict]:
             launches.append({"kernel": match.group(1), "origin": origin})
             origin = ""
     return launches
+
+
+def fp8_kernel_kinds(launches: list[dict]) -> dict[str, int]:
+    """Count FP8-storing Inductor kernels by kind: `per` (persistent reduction), `red` (looped reduction), `poi`."""
+    return dict(Counter(launch["kernel"].split("_")[1] for launch in launches if launch.get("fp8_stores")))
 
 
 def profile_steps(module: nn.Module, x: torch.Tensor, grad_output: torch.Tensor, steps: int) -> dict:
@@ -200,11 +251,23 @@ def time_steps(module: nn.Module, x: torch.Tensor, grad_output: torch.Tensor, it
     return {"forward_ms": forward_ms, "forward_backward_ms": start.elapsed_time(end) / iters}
 
 
-def run_arm(args: argparse.Namespace, base: SharedExpertBlock, arm: str, out_dir: Path) -> dict:
+def initialize_default_choices_on_both_threads() -> None:
+    """Compile an unrelated function forward and backward, so the main and autograd threads cache Inductor's default choices."""
+
+    def unrelated(t: torch.Tensor) -> torch.Tensor:
+        return (t.float().square().sum(-1, keepdim=True).sqrt() * t).to(t.dtype)
+
+    t = torch.randn(256, 512, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    torch.compile(unrelated, fullgraph=True, dynamic=False)(t).sum().backward()
+    torch.cuda.synchronize()
+
+
+def run_arm(args: argparse.Namespace, base: ToyModel, arm: str, out_dir: Path) -> tuple[dict, dict, nn.Module]:
     torch._dynamo.reset()
     PASS_RECORDS.clear()
-    unique_graphs_before = torch._dynamo.utils.counters["stats"]["unique_graphs"]
-    module = compile_block(copy.deepcopy(base), ARMS[arm], args.options)
+    stats = torch._dynamo.utils.counters["stats"]
+    unique_graphs_before = stats["unique_graphs"]
+    module = build_model(args, base, ARMS[arm])
     sources: list[str] = []
     GraphLowering.save_output_code = sources.append
     results = {}
@@ -225,9 +288,10 @@ def run_arm(args: argparse.Namespace, base: SharedExpertBlock, arm: str, out_dir
         "arm": arm,
         "pass_records": list(PASS_RECORDS),
         "compiled_graphs": len(sources),
-        "dynamo_unique_graphs": torch._dynamo.utils.counters["stats"]["unique_graphs"] - unique_graphs_before,
+        "dynamo_unique_graphs": stats["unique_graphs"] - unique_graphs_before,
         "code_files": code_files,
         "launches": launches,
+        "fp8_kernel_kinds": {name: fp8_kernel_kinds(launch_list) for name, launch_list in launches.items()},
     }
     return report, results, module
 
@@ -249,32 +313,35 @@ def benchmark(args: argparse.Namespace, modules: dict[str, nn.Module], reports: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("norm", choices=["quack", "torch"])
+    parser.add_argument("norm", choices=["quack", "torch"], help="model.rms_norm_backend")
     parser.add_argument("out_dir", type=Path)
+    parser.add_argument("--layers", type=int, default=1)
     parser.add_argument("--tokens", type=int, nargs="+", default=[1000, 4096, 5000, 32768])
-    parser.add_argument("--bench-tokens", type=int, default=32768)
+    parser.add_argument("--bench-tokens", type=int, default=32768, help="0 skips timing")
     parser.add_argument("--iters", type=int, default=20)
     parser.add_argument("--reps", type=int, default=5)
-    parser.add_argument(
-        "--option", action="append", default=[], help="Inductor option KEY=VALUE, e.g. triton.nested_reduction=True"
-    )
+    parser.add_argument("--option", action="append", default=[], help="model.compile.inductor_options entry KEY=VALUE")
     parser.add_argument("--static", action="store_true", help="do not mark the token dim dynamic")
     parser.add_argument("--persistent-group-reductions", action="store_true")
+    parser.add_argument(
+        "--preinit-choices",
+        action="store_true",
+        help="first compile an unrelated function so both threads cache Inductor's default choices",
+    )
     parser.add_argument("--arms", nargs="+", choices=list(ARMS), default=list(ARMS))
     args = parser.parse_args()
 
-    torch._dynamo.config.capture_scalar_outputs = True
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
     args.options = {key: ast.literal_eval(value) for key, value in (option.split("=", 1) for option in args.option)}
-    if args.persistent_group_reductions:
-        args.options["inductor_choices_class"] = PersistentGroupReductionChoices
-        V.set_choices_handler(PersistentGroupReductionChoices())
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.preinit_choices:
+        initialize_default_choices_on_both_threads()
     torch.manual_seed(0)
-    base = build_block(args.norm)
+    base = ToyModel([build_block() for _ in range(args.layers)])
 
     reports, results, modules = {}, {}, {}
     for arm in args.arms:
-        reports[arm], results[arm], modules[arm] = run_arm(args, base, arm, args.out_dir)
+        reports[arm], results[arm], modules[arm] = run_arm(args, base, arm, out_dir)
     if args.bench_tokens:
         benchmark(args, modules, reports)
 
@@ -295,18 +362,22 @@ def main() -> None:
 
     summary = {
         "norm": args.norm,
+        "layers": args.layers,
         "options": args.options,
         "static": args.static,
+        "persistent_group_reductions": args.persistent_group_reductions,
+        "preinit_choices": args.preinit_choices,
         "arms": reports,
         "closeness": closeness,
     }
-    (args.out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     for arm, report in reports.items():
         print(
             f"== {arm}: {report['compiled_graphs']} compiled graphs, dynamo unique graphs {report['dynamo_unique_graphs']}"
         )
         for record in report["pass_records"]:
             print(f"   pass record: {json.dumps(record)}")
+        print(f"   FP8-storing kernels by kind: {json.dumps(report['fp8_kernel_kinds'])}")
         if "timing" in report:
             print(f"   timing at M={args.bench_tokens}: {report['timing']}")
             for category, bucket in sorted(report["profile"].items()):

@@ -26,6 +26,8 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
+RMSNormBackend: TypeAlias = Literal["quack", "torch"]
+FP8WgradQuant: TypeAlias = Literal["triton", "torch"]
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -49,12 +51,37 @@ class ActivationOffloadingConfig(BaseConfig):
 OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 
+class FP8QuantPassConfig(BaseConfig):
+    """Inductor pass that moves the activation and gradient FP8 quantization of DeepGEMM FP8 linears out of the GEMM ops into torch ops, so Inductor fuses each quantization into the kernel that produces its input. SM90 only."""
+
+    wgrad_quant: FP8WgradQuant = "triton"
+    """Quantizer for the weight gradient's 128-token casts of the output gradient and the input. ``triton`` keeps the Triton kernels inside the weight-gradient op; ``torch`` emits torch ops that Inductor fuses into their producers."""
+
+    persistent_group_reductions: bool = False
+    """Compile every reduction over 128 elements in the compiled layers as a persistent reduction, which reads its input once. Inductor's default keeps strided reductions of more than 64 elements, such as the ``torch`` 128-token cast, as looped reductions that read their input twice."""
+
+
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
 
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
+
+    fp8_quant_pass: FP8QuantPassConfig | None = None
+    """Fuse FP8 quantization of dense FP8 linears into its producers. ``None`` disables the pass."""
+
+    inductor_options: dict[str, Any] = {}
+    """Inductor config options passed as ``torch.compile(options=...)``, keyed by their name in ``torch._inductor.config``, e.g. ``{"emulate_precision_casts": true, "triton.mix_order_reduction_non_strict_mode": true}``."""
+
+    @model_validator(mode="after")
+    def validate_mode_without_options(self):
+        if self.mode is not None and (self.fp8_quant_pass is not None or self.inductor_options):
+            raise ValueError(
+                "model.compile.mode cannot be combined with model.compile.fp8_quant_pass or "
+                "model.compile.inductor_options: torch.compile takes either a mode or Inductor options"
+            )
+        return self
 
 
 class FusionsConfig(BaseConfig):
@@ -332,6 +359,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    rms_norm_backend: RMSNormBackend = "quack"
+    """Implementation of the shared ``RMSNorm`` layer. ``quack`` runs quack's kernel on SM90+ GPUs and torch ops elsewhere. ``torch`` runs torch ops in quack's order (normalize and multiply by the weight in fp32, then round once to the input dtype), which ``torch.compile`` can fuse with neighboring ops such as FP8 quantization. Under compile, ``torch`` also turns on the Inductor option ``triton.mix_order_reduction_non_strict_mode`` (unless ``compile.inductor_options`` sets it), without which the norm backward recompiles as the token count changes. It therefore cannot be combined with ``compile.mode``."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
@@ -348,6 +378,15 @@ class ModelConfig(BaseModelConfig):
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        return self
+
+    @model_validator(mode="after")
+    def validate_torch_rms_norm_compile_mode(self):
+        if self.rms_norm_backend == "torch" and self.compile is not None and self.compile.mode is not None:
+            raise ValueError(
+                "rms_norm_backend='torch' cannot be combined with compile.mode: it compiles with Inductor options, "
+                "and torch.compile takes either a mode or Inductor options"
+            )
         return self
 
     @model_validator(mode="after")

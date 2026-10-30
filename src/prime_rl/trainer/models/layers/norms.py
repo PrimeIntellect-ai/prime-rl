@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.integrations import use_kernel_forward_from_hub
 
+from prime_rl.configs.trainer import RMSNormBackend
+
 
 @lru_cache(maxsize=1)
 def get_quack_rmsnorm():
@@ -20,6 +22,13 @@ def get_quack_rmsnorm():
         return None
 
 
+def rms_norm_fp32(hidden_states: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    """RMSNorm in torch ops with quack's order: normalize and multiply by the weight in fp32, then round once."""
+    hidden_states_fp32 = hidden_states.float()
+    rstd = torch.rsqrt(hidden_states_fp32.square().mean(dim=-1, keepdim=True) + eps)
+    return (hidden_states_fp32 * rstd * weight.float()).to(hidden_states.dtype)
+
+
 @dataclass
 class RMSNormConfig:
     hidden_size: int
@@ -32,8 +41,11 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(config.hidden_size))
         self.variance_epsilon = config.eps
+        self.backend: RMSNormBackend = "quack"
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.backend == "torch":
+            return rms_norm_fp32(hidden_states, self.weight, self.variance_epsilon)
         quack_fn = get_quack_rmsnorm() if hidden_states.is_cuda else None
         if quack_fn is not None:
             return quack_fn(hidden_states, self.weight, eps=self.variance_epsilon)
