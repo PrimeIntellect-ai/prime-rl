@@ -211,11 +211,8 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
 
     type: Literal["deepep"] = "deepep"
-    num_sms: int = Field(20, ge=1)
+    num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
-
-    token_chunk_size: int | None = Field(None, ge=1)
-    """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
@@ -364,12 +361,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(compute, MXFP8MoEComputeConfig):
-                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
-        elif dispatch.transport == "mxfp8":
+        if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self
@@ -645,17 +637,6 @@ class BaseTrainerConfig(BaseConfig):
             self.model.freeze_moe_router = self.auto_freeze_moe_router
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = self.auto_weight_decay
-        return self
-
-    @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
         return self
 
     @model_validator(mode="after")
