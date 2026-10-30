@@ -19,6 +19,7 @@ This page covers the inference configuration and the supported features/deployme
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
+    - [Forced Routing](#forced-routing)
 
 
 ## Overview
@@ -329,6 +330,58 @@ enable_return_routed_experts = true
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env server pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
 Router replay works with `inference.kv_cache_offload` (native and Mooncake). vLLM keeps routing rows in a local store keyed by block hash, and no connector moves them with the KV, so a loaded block has no rows on this instance. prime-rl therefore limits an offload load to the prompt tokens the client already has routing for: the blocks before `routed_experts_prompt_start`. Multi-turn rollouts keep their offload hits, because the reloaded earlier turns sit before that position. Offloaded prefixes past it (first turns, prompts shared across a group or across nodes) are recomputed. Loaded blocks then serve local GPU prefix hits like any other block, so a local hit is cut at the first loaded block that a request needs routing from (for example a first turn that hits a prefix reloaded by another rollout's later turn), and the rest is recomputed. Under P/D, decode-side loads are not limited: decode requests emit routing only from their first forward.
+
+### Forced Routing
+
+With prefix caching, every turn after the first recomputes part of the earlier context. Hybrid-attention models keep their recurrent state only at prompt boundaries, so a whole previous completion is recomputed on the next turn. The router then picks experts for those positions again, and it disagrees with the first pass in about a third of (token, layer) top-k sets. Router replay trains on the first pass's routing, so those turns are trained on a context vLLM did not compute. Forced routing makes vLLM route every recomputed position the way it was first routed:
+
+- **Stored blocks.** vLLM keeps the routing of every full hash block in its routed-experts store, keyed by the block hash (tokens and cache salt), and never overwrites a key's first rows.
+- **Tail stash.** The store never holds a request's partial last block. When a request finishes or is preempted, TP rank 0 keeps that block's rows, keyed by the hash of the block before it and checked token by token. The next turn of the episode (`routed_experts_prompt_start = known_end`) takes its partial known block `[known_end // B * B, known_end)` from there. `B` is the hash block size.
+- **Client rows** sent in `sampling_params.extra_args.routed_experts_replay` (`{start, data, shape, dtype, version}`) override both. prime-rl does not send them.
+
+On a request's first chunk, TP rank 0 looks the rows up and broadcasts them to every rank. The router uses the known expert ids, and the combine weights come from this forward's gate scores at those ids. A block whose known positions were not all forced when it was computed is marked tainted and is never forced later. Decode steps are never forced, and decode-only CUDA graphs are captured without the forcing ops.
+
+Enable it for multi-turn MoE RL with router replay:
+
+```toml
+[trainer]
+enable_router_replay = true
+
+[orchestrator]
+per_episode_cache_salt = true
+
+[inference.forced_routing]
+enabled = true
+# drift = true          # count routing drift (below)
+# stash_max_mib = 2048  # tail stash on TP rank 0 (LRU); 0 disables it
+# log_interval_s = 60
+```
+
+- It needs routed-experts capture, which is enabled automatically, and the V2 model runner.
+- It binds only to plain tensor-parallel engines. Data or expert parallelism, P/D disaggregation, speculative decoding and DBO make the server fail at startup.
+- The `rl` entrypoint requires `trainer.enable_router_replay` and `orchestrator.per_episode_cache_salt`. With a salt shared by the rollouts of a group, a block's stored rows come from whichever rollout computed it first. The per-episode salt costs the reuse of the first prompt's prefill across the group.
+- Keep a session-affine router policy (the default `sticky_least_loaded`): a turn served by another replica finds neither the KV cache nor the rows.
+- The `inference` entrypoint sets `PRIME_RL_FORCED_ROUTING` from the config. A bare `vllm serve` with prime-rl installed enables it with `PRIME_RL_FORCED_ROUTING=1`, without the stats endpoint.
+
+**Counters.** All counters are cumulative; compare two readings. TP rank 0 logs them every `log_interval_s` (`Forced routing: N prompt tokens forced (...)`, then a `Forced routing drift` line), and `GET /forced_routing/stats` on each prime-rl engine port returns them as JSON. The admission timings in the response are the maximum over TP ranks.
+
+| Counter | Meaning | Healthy |
+|---|---|---|
+| `forced`, `store`, `stash`, `client` | Prompt positions forced, in all and by source | `forced > 0` once turns are bridged |
+| `known_unforced` | Recomputed positions whose first-pass routing exists but no source had (evicted blocks, stash misses, tainted blocks) | 0 or close to it |
+| `resumed_unforced`, `readmitted` | The same for requests resumed after preemption, and how many were resumed | 0 at normal load |
+| `store_hits`, `store_misses` | Stored full blocks found or missing in the known range | hits ≫ misses |
+| `stash_hits`, `stash_misses`, `stash_evictions`, `stash_entries`, `stash_bytes` | Tail stash lookups and occupancy | misses ≪ hits; evictions only under memory pressure |
+| `store_tainted`, `stash_tainted`, `store_published_tainted` | Lookups that found tainted rows (not forced), and tainted blocks published | 0 |
+| `store_evicted`, `store_slots_used`, `store_slots` | Store evictions (published minus resident) and occupancy | slots < 100%; raise `[inference.vllm.aux_output_config] max_bytes` if evictions come with `known_unforced` |
+| `disagree` | Positions where a later source overwrote different ids | 0 |
+| `in_decode_graphs` | Positions with rows that ran in a decode-only CUDA graph, unforced (their blocks are tainted) | 0 |
+| `keys_short` | Full prompt blocks without a hash at the first chunk | 0 |
+| `admit_ms`, `admit_ms_max`, `admissions_over_4mib` | Time spent admitting new requests (total and max per step), and plans too large for the shared-memory broadcast | under a few ms per admission |
+| `weight_version`, `weight_versions_set` | The policy version the workers last received, and how many updates they saw | the trainer step; +1 per update |
+| `rejected_requests` | Client payloads rejected as malformed | 0 |
+
+**Routing drift.** With `drift = true`, every forced (token, MoE layer) pair is compared with the top-k the router picks in the same forward. `drift` maps `<source>/age<k>` to `[pairs, sets differ, ids differ]`. `<k>` is how many weight updates old the rows are (`unknown` before the first update), and `drift_by_layer` splits the totals by layer. Read `sets differ / pairs`. Two prefill passes at the same weights already differ in about 20% of sets, and a recompute against first-pass decode rows in 30 to 45%. Policy drift is the rise of that ratio with age. A stored block carries the weight version of the step that completed it, and stashed rows that of the request's last sampled step, so rows computed across an update count as one update younger than their oldest part. A ratio above 0.6 at age unknown or 0 logs a warning: forced and natural rows are misaligned.
 
 ### Sampling Replay
 
