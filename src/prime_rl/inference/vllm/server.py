@@ -16,6 +16,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.inference.vllm import forced_routing
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -104,6 +105,15 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)
     return {"status": "ok"}
+
+
+@router.get("/forced_routing/stats")
+async def forced_routing_stats(request: Request):
+    """Forced-routing counters (cumulative): TP rank 0's, with the admission timings maxed over ranks."""
+    if not forced_routing.enabled():
+        return {"enabled": False}
+    per_rank = await engine_client(request).collective_rpc(forced_routing.RPC_METHOD, args=("stats",))
+    return forced_routing.combine_stats(per_rank)
 
 
 @router.get("/liveness")

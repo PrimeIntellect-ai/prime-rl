@@ -34,6 +34,10 @@ def apply_shared_vllm_patches():
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()
+    # Opt-in (PRIME_RL_FORCED_ROUTING=1); builds on the two aux-output patches above.
+    from prime_rl.inference.vllm.forced_routing import monkey_patch_forced_routing
+
+    monkey_patch_forced_routing()
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
