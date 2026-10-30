@@ -13,7 +13,8 @@ The RMS norm is folded into the projection, so the fp32 normalized streams are n
 Autograd keeps `x`, `mixes` and `rstd`. The forward is one kernel over the tokens that reads the
 streams twice (projection, then collapse). On SM90 and SM100 the projection and sum of squares come
 from DeepGEMM's TF32 `tf32_hc_prenorm_gemm`, the kernel vLLM runs for mHC, with `fn` zero-padded to
-its multiple of 8 rows, and the forward kernel only collapses. The backward also reads the streams
+its multiple of 8 rows, and the forward kernel only collapses. `PRIME_RL_DSV4_MHC_PAD_PROJECTION=0`
+restores the multiple-of-8 gate, keeping such projections on the IEEE Triton path. The backward also reads the streams
 twice: a token-blocked kernel reduces the collapse gradient against them into the gate gradients, then
 a kernel over hidden slices writes the input gradient and accumulates the weight gradient over fixed
 token splits. Off DeepGEMM, and in the backward, the projection follows
@@ -324,12 +325,17 @@ def _grid(num_tokens):
     return lambda meta: (triton.cdiv(num_tokens, meta["BLOCK_M"]),)
 
 
+def _pads_projection() -> bool:
+    return os.environ.get("PRIME_RL_DSV4_MHC_PAD_PROJECTION", "1") != "0"
+
+
 def _uses_deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor) -> bool:
     return (
         torch.cuda.get_device_capability(x.device)[0] in (9, 10)
         and x.dtype == torch.bfloat16
         and fn.shape[0] <= 32
         and fn.shape[1] % 64 == 0
+        and (fn.shape[0] % 8 == 0 or _pads_projection())
     )
 
 
