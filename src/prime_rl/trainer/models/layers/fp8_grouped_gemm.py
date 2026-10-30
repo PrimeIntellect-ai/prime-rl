@@ -6,7 +6,9 @@ import torch
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
+    backward_cast_exact_division,
     build_grouped_layout,
+    forward_cast_exact_division,
     grouped_per_block_cast_to_fp8_triton,
     grouped_per_channel_cast_to_fp8_rowmajor_triton,
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
@@ -72,6 +74,7 @@ def _compute_grad_weight(
         )
         grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_tn_contiguous
     else:
+        exact_division = backward_cast_exact_division()
         x_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
             x,
             padded_total_m,
@@ -82,6 +85,7 @@ def _compute_grad_weight(
             block_starts_tensor,
             False,
             GROUP_ALIGNMENT,
+            exact_division,
         )
         dy_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
             grad_output,
@@ -93,6 +97,7 @@ def _compute_grad_weight(
             block_starts_tensor,
             False,
             GROUP_ALIGNMENT,
+            exact_division,
         )
         grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_nt_contiguous
 
@@ -178,6 +183,7 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
         block_starts_tensor,
         use_ue8m0,
         GROUP_ALIGNMENT,
+        forward_cast_exact_division(),
     )
     weight_fp8 = grouped_per_block_cast_to_fp8_triton(
         weight.transpose(1, 2),
@@ -249,6 +255,7 @@ def _grouped_fp8_gemm_backward(
             block_starts_tensor,
             use_ue8m0,
             GROUP_ALIGNMENT,
+            backward_cast_exact_division(),
         )
         weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
         grad_x = torch.empty(x.shape, device=grad_output.device, dtype=grad_output.dtype)

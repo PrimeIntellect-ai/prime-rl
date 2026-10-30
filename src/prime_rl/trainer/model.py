@@ -60,6 +60,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
+from prime_rl.trainer.models.kernels.fp8_utils import set_cast_division
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
@@ -806,7 +807,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, rms_norm_back
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     """Swap dense linear modules to the configured low-precision path.
 
-    Routed-expert compute is configured independently by ``model.moe.compute``.
+    Routed-expert compute is configured independently by ``model.moe.compute``, except that ``FP8Config.division``
+    also applies to the casts of the ``deepgemm_fp8`` grouped GEMMs.
     """
     quant = config.quantization
     if quant is None:
@@ -819,6 +821,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
             raise ValueError(
                 f"FP8 blockwise quantization (DeepGEMM) requires SM90 or SM100, but device is SM{capability[0]}{capability[1]}."
             )
+        set_cast_division(quant.division)
         replace_linear_with_fp8_blockwise_linear(model, ignore_modules=ignore_modules)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()

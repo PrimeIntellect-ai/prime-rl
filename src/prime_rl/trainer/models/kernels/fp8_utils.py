@@ -6,6 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
+from prime_rl.configs.trainer import FP8CastDivision
+
 FP8_MAX = tl.constexpr(448.0)
 FP8_MIN = tl.constexpr(-448.0)
 FP8_MAX_RECIPROCAL = tl.constexpr(1.0 / 448.0)
@@ -22,6 +24,23 @@ def ue8m0_for_device(device: torch.device | None = None) -> bool:
     scales, and UE8M0 there is a pure precision loss (it measurably raises the
     trainer/inference mismatch KL)."""
     return torch.cuda.get_device_capability(device)[0] >= 10
+
+
+_cast_division: FP8CastDivision = "exact"
+
+
+def set_cast_division(division: FP8CastDivision) -> None:
+    """Set the division rounding of the Triton casts inside the FP8 GEMM ops, as described by `FP8Config.division`."""
+    global _cast_division
+    _cast_division = division
+
+
+def forward_cast_exact_division() -> bool:
+    return _cast_division != "approximate"
+
+
+def backward_cast_exact_division() -> bool:
+    return _cast_division == "exact"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +131,15 @@ def _build_grouped_layout_kernel(
 
 
 @triton.jit
+def _fp32_div(numerator, denominator, EXACT_DIVISION: tl.constexpr):
+    if EXACT_DIVISION:
+        quotient = tl.math.div_rn(numerator, denominator)
+    else:
+        quotient = numerator / denominator
+    return quotient
+
+
+@triton.jit
 def _per_token_fp8_kernel(
     x_ptr,
     out_ptr,
@@ -127,6 +155,7 @@ def _per_token_fp8_kernel(
     USE_UE8M0: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    EXACT_DIVISION: tl.constexpr = True,
 ):
     pid_m = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
@@ -141,12 +170,12 @@ def _per_token_fp8_kernel(
         other=0.0,
     ).to(tl.float32)
     amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
-    scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
-        scale = tl.exp2(tl.ceil(tl.log2(scale)))
+        scale = tl.exp2(tl.ceil(tl.log2(tl.math.div_rn(amax, FP8_MAX))))
         y = tl.clamp(x * (1.0 / scale)[:, None], FP8_MIN, FP8_MAX)
     else:
-        y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
+        scale = _fp32_div(amax, FP8_MAX, EXACT_DIVISION)
+        y = tl.clamp(_fp32_div(x, scale[:, None], EXACT_DIVISION), FP8_MIN, FP8_MAX)
     tl.store(
         out_ptr + row_offsets_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -175,6 +204,7 @@ def _grouped_per_token_fp8_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_BLOCK_M: tl.constexpr,
+    EXACT_DIVISION: tl.constexpr = True,
 ):
     pid_blk = tl.program_id(axis=0)
     pid_sub = tl.program_id(axis=1)
@@ -198,12 +228,12 @@ def _grouped_per_token_fp8_kernel(
         other=0.0,
     ).to(tl.float32)
     amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
-    scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
-        scale = tl.exp2(tl.ceil(tl.log2(scale)))
+        scale = tl.exp2(tl.ceil(tl.log2(tl.math.div_rn(amax, FP8_MAX))))
         y = tl.clamp(x * (1.0 / scale)[:, None], FP8_MIN, FP8_MAX)
     else:
-        y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
+        scale = _fp32_div(amax, FP8_MAX, EXACT_DIVISION)
+        y = tl.clamp(_fp32_div(x, scale[:, None], EXACT_DIVISION), FP8_MIN, FP8_MAX)
     tl.store(
         out_ptr + dst_rows_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -231,6 +261,7 @@ def _grouped_per_channel_fp8_kernel(
     K_MAJOR: tl.constexpr,
     BLOCK_K: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    EXACT_DIVISION: tl.constexpr = True,
 ):
     pid_blk = tl.program_id(axis=0)
     pid_n = tl.program_id(axis=1)
@@ -253,12 +284,12 @@ def _grouped_per_channel_fp8_kernel(
         other=0.0,
     ).to(tl.float32)
     amax = tl.maximum(tl.max(tl.abs(x), axis=0), 1e-10)
-    scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
-        scale = tl.exp2(tl.ceil(tl.log2(scale)))
+        scale = tl.exp2(tl.ceil(tl.log2(tl.math.div_rn(amax, FP8_MAX))))
         y = tl.clamp(x * (1.0 / scale)[None, :], FP8_MIN, FP8_MAX)
     else:
-        y = tl.clamp(tl.math.div_rn(x, scale[None, :]), FP8_MIN, FP8_MAX)
+        scale = _fp32_div(amax, FP8_MAX, EXACT_DIVISION)
+        y = tl.clamp(_fp32_div(x, scale[None, :], EXACT_DIVISION), FP8_MIN, FP8_MAX)
     flat_base = block_start.to(tl.int64) * BLOCK_K * cols
     if K_MAJOR:
         out_ptrs = out_ptr + flat_base + col_offsets_i64[:, None] * aligned_m + row_offsets_i64[None, :]
@@ -332,7 +363,7 @@ def _grouped_per_block_fp8_kernel(
 
 
 def per_token_cast_to_fp8_triton(
-    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT, exact_division: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
@@ -355,6 +386,7 @@ def per_token_cast_to_fp8_triton(
         USE_UE8M0=use_ue8m0,
         BLOCK_M=32,
         BLOCK_K=gran_k,
+        EXACT_DIVISION=exact_division,
         num_warps=4,
     )
     return out, sf
@@ -369,6 +401,7 @@ def grouped_per_token_cast_to_fp8_triton(
     block_starts_tensor: torch.Tensor,
     use_ue8m0: bool,
     gran_k: int = GROUP_ALIGNMENT,
+    exact_division: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
@@ -400,6 +433,7 @@ def grouped_per_token_cast_to_fp8_triton(
         BLOCK_M=32,
         BLOCK_K=gran_k,
         GROUP_BLOCK_M=GROUP_ALIGNMENT,
+        EXACT_DIVISION=exact_division,
         num_warps=4,
     )
     return out, sf
@@ -415,6 +449,7 @@ def grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
     block_starts_tensor: torch.Tensor,
     use_ue8m0: bool,
     gran_k: int = GROUP_ALIGNMENT,
+    exact_division: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
@@ -443,6 +478,7 @@ def grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
         K_MAJOR=True,
         BLOCK_K=gran_k,
         BLOCK_N=block_n,
+        EXACT_DIVISION=exact_division,
         num_warps=2,
     )
     return out, sf.T
@@ -578,7 +614,7 @@ def per_block_cast_to_fp8_tp_triton(
 
 
 def per_token_cast_to_fp8_tp_triton(
-    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT, exact_division: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Per-token fp8 cast of ``x.T`` without materializing the transpose, with scales in DeepGEMM's MN-major TMA layout."""
     assert x.dim() == 2
@@ -606,6 +642,7 @@ def per_token_cast_to_fp8_tp_triton(
         USE_UE8M0=use_ue8m0,
         BLOCK_M=32,
         BLOCK_K=gran_k,
+        EXACT_DIVISION=exact_division,
         num_warps=4,
     )
     return out, sf

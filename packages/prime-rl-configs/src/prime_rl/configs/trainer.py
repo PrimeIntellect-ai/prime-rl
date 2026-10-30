@@ -140,6 +140,7 @@ class DebugModelConfig(BaseConfig):
 
 
 MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
+FP8CastDivision: TypeAlias = Literal["exact", "forward_exact", "approximate"]
 
 _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
@@ -165,6 +166,9 @@ class FP8Config(BaseConfig):
 
     extra_ignore_patterns: list[str] = []
     """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
+
+    division: FP8CastDivision = "exact"
+    """Rounding of the two fp32 divisions in the Triton FP8 casts inside the DeepGEMM FP8 linears and the `deepgemm_fp8` routed-expert grouped GEMMs, the group amax by 448 into the scale and each element by its scale. `exact` rounds both correctly, which matches vLLM's quantizer bit for bit but takes a slow path on exactly-zero or subnormal elements, such as the zero output-gradient rows of padding tokens. `approximate` divides approximately in every cast, at a speed independent of the data, and flips a small fraction of FP8 values by one step. `forward_exact` keeps exact division in the forward activation casts, which vLLM parity depends on, and divides approximately in the backward casts. Only SM90 casts change, the UE8M0 casts on SM100 always divide exactly. Casts that `compile.fp8_quant_pass` moves into torch ops follow its own `division`."""
 
 
 class MXFP8Config(BaseConfig):

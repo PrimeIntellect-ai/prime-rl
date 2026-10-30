@@ -6,7 +6,9 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
+    backward_cast_exact_division,
     ceil_div,
+    forward_cast_exact_division,
     grouped_per_block_cast_to_fp8_triton,
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
@@ -24,7 +26,7 @@ def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) ->
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(x.device)
-    x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size)
+    x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size, forward_cast_exact_division())
     weight_fp8 = per_block_cast_to_fp8_triton(weight, use_ue8m0, block_size)
 
     out = torch.empty((x_2d.size(0), weight.size(0)), device=x.device, dtype=torch.bfloat16)
@@ -55,7 +57,9 @@ def _fp8_blockwise_mm_backward(
     grad_weight = weight.new_empty(weight.shape)
 
     if needs_grad_x:
-        grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
+        grad_output_fp8 = per_token_cast_to_fp8_triton(
+            grad_output_2d, use_ue8m0, block_size, backward_cast_exact_division()
+        )
         weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, use_ue8m0, block_size)
         grad_x_2d = torch.empty_like(x_2d)
         deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
@@ -94,8 +98,9 @@ def _fp8_wgrad(
         pad_rows = padded_tokens - num_tokens
         grad_output_2d = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
         x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
-    grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
-    x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
+    exact_division = backward_cast_exact_division()
+    grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size, exact_division)
+    x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size, exact_division)
     return _fp8_wgrad_gemm(grad_output_t_fp8, x_t_fp8, weight)
 
 
@@ -277,10 +282,11 @@ def _fp8_blockwise_bmm_backward(
     grad_output_2d = grad_output.reshape(-1, n_groups * out_features_per_group).contiguous()
     num_tokens = grad_output_2d.size(0)
     use_ue8m0 = ue8m0_for_device(grad_output.device)
+    exact_division = backward_cast_exact_division()
 
     if needs_grad_x:
         grad_output_fp8, grad_output_sf = per_token_cast_to_fp8_triton(
-            grad_output_2d.view(-1, out_features_per_group), use_ue8m0, block_size
+            grad_output_2d.view(-1, out_features_per_group), use_ue8m0, block_size, exact_division
         )
         weight_t_fp8, weight_t_sf = grouped_per_block_cast_to_fp8_triton(
             weight.view(n_groups, out_features_per_group, in_features).transpose(1, 2), use_ue8m0, block_size
@@ -307,8 +313,10 @@ def _fp8_blockwise_bmm_backward(
             pad_rows = padded_tokens - num_tokens
             grad_output_2d = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
             x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
-        grad_output_t_fp8, grad_output_t_sf = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
-        x_t_fp8, x_t_sf = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
+        grad_output_t_fp8, grad_output_t_sf = per_token_cast_to_fp8_tp_triton(
+            grad_output_2d, use_ue8m0, block_size, exact_division
+        )
+        x_t_fp8, x_t_sf = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size, exact_division)
         grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
         for group in range(n_groups):
             out_rows = slice(group * out_features_per_group, (group + 1) * out_features_per_group)
