@@ -1,0 +1,135 @@
+"""Run-scoped cleanup and accounting of the Prime sandboxes a run creates.
+
+verifiers labels every Prime sandbox and tunnel with the run scope, ``$VF_RUN_ID``. The
+launcher sets it to an id minted on the run dir's first launch and kept in
+``launcher/run_id``, so every resume and requeue of the run shares it and a restarted run
+finds what its predecessor leaked (a SIGKILL skips every teardown path). Deletion goes
+through ``verifiers.v1.runtimes.sweep``, which only deletes this user's resources created
+before a cutoff and never what the calling process holds."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+from verifiers.v1.runtimes.sweep import sweep
+
+from prime_rl.utils.async_utils import safe_cancel
+from prime_rl.utils.logger import get_logger
+
+METRICS_INTERVAL_S = 60
+
+
+def run_id_file(run_dir: Path) -> Path:
+    # Under launcher/, which the run-dir reuse check does not count as a prior run's output.
+    return run_dir / "launcher" / "run_id"
+
+
+def stable_run_id(run_dir: Path) -> str:
+    """The id kept in ``<run_dir>/launcher/run_id``, minted on the run's first launch."""
+    path = run_id_file(run_dir)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(uuid.uuid4().hex)
+    return path.read_text().strip()
+
+
+def _has_prime_key() -> bool:
+    """A run without Prime credentials has no Prime sandboxes to sweep or count."""
+    from prime_sandboxes.core import Config
+
+    return bool(Config().api_key)
+
+
+def _client():
+    from prime_sandboxes import SandboxClient
+    from prime_sandboxes.core import APIClient
+
+    return SandboxClient(APIClient()) if _has_prime_key() else None
+
+
+async def sweep_run(run_id: str, before: datetime) -> None:
+    """Delete the run's sandboxes and tunnels created before ``before``. The id is unique to
+    the run, so no one else's resources carry it. Best effort: a failed sweep must not fail
+    the run."""
+    if not _has_prime_key():
+        return
+    try:
+        report = await sweep([run_id], before=before, unique_labels=True)
+    except Exception as e:
+        get_logger().warning(f"Could not sweep run {run_id}: {e}")
+        return
+    get_logger().info(f"Swept run {run_id}: sandboxes {report.sandboxes}, tunnels {report.tunnels}")
+
+
+def sweep_previous_run(run_dir: Path) -> None:
+    """Sweep the run that last used ``run_dir``. A clean start deletes the run dir and its
+    id with it, so its sandboxes can only be swept before; a failed sweep raises and keeps
+    the id for a retry."""
+    path = run_id_file(run_dir)
+    if path.exists() and _has_prime_key():
+        asyncio.run(sweep([path.read_text().strip()], before=datetime.now(UTC), unique_labels=True))
+
+
+@contextmanager
+def sweep_on_exit(run_id: str) -> Iterator[None]:
+    """Sweep the run when the block exits, however it exits."""
+    try:
+        yield
+    finally:
+        asyncio.run(sweep_run(run_id, datetime.now(UTC)))
+
+
+class SandboxMetrics:
+    """Polls the platform for the run's live sandboxes and logs them on wall time:
+    ``sandboxes/live`` and their age in minutes."""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.client = _client()
+        self.task: asyncio.Task | None = None
+
+    def poll(self) -> dict[str, float]:
+        sandboxes, page = [], 1
+        while True:
+            response = self.client.list(labels=[self.run_id], exclude_terminated=True, page=page, per_page=500)
+            sandboxes += response.sandboxes
+            if not response.has_next:
+                break
+            page += 1
+        now = datetime.now(UTC).replace(tzinfo=None)  # the API's timestamps are naive UTC
+        ages = sorted((now - sandbox.created_at).total_seconds() / 60 for sandbox in sandboxes)
+        metrics = {"sandboxes/live": float(len(sandboxes))}
+        if ages:
+            metrics |= {
+                "sandboxes/age_min/p50": ages[len(ages) // 2],
+                "sandboxes/age_min/p90": ages[int(len(ages) * 0.9)],
+                "sandboxes/age_min/max": ages[-1],
+            }
+        return metrics
+
+    async def run(self) -> None:
+        from prime_rl import monitors
+
+        while True:
+            start = time.monotonic()
+            try:
+                metrics = await asyncio.to_thread(self.poll)
+                await monitors.log(metrics, step=None)
+            except Exception as e:
+                get_logger().warning(f"Could not poll the sandboxes of run {self.run_id}: {e}")
+            await asyncio.sleep(max(0.0, METRICS_INTERVAL_S - (time.monotonic() - start)))
+
+    async def start(self) -> None:
+        if self.client is not None:
+            self.task = asyncio.create_task(self.run(), name="sandbox_metrics")
+
+    async def stop(self) -> None:
+        if self.task is not None:
+            await safe_cancel(self.task)
+            self.task = None

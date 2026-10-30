@@ -25,6 +25,7 @@ import json
 import os
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -91,6 +92,7 @@ from prime_rl.utils.pathing import (
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
+from prime_rl.utils.sandboxes import SandboxMetrics, sweep_run
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -139,6 +141,7 @@ class Orchestrator:
     # Set by ``setup()`` only when relevant config is present
     heart: Heartbeat | None
     inference_metrics: InferenceMetricsCollector | None
+    sandbox_metrics: SandboxMetrics | None
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
@@ -192,6 +195,7 @@ class Orchestrator:
         # config is present
         self.heart = None
         self.inference_metrics = None
+        self.sandbox_metrics = None
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
@@ -242,6 +246,13 @@ class Orchestrator:
         self.run_name = os.environ.get("PRL_RUN_NAME")
         if self.run_name:
             set_base_sandbox_labels([self.run_name])
+        # The run scope: the rl launcher sets it per run dir; without it (e.g. hosted
+        # training) it falls back to $PRL_RUN_ID, as in the env servers.
+        self.vf_run_id = os.environ.setdefault("VF_RUN_ID", self.run_id)
+        # Nothing of this launch is in flight yet: what the sweep finds was leaked by an
+        # earlier launch of the run.
+        await sweep_run(self.vf_run_id, datetime.now(UTC))
+        self.sandbox_metrics = SandboxMetrics(self.vf_run_id)
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat)
@@ -425,6 +436,8 @@ class Orchestrator:
         if self.gc is not None:
             self.gc.start()
         await self.periodic_logger.start()
+        if self.sandbox_metrics is not None:
+            await self.sandbox_metrics.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
@@ -487,12 +500,15 @@ class Orchestrator:
                     await self.inference_metrics.stop()
                 if self.periodic_logger is not None:
                     await self.periodic_logger.stop()
+                if self.sandbox_metrics is not None:
+                    await self.sandbox_metrics.stop()
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop(clean_exit)
+            await sweep_run(self.vf_run_id, datetime.now(UTC))
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:
@@ -1153,6 +1169,8 @@ class Orchestrator:
             if self.inference_metrics is not None:
                 get_logger().debug("Stopping inference metrics collector")
                 await self.inference_metrics.stop()
+            if self.sandbox_metrics is not None:
+                await self.sandbox_metrics.stop()
             if self.clients is not None:
                 await self.clients.aclose()
             if self.admin_plane is not None:

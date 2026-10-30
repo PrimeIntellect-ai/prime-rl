@@ -90,6 +90,8 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process configs to `<run_dir>/configs/latest/resolved/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
+The `rl` launcher sets the verifiers run scope (`$VF_RUN_ID`) to an id minted on the run's first launch and kept in `<run_dir>/launcher/run_id`, so resumes and requeues share it while concurrent runs never do. verifiers labels every Prime sandbox and tunnel with it. The orchestrator sweeps the run (`verifiers.v1.runtimes.sweep`) at startup and exit, and the launcher after its processes stop, so a restart cleans up what a killed run leaked; a `--clean` start first sweeps the run it replaces. A sweep only deletes your own sandboxes and tunnels created before it started, never ones the sweeping process holds. An orchestrator started without `$VF_RUN_ID` (e.g. hosted training) uses `$PRL_RUN_ID`, like the env servers. `sandboxes/*` metrics track the run's live sandboxes and their age.
+
 ### Algorithms
 
 The RL entrypoint supports several training algorithms, switched via `[orchestrator.train.algo]`'s `type` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, model references, and per-algorithm customization):

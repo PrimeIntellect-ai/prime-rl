@@ -15,6 +15,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sandboxes import sweep_previous_run
 
 
 def get_log_dir(output_dir: Path) -> Path:
@@ -380,6 +381,7 @@ def validate_run_dir(
     if clean:
         if not run_dir.resolve().is_relative_to(output_dir.resolve()):
             raise ValueError(f"clean requires the run directory ({run_dir}) to remain under output_dir ({output_dir})")
+        sweep_previous_run(run_dir)
         logger = get_logger()
         dirs_to_clean = [run_dir]
         if ckpt_output_dir is not None and ckpt_output_dir != run_dir:

@@ -8,6 +8,7 @@ from prime_rl.utils.pathing import (
     get_step_path,
     validate_run_dir,
 )
+from prime_rl.utils.sandboxes import stable_run_id
 
 
 def test_nonexistent_dir_passes(tmp_path):
@@ -37,6 +38,7 @@ def test_dir_with_launcher_artifacts_passes(tmp_path):
     (run_dir / "launcher" / ".orchestrator.done").touch()
     (run_dir / "launcher" / "logs").mkdir()
     (run_dir / "launcher" / "logs" / "job_1234.log").touch()
+    stable_run_id(run_dir)
     validate_run_dir(run_dir, output_dir=tmp_path, resuming=False, clean=False)
 
 
