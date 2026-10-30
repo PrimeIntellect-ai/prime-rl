@@ -1284,6 +1284,28 @@ def _patch_capture(manager_cls) -> None:
     manager_cls.capture = capture
 
 
+def _startup_reason(vllm_config) -> str | None:
+    """Setups where the patched V2 runner never builds the routed-experts connector, so bind would never run."""
+    if not vllm_config.aux_output_config.enable_return_routed_experts:
+        return "routed-experts capture is off (--enable-return-routed-experts)"
+    if not vllm_config.use_v2_model_runner:
+        return "vLLM selected the V1 model runner"
+    return None
+
+
+def _patch_worker(worker_cls) -> None:
+    original_init = worker_cls.__init__
+
+    def __init__(self, vllm_config, *args, **kwargs):
+        reason = _startup_reason(vllm_config)
+        if reason is not None:
+            raise RuntimeError(f"Forced routing is enabled (PRIME_RL_FORCED_ROUTING=1) but {reason}")
+        original_init(self, vllm_config, *args, **kwargs)
+
+    worker_cls.__init__ = __init__
+    worker_cls.prime_rl_forced_routing = _worker_rpc
+
+
 def _patch_engine_core(engine_core_cls) -> None:
     """Send every weight-version update (all update paths end in EngineCore.set_weight_version) to the workers."""
     original_set_weight_version = engine_core_cls.set_weight_version
@@ -1314,5 +1336,5 @@ def monkey_patch_forced_routing() -> None:
     _patch_async_output(AsyncOutput)
     _patch_capture(CudaGraphManager)
     _patch_engine_core(EngineCore)
-    Worker.prime_rl_forced_routing = _worker_rpc
+    _patch_worker(Worker)
     _logger().info("Forced routing patches installed")

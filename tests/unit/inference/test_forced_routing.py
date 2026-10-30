@@ -983,6 +983,25 @@ def test_engine_core_sends_each_weight_version_to_the_workers():
     assert fr._WEIGHT_VERSION == fr.UNKNOWN
 
 
+def test_worker_refuses_to_start_where_bind_would_never_run():
+    class Worker:
+        def __init__(self, vllm_config, local_rank=0):
+            self.vllm_config = vllm_config
+
+    fr._patch_worker(Worker)
+
+    def config(capture=True, v2=True):
+        aux = SimpleNamespace(enable_return_routed_experts=capture)
+        return SimpleNamespace(aux_output_config=aux, use_v2_model_runner=v2)
+
+    assert Worker(vllm_config=config(), local_rank=0).vllm_config.use_v2_model_runner
+    with pytest.raises(RuntimeError, match="routed-experts capture is off"):
+        Worker(vllm_config=config(capture=False))
+    with pytest.raises(RuntimeError, match="V1 model runner"):
+        Worker(config(v2=False))
+    assert Worker.prime_rl_forced_routing is fr._worker_rpc
+
+
 def test_worker_rpc_resolves_through_vllms_run_method(state):
     from vllm.v1.serial_utils import run_method
 
@@ -1041,6 +1060,7 @@ def test_off_by_default_leaves_vllm_untouched():
         (AsyncOutput, "get_output"),
         (CudaGraphManager, "capture"),
         (EngineCore, "set_weight_version"),
+        (Worker, "__init__"),
     ]
     before = [vars(cls).get(name) for cls, name in targets]
     fr.monkey_patch_forced_routing()
