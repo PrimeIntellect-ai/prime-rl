@@ -339,6 +339,8 @@ class ModelConfig(BaseModelConfig):
 
     dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
     """Backend of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` (default) runs the cuDNN frontend's fused CSA/HCA compressor where its kernels apply: an SM100 or newer GPU, bf16 activations, and a compress rate of 2 or 4, or 128 with head_dim 128 or 512. Elsewhere it silently runs the torch ops, so on SM90 GPUs such as the H100 and H200 ``cudnn`` runs torch. ``cudnn`` scans each entry's document list, so it wins on rows of few long documents and loses to the flat torch ops on rows of many short documents. ``torch`` always runs the torch ops."""
+    dsv4_cp_kv_exchange: Literal["all_gather", "halo"] = "all_gather"
+    """How DeepSeek V4 attention reaches keys on other context-parallel ranks. ``all_gather`` gathers the whole row's sliding-window keys and compressor projections onto every rank, and every rank pools every compressed entry. ``halo`` receives only the few hundred rows before this rank's shard from its left neighbor, pools only the entries whose last token this rank holds, and all-gathers the pooled entries."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
