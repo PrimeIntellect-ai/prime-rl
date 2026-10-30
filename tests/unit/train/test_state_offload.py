@@ -118,6 +118,25 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
         assert pointers_after[key] == pointer, f"state buffer reallocated for {key}"
 
 
+def test_parameter_without_grad_on_the_first_step_is_stepped_later() -> None:
+    def train(wrap: bool) -> list[torch.Tensor]:
+        model = make_model(0)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+        if wrap:
+            optimizer = CPUOffloadOptimizer(optimizer)
+        torch.manual_seed(1)
+        for step in range(3):
+            hidden = model[0](torch.randn(16, 64, device="cuda"))
+            loss = hidden.square().mean() if step == 0 else model[2](hidden).square().mean()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+        return [param.detach() for param in model.parameters()]
+
+    for reference, offloaded in zip(train(False), train(True)):
+        assert torch.equal(reference, offloaded)
+
+
 def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
     """dion's Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
 
