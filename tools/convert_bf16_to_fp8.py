@@ -62,7 +62,8 @@ def quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Te
     fp8_max = torch.finfo(torch.float8_e4m3fn).max
     inv_fp8_max = torch.tensor(1.0 / fp8_max, dtype=torch.float32, device="cpu")
     max_abs = blocks.float().abs().amax(dim=(2, 3))
-    # Match CUDA scalar division's float32 reciprocal rounding on every device.
+    # CUDA divides by a scalar via a float32 reciprocal. Round that reciprocal
+    # before multiplying so CPU exports produce the same block scales.
     scales = (max_abs * inv_fp8_max).clamp(min=1e-12)
     blocks_fp8 = (blocks.float() / scales[:, :, None, None]).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
 

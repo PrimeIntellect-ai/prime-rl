@@ -21,6 +21,7 @@ from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import get_model, setup_tokenizer
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.vlm import setup_processor
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
@@ -106,7 +107,7 @@ def get_layers(model: nn.Module) -> list[list[str]]:
 def load_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
     """Load one decoder layer from the checkpoint on CPU and convert it to HF format."""
     model = checkpoint.model
-    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+    keep_in_fp32 = model.keep_in_fp32_for_weight_transfer if isinstance(model, PreTrainedModelPrimeRL) else None
     skeleton = model.state_dict()
     state_dict = {}
     for key in keys:
