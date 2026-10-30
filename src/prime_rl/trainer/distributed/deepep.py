@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 from deep_ep import Buffer
 from torch.distributed import ProcessGroup
 
@@ -166,10 +167,32 @@ def _create_buffer(group: ProcessGroup, hidden_bytes: int) -> None:
         _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes, num_qps_per_rank=Buffer.num_sms)
 
 
+class _SumRoutes(torch.autograd.Function):
+    """Sums each received token's routes in route order, without the atomic adds of `index_add_`, so the sum is
+    deterministic. The backward copies each token's gradient to its routes."""
+
+    @staticmethod
+    def forward(
+        ctx, routed_output: torch.Tensor, route_rows: torch.Tensor, token_indices: torch.Tensor
+    ) -> torch.Tensor:
+        ctx.save_for_backward(token_indices)
+        # Routes to experts on other ranks point at this zero row.
+        routed_output = F.pad(routed_output, (0, 0, 0, 1))
+        token_output = routed_output.index_select(0, route_rows[:, 0])
+        for route in range(1, route_rows.shape[1]):
+            token_output += routed_output.index_select(0, route_rows[:, route])
+        return token_output
+
+    @staticmethod
+    def backward(ctx, grad_token_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        (token_indices,) = ctx.saved_tensors
+        return grad_token_output.index_select(0, token_indices), None, None
+
+
 @dataclass(frozen=True)
 class DeepEPDispatchState:
-    num_tokens: int
     token_indices_experts_sorted: torch.Tensor
+    route_rows: torch.Tensor
     scores_after_experts: torch.Tensor | None
     permutation: PermutationState
     num_input_tokens: int
@@ -207,7 +230,8 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         recv_x, recv_scores, expert_order, num_tokens_per_expert, handle_id = torch.ops.deepep.dispatch(
             x, selected_experts_indices, top_scores, self.num_experts
         )
-        token_indices = expert_order // selected_experts_indices.shape[1]
+        top_k = selected_experts_indices.shape[1]
+        token_indices = expert_order // top_k
         routed_input = recv_x[token_indices]
         sorted_scores = recv_scores.flatten()[expert_order]
         scores_after_experts = None
@@ -223,9 +247,13 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
             num_ranks=1,
             alignment=self.token_group_alignment,
         )
+        # Row of each received token's route in the expert-sorted routes. Routes to experts on other ranks
+        # point one past the last row, where combine puts a zero row.
+        route_rows = expert_order.new_full((recv_x.shape[0] * top_k,), expert_order.shape[0])
+        route_rows[expert_order] = torch.arange(expert_order.shape[0], device=expert_order.device)
         state = DeepEPDispatchState(
-            num_tokens=recv_x.shape[0],
             token_indices_experts_sorted=token_indices,
+            route_rows=route_rows.view(-1, top_k),
             scores_after_experts=scores_after_experts,
             permutation=permutation,
             num_input_tokens=x.shape[0],
@@ -240,6 +268,5 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
             routed_output = routed_output * state.scores_after_experts.reshape(-1, 1)
         # Each rank sums, per received token, the outputs of the experts it holds (fp32, rounded once); DeepEP's
         # combine sends these sums back to each token's own rank and adds them there in fp32.
-        token_output = routed_output.new_zeros((state.num_tokens, routed_output.shape[-1]))
-        token_output.index_add_(0, state.token_indices_experts_sorted, routed_output)
+        token_output = _SumRoutes.apply(routed_output, state.route_rows, state.token_indices_experts_sorted)
         return torch.ops.deepep.combine(token_output.to(output_dtype), state.handle_id, state.num_input_tokens)
