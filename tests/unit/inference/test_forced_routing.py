@@ -608,9 +608,12 @@ def test_reduce_drift_matches_the_per_pair_reference_across_chunks():
     assert np.array_equal(s.drift.numpy(), ref) and ref[:, [0, 2], 0].sum() == 0  # dense layers masked
 
 
-def test_drift_counter_flags_a_one_row_shift(monkeypatch):
-    """Forced rows one batch row off their tokens disagree with the router almost always: the alarm fires."""
+@pytest.mark.parametrize("log_due", [False, True])
+def test_drift_counter_flags_a_one_row_shift(monkeypatch, log_due):
+    """Forced rows one batch row off their tokens disagree with the router almost always: the alarm fires. A log
+    line due on the forcing step must not reduce its drift before its forward has run."""
     n, layers, top_k = 2600, 5, 4  # 4 MoE layers x 2600 tokens > DRIFT_ALARM_MIN_PAIRS
+    monkeypatch.setenv("PRIME_RL_FORCED_ROUTING_LOG_INTERVAL", "0" if log_due else "1e9")
     g = torch.Generator().manual_seed(0)
     natural = torch.stack([torch.randperm(64, generator=g)[:top_k] for _ in range(n * layers)]).view(n, layers, top_k)
     first_pass = natural.clone()
@@ -630,7 +633,8 @@ def test_drift_counter_flags_a_one_row_shift(monkeypatch):
             fr._RouterHook(layer, "sigmoid", True, 1.0).apply(
                 s, torch.zeros(n, 64), torch.zeros(n, top_k), natural[:, layer].int()
             )
-        drift, _ = s.drift_snapshot()
+        s.fill(None, [], np.array([0]), np.array([], np.int32), np.array([], np.int32), PIECEWISE)  # flushes it
+        drift = s.drift.numpy()
         pairs, differ, _ = drift.sum(axis=(0, 1))
         ratios[shift] = differ / pairs
         assert pairs == n * (layers - 1)

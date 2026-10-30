@@ -747,6 +747,8 @@ class ForcedRoutingState:
         """Mark this step's tokens whose absolute position (num_computed + j) has rows."""
         if self.pending_drift is not None:
             self.reduce_drift()
+        if self.tp_rank == 0:  # before this step is marked: its forward has not run yet
+            self._maybe_log()
         if self.dirty:
             self.mask.zero_()
             self.dirty = False
@@ -793,8 +795,6 @@ class ForcedRoutingState:
                 self.stats["forced"] += n_forced
                 if self.drift is not None:
                     self.pending_drift = (lo_mark, hi_mark)
-        if self.tp_rank == 0:
-            self._maybe_log()
 
     def reduce_drift(self) -> None:
         """Accumulate the last forcing step's drift; eager, on the stream that ran the forward, no host sync."""
