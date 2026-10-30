@@ -146,6 +146,12 @@ class AppState(Stateful):
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
+            # The in-place load reaches tensors only: restore the param groups' values too (dion's Muon keeps its
+            # step count there, so AdamW's bias correction would restart).
+            loaded_groups = iter(state_dict["optimizers"]["param_groups"])
+            for optimizer in checkpoint_optimizers:
+                for group in optimizer.param_groups:
+                    group.update({key: value for key, value in next(loaded_groups).items() if key != "params"})
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()

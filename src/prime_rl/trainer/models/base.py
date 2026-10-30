@@ -6,8 +6,8 @@ from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext
-from prime_rl.utils.vlm import get_language_model
 
 
 @runtime_checkable

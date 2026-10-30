@@ -24,7 +24,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen3_8FlashNextNGramHasher
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
-from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel
+from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel, materialize_qwen_vl_images
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -100,14 +100,14 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         if self.ple is not None:
             hidden_states = hidden_states + self.ple(hidden_states, ngram_embedding, cu_seqlens)
 
-        block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
+        block_input, (hidden_states, injection_weights) = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
             block_output = self.linear_attn(block_input, cu_seqlens)
         else:
             block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
-        hidden_states = self.attn_hyper_connection.combine(block_output, residual_state)
 
-        block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states)
+        # The MLP's mix applies the attention's combine in the same pass.
+        block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states, (block_output, injection_weights))
         block_output = self.mlp(block_input, routed_experts=routed_experts)
         return self.mlp_hyper_connection.combine(block_output, residual_state)
 
@@ -270,19 +270,15 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
             # Every rank must retain the vision graph so FSDP collectives stay symmetric.
             inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
-        if position_ids is None:
-            if image_grid_thw is None:
-                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-            else:
-                if mm_token_type_ids is None:
-                    raise ValueError("mm_token_type_ids are required with Qwen3.8 Flash Next image inputs")
-                position_ids = build_mrope_position_ids(
-                    input_ids=input_ids,
-                    mm_token_type_ids=mm_token_type_ids,
-                    image_grid_thw=image_grid_thw,
-                    spatial_merge_size=vision_config.spatial_merge_size,
-                    seq_lens=seq_lens,
-                )
+        if image_grid_thw is not None:
+            # Image inputs get MRoPE positions; text-only inputs keep the caller's positions.
+            position_ids = build_mrope_position_ids(
+                input_ids=input_ids,
+                mm_token_type_ids=mm_token_type_ids,
+                image_grid_thw=image_grid_thw,
+                spatial_merge_size=vision_config.spatial_merge_size,
+                seq_lens=seq_lens,
+            )
         return inputs_embeds, position_ids
 
     def forward(
@@ -342,6 +338,8 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
 
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
+
+    materialize_images = staticmethod(materialize_qwen_vl_images)
 
     def num_active_params(self) -> int:
         if not self.is_vlm:

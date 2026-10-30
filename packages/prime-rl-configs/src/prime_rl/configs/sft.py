@@ -317,8 +317,8 @@ class SFTConfig(BaseTrainerConfig):
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem":
-            if self.weight_broadcast.type == "nixl":
-                raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
+            if self.weight_broadcast.type in ("nixl", "modelexpress"):
+                raise ValueError("NIXL and ModelExpress weight broadcast are not supported for SFT online evals.")
             if self.model.lora is not None:
                 raise ValueError(
                     "LoRA training is not yet supported with in-memory weight broadcast. "
@@ -459,7 +459,9 @@ class SFTConfig(BaseTrainerConfig):
         if dispatch.type == "mega_moe":
             data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+                dispatch.max_tokens_per_rank,
+                max(data.micro_batch_size * data.seq_len for data in data_configs),
+                self.model.cp,
             )
         return self
 
@@ -476,10 +478,6 @@ class SFTConfig(BaseTrainerConfig):
     def validate_vlm_constraints(self):
         if self.model.vlm is None:
             return self
-        if self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16":
-            raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
-            )
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:
