@@ -219,7 +219,7 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
         packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
         assert resolve_payloads([packed], pool)[0] == []
     assert len(packed.top_logprobs.ids) == 3 * 4
-    tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    tensor = DataLoader.micro_batch_to_tensor(packed)
     ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
     assert ids.shape == values.shape
     assert ids.shape[0] == sum(packed.sequence_lengths)

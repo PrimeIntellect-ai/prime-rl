@@ -1,0 +1,38 @@
+# One-node (8 x B300) slice of the 8-node trainer proxy (../dsv4f-rl-trainer-perf/proxy.toml): the same
+# trainer settings with 6 layers, cp 8 inside the node, fullgraph on, and production batches replayed at DP 1
+# (--data.replay). Launch with MODEL=<hf id> run_arm.sh.
+max_steps = 12
+matmul_precision = "highest"
+dist_timeout_seconds = 14400
+
+[model]
+seq_len = 262144
+cp = 8
+ep = "auto"
+ac_offloading = "None"
+offload = "none"
+
+[model.debug]
+num_layers = 6
+
+[model.compile]
+fullgraph = true
+
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.quantization]
+type = "mxfp8"
+recipe = "mxfp8_rceil_wgrad_with_hp"
+extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']
+
+[model.moe.compute]
+type = "mxfp8"
+
+[optim]
+type = "muon"
+
+[loss]
+type = "icepop"
+score_centering = false

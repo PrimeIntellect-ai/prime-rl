@@ -1,0 +1,66 @@
+# Trainer-only throughput proxy for a production DeepSeek-V4-Flash architecture RL run at prime-rl main
+# f98f9937a: the production trainer settings (cp 8, fullgraph off) with 8 trainer nodes, replayed
+# production batches (--trainer.data.replay, converted for the arm's DP) instead of rollouts, and no
+# score centering, which replay does not support. Pass the checkpoint with MODEL=<hf id> to
+# launch_in_alloc.sh. ab_arms.sh holds the A/B arms.
+max_steps = 10
+seq_len = 262144
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+num_infer_nodes = 0
+gpus_per_node = 8
+
+[slurm]
+partition = "all"
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "dsv4f-trainer-perf"
+
+[monitors]
+prime = "None"
+
+# Required by the RL config, unused without inference nodes.
+[orchestrator.renderer]
+name = "default"
+
+[trainer]
+matmul_precision = "highest"
+dist_timeout_seconds = 14400
+
+[trainer.model]
+cp = 8
+ep = "auto"
+ac_offloading = "None"
+offload = "none"
+
+[trainer.model.compile]
+fullgraph = false
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+
+[trainer.model.quantization]
+type = "mxfp8"
+recipe = "mxfp8_rceil_wgrad_with_hp"
+extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']
+
+[trainer.model.moe.compute]
+type = "mxfp8"
+
+[trainer.optim]
+type = "muon"
+
+[trainer.loss]
+type = "icepop"
+score_centering = false
+
+[env_vars]
+CUDA_HOME = "/usr/local/cuda-13.0"
+NUMPY_MADVISE_HUGEPAGE = "0"
+HF_HUB_CACHE = "/home/huggingface/hub"
+HF_XET_CACHE = "/home/huggingface/xet"
+HF_DATASETS_CACHE = "/home/huggingface/datasets"

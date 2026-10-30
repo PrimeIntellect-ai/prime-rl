@@ -119,7 +119,7 @@ class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
 
 class MultiNodeDeploymentConfig(BaseMultiNodeDeploymentConfig):
     num_infer_nodes: int | None = Field(None, ge=0)
-    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
+    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake or replayed data)."""
 
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
@@ -260,9 +260,9 @@ class RLConfig(BaseConfig):
                     "Cannot configure inference with num_infer_nodes = 0. "
                     "Either set num_infer_nodes > 0 or remove the inference config."
                 )
-            if num_infer_nodes == 0 and not self.trainer.data.fake:
+            if num_infer_nodes == 0 and not (self.trainer.data.fake or self.trainer.data.replay):
                 raise ValueError(
-                    "Must use fake data (trainer.data.fake) when num_infer_nodes = 0, "
+                    "Must use fake or replayed data (trainer.data.fake or trainer.data.replay) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
         return self
