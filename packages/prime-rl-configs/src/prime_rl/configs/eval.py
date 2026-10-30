@@ -165,7 +165,7 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     resume_step: int | None = None
     """Trainer step the run resumed from. When set, the startup (base-model) eval is
-    skipped; set ``retrigger_on_resume`` to re-fire interval-aligned evals at this step."""
+    skipped, and ``retrigger_on_resume`` re-fires interval-aligned evals at this step."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """The run directory, shared with the trainer. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""

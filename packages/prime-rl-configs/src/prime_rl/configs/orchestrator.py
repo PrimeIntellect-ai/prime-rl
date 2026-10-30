@@ -416,10 +416,11 @@ class ScheduledEvalConfig(EvalSourcesConfig):
     """If True, skip the startup eval that otherwise runs before any
     train rollouts."""
 
-    retrigger_on_resume: bool = Field(False, frozen=True)
-    """If True, re-trigger evals at the checkpoint step on resume (e.g. after a
-    crash that left in-flight evals unfinished). By default, assumes a clean
-    exit where all evals already completed."""
+    retrigger_on_resume: bool = Field(True, frozen=True)
+    """If True, re-trigger evals at the checkpoint step on resume. The trainer
+    broadcasts the checkpoint step's weights after the orchestrator saves that
+    step, so its evals are never in the checkpoint. Set False to skip them, e.g.
+    when the previous run already finished them."""
 
     @property
     def intervals(self) -> dict[str, int]:

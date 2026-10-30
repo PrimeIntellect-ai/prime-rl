@@ -168,7 +168,6 @@ env.agent.harness.compaction.summarize_at_tokens = 184320
 interval = 10
 group_size = 2
 skip_first_step = false
-retrigger_on_resume = true
 
 [orchestrator.eval.sampling]
 temperature = 1.0
