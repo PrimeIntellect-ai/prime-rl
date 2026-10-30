@@ -3,8 +3,7 @@
 Packed training needs the convolution and state-space scan to reset at every
 document boundary. Under Ulysses context parallelism, each rank also needs the
 full sequence for its local Mamba heads because recurrent state cannot be split
-along the sequence. CP may exceed ``n_groups``: the ranks that split a group's
-heads each receive a copy of that group's B/C projections.
+along the sequence.
 """
 
 import math
@@ -133,13 +132,6 @@ class NemotronHMamba2(nn.Module):
         # `head_dim * state_size` products.
         return 6 * 2 * self.num_heads * self.head_dim * self.state_size * seq_len
 
-    def _replicate_groups(self, tensor: torch.Tensor, replicas: int) -> torch.Tensor:
-        """Repeat each group's ``state_size`` features ``replicas`` times: ``[..., G*N]`` -> ``[..., G*replicas*N]``.
-
-        The backward sums the replicas' gradients back into their group.
-        """
-        return tensor.unflatten(-1, (self.num_groups, self.state_size)).repeat_interleave(replicas, dim=-2).flatten(-2)
-
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         projected_states = self.in_proj(hidden_states)
@@ -157,20 +149,13 @@ class NemotronHMamba2(nn.Module):
         state_decay = -torch.exp(self.A_log.float())
         skip = self.D.float()
         dt_bias = self.dt_bias
+        norm_weight = self.norm.weight
 
         if self.cp_context.cp_enabled:
             cp_group = self.cp_context.cp_group
             world_size = self.cp_context.cp_world_size
             rank = self.cp_context.cp_rank
-            if self.num_heads % world_size != 0 or (
-                self.num_groups % world_size != 0 and world_size % self.num_groups != 0
-            ):
-                raise ValueError(
-                    f"Mamba CP needs cp ({world_size}) to divide mamba_num_heads ({self.num_heads}) and to "
-                    f"divide or be a multiple of n_groups ({self.num_groups})"
-                )
-            # With more ranks than groups, the ranks sharing a group each hold a copy of its B/C.
-            group_replicas = max(world_size // self.num_groups, 1)
+            gate = sequence_to_head_parallel(gate, cp_group, world_size)
             time_step = sequence_to_head_parallel(time_step, cp_group, world_size)
 
             recurrent_input, state_input, state_output = torch.split(
@@ -178,9 +163,6 @@ class NemotronHMamba2(nn.Module):
                 [self.intermediate_size, self.group_state_size, self.group_state_size],
                 dim=-1,
             )
-            if group_replicas > 1:
-                state_input = self._replicate_groups(state_input, group_replicas)
-                state_output = self._replicate_groups(state_output, group_replicas)
             convolution_input = torch.cat(
                 [
                     sequence_to_head_parallel(recurrent_input, cp_group, world_size),
@@ -191,15 +173,16 @@ class NemotronHMamba2(nn.Module):
             )
 
             num_heads //= world_size
-            num_groups = max(num_groups // world_size, 1)
+            num_groups //= world_size
             intermediate_size //= world_size
             head_start = rank * num_heads
-            group_start = (rank // group_replicas) * num_groups * self.state_size
+            group_start = rank * num_groups * self.state_size
             intermediate_start = rank * intermediate_size
 
             state_decay = state_decay[head_start : head_start + num_heads]
             skip = skip[head_start : head_start + num_heads]
             dt_bias = dt_bias[head_start : head_start + num_heads]
+            norm_weight = norm_weight[intermediate_start : intermediate_start + intermediate_size]
 
             state_input_start = self.intermediate_size + group_start
             state_output_start = self.intermediate_size + self.group_state_size + group_start
@@ -252,6 +235,7 @@ class NemotronHMamba2(nn.Module):
             dt_softplus=True,
             **scan_kwargs,
         ).reshape(batch_size, sequence_length, intermediate_size)
+        hidden_states = self.norm(hidden_states, gate, weight=norm_weight)
 
         if self.cp_context.cp_enabled:
             hidden_states = head_to_sequence_parallel(
@@ -259,9 +243,6 @@ class NemotronHMamba2(nn.Module):
                 self.cp_context.cp_group,
                 self.cp_context.cp_world_size,
             )
-        # The gated norm is per token over each group's channels, so it runs on the sequence shard,
-        # where every rank has all channels (a group's heads can span several ranks under CP).
-        hidden_states = self.norm(hidden_states, gate)
         return self.out_proj(hidden_states)
 
 
