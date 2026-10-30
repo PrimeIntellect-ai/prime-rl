@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import numpy as np
 import verifiers.v1 as vf
 from verifiers.v1.trace import min_new_input_tokens
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig, PowerLengthPenaltyConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
 
@@ -43,6 +44,43 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
     return output_tokens, input_tokens
 
 
+def _agent_lengths(trace: vf.Trace) -> list[tuple[bool, float]]:
+    """Lifetime output plus new input tokens of each agent, and whether it was spawned. An agent is the
+    calls of its branches, joined across compactions and turns by continuation and compaction edges;
+    a ``subagent_call`` edge starts a spawned agent."""
+    owner = list(range(len(trace.nodes)))
+
+    def find(node: int) -> int:
+        while owner[node] != node:
+            owner[node] = owner[owner[node]]
+            node = owner[node]
+        return node
+
+    spawned_nodes = []
+    for node_id, node in enumerate(trace.nodes):
+        for link in node.semantic_parents:
+            if link.type in {"continuation", "compaction_attempt", "compaction"}:
+                owner[find(node_id)] = find(link.node)
+            elif link.type == "subagent_call":
+                spawned_nodes.append(node_id)
+    branches = [list(min_new_input_tokens(branch.calls)) for branch in trace.branches]
+    for calls in branches:
+        for call, _ in calls:
+            owner[find(call.node)] = find(calls[0][0].node)
+    tokens: dict[int, float] = defaultdict(float)
+    for calls in branches:
+        for call, increment in calls:
+            tokens[find(call.node)] += call.usage.completion_tokens + increment
+    spawned = {find(node) for node in spawned_nodes}
+    return [(agent in spawned, total) for agent, total in tokens.items()]
+
+
+def _power_length_cost(trace: vf.Trace, config: PowerLengthPenaltyConfig) -> float:
+    return sum(
+        (config.subagent_weight if spawned else 1.0) * length**config.alpha for spawned, length in _agent_lengths(trace)
+    )
+
+
 class GRPOAlgorithm(Algorithm):
     """Group Relative Policy Optimization: sample a group of rollouts from the
     policy per example; credit = reward minus the group mean (optionally
@@ -62,6 +100,10 @@ class GRPOAlgorithm(Algorithm):
         length_penalty = self.length_penalty
         if length_penalty is None:
             shaped_rewards = rewards
+        elif isinstance(length_penalty, PowerLengthPenaltyConfig):
+            cost = torch.tensor([_power_length_cost(trace, length_penalty) for trace in traces], dtype=torch.float64)
+            penalty_frac = length_penalty.weight * cost / cost.max().clamp(min=1)
+            shaped_rewards = rewards - rewards.mean() * penalty_frac.to(rewards.dtype)
         else:
             if isinstance(length_penalty, LinearSubagentLengthPenaltyConfig):
                 token_counts = [_length_penalty_tokens(trace, length_penalty.subagent_token_weight) for trace in traces]

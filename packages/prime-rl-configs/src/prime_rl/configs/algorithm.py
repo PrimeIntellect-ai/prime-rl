@@ -109,8 +109,23 @@ class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
     """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
 
 
+class PowerLengthPenaltyConfig(BaseConfig):
+    """Superlinear per-agent penalty subtracted from each reward before the GRPO baseline. Each agent's lifetime tokens ``L`` (output plus new input, across its compactions) cost ``L ** alpha``, summed over the rollout's agents; each reward is reduced by ``weight * pass_rate * cost / group's max cost``. With ``alpha > 1`` one long context costs more than the same tokens split across agents (an even k-way split costs ``k ** (1 - alpha)`` of one context); ``alpha = 2`` follows attention cost. Agents follow the same semantic edges as ``linear-subagent``."""
+
+    type: Literal["power"] = "power"
+
+    weight: float = Field(0.2, ge=0, allow_inf_nan=False)
+    """Scale on the normalized cost: the longest rollout of a group loses ``weight * pass_rate``. 0 disables the penalty."""
+
+    alpha: float = Field(1.5, gt=0, allow_inf_nan=False)
+    """Exponent on each agent's lifetime tokens. 1 is linear in total tokens; above 1, long single contexts cost more than parallel agents."""
+
+    subagent_weight: float = Field(1.0, ge=0, le=1, allow_inf_nan=False)
+    """Multiplier on spawned agents' costs. 1 charges every agent alike, so spawning pays off only by shortening contexts."""
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig,
+    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig | PowerLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
@@ -210,7 +225,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: LengthPenaltyConfig | None = None
-    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it."""
+    """Length penalty subtracted from each reward before the GRPO baseline, ``pass_rate``-scaled and normalized by the group's own max. ``linear`` sums output-token, input-token, and turns terms from trace counts; opt-in ``linear-subagent`` discounts semantic subagent tokens; ``power`` charges each agent's lifetime tokens to the power ``alpha``. None disables it."""
 
     @field_validator("length_penalty", mode="before")
     @classmethod

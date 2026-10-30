@@ -8,8 +8,9 @@ from prime_rl.configs.algorithm import (
     LinearLengthPenaltyConfig,
     LinearSubagentLengthPenaltyConfig,
     MaxRLAlgoConfig,
+    PowerLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _agent_lengths, _length_penalty_tokens
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -276,9 +277,9 @@ def test_linear_turns_term_penalizes_more_turns():
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
-@pytest.mark.parametrize("subagent_token_weight", [0.0, 0.7, 1.0])
-@pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
-def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, term):
+def _semantic_episode() -> vf.Episode:
+    """A root agent, a child it spawns (which continues, then compacts), and a child the compacted child
+    spawns, each turn with its own physical root and the harness's semantic edges."""
     episode = _build_episode(1.0, sampled_lengths=[1])
     trace = episode.traces[0]
     trace.nodes.clear()
@@ -320,6 +321,14 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     )
     # A cancel closes a causal loop without changing which agent owns either turn.
     trace.nodes[child_next].semantic_parents.append(vf.ParentLink(node=root_next, type="subagent_cancel"))
+    return episode
+
+
+@pytest.mark.parametrize("subagent_token_weight", [0.0, 0.7, 1.0])
+@pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
+def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, term):
+    episode = _semantic_episode()
+    trace = episode.traces[0]
 
     # Branches have separate physical roots; continued history is not recounted.
     expected_output = 90 + 200 * subagent_token_weight
@@ -364,6 +373,26 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     assert _grpo([episode, peer], length_penalty=linear) == pytest.approx(
         [mean_penalty - penalty for penalty in penalties], abs=1e-6
     )
+
+
+def test_power_penalty_charges_each_agent_superlinearly():
+    episode = _semantic_episode()
+    # Root 205 tokens; the child's chain across its compaction 172 + 240 + 110; the nested child 130.
+    assert sorted(_agent_lengths(episode.traces[0])) == [(False, 205), (True, 130), (True, 522)]
+    unlabelled = episode.model_copy(deep=True)
+    for node in unlabelled.traces[0].nodes:
+        node.semantic_parents.clear()
+    assert sorted(_agent_lengths(unlabelled.traces[0])) == [(False, n) for n in (110, 130, 172, 205, 240)]
+
+    # The same tokens cost more in one long chain than spread over separate contexts.
+    chained = 205**1.5 + 522**1.5 + 130**1.5
+    split = 205**1.5 + 172**1.5 + 240**1.5 + 110**1.5 + 130**1.5
+    advantage = 0.2 * (1 - split / chained) / 2
+    cfg = PowerLengthPenaltyConfig(weight=0.2, alpha=1.5)
+    assert _grpo([episode, unlabelled], length_penalty=cfg) == pytest.approx([-advantage, advantage], abs=1e-6)
+    discounted = PowerLengthPenaltyConfig(weight=0.2, alpha=1.5, subagent_weight=0.0)
+    advantage = 0.2 * (1 - 205**1.5 / split) / 2
+    assert _grpo([episode, unlabelled], length_penalty=discounted) == pytest.approx([advantage, -advantage], abs=1e-6)
 
 
 # --------------------------------------------------------------------------
