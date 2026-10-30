@@ -11,6 +11,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.layers.fp8_linear import (
     Float8BlockwiseGroupedLinear,
@@ -873,3 +874,38 @@ def test_fp8_o_a_proj_traces_under_torch_compile():
     assert torch.equal(compiled_out, eager_out)
     assert torch.equal(compiled_x.grad, eager_x.grad)
     assert torch.equal(module.weight.grad, eager_weight_grad)
+
+
+def _mhc_pre_reference(x, fn, scale, base, norm_eps, hc_eps):
+    flat = x.flatten(-2)
+    logits = (flat * torch.rsqrt(flat.square().mean(-1, keepdim=True) + norm_eps)) @ fn.T * scale + base
+    pre = torch.sigmoid(logits[..., : x.shape[-2]]) + hc_eps
+    return (pre.unsqueeze(-1) * x).sum(-2), logits
+
+
+@pytest.mark.parametrize("num_tokens", [1, 37, 130])
+@pytest.mark.parametrize("outputs", [4, 24])
+@pytest.mark.parametrize("fn_dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("hidden", [96, 128, 512])
+def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
+    """Outputs and every gradient of the fused mHC input side, across token-block and hidden-block boundaries."""
+    hc = 4
+    x = torch.randn(1, num_tokens, hc, hidden, device="cuda") * torch.rand(1, num_tokens, 1, 1, device="cuda") * 4
+    x = x.to(torch.bfloat16)
+    fn = (torch.randn(outputs, hc * hidden, device="cuda") * 0.05).to(fn_dtype)
+    scale = torch.rand(outputs, device="cuda") + 0.5
+    base = torch.randn(outputs, device="cuda") * 0.5
+    fused_inputs = _leaves(x, fn, scale, base)
+    reference_inputs = _leaves(x.double(), fn.double(), scale.double(), base.double())
+    grad_collapsed = torch.randn(1, num_tokens, hidden, device="cuda")
+    grad_logits = torch.randn(1, num_tokens, outputs, device="cuda")
+
+    collapsed, logits = fused_mhc_pre(*fused_inputs, 1e-6, 1e-6)
+    ((collapsed.float() * grad_collapsed).sum() + (logits * grad_logits).sum()).backward()
+    ref_collapsed, ref_logits = _mhc_pre_reference(*reference_inputs, 1e-6, 1e-6)
+    ((ref_collapsed * grad_collapsed.double()).sum() + (ref_logits * grad_logits.double()).sum()).backward()
+
+    _assert_frobenius_relative(collapsed, ref_collapsed, 1e-2, "collapsed")
+    _assert_frobenius_relative(logits, ref_logits, 1e-2, "logits")
+    for name, fused, reference in zip(("x", "fn", "scale", "base"), fused_inputs, reference_inputs):
+        _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")

@@ -153,7 +153,8 @@ def bind_process_to_gpu_numa_node() -> None:
         bus_id = bus_id.decode()
     domain, rest = bus_id.split(":", 1)
     sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
-    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    numa_path = Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node")
+    numa_node = int(numa_path.read_text()) if numa_path.exists() else -1
     if numa_node < 0:
         logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
         return
@@ -223,6 +224,17 @@ def broadcast_pause(controller: Controller, step: int) -> bool:
     return bool(paused.item())
 
 
+def get_peak_memory_across_ranks() -> tuple[float, float]:
+    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
+    peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    dist.all_reduce(memory, op=dist.ReduceOp.MAX)
+    peak_memory, non_torch_memory = memory.tolist()
+    return peak_memory, non_torch_memory
+
+
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
     """
     Visualize the loss mask of a tokenized sample using rich.
@@ -232,6 +244,11 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     for token, mask in zip(tokenizer.convert_ids_to_tokens(input_ids), loss_mask):
         text.append(token.replace("Ġ", " ").replace("Ċ", "\n"), style="cyan" if mask else "white")
     rich_print(text)
+
+
+# Log2 bins over token staleness: bucketizing by the edges (``right=True``) gives each token's bin
+STALENESS_BIN_EDGES = [1, 2, 4, 8, 16, 32, 64]
+STALENESS_BINS = ["0", "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64+"]
 
 
 class TensorStats:
@@ -253,9 +270,11 @@ class TensorStats:
         mask: Tensor | None = None,
         env_ids: Tensor | None = None,
         env_names: list[str] | None = None,
+        fold_all: bool = True,
     ) -> None:
         """Fold ``values`` (where ``mask`` is set) into ``key``. With ``env_ids`` (each value's index into
-        ``env_names``), fold them into ``{key}/{env}`` per env and into ``{key}/all`` instead.
+        ``env_names``), fold them into ``{key}/{env}`` per env and, with ``fold_all``, into ``{key}/all``
+        instead.
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
         # A custom loss may emit a metric on the CPU
@@ -271,7 +290,8 @@ class TensorStats:
         rows = _moments(values, members)
         for env_name, row in zip(env_names, rows):
             self._fold(f"{key}/{env_name}", row)
-        self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
+        if fold_all:
+            self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
 
     def _fold(self, key: str, row: Tensor) -> None:
         if (moments := self.moments.get(key)) is None:
@@ -337,6 +357,7 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
     mean_max_only_prefixes = (
         "is_masked/",
         "mismatch_kl/",
+        "mismatch_kl_by_staleness/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",

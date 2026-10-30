@@ -17,6 +17,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
@@ -31,7 +32,20 @@ from prime_rl.orchestrator.utils import (
     train_work,
 )
 from prime_rl.transports.batch import TrainingSample
+from prime_rl.transports.payload import delete_payloads, sample_payload_urls, trace_payload_urls
 from prime_rl.utils.logger import get_logger
+
+
+def _kept(sample: TrainingSample, field: str) -> bool:
+    """Whether an env server keeps this array of the sample (see `prime_rl.transports.payload`)."""
+    return sample.payload is not None and field in sample.payload.fields
+
+
+# Training arrays reach the trainer only through env servers that keep them.
+_KEEP_ARRAYS_HINT = (
+    "Serve the env with prime-rl's `env-server` entrypoint, which keeps them for the trainer, "
+    "and check its log for arrays it could not keep."
+)
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -80,6 +94,20 @@ def stale_token_runs(branch: vf.Branch, fallback: int, min_version: int) -> Iter
         offset += len(node.token_ids)
 
 
+def token_staleness(branch: vf.Branch, fallback: int, trained_version: int) -> np.ndarray:
+    """Per-token staleness of the branch when it trains on ``trained_version``
+    (see ``node_policy_versions``); -1 on tokens the policy did not sample."""
+    lengths = [len(node.token_ids) for node in branch.nodes]
+    staleness = np.full(sum(lengths), -1, dtype=np.int16)
+    offset = 0
+    for node, length in zip(branch.nodes, lengths):
+        if node.sampled:
+            for start, end, version in node_policy_versions(node, fallback):
+                staleness[offset + start : offset + end] = max(0, trained_version - version)
+        offset += length
+    return staleness
+
+
 def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, min_version: int) -> int:
     """Remove the sample's stale tokens from every loss component and return
     how many trainable tokens this newly masked; fresher tokens keep training
@@ -94,7 +122,7 @@ def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, 
     return masked
 
 
-class TrainSink:
+class TrainSink(Reconfigurable):
     """Score native episodes, admit groups, then compile trainer payloads."""
 
     def __init__(
@@ -127,6 +155,22 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        """Queued traces stay queued: the next readiness check sweeps them against the new
+        ``max_staleness`` and cuts batches of the new ``batch_size``."""
+        self.config = update.config
+        self.batch_size = update.config.batch_size
+        self._swept_step = 0
+
+    def _release(self, urls: Iterable[str]) -> None:
+        """Env servers keep the arrays of delivered traces; the sink deletes those of every
+        sample and trace it drops without shipping."""
+        delete_payloads(urls)
+
+    def release_samples(self, samples: Iterable[TrainingSample]) -> None:
+        """Delete the env-server arrays of samples that will never ship."""
+        self._release(sample_payload_urls(samples))
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -224,7 +268,9 @@ class TrainSink:
                 mask_stale_tokens(sample, branches[sample.branch_index], policy.start, min_version)
                 for sample in samples
             ]
-            if samples := [sample for sample, n in zip(samples, masked) if not n or _has_loss(sample)]:
+            trainable = [not n or _has_loss(sample) for sample, n in zip(samples, masked)]
+            self.release_samples(sample for sample, keep in zip(samples, trainable) if not keep)
+            if samples := [sample for sample, keep in zip(samples, trainable) if keep]:
                 self.pending_batch[trace_id] = samples
                 continue
             del self.pending_batch[trace_id]
@@ -243,6 +289,16 @@ class TrainSink:
         await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
+        traces = [trace for episode in self.pending_groups.get(group_id, []) for trace in episode.traces]
+        try:
+            await self._process_group(group_id)
+        finally:
+            # Every delivered trace's arrays are either queued for a batch or deleted here.
+            for trace in traces:
+                queued = set(sample_payload_urls(self.pending_batch.get(trace.id, [])))
+                self._release(url for url in trace_payload_urls(trace) if url not in queued)
+
+    async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
         cancellation = self.pending_group_cancellations.pop(group_id, None)
@@ -288,23 +344,27 @@ class TrainSink:
             return
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
-        temperature = env.config.sampling.temperature
+        # The temperature the group sampled with, which a live update may have changed since.
+        temperature = env.sampling_at(train_work(group[0]).step).temperature
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and sample.sampling_mask is None:
+                if env.requires_sampling_masks and not _kept(sample, "sampling_mask"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
                         f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
                         "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
                         "the inference server config (the rl entrypoint does this automatically) - "
-                        "it requires vLLM's native sampling-mask capture (>= 0.28)."
+                        f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_ARRAYS_HINT}"
                     )
-                mask_logprobs = sample.sampling_mask.logprobs if sample.sampling_mask is not None else None
-                if env.requires_top_logprobs and sample.top_logprobs is None and mask_logprobs is None:
-                    raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
+                if env.requires_top_logprobs and not (
+                    _kept(sample, "top_logprobs") or _kept(sample, "sampling_mask_logprobs")
+                ):
+                    raise RuntimeError(
+                        f"env {env_name!r} requested sampler top logprobs but returned none. {_KEEP_ARRAYS_HINT}"
+                    )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
@@ -369,6 +429,14 @@ class TrainSink:
         """Release accepted traces that cannot ship after training stops."""
         if self.pending_batch:
             self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
+        self.release_samples(sample for samples in self.pending_batch.values() for sample in samples)
+        self._release(
+            url
+            for group in self.pending_groups.values()
+            for episode in group
+            for trace in episode.traces
+            for url in trace_payload_urls(trace)
+        )
         self.pending_batch.clear()
         self.episode_by_trace.clear()
 
@@ -415,6 +483,23 @@ class TrainSink:
 
             selected_by_trace = await asyncio.to_thread(prune_selected)
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
+        shipped = set(sample_payload_urls(samples))
+        self._release(
+            url for _, trace_samples in selected for url in sample_payload_urls(trace_samples) if url not in shipped
+        )
+
+        trained_version = self.progress.step - 1
+
+        def stamp_staleness() -> None:
+            for trace_id, trace_samples in selected_by_trace.items():
+                episode = self.episode_by_trace[trace_id]
+                if (policy := train_work(episode).policy) is None:
+                    continue
+                branches = episode.traces[0].branches
+                for sample in trace_samples:
+                    sample.staleness = token_staleness(branches[sample.branch_index], policy.start, trained_version)
+
+        await asyncio.to_thread(stamp_staleness)
 
         min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
         kept = masked = 0

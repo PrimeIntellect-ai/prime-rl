@@ -28,12 +28,11 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
-    get_load_balance_stats,
     is_tt_moe_model,
     reshard_module,
-    setup_processor,
     setup_tokenizer,
     setup_model,
+    take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -53,12 +52,14 @@ from prime_rl.trainer.utils import (
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
+    get_peak_memory_across_ranks,
     prepare_gradient_offload,
     print_sample,
     scale_gradients_,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
@@ -259,7 +260,8 @@ def train(config: SFTConfig):
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
             validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
-            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+            # The VLM shards image inputs itself, after building their positions.
+            defer_vlm_cp_to_model = mm_kwargs is not None
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
             seq_lens_are_pre_shard = True
@@ -339,7 +341,7 @@ def train(config: SFTConfig):
         mean_loss, nan_count = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
-            get_load_balance_stats(model)
+            take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
@@ -370,6 +372,7 @@ def train(config: SFTConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            model_name=config.model.name,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken
         # transport and lets the evals process re-trigger at the resume step
@@ -412,15 +415,6 @@ def train(config: SFTConfig):
         step_loss_sum = torch.tensor(0.0, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
-        moe_stats = (
-            {
-                "max_vio/mean": torch.tensor(0.0, device="cuda"),
-                "max_vio/max": torch.tensor(0.0, device="cuda"),
-                "routing_confidence/mean": torch.tensor(0.0, device="cuda"),
-            }
-            if is_moe_model
-            else {}
-        )
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
             or (not is_first_step and progress.step % config.val.interval == 0)
@@ -445,7 +439,7 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
-        step_tokens_per_expert = 0
+        routing_stats = []
         perf_counter = get_perf_counter(model)
         step_local_num_tokens = 0
         step_local_flops = 0
@@ -477,17 +471,19 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in micro_moe_stats.items():
-                    moe_stats[f"{name}/mean"] += value / grad_accum_steps
-                    if name == "max_vio":
-                        moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
-                step_tokens_per_expert += tokens_per_expert
+                routing_stats.append(take_moe_routing_stats(model))
 
         # Wait for the queued backward kernels so this times GPU work, not kernel launches.
         torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        moe_stats, expert_load_stats = {}, {}
+        if is_moe_model:
+            micro_moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
+            for name, values in micro_moe_stats.items():
+                moe_stats[f"{name}/mean"] = values.mean()
+                if name == "max_vio":
+                    moe_stats["max_vio/max"] = values.max()
+            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
@@ -565,7 +561,7 @@ def train(config: SFTConfig):
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
@@ -573,11 +569,9 @@ def train(config: SFTConfig):
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if is_moe_model:
-            for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
-                value = moe_stats[name].item()
-                if value > 0:
-                    step_message += f" | {label} {value:.4f}"
+        for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
+            if name in moe_stats and (value := moe_stats[name].item()) > 0:
+                step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -610,6 +604,7 @@ def train(config: SFTConfig):
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
+            "perf/non_torch_memory": non_torch_memory,
             "perf/mfu": mfu,
             "perf/mfu_6dn": mfu_6dn,
             "step": progress.step,

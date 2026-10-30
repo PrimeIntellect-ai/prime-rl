@@ -2,12 +2,11 @@ import numpy as np
 import pytest
 
 from prime_rl.orchestrator.batch import (
-    _is_multimodal_sample,
     pad_micro_batch,
     prepare_batch,
     prepare_sample,
 )
-from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample, encode_array
+from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, PayloadSlice, TrainingSample
 
 SAMPLE_DTYPES = {
     "token_ids": np.int32,
@@ -20,6 +19,7 @@ SAMPLE_DTYPES = {
     "rl_weights": np.float32,
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
+    "staleness": np.int16,
 }
 
 
@@ -31,81 +31,6 @@ def _sample(**fields) -> TrainingSample:
             for name, value in fields.items()
         }
     )
-
-
-def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training_example):
-    import msgspec
-
-    from prime_rl.trainer.rl.data import DataLoader
-    from prime_rl.transports.batch.types import SamplingMask, TopLogprobs
-
-    sample = make_training_example()
-    sample.top_logprobs = TopLogprobs(
-        ids=np.array([3, 7, 4], np.int32).tobytes(),
-        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
-        counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
-    )
-    truncated = prepare_sample(sample, seq_len=3)
-    np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
-    np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
-    replayed = make_training_example()
-    replayed.sampling_mask = SamplingMask(
-        ids=np.array([5, 6, 8], np.int32).tobytes(),
-        counts=np.array([0, 0, 1, 2], np.int32).tobytes(),
-        logprobs=np.log(np.array([1.0, 0.75, 0.25], np.float32)).tobytes(),
-    )
-    truncated = prepare_sample(replayed, seq_len=3)
-    np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.ids, np.int32), [5])
-    np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.logprobs, np.float32), [0.0])
-    plain = make_training_example(rl_weights=[0.0] * 4)
-    plain.sampling_mask = SamplingMask(
-        ids=np.array([9], np.int32).tobytes(), counts=np.array([0, 0, 0, 1], np.int32).tobytes()
-    )
-    batches = prepare_batch(
-        [sample, replayed, plain], seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16
-    )
-    [[packed]] = batches
-    packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
-    assert len(packed.top_logprobs.ids) == 3 * 4
-    tensor = DataLoader._micro_batch_to_tensor(None, packed)
-    ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
-    assert ids.shape == values.shape
-    assert ids.shape[0] == sum(packed.sequence_lengths)
-    rows = {
-        tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
-    }
-    expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
-    assert rows.keys() == expected.keys()
-    for key, value in expected.items():
-        np.testing.assert_allclose(rows[key], value, rtol=1e-6)
-    # The source evidence is immutable under truncation and packing.
-    np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
-    np.testing.assert_array_equal(np.frombuffer(replayed.sampling_mask.counts, np.int32), [0, 0, 1, 2])
-
-
-@pytest.mark.parametrize("support", ["complete", "mismatch"])
-def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
-    import verifiers.v1 as vf
-
-    from prime_rl.orchestrator.trajectories import _encode_sampler_evidence
-
-    mask = vf.SamplingMask(ids=np.array([5, 6, 8], np.int32), counts=np.array([0, 0, 1, 2], np.int32))
-    head = vf.TopLogprobs(
-        ids=np.array([1, 2, 5, 8, 6 if support == "complete" else 7], np.int32),
-        logprobs=np.array([-0.1, -2.5, 0.0, -0.3, -1.4], np.float32),
-        counts=np.array([0, 2, 1, 2], np.int32),
-    )
-    if support == "mismatch":
-        with pytest.raises(ValueError):
-            _encode_sampler_evidence(mask, head, 4)
-        return
-    sampling_mask, top_logprobs = _encode_sampler_evidence(mask, head, 4)
-    np.testing.assert_array_equal(np.frombuffer(sampling_mask.ids, np.int32), [5, 8, 6])
-    np.testing.assert_array_equal(np.frombuffer(sampling_mask.counts, np.int32), [0, 0, 1, 2])
-    np.testing.assert_array_equal(np.frombuffer(sampling_mask.logprobs, np.float32), np.float32([0.0, -0.3, -1.4]))
-    np.testing.assert_array_equal(np.frombuffer(top_logprobs.ids, np.int32), [1, 2])
-    np.testing.assert_array_equal(np.frombuffer(top_logprobs.logprobs, np.float32), np.float32([-0.1, -2.5]))
-    np.testing.assert_array_equal(np.frombuffer(top_logprobs.counts, np.int32), [0, 2, 0, 0])
 
 
 @pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
@@ -164,15 +89,6 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         raise_score_centering_data_errors([errors(make_batch(), device)])
         with pytest.raises(ValueError, match=f"^{error.value}$"):
             raise_score_centering_data_errors([errors(make_batch(), device), errors(batch, device)])
-
-
-def _routed_experts(data, dtype=np.uint8):
-    routed_experts = np.asarray(data, dtype=dtype)
-    return RoutedExperts(
-        data=routed_experts.tobytes(),
-        shape=list(routed_experts.shape),
-        dtype=str(routed_experts.dtype),
-    )
 
 
 @pytest.fixture
@@ -504,6 +420,25 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
         assert batch.ce_weights == pytest.approx([0.0] * 6 + [0.0, 0.0, 1.0, 1.0])
 
 
+def test_prepare_batch_backfills_and_pads_staleness(make_training_example):
+    """Samples without a staleness stream (frozen-sourced) and padding read as unknown (-1)."""
+    longer = _sample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, True, True, True, True],
+        logprobs=[0.0, 0.0, -0.1, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        advantages=[0.0] * 2 + [1.0] * 4,
+        env_name="test-env",
+        staleness=[-1, -1, 0, 1, 3, 3],
+    )
+    shorter = make_training_example()
+
+    [batch] = _flatten_batches(
+        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_train_workers=1, bin_cost=sum)
+    )
+    assert batch.staleness.tolist() == [-1, -1, 0, 1, 3, 3] + [-1] * 4 + [-1] * 2
+
+
 @pytest.mark.parametrize("refs_on_longer", [True, False])
 def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, refs_on_longer):
     """Packing a ref-bearing sample (e.g. OPD) with a ref-less one (e.g. GRPO)
@@ -538,47 +473,6 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         assert bin_content.ref_logprobs == pytest.approx([-1.5] * 6 + [0.0] * 4)
     else:
         assert bin_content.ref_logprobs == pytest.approx([0.0] * 6 + [-1.5] * 4)
-
-
-def test_prepare_sample_with_routed_experts():
-    """Routed experts are passed through prepare_sample and match input_ids length."""
-    # 4 tokens, 2 layers, topk=2
-    routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
-    routed_payload = _routed_experts(routed_experts)
-    sample = _sample(
-        token_ids=[1, 2, 3, 4],
-        mask=[False, False, True, True],
-        logprobs=[0.0, 0.0, -0.1, -0.2],
-        temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantages=[0.0, 0.0, 1.0, 1.0],
-        env_name="test-env",
-        routed_experts=routed_payload,
-    )
-
-    micro_batch = prepare_sample(sample, seq_len=8)
-    assert micro_batch.routed_experts is not None
-    assert micro_batch.routed_experts == routed_payload
-
-
-def test_prepare_sample_truncates_routed_experts():
-    """Routed experts are truncated to seq_len when input exceeds it."""
-    routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
-    routed_payload = _routed_experts(routed_experts)
-    expected_payload = _routed_experts(routed_experts[:3])
-    sample = _sample(
-        token_ids=[1, 2, 3, 4],
-        mask=[False, False, True, True],
-        logprobs=[0.0, 0.0, -0.1, -0.2],
-        temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantages=[0.0, 0.0, 1.0, 1.0],
-        env_name="test-env",
-        routed_experts=routed_payload,
-    )
-
-    micro_batch = prepare_sample(sample, seq_len=3)
-    assert micro_batch.routed_experts is not None
-    assert micro_batch.routed_experts == expected_payload
-    assert micro_batch.env_names == ["test-env"]
 
 
 def test_prepare_sample_truncates_mm_at_image_boundary():
@@ -671,11 +565,15 @@ def test_split_to_align_splits_multimodal_bins():
 
     batches = _flatten_batches(batches_per_gpu)
     assert len(batches) == 2
-    assert all(_has_loss_tokens(batch) and _is_multimodal_sample(batch) for batch in batches)
+    assert all(_has_loss_tokens(batch) and batch.mm_refs is not None for batch in batches)
 
 
-def test_prepare_sample_none_routed_experts():
-    """When routed_experts is None, micro_batch.routed_experts is None."""
+def test_prepare_sample_keeps_the_payload_reference():
+    """The packer carries a sample's reference, one per sequence; truncation shortens the
+    token count and keeps the rest of the reference."""
+    payload = PayloadSlice(
+        url="http://h:1", id="t-0", num_tokens=4, fields=["routed_experts"], routed_shape=[2, 2], routed_dtype="uint8"
+    )
     sample = _sample(
         token_ids=[1, 2, 3, 4],
         mask=[False, False, True, True],
@@ -683,7 +581,11 @@ def test_prepare_sample_none_routed_experts():
         temperatures=[1.0, 1.0, 1.0, 1.0],
         advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
+        payload=payload,
     )
-
-    micro_batch = prepare_sample(sample, seq_len=8)
-    assert micro_batch.routed_experts is None
+    assert prepare_sample(sample, seq_len=8).payloads == [payload]
+    [truncated] = prepare_sample(sample, seq_len=3).payloads
+    assert truncated.num_tokens == 3
+    assert (truncated.routed_shape, truncated.routed_dtype) == ([2, 2], "uint8")
+    sample.payload = None
+    assert prepare_sample(sample, seq_len=8).payloads is None

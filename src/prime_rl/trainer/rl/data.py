@@ -1,5 +1,8 @@
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -7,8 +10,6 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
-from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -18,6 +19,8 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
+from prime_rl.transports.payload import delete_payloads, resolve_payloads
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class TensorMicroBatch(TypedDict):
@@ -53,10 +56,9 @@ class TensorMicroBatch(TypedDict):
     top_logprobs_values: Float[Tensor, "batch seq head"] | None
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
-    # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
+    # replaces them with mm_kwargs (CPU tensors for the vision encoder).
     mm_refs: MMRefs | None
     mm_kwargs: NotRequired[dict[str, Tensor] | None]
-    mm_forward_policy: NotRequired[ForwardPolicy | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -65,6 +67,9 @@ class TensorMicroBatch(TypedDict):
     rl_weights: Float[Tensor, "batch seq"] | None
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
+
+    # Per-token staleness, -1 on tokens the policy did not sample
+    staleness: Int[Tensor, "batch seq"] | None
 
 
 class FakeDataLoader:
@@ -78,6 +83,7 @@ class FakeDataLoader:
         self.num_micro_batches = self.batch_size // self.dp_world_size
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
+        self.doc_len = config.doc_len
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
@@ -107,8 +113,11 @@ class FakeDataLoader:
         sequence_lengths = []
 
         while total_seq_len < self.seq_len:
-            # Generate reasonably long documents
-            seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
+            if self.doc_len is not None:
+                seq_len_to_generate = self.doc_len
+            else:
+                # Generate reasonably long documents
+                seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
             if seq_len_to_generate + total_seq_len > self.seq_len:
                 seq_len_to_generate = self.seq_len - total_seq_len
             total_seq_len += seq_len_to_generate
@@ -148,6 +157,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -182,24 +192,33 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "staleness": None,
         }
 
 
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+    micro_batch: TensorMicroBatch, materialize_images: Callable[[MMRefs], dict[str, Tensor]] | None
 ) -> TensorMicroBatch:
     """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
-    micro_batch["mm_forward_policy"] = None
     mm_refs = micro_batch.get("mm_refs")
     if mm_refs is not None:
-        if processor is None or mm_adapter is None:
+        if materialize_images is None:
             raise ValueError("Received multimodal samples but [model.vlm] is not set")
-        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-        micro_batch["mm_kwargs"] = materialized.kwargs
-        micro_batch["mm_forward_policy"] = materialized.forward_policy
+        micro_batch["mm_kwargs"] = materialize_images(mm_refs)
         micro_batch["mm_refs"] = None
     return micro_batch
+
+
+def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]) -> None:
+    """Keep micro batches out of every loss component (they still run forward/backward,
+    so all ranks issue the same collectives)."""
+    for index in indices:
+        micro_batch = micro_batches[index]
+        micro_batch["loss_mask"] = torch.zeros_like(micro_batch["loss_mask"])
+        for name in ("rl_weights", "ce_weights", "ref_kl_weights"):
+            if micro_batch[name] is not None:
+                micro_batch[name] = torch.zeros_like(micro_batch[name])
 
 
 class DataLoader:
@@ -216,6 +235,13 @@ class DataLoader:
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
+        self.dp_rank = dp_rank
+        self.dp_world_size = dp_world_size
+        self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload")
+        self.failed_micro_batches: list[int] = []
+        """Micro batches of the last batch whose arrays could not be fetched on this rank."""
+        self.payload_urls: list[str] = []
+        """The last batch's fetched arrays, for `release_payloads`."""
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -231,7 +257,18 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        start = time.perf_counter()
+        self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+        get_logger().debug(
+            f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+        )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def release_payloads(self) -> None:
+        """Free the last batch's arrays on the env servers. Call once every rank that may
+        read them has fetched them."""
+        delete_payloads(self.payload_urls)
+        self.payload_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
@@ -308,6 +345,7 @@ class DataLoader:
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
+            staleness=stream("staleness", np.int16),
         )
 
 
