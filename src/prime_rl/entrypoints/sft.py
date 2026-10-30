@@ -14,6 +14,7 @@ from prime_rl.utils.config import cli, dump_resolved_config, find_package_resour
 from prime_rl.utils.links import PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -21,6 +22,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    get_trainer_step_path,
     launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
@@ -67,7 +69,7 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
         return config.resume.dir_step
     if config.resume.step is not None:
         return config.resume.step
-    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
+    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)), with_orchestrator=False)
 
 
 def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
@@ -171,6 +173,13 @@ def write_slurm_script(
         **config.env_vars,
     }
 
+    requeue_vars = {
+        "trainer_step_path": get_trainer_step_path(config.run_dir),
+        "ckpt_dir": get_ckpt_dir(get_ckpt_base(config)),
+        "ckpt_with_orchestrator": False,
+        "resume_latest": config.resume is not None and config.resume.dir is None and config.resume.step is None,
+    }
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -179,6 +188,7 @@ def write_slurm_script(
             log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
@@ -215,6 +225,7 @@ def write_slurm_script(
             log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_train_nodes,
@@ -465,6 +476,11 @@ def sft(config: SFTConfig):
         )
 
     prepare_run(config, config.ckpt.output_dir if config.ckpt else None)
+
+    if config.resume is not None and config.resume.dir is None and not config.dry_run:
+        resume_step = resolve_resume_step(config)
+        if resume_step is not None:
+            abandon_future_ckpts(get_ckpt_dir(get_ckpt_base(config)), resume_step)
 
     if config.eval is not None and not config.dry_run:
         clean_stale_eval_artifacts(config)

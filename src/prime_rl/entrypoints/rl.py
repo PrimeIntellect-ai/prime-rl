@@ -17,12 +17,14 @@ from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.links import PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     format_config_message,
     format_log_message,
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    get_trainer_step_path,
     launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
@@ -388,6 +390,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     }
 
     ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
+    requeue_vars = {
+        "trainer_step_path": get_trainer_step_path(config.run_dir),
+        "ckpt_with_orchestrator": config.trainer.data.fake is None,
+        "resume_latest": config.resume is not None and config.resume.dir is None and config.resume.step is None,
+    }
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -397,7 +404,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
@@ -413,6 +422,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             output_dir=config.run_dir,
             ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
@@ -459,6 +469,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             output_dir=config.run_dir,
             ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
@@ -561,7 +572,7 @@ def rl_slurm(config: RLConfig):
 
 def rl(config: RLConfig):
     # TODO: fetch the run id from the Prime SDK once runs are registered there.
-    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    ckpt_output_dir = config.trainer.ckpt.output_dir if config.trainer.ckpt else None
     prepare_run(config, ckpt_output_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
@@ -570,18 +581,21 @@ def rl(config: RLConfig):
     # from a previous run and the orchestrator would see a negative async level.
     get_logger().info("Starting RL run")
     resume_step: int | None = None
+    own_ckpt_dir: Path | None = None
     if config.resume is not None:
         if config.resume.dir is not None:
             resume_step = config.resume.dir_step
         else:
+            own_ckpt_dir = get_ckpt_dir(ckpt_output_dir if ckpt_output_dir is not None else config.run_dir)
             resume_step = config.resume.step
             if resume_step is None:
-                ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+                resume_step = resolve_latest_ckpt_step(own_ckpt_dir, with_orchestrator=config.trainer.data.fake is None)
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
         clean_future_steps(config.run_dir, resume_step)
+        if own_ckpt_dir is not None and not config.dry_run:
+            abandon_future_ckpts(own_ckpt_dir, resume_step)
     else:
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
         clean_future_steps(config.run_dir, -1)

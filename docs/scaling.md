@@ -291,6 +291,18 @@ ModelExpress exchanges peer metadata during startup. Weight updates reuse prepar
 
 By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
+### Requeue, smoke test and watchdog
+
+With `slurm.max_requeues = N` (default 0: off), a failed job requeues itself (same job ID). It gives up after N requeues in a row without a new complete checkpoint; the count resets whenever a newer checkpoint is complete, so sporadic faults in a long run do not use up the budget, while a crash loop still stops. The job log keeps appending to `launcher/logs/job_<id>.log`, and component logs of restart `n` go to `logs/attempt_<k>/restart_<n>/`. Every RL and SFT component of a requeued job resumes from the latest complete checkpoint, so enable `[ckpt]` with an `interval`, or a requeue restarts training from scratch.
+
+A SIGTERM sent only to the batch script of a running job requeues it without counting against the budget. When `slurm.time` is set (with `max_requeues`), the job gets `#SBATCH --signal=B:TERM@<lead>`, where `<lead>` is `slurm.cleanup_grace_period` clamped to 60–600 s, so it requeues before the time limit and continues past it. Before requeueing, the batch script waits for an in-flight trainer checkpoint to finish, up to `<lead>` − 30 s. Use `scancel --signal=TERM --batch <job>` to restart a job by hand. A plain `scancel` and the hard time limit end the job without a requeue.
+
+`slurm.smoke_test = true` runs a short all-reduce over the GPUs of every node before the main command and again after it fails (2 min timeout). With `max_requeues`, nodes that fail it are added to the job's excluded nodes before it requeues; only the smoke test excludes nodes. Excluded nodes stay excluded for the job's lifetime; `scontrol update JobId=<job> ExcNodeList=` clears them.
+
+The trainer master writes `step <n>` to `<run_dir>/trainer_step` after every step and `done <n>` once it has finished (after the final checkpoint). With `slurm.step_timeout` set (default `None`: off), the job is killed, and requeues if `max_requeues` allows, when no step finishes for that many seconds. The limit applies from the job's first step until `done`, so a checkpoint save counts toward the step it follows: set it above the step time plus the save time. Startup and the final evals that drain after the trainer finishes are not bounded by it; the collective and weight-broadcast timeouts cover startup hangs.
+
+In a multi-node job the batch script resolves the resume step itself (`resolve_latest_ckpt_step`). If checkpoint steps exist but none is complete, that raises and the batch script exits before launching, without a requeue.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

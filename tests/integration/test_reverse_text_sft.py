@@ -152,6 +152,20 @@ def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path)
     check_loss_goes_down(trainer_stdout)
 
 
+def test_convert_final_checkpoint(sft_resume_process: ProcessResult, run_dir: Path, tmp_path: Path):
+    """The final DCP checkpoint converts to bf16 and fp8, and the exports reload in HF.
+
+    Runs before the model-only resume test, which resumes from step 5 and so moves step_10 to
+    ``checkpoints/abandoned/``."""
+    assert sft_resume_process.returncode == 0
+    step_dir = run_dir / "checkpoints" / "step_10"
+    convert_checkpoint("dcp_to_bf16", step_dir)
+    convert_checkpoint("dcp_to_fp8", step_dir)
+    check_hf_load(step_dir / "weights")
+    convert_checkpoint("fp8_to_bf16", step_dir / "weights-FP8", tmp_path / "dequant")
+    check_hf_load(tmp_path / "dequant")
+
+
 def test_full_offload_model_only_resume_preserves_weights(
     sft_full_offload_model_only_resume_process: ProcessResult,
     run_dir: Path,
@@ -174,17 +188,6 @@ def test_full_offload_model_only_resume_preserves_weights(
         assert torch.equal(before[key].to(torch.bfloat16), after[key].to(torch.bfloat16)), (
             f"Weight mismatch after model-only resume: {key}"
         )
-
-
-def test_convert_final_checkpoint(sft_resume_process: ProcessResult, run_dir: Path, tmp_path: Path):
-    """The final DCP checkpoint converts to bf16 and fp8, and the exports reload in HF."""
-    assert sft_resume_process.returncode == 0
-    step_dir = run_dir / "checkpoints" / "step_10"
-    convert_checkpoint("dcp_to_bf16", step_dir)
-    convert_checkpoint("dcp_to_fp8", step_dir)
-    check_hf_load(step_dir / "weights")
-    convert_checkpoint("fp8_to_bf16", step_dir / "weights-FP8", tmp_path / "dequant")
-    check_hf_load(tmp_path / "dequant")
 
 
 test_dashboard = make_dashboard_test("sft_process", RUN_NAME)

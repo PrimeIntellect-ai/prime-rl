@@ -333,7 +333,7 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus perma
 
 ### Resuming a Run
 
-Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
+Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. The latest checkpoint is the newest complete step: one with `trainer/.metadata` (DCP writes it last, after every rank's shards) and, in RL, `orchestrator/progress.pt`. A save that was killed mid-write is skipped. `keep_last` never deletes the newest complete step. Resuming moves the run's checkpoints past the resume step to `checkpoints/abandoned/<UTC time>/`, where resume does not look; move them back to undo a rollback. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
 ```bash
 # First run: steps 1–10
