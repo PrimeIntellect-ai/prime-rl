@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -13,6 +13,8 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
+    BaseMultiNodeDeploymentConfig,
+    BaseSingleNodeDeploymentConfig,
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
     ResumeConfig,
@@ -168,20 +170,7 @@ class SFTValConfig(BaseConfig):
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
-class BaseDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
-    """GPUs per node."""
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: int = 1
-    """GPUs allocated to the trainer."""
-
-    num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
-    """GPUs allocated to inference for online evals (alias: ``num_eval_gpus``). Only used when an ``[inference]`` block is configured."""
-
+class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
         if self.num_train_gpus > self.gpus_per_node:
@@ -189,18 +178,10 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: int = Field(2, ge=1)
-    """Training nodes."""
-
-    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
-    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
-    one SLURM allocation with the trainer nodes."""
-
-    nodes_per_fsdp_group: int | None = None
-    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
+class MultiNodeDeploymentConfig(BaseMultiNodeDeploymentConfig):
+    num_infer_nodes: int = Field(0, ge=0)
+    """Inference nodes for online evals. These nodes share one SLURM allocation with the
+    trainer nodes."""
 
 
 SFTDeploymentConfig: TypeAlias = Annotated[
@@ -287,17 +268,6 @@ class SFTConfig(BaseTrainerConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_deployment(cls, data):
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus"):
-                deployment.pop(key, None)
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
     def propagate_model_to_inference(cls, data):
         """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
         construction, so its parser auto-resolution sees the right model name."""
@@ -346,8 +316,8 @@ class SFTConfig(BaseTrainerConfig):
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem":
-            if self.weight_broadcast.type == "nixl":
-                raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
+            if self.weight_broadcast.type in ("nixl", "modelexpress"):
+                raise ValueError("NIXL and ModelExpress weight broadcast are not supported for SFT online evals.")
             if self.model.lora is not None:
                 raise ValueError(
                     "LoRA training is not yet supported with in-memory weight broadcast. "
@@ -488,7 +458,9 @@ class SFTConfig(BaseTrainerConfig):
         if dispatch.type == "mega_moe":
             data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+                dispatch.max_tokens_per_rank,
+                max(data.micro_batch_size * data.seq_len for data in data_configs),
+                self.model.cp,
             )
         return self
 
@@ -505,10 +477,6 @@ class SFTConfig(BaseTrainerConfig):
     def validate_vlm_constraints(self):
         if self.model.vlm is None:
             return self
-        if self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16":
-            raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
-            )
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:
@@ -516,18 +484,6 @@ class SFTConfig(BaseTrainerConfig):
         return self
 
     ### Auto-setup and validate shared configs
-
-    @model_validator(mode="after")
-    def auto_setup_deployment(self):
-        if self.deployment.type == "multi_node":
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-        return self
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):

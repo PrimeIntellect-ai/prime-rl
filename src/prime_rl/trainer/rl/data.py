@@ -1,7 +1,8 @@
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -9,8 +10,6 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
-from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -57,10 +56,9 @@ class TensorMicroBatch(TypedDict):
     top_logprobs_values: Float[Tensor, "batch seq head"] | None
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
-    # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
+    # replaces them with mm_kwargs (CPU tensors for the vision encoder).
     mm_refs: MMRefs | None
     mm_kwargs: NotRequired[dict[str, Tensor] | None]
-    mm_forward_policy: NotRequired[ForwardPolicy | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -85,6 +83,7 @@ class FakeDataLoader:
         self.num_micro_batches = self.batch_size // self.dp_world_size
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
+        self.doc_len = config.doc_len
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
@@ -114,8 +113,11 @@ class FakeDataLoader:
         sequence_lengths = []
 
         while total_seq_len < self.seq_len:
-            # Generate reasonably long documents
-            seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
+            if self.doc_len is not None:
+                seq_len_to_generate = self.doc_len
+            else:
+                # Generate reasonably long documents
+                seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
             if seq_len_to_generate + total_seq_len > self.seq_len:
                 seq_len_to_generate = self.seq_len - total_seq_len
             total_seq_len += seq_len_to_generate
@@ -195,18 +197,15 @@ class FakeDataLoader:
 
 
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+    micro_batch: TensorMicroBatch, materialize_images: Callable[[MMRefs], dict[str, Tensor]] | None
 ) -> TensorMicroBatch:
     """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
-    micro_batch["mm_forward_policy"] = None
     mm_refs = micro_batch.get("mm_refs")
     if mm_refs is not None:
-        if processor is None or mm_adapter is None:
+        if materialize_images is None:
             raise ValueError("Received multimodal samples but [model.vlm] is not set")
-        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-        micro_batch["mm_kwargs"] = materialized.kwargs
-        micro_batch["mm_forward_policy"] = materialized.forward_policy
+        micro_batch["mm_kwargs"] = materialize_images(mm_refs)
         micro_batch["mm_refs"] = None
     return micro_batch
 
