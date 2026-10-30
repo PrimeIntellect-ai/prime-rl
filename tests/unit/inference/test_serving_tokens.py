@@ -14,6 +14,7 @@ deltas here:
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -42,9 +43,11 @@ from vllm.outputs import CompletionOutput, RequestOutput
 from prime_rl.inference.patches import PackedSamplingMask
 from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
 from prime_rl.inference.vllm.serving_tokens import (
+    _PLACED_MEDIA,
     PrimeRlServingTokens,
     _PackedOutputs,
     encode_array,
+    install_placed_media,
     pack_sampled_logprobs,
 )
 
@@ -244,3 +247,40 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
     logprobs.append({3: Logprob(float("-inf"), 9, None)})
 
     np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
+
+
+PAD = 9
+
+
+async def _expand_first_pads(prompts, num_images):
+    """vLLM's prompt-update matcher: expand the first ``num_images`` pad tokens."""
+    out, ranges = [], []
+    for token in prompts[0]["prompt_token_ids"]:
+        if token == PAD and len(ranges) < num_images:
+            ranges.append((len(out), 3))
+            out += [PAD] * 3
+        else:
+            out.append(token)
+    return [{"prompt_token_ids": out, "mm_placeholders": ranges}]
+
+
+def test_media_expands_only_at_placed_ranges():
+    # Image 0, a pad the policy sampled in an earlier turn, a pad in tool text, image 1.
+    token_ids = [1, PAD, 2, PAD, 3, PAD, 4, PAD, 5]
+    renderer = SimpleNamespace(render_cmpl_async=_expand_first_pads)
+    install_placed_media(renderer)
+
+    async def render(placed):
+        reset = _PLACED_MEDIA.set(placed)
+        try:
+            (engine_input,) = await renderer.render_cmpl_async([{"prompt_token_ids": token_ids}], 2)
+        finally:
+            _PLACED_MEDIA.reset(reset)
+        return engine_input
+
+    unplaced = asyncio.run(render(None))
+    assert unplaced["mm_placeholders"] == [(1, 3), (5, 3)]  # the sampled pad steals image 1
+
+    placed = asyncio.run(render([(1, 1), (7, 1)]))
+    assert placed["mm_placeholders"] == [(1, 3), (9, 3)]
+    assert placed["prompt_token_ids"] == [1, PAD, PAD, PAD, 2, PAD, 3, PAD, 4, PAD, PAD, PAD, 5]

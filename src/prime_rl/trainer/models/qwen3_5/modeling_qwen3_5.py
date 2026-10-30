@@ -230,7 +230,8 @@ class Qwen3_5VLMModel(nn.Module):
 
         image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
         if has_images:
-            image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
+            # Image positions come from the batch: a placeholder token id elsewhere is text.
+            image_mask = (mm_token_type_ids == 1).unsqueeze(-1).expand_as(inputs_embeds)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
         else:
             # Every rank must retain the vision graph so FSDP collectives stay symmetric.
