@@ -1,4 +1,4 @@
-"""Custom SFT objectives (``[objective]``): a loss in place of token cross-entropy, with the rest of the SFT trainer
+"""Custom SFT losses (``[loss]``): a loss function in place of token cross-entropy, with the rest of the SFT trainer
 unchanged."""
 
 from collections.abc import Callable
@@ -8,7 +8,7 @@ from functools import partial
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from prime_rl.configs.sft import SFTObjectiveConfig
+from prime_rl.configs.sft import SFTCustomLossConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.sft.data import Batch
 from prime_rl.utils.utils import import_object
@@ -38,23 +38,22 @@ class LossOutputs:
     validation. Every call must return the same names."""
 
 
-ObjectiveFn = Callable[..., LossOutputs]
-"""A custom objective: ``my_loss(inputs: LossInputs, **kwargs) -> LossOutputs``, called with
-``[objective.kwargs]``."""
+LossFn = Callable[..., LossOutputs]
+"""A custom loss: ``my_loss(inputs: LossInputs, **kwargs) -> LossOutputs``, called with ``[loss.kwargs]``."""
 
 
-def load_objective(config: SFTObjectiveConfig) -> Callable[[LossInputs], LossOutputs]:
-    fn: ObjectiveFn = import_object(config.import_path)
+def setup_sft_loss_fn(config: SFTCustomLossConfig) -> Callable[[LossInputs], LossOutputs]:
+    fn: LossFn = import_object(config.import_path)
     return partial(fn, **config.kwargs)
 
 
-def objective_loss(objective: Callable[[LossInputs], LossOutputs], model: nn.Module, batch: Batch) -> LossOutputs:
-    """The objective's loss on one micro-batch, computed inside the model's forward pass on the backbone's final
+def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, batch: Batch) -> LossOutputs:
+    """The custom loss on one micro-batch, computed inside the model's forward pass on the backbone's final
     hidden states, where stock SFT computes its cross-entropy: FSDP keeps the root unit gathered for it and treats the
     modules it calls, such as the LM head, as part of the forward."""
 
     def loss(hidden_states: Tensor) -> dict:
-        outputs = objective(LossInputs(model=model, hidden_states=hidden_states, batch=batch))
+        outputs = loss_fn(LossInputs(model=model, hidden_states=hidden_states, batch=batch))
         # A dict, not the dataclass: FSDP hooks backward onto the tensors of the forward's output pytree.
         return {"loss": outputs.loss, "count": outputs.count, "metrics": outputs.metrics}
 

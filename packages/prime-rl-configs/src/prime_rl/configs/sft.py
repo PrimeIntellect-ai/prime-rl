@@ -163,13 +163,13 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-class SFTObjectiveConfig(BaseConfig):
-    """A custom SFT objective: a loss computed from the backbone's final hidden states, in place of token
+class SFTCustomLossConfig(BaseConfig):
+    """A custom SFT loss: a function computed from the backbone's final hidden states, in place of token
     cross-entropy."""
 
     import_path: str
     """Import path to the loss function (e.g. ``my_module.my_loss``), called as ``my_loss(inputs, **kwargs)`` with a
-    ``prime_rl.trainer.sft.objective.LossInputs`` and returning a ``LossOutputs``."""
+    ``prime_rl.trainer.sft.loss.LossInputs`` and returning a ``LossOutputs``."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
     """Kwargs forwarded to the loss function."""
@@ -260,8 +260,8 @@ class SFTConfig(BaseConfig):
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
-    objective: SFTObjectiveConfig | None = None
-    """Custom SFT objective: a loss in place of token cross-entropy. If None, trains with token cross-entropy."""
+    loss: SFTCustomLossConfig | None = None
+    """Custom SFT loss in place of token cross-entropy. If None, trains with token cross-entropy."""
 
     ckpt: CheckpointConfig | None = None
 
@@ -596,12 +596,12 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_objective(self):
-        if self.objective is None:
+    def validate_loss(self):
+        if self.loss is None:
             return self
         if self.model.cp > 1 or self.model.vlm is not None or self.model.offload == "full":
             raise ValueError(
-                "objective is not supported with context parallelism, VLM training or model.offload='full'"
+                "a custom loss is not supported with context parallelism, VLM training or model.offload='full'"
             )
         return self
 

@@ -11,13 +11,13 @@ from torch.distributed.tensor import DTensor
 from transformers import PretrainedConfig
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
-from prime_rl.configs.sft import SFTConfig, SFTObjectiveConfig
+from prime_rl.configs.sft import SFTConfig, SFTCustomLossConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head, token_logprobs
 from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.sft.objective import LossInputs, LossOutputs, load_objective, objective_loss
+from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, run_loss_fn, setup_sft_loss_fn
 
 
 def scaled_ce(inputs: LossInputs, scale: float = 1.0) -> LossOutputs:
@@ -60,8 +60,8 @@ def test_forward_runs_a_function_on_the_hidden_states():
     assert out["logits"].shape == (1, 3, 11)
 
 
-def test_objective_loss_calls_the_function_with_its_kwargs():
-    objective = load_objective(SFTObjectiveConfig(import_path=f"{__name__}.scaled_ce", kwargs={"scale": 2.0}))
+def test_custom_loss_calls_the_function_with_its_kwargs():
+    loss_fn = setup_sft_loss_fn(SFTCustomLossConfig(import_path=f"{__name__}.scaled_ce", kwargs={"scale": 2.0}))
     model = tiny_causal_lm()
     input_ids = torch.tensor([[1, 2, 3, 4, 5]])
     batch = {
@@ -71,7 +71,7 @@ def test_objective_loss_calls_the_function_with_its_kwargs():
         "target_ids": torch.tensor([[2, 3, 4, 5, 6]]),
         "loss_mask": torch.tensor([[True, True, False, True, True]]),
     }
-    outputs = objective_loss(objective, model, batch)
+    outputs = run_loss_fn(loss_fn, model, batch)
 
     # stock SFT's summed cross-entropy on the same micro-batch
     stock = forward(
@@ -94,15 +94,15 @@ def test_token_logprobs(chunk_size):
     assert hidden_states.grad.abs().sum() > 0 and model.lm_head.weight.grad.abs().sum() > 0
 
 
-def test_objective_config_rejects_unsupported_setups():
-    objective = {"import_path": f"{__name__}.scaled_ce"}
-    assert SFTConfig(objective=objective).objective.import_path.endswith("scaled_ce")
+def test_custom_loss_config_rejects_unsupported_setups():
+    loss = {"import_path": f"{__name__}.scaled_ce"}
+    assert SFTConfig(loss=loss).loss.import_path.endswith("scaled_ce")
     with pytest.raises(ValidationError, match="not supported with context parallelism"):
-        SFTConfig(objective=objective, model={"cp": 2})
+        SFTConfig(loss=loss, model={"cp": 2})
 
 
 class HeadsConfig(PretrainedConfig):
-    model_type = "objective_heads_test"
+    model_type = "custom_loss_heads_test"
 
 
 class Block(nn.Module):
@@ -146,7 +146,7 @@ class HeadsModel(PreTrainedModelPrimeRL):
         pass
 
 
-def heads_objective(inputs: LossInputs) -> LossOutputs:
+def heads_loss(inputs: LossInputs) -> LossOutputs:
     """Calls the LM head twice (the summed cross-entropy, then per-token log-probabilities) and the score head."""
     batch, head = inputs.batch, inputs.model.score_head
     ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
@@ -183,10 +183,10 @@ def fsdp_worker(rank: int, world: int, tied: bool, init_file: str, out_dir: str)
     model = heads_model(tied)
     setup_fsdp(model, config, get_parallel_dims(config))  # prime-rl's real FSDP setup
 
-    objective_loss(heads_objective, model, heads_batch(rank)).loss.backward()
+    run_loss_fn(heads_loss, model, heads_batch(rank)).loss.backward()
     grads = {name: p.grad.full_tensor() for name, p in model.named_parameters()}
     with torch.no_grad():  # as in validation, which the trainer follows with reshard_module before clipping
-        objective_loss(heads_objective, model, heads_batch(rank))
+        run_loss_fn(heads_loss, model, heads_batch(rank))
     reshard_module(model)
     resharded = all(isinstance(p, DTensor) for p in model.parameters())
     torch.save({"grads": grads, "resharded": resharded}, os.path.join(out_dir, f"{rank}.pt"))
@@ -194,13 +194,13 @@ def fsdp_worker(rank: int, world: int, tied: bool, init_file: str, out_dir: str)
 
 
 @pytest.mark.parametrize("tied", [True, False])
-def test_objective_loss_under_fsdp(tied, tmp_path):
+def test_custom_loss_under_fsdp(tied, tmp_path):
     world = 2
     mp.spawn(fsdp_worker, args=(world, tied, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
 
     # The same micro-batches on one process without FSDP, in bf16 as FSDP computes; FSDP averages over ranks.
     model = heads_model(tied).to(torch.bfloat16)
-    sum(objective_loss(heads_objective, model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
+    sum(run_loss_fn(heads_loss, model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
     for rank in range(world):
         result = torch.load(tmp_path / f"{rank}.pt")
         assert result["resharded"]  # after a loss without a backward, every FSDP unit reshards

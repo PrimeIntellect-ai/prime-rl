@@ -16,7 +16,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Dataset Format](#dataset-format)
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
-  - [Custom Objective](#custom-objective)
+  - [Custom Loss](#custom-loss)
   - [Important Metrics](#important-metrics-1)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
@@ -269,14 +269,14 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
-### Custom Objective
+### Custom Loss
 
-`[objective]` replaces the SFT trainer's loss (token cross-entropy) with a function of yours. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: the function returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss), a function called as `my_loss(inputs, **kwargs)` with the config's `kwargs`, except that it returns a summed loss with its count, and its metrics are summed and divided by the global count rather than averaged per sequence.
+`[loss]` replaces the SFT trainer's token cross-entropy with a loss function of yours. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: the function returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss), a function called as `my_loss(inputs, **kwargs)` with the config's `kwargs`, except that it returns a summed loss with its count, and its metrics are summed and divided by the global count rather than averaged per sequence.
 
 ```python
 # my_module.py
 from prime_rl.trainer.models.layers.lm_head import token_logprobs
-from prime_rl.trainer.sft.objective import LossInputs, LossOutputs
+from prime_rl.trainer.sft.loss import LossInputs, LossOutputs
 
 def focal_loss(inputs: LossInputs, gamma: float = 2.0) -> LossOutputs:
     """Token cross-entropy, down-weighting tokens the model already predicts well: -(1 - p)^gamma * log p."""
@@ -293,7 +293,7 @@ def focal_loss(inputs: LossInputs, gamma: float = 2.0) -> LossOutputs:
 Wire it up:
 
 ```toml
-[objective]
+[loss]
 import_path = "my_module.focal_loss"
 kwargs = { gamma = 2.0 }
 ```
@@ -324,7 +324,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
-- With `[objective]`: `loss/<name>` and `val/<name>` for each metric the objective returns, averaged like the loss; the perplexities are not logged, since the loss need not be a cross-entropy.
+- With `[loss]`: `loss/<name>` and `val/<name>` for each metric the loss function returns, averaged like the loss; the perplexities are not logged, since the loss need not be a cross-entropy.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.

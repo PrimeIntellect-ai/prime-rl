@@ -45,7 +45,7 @@ from prime_rl.trainer.sft.data import (
     setup_dataloader,
     setup_dataset,
 )
-from prime_rl.trainer.sft.objective import load_objective, objective_loss
+from prime_rl.trainer.sft.loss import run_loss_fn, setup_sft_loss_fn
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -181,10 +181,10 @@ def train(config: SFTConfig):
     logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    objective = None
-    if config.objective is not None:
-        logger.info(f"Loading objective ({config.objective})")
-        objective = load_objective(config.objective)
+    loss_fn = None
+    if config.loss is not None:
+        logger.info(f"Loading custom loss ({config.loss})")
+        loss_fn = setup_sft_loss_fn(config.loss)
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
@@ -245,9 +245,9 @@ def train(config: SFTConfig):
     cp_size = parallel_dims.cp
 
     def compute_loss(micro_batch: dict, metrics: dict | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the objective's (loss, count).
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the custom loss's (loss, count).
 
-        With ``metrics``, the objective's metric sums for this micro-batch are added to it."""
+        With ``metrics``, the custom loss's metric sums for this micro-batch are added to it."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -285,7 +285,7 @@ def train(config: SFTConfig):
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
-        if objective is not None:
+        if loss_fn is not None:
             batch = {
                 **micro_batch,
                 "input_ids": input_ids,
@@ -295,21 +295,21 @@ def train(config: SFTConfig):
                 "seq_lens": seq_lens,
             }
             with maybe_activation_offloading(config.model.ac_offloading):
-                outputs = objective_loss(objective, model, batch)
+                outputs = run_loss_fn(loss_fn, model, batch)
             count = torch.as_tensor(outputs.count, device="cuda")
             if count.ndim != 0 or count.is_floating_point():
-                raise TypeError(f"objective count must be an integer, got {outputs.count!r}")
+                raise TypeError(f"custom loss count must be an integer, got {outputs.count!r}")
             if metrics is not None:
                 # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
                 nan_loss = torch.isnan(outputs.loss.detach())
                 if metrics and outputs.metrics.keys() != metrics.keys():
                     raise ValueError(
-                        f"objective metrics must have the same names on every call: {sorted(outputs.metrics)}"
+                        f"custom loss metrics must have the same names on every call: {sorted(outputs.metrics)}"
                     )
                 for name, value in outputs.metrics.items():
                     if value.ndim != 0:
                         raise ValueError(
-                            f"objective metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}"
+                            f"custom loss metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}"
                         )
                     value = value.detach().float().to("cuda")
                     metrics[name] = metrics.get(name, 0.0) + torch.where(nan_loss, 0.0, value)
@@ -369,7 +369,7 @@ def train(config: SFTConfig):
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
-        # Every rank reports the same metric names, since one objective computes them all; reduce them in one order.
+        # Every rank reports the same metric names, since one loss function computes them all; reduce them in one order.
         for name in sorted(metrics):
             dist.all_reduce(metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
 
@@ -405,8 +405,8 @@ def train(config: SFTConfig):
             monitors.log(
                 {
                     "val/loss": mean_loss,
-                    # perplexity is exp(cross-entropy); an objective's loss need not be one
-                    **({} if objective is not None else {"val/perplexity": math.exp(min(mean_loss, 20))}),
+                    # perplexity is exp(cross-entropy); a custom loss need not be one
+                    **({} if loss_fn is not None else {"val/perplexity": math.exp(min(mean_loss, 20))}),
                     **{f"val/{name}": value for name, value in mean_metrics.items()},
                     "step": step,
                 },
@@ -544,7 +544,7 @@ def train(config: SFTConfig):
             global_step_token_count = step_local_token_count.clone()
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
-            # With nothing to average over, the gradients are zeroed: an objective may return a loss with a count of 0.
+            # With nothing to average over, the gradients are zeroed: a custom loss may return a count of 0.
             grad_scale = (
                 parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
                 if global_token_count_val > 0
@@ -571,7 +571,7 @@ def train(config: SFTConfig):
         nan_loss_count = nan_loss_count.item()
         for name in sorted(step_metrics):
             dist.all_reduce(step_metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
-        objective_metrics = {
+        loss_metrics = {
             f"loss/{name}": (value / global_token_count_val).item() if global_token_count_val > 0 else 0.0
             for name, value in step_metrics.items()
         }
@@ -687,9 +687,9 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
-            **({} if objective is not None else {"loss/perplexity": math.exp(min(batch_loss, 20))}),
+            **({} if loss_fn is not None else {"loss/perplexity": math.exp(min(batch_loss, 20))}),
             "loss/nan_count": nan_loss_count,
-            **objective_metrics,
+            **loss_metrics,
             "step": progress.step,
         }
         # Log tensor stats
