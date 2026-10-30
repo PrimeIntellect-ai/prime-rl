@@ -745,6 +745,8 @@ class TrainerConfig(BaseTrainerConfig):
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
             )
+        if self.model.lora is not None and self.weight_broadcast.type == "filesystem" and self.weight_broadcast.delta:
+            raise ValueError("weight_broadcast.delta does not support LoRA")
         return self
 
     @model_validator(mode="after")
