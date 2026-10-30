@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -21,7 +22,8 @@ class AnnotationWriter:
     NaN for null.
 
     ``export`` accumulates locally per micro batch; ``flush`` gathers every rank's
-    records to rank 0, the only rank running monitors. CP ranks past the first
+    records to rank 0, the only rank running monitors, which writes them on a background
+    thread so the other ranks don't wait on serialization. CP ranks past the first
     accumulate nothing since they share their micro batches."""
 
     def __init__(self, parallel_dims: Any, world: Any, float_decimals: int | None) -> None:
@@ -29,6 +31,8 @@ class AnnotationWriter:
         self.float_decimals = float_decimals
         self.is_duplicate_rank = parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0
         self._pending: list[dict[str, Any]] = []
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="annotations")
+        self._write: Future | None = None
 
     def export(self, micro_batch: Mapping[str, Any], model_output: Mapping[str, Tensor]) -> None:
         if self.is_duplicate_rank:
@@ -66,8 +70,9 @@ class AnnotationWriter:
             )
 
     def flush(self) -> None:
-        """Gather the step's records to rank 0 and log them; collective, so every rank
-        must call it once per step."""
+        """Gather the step's records to rank 0, which logs them in the background after
+        the previous step's write finishes; collective, so every rank must call it once
+        per step."""
         records, self._pending = self._pending, []
         if dist.is_initialized() and self.world.world_size > 1:
             gathered: list[list[dict[str, Any]]] | None = None
@@ -77,7 +82,24 @@ class AnnotationWriter:
             if gathered is None:
                 return
             records = [record for rank_records in gathered for record in rank_records]
-        asyncio.run(monitors.log_annotations(records))
+        self.wait()
+        if records:
+            self._write = self._executor.submit(_log_annotations, records)
+
+    def close(self) -> None:
+        """Finish the pending write before the monitors close their streams."""
+        self.wait()
+        self._executor.shutdown(wait=True)
+
+    def wait(self) -> None:
+        """Block until the pending write finishes, so a checkpoint never runs ahead of its annotations."""
+        if self._write is not None:
+            write, self._write = self._write, None
+            write.result()
+
+
+def _log_annotations(records: list[dict[str, Any]]) -> None:
+    asyncio.run(monitors.log_annotations(records))
 
 
 def _masked_floats(tensor: Tensor, mask: np.ndarray, decimals: int | None) -> np.ndarray:

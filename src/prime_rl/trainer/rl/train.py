@@ -693,6 +693,7 @@ def train(config: TrainerConfig):
             and not is_last_step
             and progress.step % config.ckpt.interval == 0
         ):
+            annotation_writer.wait()
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
@@ -817,6 +818,7 @@ def train(config: TrainerConfig):
 
     # Write final checkpoint
     if config.ckpt is not None or paused:
+        annotation_writer.wait()
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         if paused:
@@ -827,6 +829,7 @@ def train(config: TrainerConfig):
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
+    annotation_writer.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")
