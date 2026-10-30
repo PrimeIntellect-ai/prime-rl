@@ -270,6 +270,22 @@ class HiSparseConfig(BaseConfig):
     """Pinned host pool per GPU worker, in GiB (``HiSparseConnector`` ``host_pool_gib``). Budget ``GPUs per node × host_pool_gib`` against node RAM."""
 
 
+class ForcedRoutingConfig(BaseConfig):
+    """Route recomputed prompt positions with the MoE routing they were first computed with (vLLM server patch)."""
+
+    enabled: bool = False
+    """Force the routing of prompt positions vLLM recomputes (prefix-cache re-prefill of earlier turns) to the routing of their first pass: from vLLM's per-block routing store, and from the partial last block the server keeps for each finished request. Needs routed-experts capture (auto-enabled), the V2 model runner and plain tensor parallelism. Sets ``PRIME_RL_FORCED_ROUTING=1`` on the server."""
+
+    drift: bool = True
+    """Count how often the forced top-k set differs from the top-k this forward picks, by source and by age in weight updates. Costs one copy per MoE layer on forcing steps and one small reduction after each."""
+
+    stash_max_mib: int = Field(2048, ge=0)
+    """Host memory (TP rank 0) for the partial last blocks of finished requests, which cover the start of the next turn's recomputed tail. LRU; 0 disables the stash."""
+
+    log_interval_s: float = Field(60.0, gt=0)
+    """Seconds between the counter log lines on TP rank 0."""
+
+
 # Known llm-d EPP scorer plugins (used to guard the ``scorers`` map against typos).
 KNOWN_SCORERS = frozenset(
     {
@@ -466,6 +482,9 @@ class InferenceConfig(BaseConfig):
     top_p_before_top_k: bool = True
     """With sampling-mask capture, apply top-p to the full temperature-scaled distribution before the top-k cap. Applies engine-wide on the V2 runner and uses a sorting-based reference sampler. Has no effect without sampling-mask capture. The final support can contain less than top_p of the original mass when the cap binds. Set false to use vLLM's top-k-before-top-p order."""
 
+    forced_routing: ForcedRoutingConfig = ForcedRoutingConfig()
+    """Forced MoE routing of recomputed prompt positions (router replay on prefill). Off by default."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
@@ -489,6 +508,20 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_forced_routing(self):
+        """Forced routing reads vLLM's routed-experts capture, and binds only to plain tensor-parallel engines."""
+        if not self.forced_routing.enabled:
+            return self
+        if self.deployment.type == "disaggregated":
+            raise ValueError("inference.forced_routing does not support disaggregated P/D deployments.")
+        if self.vllm.enable_expert_parallel or self.vllm.data_parallel_size > 1:
+            raise ValueError("inference.forced_routing does not support expert or data parallelism.")
+        if "enable_return_routed_experts" in self.vllm.model_fields_set and not self.vllm.enable_return_routed_experts:
+            raise ValueError("inference.forced_routing requires inference.vllm.enable_return_routed_experts.")
+        self.vllm.enable_return_routed_experts = True
         return self
 
     @model_validator(mode="after")

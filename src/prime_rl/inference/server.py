@@ -10,6 +10,14 @@ def setup_vllm_env(config: InferenceConfig):
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
+    # The config is authoritative; the env var alone also enables it for a bare `vllm serve`.
+    forced_routing = config.forced_routing
+    os.environ["PRIME_RL_FORCED_ROUTING"] = "1" if forced_routing.enabled else "0"
+    if forced_routing.enabled:
+        os.environ["PRIME_RL_FORCED_ROUTING_DRIFT"] = "1" if forced_routing.drift else "0"
+        os.environ["PRIME_RL_FORCED_ROUTING_STASH_MIB"] = str(forced_routing.stash_max_mib)
+        os.environ["PRIME_RL_FORCED_ROUTING_LOG_INTERVAL"] = str(forced_routing.log_interval_s)
+
     # vLLM captures sampling masks and routed experts only on the V2 model runner.
     # setdefault keeps an explicit env-var choice authoritative.
     if config.enable_return_sampling_mask or config.vllm.enable_return_routed_experts:

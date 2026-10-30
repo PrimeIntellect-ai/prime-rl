@@ -521,6 +521,18 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_forced_routing(self):
+        """Forced routing only pays off when the trainer replays the routing, and is only correct when no two rollouts
+        share prefix-cache blocks (a shared block's stored routing comes from whichever rollout computed it first)."""
+        if self.inference is None or not self.inference.forced_routing.enabled:
+            return self
+        if not self.trainer.enable_router_replay:
+            raise ValueError("inference.forced_routing requires trainer.enable_router_replay.")
+        if not self.orchestrator.per_episode_cache_salt:
+            raise ValueError("inference.forced_routing requires orchestrator.per_episode_cache_salt = true.")
+        return self
+
+    @model_validator(mode="after")
     def validate_multi_node_requires_router(self):
         if self.deployment.type == "multi_node" and self.inference is not None and self.inference.router is None:
             raise ValueError("Multi-node deployments require inference.router to front the per-rank engines.")
