@@ -9,7 +9,8 @@ live on `vf.Trace` itself.
 
 Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
 always carries its tokens — no backfill needed. Multimodal RL keeps the inline image URLs on
-the messages and pairs them with vLLM's expanded image-token runs here.
+the messages and pairs them with the branch's image placeholder ranges here; a placeholder
+token id anywhere else (sampled, or in tool text) is plain text.
 """
 
 from __future__ import annotations
@@ -39,30 +40,19 @@ def _image_urls(branch: vf.Branch) -> list[str]:
     return urls
 
 
-def _image_runs(token_types: list[int]) -> list[tuple[int, int]]:
-    runs: list[tuple[int, int]] = []
-    start: int | None = None
-    for index, token_type in enumerate([*token_types, 0]):
-        if token_type == 1 and start is None:
-            start = index
-        elif token_type != 1 and start is not None:
-            runs.append((start, index - start))
-            start = None
-    return runs
-
-
-def _build_mm_refs(urls: list[str], token_types: list[int]) -> MMRefs | None:
-    runs = _image_runs(token_types)
-    if len(urls) != len(runs):
+def _build_mm_refs(trace: vf.Trace, branch: vf.Branch) -> MMRefs | None:
+    """Pair the branch's inline images with the placeholder ranges where they were placed."""
+    urls = _image_urls(branch)
+    spans = branch.mm_placeholders.get("image", [])
+    if len(urls) != len(spans):
         raise ValueError(
-            f"Inline image count does not match expanded placeholder runs: images={len(urls)}, runs={len(runs)}"
+            f"Trace {trace.id} branch {branch.index} has {len(urls)} inline images but "
+            f"{len(spans)} image placeholder ranges: {spans}"
         )
     if not urls:
         return None
     return MMRefs(
-        images=[
-            MMImageRef(url=url, offset=offset, length=length) for url, (offset, length) in zip(urls, runs, strict=True)
-        ]
+        images=[MMImageRef(url=url, offset=offset, length=length) for url, (offset, length) in zip(urls, spans)]
     )
 
 
@@ -122,8 +112,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
     out. Errored traces are dropped upstream (`TrainSink.process_episode`), so no error
-    handling happens here. A branch carrying images gets raw image refs paired with expanded
-    placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
+    handling happens here. A branch carrying images gets raw image refs paired with its
+    placeholder ranges, and `mm_token_type_ids` built from those ranges. Branches with no sampled tokens yield nothing.
     """
     samples: list[TrainingSample] = []
     # Set by the env server when it keeps the arrays (`prime_rl.transports.payload`).
@@ -131,14 +121,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
-        mm_token_type_ids: np.ndarray | None = None
-        mm_refs: MMRefs | None = None
-        image_urls = _image_urls(branch)
-        if image_urls:
-            mm_token_type_ids = branch.mm_token_type_ids
-            if mm_token_type_ids is None:
-                raise ValueError("Inline images have no expanded multimodal prompt tokens")
-            mm_refs = _build_mm_refs(image_urls, mm_token_type_ids)
+        mm_refs = _build_mm_refs(trace, branch)
+        mm_token_type_ids = branch.mm_token_type_ids if mm_refs is not None else None
         samples.append(
             TrainingSample(
                 token_ids=token_ids,

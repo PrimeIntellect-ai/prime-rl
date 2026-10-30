@@ -157,11 +157,12 @@ async def custom_init_app_state(
     # X-data-parallel-rank header and routed_experts response field — both
     # used by prime-RL's renderer / router-replay paths — keep working.
     if "generate" in supported_tasks and state.serving_tokens is not None:
-        from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
+        from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens, install_placed_media
 
         upstream = state.serving_tokens
         prime_serving = object.__new__(PrimeRlServingTokens)
         prime_serving.__dict__.update(upstream.__dict__)
+        install_placed_media(prime_serving.online_renderer.renderer)
         state.serving_tokens = prime_serving
 
     # Under RL load the API server holds millions of live objects, and CPython's

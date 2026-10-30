@@ -116,7 +116,10 @@ def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():
     assert len(fake.calls) == 1
     body = fake.calls[0]["body"]
     assert "features" not in body
-    assert body["content_parts"] == [{"type": "image_url", "url": image_url}]
+    pad_index = body["token_ids"].index(image_pad_id)
+    assert body["content_parts"] == [
+        {"type": "image_url", "url": image_url, "placeholder": {"offset": pad_index, "length": 1}}
+    ]
     assert body["token_ids"].count(image_pad_id) == 1
     assert result["renderer_prompt_ids"] == body["token_ids"]
     assert result["prompt_ids"].count(image_pad_id) == 4

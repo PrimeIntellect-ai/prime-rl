@@ -258,7 +258,8 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
 
         image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
         if has_images:
-            image_mask = input_ids == self.config.image_token_id
+            # Image positions come from the batch: a placeholder token id elsewhere is text.
+            image_mask = mm_token_type_ids == 1
             torch_compilable_check(
                 image_mask.sum() * inputs_embeds.shape[-1] == image_embeds.numel(),
                 "Image features and image tokens do not match",

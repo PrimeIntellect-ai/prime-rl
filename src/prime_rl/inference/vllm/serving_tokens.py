@@ -20,13 +20,18 @@ detokenization (``/generate`` returns token ids only; requests with stop strings
 keep it) and asks for flat logprobs (a few lists per request instead of a dict
 and ``Logprob`` objects per token).
 
+Raw media (``content_parts``) is expanded only at the placeholder ranges the renderer
+declared per part, so a placeholder token id sampled earlier or carried in text stays text.
+
 Everything else delegates to upstream so we track future vLLM changes for free.
 """
 
 from __future__ import annotations
 
+import itertools
 import os
 from collections.abc import AsyncGenerator, AsyncIterator
+from contextvars import ContextVar
 from copy import copy
 from typing import Any
 
@@ -146,8 +151,62 @@ class _PackedOutputs:
         return PrimeRlGenerateResponse(**{**response.model_dump(exclude={"choices"}), "choices": choices})
 
 
+# Media placeholder ranges a request declared in its content parts; read by the
+# ``render_cmpl_async`` wrapper that ``install_placed_media`` puts on the renderer.
+_PLACED_MEDIA: ContextVar[list[tuple[int, int]] | None] = ContextVar("prl_placed_media", default=None)
+
+
+def hide_stray_placeholders(
+    token_ids: list[int], placed: list[tuple[int, int]]
+) -> tuple[list[int], list[int], int] | None:
+    """Swap placeholder token ids outside the placed ranges for a token absent from the prompt.
+
+    vLLM expands media at the first N placeholder tokens it finds, so a placeholder id
+    sampled earlier or carried in text would take an image. Returns the masked ids, the
+    swapped positions and the stand-in token, or None when nothing needs hiding.
+    """
+    placed_positions = {i for offset, length in placed for i in range(offset, offset + length)}
+    placeholder_ids = {token_ids[i] for i in placed_positions}
+    strays = [i for i, token in enumerate(token_ids) if token in placeholder_ids and i not in placed_positions]
+    if not strays:
+        return None
+    present = set(token_ids)
+    stand_in = next(token for token in itertools.count() if token not in present)
+    masked = list(token_ids)
+    for i in strays:
+        masked[i] = stand_in
+    return masked, strays, stand_in
+
+
+def restore_stray_placeholders(expanded: list[int], token_ids: list[int], strays: list[int], stand_in: int) -> None:
+    """Put the original ids back where the stand-in landed after media expansion."""
+    positions = [i for i, token in enumerate(expanded) if token == stand_in]
+    if len(positions) != len(strays):
+        raise ValueError(f"Expected {len(strays)} hidden placeholder tokens after expansion, found {len(positions)}")
+    for position, stray in zip(positions, strays):
+        expanded[position] = token_ids[stray]
+
+
+def install_placed_media(renderer: Any) -> None:
+    """Expand media only at the ranges the request declared (see ``hide_stray_placeholders``)."""
+    render_cmpl_async = renderer.render_cmpl_async
+
+    async def render_placed(prompts, *args, **kwargs):
+        placed = _PLACED_MEDIA.get()
+        hidden = hide_stray_placeholders(prompts[0]["prompt_token_ids"], placed) if placed else None
+        if hidden is None:
+            return await render_cmpl_async(prompts, *args, **kwargs)
+        masked, strays, stand_in = hidden
+        token_ids = prompts[0]["prompt_token_ids"]
+        (engine_input,) = await render_cmpl_async([{**prompts[0], "prompt_token_ids": masked}], *args, **kwargs)
+        restore_stray_placeholders(engine_input["prompt_token_ids"], token_ids, strays, stand_in)
+        return [engine_input]
+
+    renderer.render_cmpl_async = render_placed
+
+
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens with packed per-token payloads."""
+    """ServingTokens with packed per-token payloads, expanding media only where it was placed."""
 
     async def serve_tokens(
         self,
@@ -176,7 +235,17 @@ class PrimeRlServingTokens(ServingTokens):
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
             if not sampling_params.stop:
                 sampling_params.detokenize = False
-        return await super().serve_tokens(request, raw_request)
+        parts = request.content_parts or []
+        placed = (
+            [(part["placeholder"]["offset"], part["placeholder"]["length"]) for part in parts]
+            if parts and all("placeholder" in part for part in parts)
+            else None
+        )
+        token = _PLACED_MEDIA.set(placed)
+        try:
+            return await super().serve_tokens(request, raw_request)
+        finally:
+            _PLACED_MEDIA.reset(token)
 
     async def serve_tokens_full_generator(  # type: ignore[override]
         self,
