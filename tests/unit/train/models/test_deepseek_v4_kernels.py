@@ -178,6 +178,11 @@ requires_cudnn_flashmla = pytest.mark.skipif(
 )
 
 DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
+DSV4_BACKWARDS = [
+    pytest.param("tilelang", False, id="tilelang"),
+    pytest.param("cudnn_flashmla", False, id="cudnn_flashmla", marks=requires_cudnn_flashmla),
+    pytest.param("cudnn_flashmla", True, id="cudnn_flashmla-cudnn_sink_grad", marks=requires_cudnn_flashmla),
+]
 
 if importlib.util.find_spec("flash_mla") is not None:
     # vLLM's bundled FlashMLA (`vllm._flashmla_C`) and the flash-mla wheel both define the GNU-unique
@@ -318,10 +323,10 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
     )
 
 
-@pytest.mark.parametrize("backend", DSV4_BACKENDS)
+@pytest.mark.parametrize("backend, cudnn_sink_grad", DSV4_BACKWARDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_traces_under_torch_compile(backend):
+def test_kernel_traces_under_torch_compile(backend, cudnn_sink_grad):
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
     `apply_compile` in `prime_rl/trainer/model.py` compiles each decoder layer, so every real
@@ -335,7 +340,9 @@ def test_kernel_traces_under_torch_compile(backend):
     compiled_leaves = _leaves(q, kv, sinks)
 
     def attend(q: torch.Tensor, kv: torch.Tensor, sinks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
+        return dsv4_sparse_attn(
+            q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS, cudnn_sink_grad=cudnn_sink_grad
+        )
 
     out, lse = attend(*eager_leaves)
     # One weight tensor for both losses, so the two backwards are the same function of the same

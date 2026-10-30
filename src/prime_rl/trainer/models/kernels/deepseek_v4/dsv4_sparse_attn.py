@@ -1,6 +1,9 @@
 # Torch-facing layer for the DeepSeek V4 sparse attention kernels: the `prime_rl::dsv4_sparse_attn`
 # and `prime_rl::dsv4_sparse_attn_backward` custom ops, their fake (meta) implementations, and the
-# autograd rule that ties them together and forms the attention-sink gradient in torch. The
+# autograd rule that ties them together and forms the attention-sink gradient in torch. With
+# `cudnn_sink_grad`, the autograd rule calls `prime_rl::dsv4_sparse_attn_backward_cudnn_sink`
+# instead, which forms the attention-sink gradient from what the cuDNN backward computes, with no
+# separate pass over the output and its gradient. The
 # TileLang kernels themselves live in `dsv4_sparse_attn_fwd.py` and `dsv4_sparse_attn_bwd.py`; this
 # module is the only place that knows both exist. The `cudnn_flashmla` backend calls FlashMLA's
 # sparse prefill forward and the cuDNN frontend's DSA backward from their wheels.
@@ -162,6 +165,33 @@ def flat_cudnn_flashmla_indices(indices: torch.Tensor, n_positions: int) -> tupl
     return flat_indices.contiguous(), topk_length
 
 
+def flashmla_sparse_forward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """FlashMLA's sparse prefill output and its LSE, which is natural-log, leaves the sink out, and is +inf for a query with no valid slot."""
+    from flash_mla import flash_mla_sparse_fwd
+
+    batch, seq_len, heads, dim = q.shape
+    n_positions = kv.shape[1]
+    if sm_scale is None:
+        sm_scale = dim**-0.5
+    flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
+    out, _max_logits, sinkless_lse = flash_mla_sparse_fwd(
+        q.view(batch * seq_len, heads, dim),
+        kv.view(batch * n_positions, 1, dim),
+        flat_indices.unsqueeze(1),
+        sm_scale,
+        dim,
+        attn_sink=sinks.float().contiguous(),
+        topk_length=topk_length,
+    )
+    return out.view(batch, seq_len, heads, dim), sinkless_lse.view(batch, seq_len, heads)
+
+
 def cudnn_flashmla_forward(
     q: torch.Tensor,
     kv: torch.Tensor,
@@ -172,27 +202,11 @@ def cudnn_flashmla_forward(
     _num_stages: int,
     _threads: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    from flash_mla import flash_mla_sparse_fwd
-
-    batch, seq_len, heads, dim = q.shape
-    n_positions = kv.shape[1]
-    if sm_scale is None:
-        sm_scale = dim**-0.5
-    flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
-    sink_logits = sinks.float().contiguous()
-    out, _max_logits, sinkless_lse = flash_mla_sparse_fwd(
-        q.view(batch * seq_len, heads, dim),
-        kv.view(batch * n_positions, 1, dim),
-        flat_indices.unsqueeze(1),
-        sm_scale,
-        dim,
-        attn_sink=sink_logits,
-        topk_length=topk_length,
-    )
-    # FlashMLA's LSE is natural-log and leaves the sink out, and it is +inf for a query with no
-    # valid slot. The public LSE is TileLang's: base-2, sink included, the sink alone when empty.
+    out, sinkless_lse = flashmla_sparse_forward(q, kv, indices, sinks, sm_scale)
+    # The public LSE is TileLang's: base-2, sink included, the sink alone when empty.
+    sink_logits = sinks.float()
     lse = torch.where(torch.isfinite(sinkless_lse), torch.logaddexp(sinkless_lse, sink_logits), sink_logits) * LOG2E
-    return out.view(batch, seq_len, heads, dim), lse.view(batch, seq_len, heads)
+    return out, lse
 
 
 FORWARD_BACKENDS = {"tilelang": tilelang_forward, "cudnn_flashmla": cudnn_flashmla_forward}
@@ -210,9 +224,13 @@ def dsv4_sparse_attn(
     threads: int = 256,
     backend: str = "tilelang",
     max_slots: int | None = None,
+    cudnn_sink_grad: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert backend in FORWARD_BACKENDS, (
         f"unknown sparse attention backend {backend!r}, expected one of {sorted(FORWARD_BACKENDS)}"
+    )
+    assert not cudnn_sink_grad or backend == "cudnn_flashmla", (
+        f"only the cudnn_flashmla backend can form the sink gradient in cuDNN, not {backend!r}"
     )
     assert q.is_contiguous(), "q must be contiguous"
     assert kv.is_contiguous(), "kv must be contiguous"
@@ -232,6 +250,9 @@ def dsv4_sparse_attn(
     assert backend != "cudnn_flashmla" or max_slots is not None, (
         "the cudnn_flashmla backward builds one kernel for every slot width up to max_slots, so it needs max_slots"
     )
+    if cudnn_sink_grad:
+        # The cuDNN backward takes FlashMLA's own LSE and the sinks, so this LSE stays natural-log and sink-free.
+        return flashmla_sparse_forward(q, kv, indices, sinks, sm_scale)
     return FORWARD_BACKENDS[backend](q, kv, indices, sinks, sm_scale, block_I, num_stages, threads)
 
 
@@ -249,6 +270,7 @@ def _dsv4_sparse_attn_fake(
     threads: int = 256,
     backend: str = "tilelang",
     max_slots: int | None = None,
+    cudnn_sink_grad: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
@@ -281,16 +303,22 @@ def tilelang_backward(
     return dq, dkv, delta
 
 
-def cudnn_flashmla_backward(
+def cudnn_dsa_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
     out: torch.Tensor,
     grad_out: torch.Tensor,
     indices: torch.Tensor,
-    lse: torch.Tensor,
+    natural_log_lse: torch.Tensor,
+    sinks: torch.Tensor | None,
     sm_scale: float | None,
-    max_slots: int | None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    max_slots: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """cuDNN's DSA backward: dQ, dKV, and with `sinks` (float32) the sink gradient, folding the sinks into `natural_log_lse`.
+
+    cuDNN's SM90 kernel would add every query's sink term into `d_sink` with its own atomic, which costs more than
+    the rest of its preprocess, so on SM90 the sink gradient is reduced here from the preprocess's `rowsum(out * dout)`.
+    """
     from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
         flash_attn_bwd_sm100_workspace_size,
     )
@@ -305,33 +333,55 @@ def cudnn_flashmla_backward(
         kv.view(batch * n_positions, dim),
         out.view(batch * seq_len, heads, dim),
         grad_out.view(batch * seq_len, heads, dim),
-        # A sink-inclusive natural-log LSE with no sink makes cuDNN's `exp(s - lse)` exactly the
-        # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
-        (lse * math.log(2.0)).view(batch * seq_len, heads),
+        natural_log_lse.view(batch * seq_len, heads),
     )
     if torch.cuda.get_device_capability(q.device)[0] == 9:
-        dq, dkv = flash_attn_bwd_sm90(
+        grads = flash_attn_bwd_sm90(
             *flat_tensors,
+            attn_sink=sinks,
             softmax_scale=sm_scale,
             topk_idxs=flat_indices,
             topk_length=topk_length,
             max_slots=cudnn_flashmla_slot_width(max_slots),
+            return_dpsum=sinks is not None,
         )
+        if sinks is not None:
+            dq, dkv, dpsum = grads
+            # p_sink = 1 / (1 + exp(lse - sink)) for the sink-free `lse`, so a query with no valid slot (+inf) adds 0.
+            p_sink = torch.sigmoid(sinks - flat_tensors[-1])
+            grads = dq, dkv, -(p_sink * dpsum).sum(dim=0)
     else:
-        # The SM100 kernel folds `attn_sink` into the LSE itself, and a -inf sink folds in nothing.
+        # The SM100 kernel always folds `attn_sink` into the LSE, and a -inf sink folds in nothing.
         no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
         workspace_bytes = flash_attn_bwd_sm100_workspace_size(batch * seq_len, batch * n_positions, dim, heads)
-        dq, dkv, _ = flash_attn_bwd_sm100(
+        grads = flash_attn_bwd_sm100(
             *flat_tensors,
-            no_sink,
+            no_sink if sinks is None else sinks,
             flat_indices,
             softmax_scale=sm_scale,
             topk_length=topk_length,
             workspace=torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device),
             max_slots=cudnn_flashmla_slot_width(max_slots),
         )
+    return grads[0].view_as(q), grads[1].view_as(kv), grads[2] if sinks is not None else None
+
+
+def cudnn_flashmla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None,
+    max_slots: int | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # A sink-inclusive natural-log LSE with no sink makes cuDNN's `exp(s - lse)` exactly the
+    # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
+    dq, dkv, _ = cudnn_dsa_backward(q, kv, out, grad_out, indices, lse * math.log(2.0), None, sm_scale, max_slots)
+    heads, dim = q.shape[2:]
     delta = preprocess(heads, dim)(out, grad_out)
-    return dq.view_as(q), dkv.view_as(kv), delta
+    return dq, dkv, delta
 
 
 BACKWARD_BACKENDS = {"tilelang": tilelang_backward, "cudnn_flashmla": cudnn_flashmla_backward}
@@ -387,18 +437,74 @@ def _dsv4_sparse_attn_backward_fake(
     return torch.empty_like(q), torch.empty_like(kv), torch.empty_like(lse)
 
 
+@torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward_cudnn_sink", mutates_args=())
+def dsv4_sparse_attn_backward_cudnn_sink(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    sinkless_lse: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None,
+    max_slots: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The cudnn_flashmla backward from FlashMLA's natural-log, sink-free LSE: dQ, dKV and the float32 sink gradient."""
+    assert q.is_contiguous(), "q must be contiguous"
+    assert kv.is_contiguous(), "kv must be contiguous"
+    assert indices.is_contiguous(), "indices must be contiguous"
+    assert sinkless_lse.is_contiguous(), "sinkless_lse must be contiguous"
+    batch, seq_len, heads, dim = q.shape
+    shape_error = cudnn_flashmla_error(heads, kv.shape[2], dim)
+    assert shape_error is None, shape_error
+    assert sinkless_lse.shape == (batch, seq_len, heads)
+    assert sinks.shape == (heads,)
+    return cudnn_dsa_backward(
+        q, kv, out, grad_out.contiguous(), indices, sinkless_lse, sinks.float().contiguous(), sm_scale, max_slots
+    )
+
+
+@dsv4_sparse_attn_backward_cudnn_sink.register_fake
+def _dsv4_sparse_attn_backward_cudnn_sink_fake(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    sinkless_lse: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None,
+    max_slots: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return torch.empty_like(q), torch.empty_like(kv), torch.empty_like(sinks, dtype=torch.float32)
+
+
 def _dsv4_sparse_attn_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads, backend, max_slots = inputs
+    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads, backend, max_slots, cudnn_sink_grad = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse, sinks)
     ctx.sm_scale = sm_scale
     ctx.backend = backend
     ctx.max_slots = max_slots
+    ctx.cudnn_sink_grad = cudnn_sink_grad
     ctx.mark_non_differentiable(lse)
 
 
 def _dsv4_sparse_attn_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None):
     q, kv, out, indices, lse, sinks = ctx.saved_tensors
+    if ctx.cudnn_sink_grad:
+        dq, dkv, dsink = dsv4_sparse_attn_backward_cudnn_sink(
+            q.detach(),
+            kv.detach(),
+            out.detach(),
+            grad_out,
+            indices,
+            lse.detach(),
+            sinks.detach(),
+            ctx.sm_scale,
+            ctx.max_slots,
+        )
+        return dq, dkv, None, dsink.to(sinks.dtype), None, None, None, None, None, None, None
     dq, dkv, delta = dsv4_sparse_attn_backward(
         q.detach(),
         kv.detach(),
@@ -414,7 +520,7 @@ def _dsv4_sparse_attn_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: 
     # contracts to -p_sink * Delta. The sink logit is unscaled, hence no sm_scale factor.
     p_sink = torch.exp2(sinks.float().view(1, 1, -1) * LOG2E - lse)
     dsink = -(p_sink * delta).sum(dim=(0, 1)).to(sinks.dtype)
-    return dq, dkv, None, dsink, None, None, None, None, None, None
+    return dq, dkv, None, dsink, None, None, None, None, None, None, None
 
 
 dsv4_sparse_attn.register_autograd(_dsv4_sparse_attn_autograd_backward, setup_context=_dsv4_sparse_attn_setup_context)
