@@ -1,9 +1,8 @@
-# Adapted/copied from https://github.com/meta-pytorch/torchtune/blob/10c31c0abadf51dfa2bf606637cd81e812e3f8c9/torchtune/training/_activation_offloading.py
-
 from contextlib import nullcontext
 
 import psutil
 import torch
+from torch import nn
 from torch.autograd.graph import saved_tensors_hooks
 from torch.distributed.tensor import DTensor
 from torch.multiprocessing.reductions import StorageWeakRef
@@ -14,364 +13,136 @@ from .logger import get_logger
 
 
 class OffloadActivations(saved_tensors_hooks):
-    """Context manager under which activation tensors created in the forward pass will be offloaded.
+    """Offload tensors saved for backward to pinned CPU memory, copying on a side stream.
 
-    Enable the memory efficiency technique of activation offloading, where activations bigger than
-    min_offload_size bytes will be offloaded to CPU in the forward and brought back in the backward.
-    This is in contrast to maintaining the activation on GPU VRAM throughout the program.
+    In the forward pass, at most ``max_inflight`` activations stay on the GPU while their copies
+    to CPU run. In the backward pass, the next ``max_inflight`` activations are copied back
+    ahead of use. Copies are ordered against the stream that saves or unpacks a tensor, which is
+    not always the compute stream: autograd runs a backward node on the stream of its forward op.
+    Prefetched GPU memory is allocated on the compute stream. A saved tensor can come from any
+    stream, so a repeated save and every unpack record the current stream on it.
 
-    This manager contains the option of using one additional CUDA stream to handle the communication
-    between CUDA and CPU, which is intended to overlap with the default computation stream to improve
-    runtime. We designed synchronization with a few heuristics for optimizing the tradeoff between
-    runtime vs memory usage.
+    Tensors that share storage with a parameter of ``model`` stay on the GPU. A compiled block saves
+    the local tensors of unsharded DTensor parameters (e.g. EP experts), and FSDP frees and refills
+    that storage itself.
 
-    Args:
-        model (nn.Module): Tensors that share storage with one of its parameters are not offloaded. A compiled
-            block saves the local tensors of unsharded DTensor parameters (e.g. EP experts), and FSDP frees and
-            refills that storage itself.
-
-        use_pin_memory (bool): Whether or not the offloaded Tensor will be placed in pinned
-            memory on the CPU. Pinned memory allows the Tensor to be moved back onto GPU more quickly
-            but is a limited resource. Default: True.
-
-        use_streams (bool): Whether or not to use streams for performance optimization where
-            the communications get overlapped with the computation. Requires a torch build
-            after torch-2.5.0.]. Default: True.
-
-        max_fwd_stash_size (int): The maximum size of the forward stash, or the maximum number of
-            consecutive activations to keep alive during the forward pass. This number must be at
-            least 1. Keeping alive more activations will potentially allow more overlap between the
-            communication and compute streams at the cost of increasing memory usage. Keeping alive
-            fewer activations will conserve memory, but may cause poor overlap between the streams,
-            increasing runtime. Default: 5.
-
-        min_offload_size (int): The minimum number of bytes a Tensor must be in order to qualify
-            for offloading. If the tensor is too small, we do not want to waste bandwidth and resources
-            moving it to CPU and back. Default: 1024 bytes.
-
-    Raises:
-        ValueError: if max_fwd_stash_size is not at least 1.
-
-    Example:
-        >>> with OffloadActivations():
-        >>>     logits = model(inputs)
-        >>> loss = ...
-        >>> loss.backward()
+    A contiguous tensor saved again (same storage, offset, numel and dtype, e.g. RoPE ``cos``/``sin``
+    or shared indexer outputs saved by every block) reuses the first save's copy in both directions.
+    The key leaves out the version counter: compiled blocks can save views of one storage with
+    different versions, and a mutation between two saves already fails autograd's version check.
     """
 
-    def __init__(
-        self,
-        model: torch.nn.Module,
-        use_pin_memory: bool = True,
-        max_fwd_stash_size: int = 5,
-        min_offload_size: int = 1024,
-    ) -> None:
-        # We don't use streams as they can result in memory leaks/non-matching loss curves and other issues, response to this from torchtune repo is:
-        # `if it's related to streams, the fix is gonna be non-trivial...`
-        self.use_streams: bool = False
-
-        self.min_tensor_size_bytes = min_offload_size  # we don't want to bother with small tensors
+    def __init__(self, model: nn.Module, max_inflight: int = 5, min_offload_size: int = 1024) -> None:
         self.param_slots = [(module, name) for module in model.modules() for name in module._parameters]
-        self.tracker = {}  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
-        self.cpu_copies = {}
-        self.shared_copies = {}
-        self.tensor_id: int = 0
-        self.is_first_forward_call = True
-        self.is_first_backward_call = True
-        self.is_first_forward_pass = True
+        self.max_inflight = max_inflight
+        self.min_offload_size = min_offload_size
+        self.compute_stream = torch.cuda.current_stream()
+        self.copy_stream = torch.cuda.Stream()
+        self.next_id = 0
+        self.kept: dict[int, torch.Tensor] = {}
+        self.on_cpu: dict[int, torch.Tensor] = {}
+        self.offloading: dict[int, tuple[torch.Tensor, torch.Event]] = {}
+        self.prefetched: dict[int, tuple[torch.Tensor, torch.Event]] = {}
+        self.copies: dict[tuple, tuple[StorageWeakRef, int]] = {}  # storage key -> (storage ref, copy id)
+        self.aliases: dict[int, tuple[int, torch.Size]] = {}  # tensor id -> (copy id, shape) for repeated saves
+        self.refs: dict[int, int] = {}  # copy id -> saves not yet unpacked
+        super().__init__(self.pack, self.unpack)
 
-        # managing cpu memory
-        self.use_pin_memory: bool = use_pin_memory
-        self.virtual_memory_safe_pct = 90  # we should not exceed this percentage of memory
-        # comp stream
-        if torch.accelerator.is_available():
-            self.s0 = torch.accelerator.current_stream()
-        else:
-            raise ValueError("enable_activation_offloading should only be True when training on CUDA or XPU")
+    def __exit__(self, *args: object) -> None:
+        super().__exit__(*args)
+        ram_pct = psutil.virtual_memory().percent
+        if ram_pct > 90:
+            get_logger().warning(f"Host RAM is {ram_pct}% used after offloading activations")
 
-        # for streaming
-        if self.use_streams:
-            self.s1 = torch.Stream()  # comms stream
-            self.fwd_stash = {}  # tensor_id => (activation, ev1)
-            if max_fwd_stash_size < 1:
-                raise ValueError(f"max_fwd_stash_size should be at least 1 but is {max_fwd_stash_size}")
-            self.max_fwd_stash_size = max_fwd_stash_size
-            self.bwd_tensor_stash = {}  # tensor_id => activation
-            self.bwd_ev_stash = {}  # tensor_id => ev0
-            self.curr_graph_id = None
-            self.curr_autograd_node = None
-
-        # -------- platform util functions -------- #
-        def verify_sufficient_virtual_memory():
-            curr_pct = get_cpu_ram_pct()
-            if curr_pct > self.virtual_memory_safe_pct:
-                get_logger().warning(
-                    f"***** WARNING: {curr_pct=}% > {self.virtual_memory_safe_pct=}% of virtual memory used"
-                )
-
-        def get_cpu_ram_pct() -> float:
-            # get the percentage of memory used by the system
-            return psutil.virtual_memory().percent
-
-        def get_tensor_id() -> int:
-            # create a unique id for each tensor we are managing
-            self.tensor_id += 1
-            return self.tensor_id
-
-        def get_param_storages() -> set[int]:
-            storages = set()
-            with torch.no_grad():
-                for module, name in self.param_slots:
-                    param = module._parameters[name]
-                    if param is not None:
-                        local = param.to_local() if isinstance(param, DTensor) else param
-                        storages.add(local.untyped_storage()._cdata)
-            return storages
-
-        def get_num_bytes_tensor(x: torch.Tensor) -> int:
-            # get the number of bytes in a tensor, for memory management purposes
-            return x.element_size() * x.nelement()  # x.element_size() * x._base_storage().nbytes()
-
-        # -------- core pack / unpack work -------- #
-        def pack_tensor(activation: torch.Tensor) -> int:
-            # activations are passed in during forward pass - from here we take over and return a unique id
-            if self.is_first_forward_call:
-                assert len(self.tracker) == 0, "backward pass should have cleared tracker of all tensors"
-
-                # set training phase trackers
-                self.is_first_forward_call = False
-                self.is_first_backward_call = True
-
-            # query for basic tensor info
-            num_bytes = get_num_bytes_tensor(activation)
-            tensor_id = get_tensor_id()
-
-            # only offload hefty bois if they're activations on CUDA (our heuristic
-            # for that is to check if they're not params or buffers)!
-            if (
-                activation.device.type == torch.accelerator.current_accelerator().type
-                and num_bytes >= self.min_tensor_size_bytes
-                and (
-                    not isinstance(activation, torch.nn.Parameter)
-                    and not (hasattr(torch.nn, "Buffer") and isinstance(activation, torch.nn.Buffer))
-                )
-                and activation.untyped_storage()._cdata not in get_param_storages()
-            ):
-                if self.use_streams:
-                    # First, sync back and dereference previously offloaded tensors
-                    # as the offloading should be done sufficiently long ago.
-                    for id in [k for k in self.fwd_stash.keys()]:
-                        if id <= tensor_id - self.max_fwd_stash_size:
-                            _, ev = self.fwd_stash[id]
-                            self.s0.wait_event(ev)
-                            del self.fwd_stash[id]
-                        else:
-                            break
-
-                    # Sync in, offload, and add an event to sync back later
-                    self.s1.wait_stream(self.s0)
-
-                key = (
-                    activation.untyped_storage()._cdata,
-                    activation.storage_offset(),
-                    activation.numel(),
-                    activation.dtype,
-                )
-                copy = self.cpu_copies.get(key) if activation.is_contiguous() else None
-                if copy is not None and not copy[0].expired():
-                    cpu_tensor = copy[1]
-                    self.tracker[tensor_id] = (cpu_tensor.view(activation.shape), True)
-                    shared = self.shared_copies.setdefault(cpu_tensor.data_ptr(), [1, None])
-                    shared[0] += 1
-                    return tensor_id
-
-                stream = self.s1 if self.use_streams else self.s0
-                with stream:
-                    try:
-                        cpu_tensor = torch.empty_like(activation, pin_memory=self.use_pin_memory, device="cpu")
-                    except NotImplementedError as e:
-                        raise e
-                    cpu_tensor.copy_(activation, non_blocking=True)
-                    self.tracker[tensor_id] = (
-                        cpu_tensor,
-                        True,
-                    )  # True = (in future) modified
-                    if activation.is_contiguous():
-                        self.cpu_copies[key] = (StorageWeakRef(activation.untyped_storage()), cpu_tensor)
-
-                if self.use_streams:
-                    event = self.s1.record_event()
-
-                    # Stash to keep activation alive til s1 is done
-                    self.fwd_stash[tensor_id] = (activation, event)
-            else:
-                self.tracker[tensor_id] = (
-                    activation,
-                    False,
-                )  # False = not modified, tensor is as is
-
+    def pack(self, tensor: torch.Tensor) -> int:
+        self.next_id += 1
+        tensor_id = self.next_id
+        if (
+            tensor.device.type != "cuda"
+            or tensor.nbytes < self.min_offload_size
+            or isinstance(tensor, (nn.Parameter, nn.Buffer))
+            or tensor.untyped_storage()._cdata in self.param_storages()
+        ):
+            self.kept[tensor_id] = tensor
             return tensor_id
 
-        def unpack_tensor_single_stream(unpack_tensor_id: int) -> torch.Tensor:
-            # backward pass - we are called with the tensor_id, which
-            # we will use to retrieve the saved/offloaded tensor
-            if self.is_first_backward_call:
-                if self.is_first_forward_pass:
-                    self.is_first_forward_pass = False
-                    if self.use_pin_memory:
-                        verify_sufficient_virtual_memory()
+        if tensor.is_contiguous():
+            key = (tensor.untyped_storage()._cdata, tensor.storage_offset(), tensor.numel(), tensor.dtype)
+            match = self.copies.get(key)
+            if match is not None and not match[0].expired() and match[1] in self.refs:
+                tensor.record_stream(torch.cuda.current_stream())
+                self.refs[match[1]] += 1
+                self.aliases[tensor_id] = (match[1], tensor.shape)
+                return tensor_id
+            self.copies[key] = (StorageWeakRef(tensor.untyped_storage()), tensor_id)
 
-                self.is_first_backward_call = False
-                self.is_first_forward_call = True
-                self.cpu_copies.clear()
+        stream = torch.cuda.current_stream()
+        while len(self.offloading) >= self.max_inflight:
+            _, event = self.offloading.pop(next(iter(self.offloading)))
+            stream.wait_event(event)
 
-            assert unpack_tensor_id in self.tracker, f"untracked tensor with id {unpack_tensor_id}"
+        self.copy_stream.wait_stream(stream)
+        with torch.cuda.stream(self.copy_stream):
+            cpu_tensor = torch.empty_like(tensor, device="cpu", pin_memory=True)
+            cpu_tensor.copy_(tensor, non_blocking=True)
+        tensor.record_stream(self.copy_stream)
+        self.on_cpu[tensor_id] = cpu_tensor
+        self.offloading[tensor_id] = (tensor, self.copy_stream.record_event())
+        self.refs[tensor_id] = 1
+        return tensor_id
 
-            maybe_gpu_tensor, modified = self.tracker[unpack_tensor_id]
-            if modified:
-                shared = self.shared_copies.get(maybe_gpu_tensor.data_ptr())
-                if shared is not None and shared[1] is not None:
-                    gpu_tensor = shared[1].view(maybe_gpu_tensor.shape)
-                else:
-                    gpu_tensor = maybe_gpu_tensor.to(torch.accelerator.current_accelerator(), non_blocking=True)
-                if shared is not None:
-                    shared[0] -= 1
-                    shared[1] = gpu_tensor
-                    if shared[0] == 0:
-                        del self.shared_copies[maybe_gpu_tensor.data_ptr()]
-                maybe_gpu_tensor = gpu_tensor
+    def param_storages(self) -> set[int]:
+        storages = set()
+        with torch.no_grad():
+            for module, name in self.param_slots:
+                param = module._parameters[name]
+                if param is not None:
+                    local = param.to_local() if isinstance(param, DTensor) else param
+                    storages.add(local.untyped_storage()._cdata)
+        return storages
 
-            # clear tensor from tracking
-            del self.tracker[unpack_tensor_id]
-            return maybe_gpu_tensor
+    def unpack(self, tensor_id: int) -> torch.Tensor:
+        if tensor_id in self.kept:
+            return self.kept.pop(tensor_id)
 
-        def unpack_tensor_with_streams(unpack_tensor_id: int) -> torch.Tensor:
-            # backward pass - we are called with the tensor_id, which
-            # we will use to retrieve the saved/offloaded tensor
-            if self.is_first_backward_call:
-                self.curr_graph_id = torch._C._current_graph_task_id()
+        copy_id, shape = self.aliases.pop(tensor_id, (tensor_id, None))
+        if copy_id in self.offloading:
+            tensor, event = self.offloading[copy_id]
+        else:
+            if copy_id not in self.prefetched:
+                self.prefetch(copy_id)
+            tensor, event = self.prefetched[copy_id]
+        self.refs[copy_id] -= 1
+        if self.refs[copy_id] == 0:
+            del self.refs[copy_id], self.on_cpu[copy_id]
+            self.offloading.pop(copy_id, None)
+            self.prefetched.pop(copy_id, None)
 
-                def wait_and_del_remaining_references() -> None:
-                    for id in [k for k in self.bwd_tensor_stash.keys()]:
-                        event = self.bwd_ev_stash[id]
-                        self.s1.wait_event(event)
-                        del self.bwd_tensor_stash[id]
+        upcoming = [i for i in reversed(self.on_cpu) if i < tensor_id and i not in self.offloading]
+        for i in upcoming[: self.max_inflight]:
+            if i not in self.prefetched:
+                self.prefetch(i)
 
-                # Register a callback to the end of autograd to clean everything up
-                torch.autograd.variable.Variable._execution_engine.queue_callback(wait_and_del_remaining_references)
+        stream = torch.cuda.current_stream()
+        stream.wait_event(event)
+        tensor.record_stream(stream)
+        return tensor if shape is None else tensor.view(shape)
 
-                if self.is_first_forward_pass:
-                    self.is_first_forward_pass = False
-                    if self.use_pin_memory:
-                        verify_sufficient_virtual_memory()
-
-                self.is_first_backward_call = False
-                self.is_first_forward_call = True
-
-            assert unpack_tensor_id in self.tracker, f"untracked tensor with id {unpack_tensor_id}"
-
-            maybe_gpu_tensor, modified = self.tracker[unpack_tensor_id]
-            if modified:
-                # Get data on the current autograd node
-                graph_id = torch._C._current_graph_task_id()
-                node = torch._C._current_autograd_node()
-                prev_node_ids = []
-
-                # If we're on a new node, mark prev node's tensors to be freed later
-                if graph_id == self.curr_graph_id and self.curr_autograd_node != node:
-                    self.curr_autograd_node = node
-                    prev_node_ids = [id for id in self.bwd_tensor_stash.keys()]
-
-                brought_back_from_cpu = True
-                if unpack_tensor_id in self.fwd_stash:
-                    maybe_gpu_tensor = self.fwd_stash[unpack_tensor_id][0]
-                    brought_back_from_cpu = False
-                else:
-                    # Kick off the process to bring tensors back
-                    with self.s1:
-                        gpu_tensor = maybe_gpu_tensor.to(torch.accelerator.current_accelerator(), non_blocking=True)
-                        maybe_gpu_tensor = gpu_tensor
-
-                    # Tell comp stream to wait for the info to be loaded before executing
-                    self.s0.wait_stream(self.s1)
-
-                    # Stash the tensor to keep memory alive until compute stream is complete
-                    self.bwd_tensor_stash[unpack_tensor_id] = maybe_gpu_tensor
-
-                    # Note: [Track views of the unpacked]
-                    # Why do we get the use count of the unpacked tensor here? We want an
-                    # initial count to compare to later, during the post-hook of the
-                    # backward node, when we need to decide whether we're allowed to free
-                    # the tensor yet. In what obscure cases must we delay freeing the
-                    # tensor (and thus call record_stream)?
-                    # 1. Any of the outputs of the backward node is a view of the unpacked
-                    #    tensor.
-                    # 2. In the case that this unpacked tensor will be used in a
-                    #    checkpointed region, if one of the recomputed saved tensors ends
-                    #    up as a view of the unpacked tensor.
-                    # 3. The user abuses the system somehow and manually relies on the
-                    #    unpacked tensor to exist after the backward node has executed.
-                    storage_refcount = torch._C._storage_Use_Count(maybe_gpu_tensor.untyped_storage()._cdata)
-
-                def hook(outputs, inputs):
-                    # create events for the current node inputs/outputs if they were streamed in
-                    if brought_back_from_cpu:
-                        # See Note: [Track views of the unpacked]
-                        # IF any of the outputs is a view of the tensor, OR if a view of
-                        # the tensor has been saved as a part of checkpoint's recompute
-                        # process, OR the user has abusedly incurred a reference on the
-                        # unpacked tensor, THEN the tensor might be used later and we
-                        # cannot presume to delete it after only the current node is
-                        # done! So we use our frenemy, record_stream, to ensure the
-                        # Tensor stays unmessed with until it's done getting used in the
-                        # compute stream (s0 here). Note that the con here is we introduce
-                        # non-deterministic (thus higher) memory usage, but this case
-                        # should not happen often.
-                        unpacked_tensor = self.bwd_tensor_stash[unpack_tensor_id]
-                        if torch._C._storage_Use_Count(unpacked_tensor.untyped_storage()._cdata) > storage_refcount:
-                            unpacked_tensor.record_stream(self.s0)
-                            del self.bwd_tensor_stash[unpack_tensor_id]
-                        else:
-                            event = self.s0.record_event()
-                            self.bwd_ev_stash[unpack_tensor_id] = event
-
-                    # if there are still things in the fwd_stash, get rid of them as we're in bwd now
-                    for id in [k for k in self.fwd_stash.keys()]:
-                        _, ev = self.fwd_stash[id]
-                        self.s0.wait_event(ev)
-                        del self.fwd_stash[id]
-
-                    # wait on prev node's events and del those
-                    for id in prev_node_ids:
-                        event = self.bwd_ev_stash[id]
-                        self.s1.wait_event(event)
-                        del self.bwd_tensor_stash[id]
-
-                    return outputs
-
-                node.register_hook(hook)
-
-            # clear tensor from tracking
-            del self.tracker[unpack_tensor_id]
-            return maybe_gpu_tensor
-
-        unpack_tensor = unpack_tensor_with_streams if self.use_streams else unpack_tensor_single_stream
-        super().__init__(pack_tensor, unpack_tensor)
+    def prefetch(self, tensor_id: int) -> None:
+        cpu_tensor = self.on_cpu[tensor_id]
+        with torch.cuda.stream(self.compute_stream):
+            tensor = torch.empty_like(cpu_tensor, device="cuda")
+        self.copy_stream.wait_stream(self.compute_stream)
+        with torch.cuda.stream(self.copy_stream):
+            tensor.copy_(cpu_tensor, non_blocking=True)
+        tensor.record_stream(self.copy_stream)
+        self.prefetched[tensor_id] = (tensor, self.copy_stream.record_event())
 
 
 def maybe_activation_offloading(
-    config: ActivationOffloadingConfig | None, model: torch.nn.Module
+    config: ActivationOffloadingConfig | None, model: nn.Module
 ) -> OffloadActivations | nullcontext:
-    """Returns an OffloadActivations object if activation offloading is enabled, otherwise returns a nullcontext.
-
-    Args:
-        config: The activation offloading configuration.
-        model: The model whose parameter storage is never offloaded.
-
-    Returns:
-        An OffloadActivations object if activation offloading is enabled, otherwise a nullcontext object.
-    """
     if config is None:
         return nullcontext()
 
-    return OffloadActivations(model, max_fwd_stash_size=config.max_inflight_activations)
+    return OffloadActivations(model, max_inflight=config.max_inflight_activations)
