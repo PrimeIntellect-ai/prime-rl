@@ -191,6 +191,7 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 
 class SFTConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
+    auto_freeze_ngram_embedding = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
 

@@ -328,7 +328,8 @@ class NIXLWeightSender(WeightSender):
         if self.initialized:
             return
         model = cast(PreTrainedModelPrimeRL, model)
-        state_dict = model.state_dict()
+        frozen = model.frozen_weight_keys()
+        state_dict = {key: value for key, value in model.state_dict().items() if key not in frozen}
         transfer_groups = self.build_transfer_group_index(state_dict)
         self.transfer_group_names = transfer_groups.group_names
         if self.is_serving_rank:
