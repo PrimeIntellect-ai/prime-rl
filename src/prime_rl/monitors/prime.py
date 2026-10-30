@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import atexit
 import os
+import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -11,6 +13,7 @@ from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import PRIME_EVAL_LINKS, PRIME_LINKS, publish_link, register_links
@@ -23,10 +26,14 @@ if TYPE_CHECKING:
 
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
+
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
 FINISH_TIMEOUT = 60.0
+
+PENDING_METRICS_LIMIT = 256
+UNATTACHED_WARN_SECONDS = 300.0
 
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
@@ -97,9 +104,20 @@ class PrimeTrainMonitor(Monitor):
     """
 
     config: PrimeTrainMonitorConfig
-    run: pr.Run
+    run: pr.Run | None
+    mode: str
+    output_dir: Path | None
+    pending: deque[tuple[int | None, dict[str, Any]]]
+    first_pending_at: float | None
+    warned_unattached: bool
+    attach_gave_up: bool
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
+        self.sidecar = isinstance(config, TrainerConfig)
+        if self.sidecar:
+            await self._init_sidecar(output_dir)
+            return
+
         init_kwargs: dict[str, Any]
         if run_id := os.getenv("RUN_ID"):
             # A managed launch pre-created the platform run and injected its id -
@@ -171,8 +189,108 @@ class PrimeTrainMonitor(Monitor):
         if self.run.url:
             # Merge, not overwrite: a concurrent eval process (SFT online evals share
             # the trainer's run dir) may already have written its evaluations record.
-            update_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
+            update_platform_record(
+                output_dir,
+                {"kind": "train", "id": self.run.id, "url": self.run.url, "run_id": os.getenv("PRL_RUN_ID")},
+            )
             publish_link(output_dir, PRIME_LINKS, "run", self.run.url)
+
+    async def _init_sidecar(self, output_dir: Path | None) -> None:
+        """Attach to the run another process owns and post stepped metrics to it."""
+        self.mode = prime_mode()
+        self.output_dir = output_dir
+        self.pending = deque(maxlen=PENDING_METRICS_LIMIT)
+        self.first_pending_at = None
+        self.warned_unattached = False
+        self.attach_gave_up = False
+        self.run = None
+        run_id = os.getenv("RUN_ID")
+        if self.mode == "online" and not run_id and not os.getenv("PRL_RUN_ID"):
+            raise RuntimeError(
+                "The trainer Prime monitor needs RUN_ID or a shared PRL_RUN_ID with its orchestrator. "
+                f"Launch with `rl`, set RUN_ID explicitly, or {OFF_HINT}"
+            )
+        if run_id:
+            self.run = await self._attach(run_id)
+        elif self.mode == "online" and output_dir is not None and (record_id := self._record_run_id(output_dir)):
+            await self._attach_record(record_id)
+        elif self.mode == "disabled":
+            self.run = await asyncio.to_thread(
+                pr.init,
+                kind="train",
+                mode="disabled",
+                base_url=_base_url(),
+                finish_timeout=FINISH_TIMEOUT,
+            )
+            self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
+
+    def _record_run_id(self, output_dir: Path) -> str | None:
+        """This launch's run id from the orchestrator's shared platform record, if any."""
+        try:
+            record = read_platform_record(output_dir)
+        except (OSError, ValueError):
+            return None
+        if isinstance(record, dict) and record.get("kind") == "train" and record.get("id"):
+            if record.get("run_id") != os.getenv("PRL_RUN_ID"):
+                return None
+            return str(record["id"])
+        return None
+
+    async def _attach(self, run_id: str) -> pr.Run:
+        """Attaching is a local handle, not a request, so errors are inherited."""
+        run = await asyncio.to_thread(
+            pr.init,
+            kind="train",
+            mode=self.mode,
+            base_url=_base_url(),
+            id=run_id,
+            finish_timeout=FINISH_TIMEOUT,
+        )
+        # The atexit hook would report the shared run crashed when this process exits
+        # before the owner finishes it; finishing belongs to the owner alone.
+        atexit.unregister(run._atexit_hook)
+        if run.url:
+            self.logger.info(f"Logging trainer metrics to platform run {run.id} ({run.url}) (sidecar)")
+        return run
+
+    async def _attach_record(self, run_id: str) -> None:
+        """A failed attach disables this sink for the rest of the run."""
+        try:
+            run = await self._attach(run_id)
+        except Exception as e:
+            self.attach_gave_up = True
+            self.pending.clear()
+            self.logger.warning(
+                f"Failed to attach to the orchestrator's platform run {run_id} "
+                f"({type(e).__name__}: {e}); dropping the rest of the run's trainer metrics"
+            )
+            return
+        self.run = run
+        while self.pending:
+            pending_step, pending_metrics = self.pending.popleft()
+            await asyncio.to_thread(run.log_metrics, pending_metrics, step=pending_step)
+
+    async def _log_metrics_pending(self, metrics: dict[str, Any], step: int | None) -> None:
+        if self.attach_gave_up:
+            return
+        run_id = self._record_run_id(self.output_dir) if self.output_dir is not None else None
+        if run_id is None:
+            if not self.pending:
+                self.first_pending_at = time.time()
+            # The SDK keeps a row's own `_timestamp`, so a late flush keeps its time.
+            metrics["_timestamp"] = time.time()
+            self.pending.append((step, metrics))
+            if not self.warned_unattached and time.time() - self.first_pending_at > UNATTACHED_WARN_SECONDS:
+                self.warned_unattached = True
+                self.logger.warning(
+                    f"No platform run record from the orchestrator after "
+                    f"{UNATTACHED_WARN_SECONDS:.0f}s ({len(self.pending)} metric rows queued, "
+                    "oldest dropped when full); training continues without platform metrics"
+                )
+            return
+        await self._attach_record(run_id)
+        if self.run is not None:
+            await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # The SDK also drops non-finite values, but silently; sanitize first so
@@ -180,6 +298,9 @@ class PrimeTrainMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
+        if self.sidecar and self.run is None:
+            await self._log_metrics_pending(metrics, step)
+            return
         # A queue put that can block briefly under backpressure - off the loop. The SDK
         # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
@@ -189,12 +310,24 @@ class PrimeTrainMonitor(Monitor):
         filtered ones included, online evals too. The SDK keys each to its dispatch
         step and work type off ``run.work`` - the ``TrainRunInfo`` the dispatcher
         stamps at emit time."""
-        if subset != "all" or not episodes:
+        if self.sidecar or subset != "all" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
 
     async def finalize(self, paused: bool = False) -> None:
+        if self.sidecar:
+            if self.run is None:
+                if not self.warned_unattached and not self.attach_gave_up:
+                    self.warned_unattached = True
+                    self.logger.warning(
+                        "Finalizing without platform metrics: the orchestrator's run record never appeared"
+                    )
+                self.pending.clear()
+                return
+            # Drain only: the owner finalizes; a finish() could tear the hosted job down.
+            await asyncio.to_thread(self.run.flush, timeout=FINISH_TIMEOUT)
+            return
         # Drains queued uploads so the final step's metrics and episodes land,
         # then finalizes (idempotent on the platform side); an attached run's
         # failure marking stays with the launcher. A paused run only drains and

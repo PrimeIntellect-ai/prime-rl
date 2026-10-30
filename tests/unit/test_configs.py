@@ -1044,7 +1044,7 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
 def test_shared_monitor_disable_and_prime_propagate():
     """CLI ``--no-monitors.wandb`` / ``--no-monitors.file`` (which land as the string
     "None") propagate the disable to both sub-configs, whose monitors default to
-    enabled; a shared ``[monitors.prime]`` reaches the orchestrator only."""
+    enabled; a shared ``[monitors.prime]`` reaches both components."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
@@ -1055,8 +1055,52 @@ def test_shared_monitor_disable_and_prime_propagate():
     )
     assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
     assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
+    assert config.trainer.monitors.prime is not None
+    assert config.trainer.monitors.prime.name == "shared-prime"
     assert config.orchestrator.monitors.prime is not None
     assert config.orchestrator.monitors.prime.name == "shared-prime"
+
+
+@pytest.mark.parametrize("prime", [{}, "None"])
+def test_shared_prime_enable_and_disable(prime):
+    config = RLConfig.model_validate(
+        {
+            "monitors": {"prime": prime},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    for component in (config.trainer, config.orchestrator):
+        assert (component.monitors.prime is None) == (prime == "None")
+        if component.monitors.prime is not None:
+            assert component.monitors.prime.name == config.run.name
+
+
+def test_shared_prime_conflicting_trainer_name_rejected():
+    with pytest.raises(ValidationError, match="Shared config conflicts"):
+        RLConfig.model_validate(
+            {
+                "monitors": {"prime": {"name": "shared"}},
+                "trainer": {"monitors": {"prime": {"name": "different"}}},
+                "orchestrator": {"renderer": {"name": "default"}},
+            }
+        )
+
+
+def test_trainer_prime_block_parses_independently():
+    """A component-specific monitor leaves the other component untouched."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"monitors": {"prime": {"name": "trainer-sink"}}},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+
+    assert config.trainer.monitors.prime is not None
+    assert config.trainer.monitors.prime.name == "trainer-sink"
+    assert config.orchestrator.monitors.prime is not None
+    assert config.orchestrator.monitors.prime.name == config.run.name
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
