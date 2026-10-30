@@ -159,7 +159,7 @@ For long sequences, a MoE layer's routed-expert activations (tokens × `top_k` �
 token_chunk_size = 8192      # tokens per rank per chunk
 ```
 
-On Nemotron 3.5 Super (4 × 8 H200, CP 8) this takes 512k and 1M-token rows from out-of-memory to a 71 and 107 GiB peak; other blocks keep whole-block checkpointing.
+Every chunk runs the MoE's EP all-to-alls, so all ranks of an EP group must run the same number of chunks: chunking requires `ep == 1` or `ep == cp` (the EP group is then the CP group, whose ranks hold slices of the same row). On Nemotron 3.5 Super (4 × 8 H200, CP 8) this takes 512k and 1M-token rows from out-of-memory to a 71 and 107 GiB peak; other blocks keep whole-block checkpointing.
 
 `ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only losing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
 

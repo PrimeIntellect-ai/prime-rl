@@ -124,7 +124,7 @@ def _selective_checkpoint_policy(
 
 
 class TokenChunkedCheckpointWrapper(CheckpointWrapper):
-    """Checkpoint a token-local block as one checkpoint per chunk of tokens.
+    """Checkpoint a token-local block as one checkpoint per chunk of at most ``token_chunk_size`` tokens.
 
     The block's recompute and backward then hold one chunk's activations at a time instead of the
     whole sequence's. Only valid for blocks whose output at each token depends on that token alone
@@ -135,21 +135,34 @@ class TokenChunkedCheckpointWrapper(CheckpointWrapper):
     def __init__(self, mod: nn.Module, token_chunk_size: int, **checkpoint_kwargs) -> None:
         super().__init__(mod, **checkpoint_kwargs)
         self.token_chunk_size = token_chunk_size
+        self._checkpoint_chunk = super().forward
+
+    def compile(self, *args, **kwargs) -> None:
+        # Compile one checkpointed chunk, not the chunk loop: the loop's bounds follow the row length, which
+        # torch.compile would specialize on and recompile for. The checkpoint stays inside the compiled call so
+        # its policy still applies.
+        self._checkpoint_chunk = torch.compile(super().forward, *args, **kwargs)
 
     def forward(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         batch_size, seq_len = hidden_states.shape[:2]
         if seq_len <= self.token_chunk_size:
-            return super().forward(hidden_states, *args, **kwargs)
+            return self._checkpoint_chunk(hidden_states, *args, **kwargs)
 
         def is_token_aligned(value) -> bool:
             return isinstance(value, torch.Tensor) and value.ndim >= 2 and value.shape[:2] == (batch_size, seq_len)
 
+        # Equal chunks rather than full chunks plus a remainder: a 1-token tail would hit torch.compile's size-1
+        # specialization, whose separate graph gave wrong parameter gradients.
+        num_chunks = -(-seq_len // self.token_chunk_size)
+        base, extra = divmod(seq_len, num_chunks)
         outputs = []
-        for start in range(0, seq_len, self.token_chunk_size):
-            end = min(start + self.token_chunk_size, seq_len)
+        start = 0
+        for chunk in range(num_chunks):
+            end = start + base + (chunk < extra)
             chunk_args = [arg[:, start:end] if is_token_aligned(arg) else arg for arg in args]
             chunk_kwargs = {k: v[:, start:end] if is_token_aligned(v) else v for k, v in kwargs.items()}
-            outputs.append(super().forward(hidden_states[:, start:end], *chunk_args, **chunk_kwargs))
+            outputs.append(self._checkpoint_chunk(hidden_states[:, start:end], *chunk_args, **chunk_kwargs))
+            start = end
         return torch.cat(outputs, dim=1)
 
 

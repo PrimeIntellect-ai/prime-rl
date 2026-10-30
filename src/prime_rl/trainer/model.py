@@ -912,6 +912,12 @@ def setup_model(
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
+        if config.ac.token_chunk_size is not None and parallel_dims.ep not in (1, parallel_dims.cp):
+            # Every chunk runs the EP all-to-alls. An EP group wider than CP spans ranks holding different rows,
+            # whose chunk counts can differ, so one rank would wait on a collective its peers never start.
+            raise ValueError(
+                f"model.ac.token_chunk_size requires ep == 1 or ep == cp, got ep={parallel_dims.ep}, cp={parallel_dims.cp}"
+            )
         apply_ac(model, config.ac)
     if config.compile is not None:
         apply_compile(model, config.compile)
