@@ -7,12 +7,14 @@ import ast
 import copy
 import json
 import re
+import socket
 import statistics
 import threading
 from collections import Counter
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import triton
 from torch import nn
 from torch._inductor.graph import GraphLowering
@@ -22,7 +24,7 @@ from torch.autograd import DeviceType
 
 import prime_rl.trainer.model as trainer_model
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, FP8QuantPassConfig
-from prime_rl.trainer.distributed.token_dispatcher import _GatherPermutedRows
+from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher, _GatherPermutedRows
 from prime_rl.trainer.fp8_quant_pass import GROUPED_FP8_GEMM_BACKWARD, REWRITTEN_OPS, Fp8QuantPass
 from prime_rl.trainer.model import apply_ac, apply_compile
 from prime_rl.trainer.models.kernels.fp8_torch_quant import BLOCK, quant_1x128, quant_grouped_128x1_kmajor
@@ -61,8 +63,7 @@ class RecordingFp8QuantPass(Fp8QuantPass):
             {
                 "graph": "backward" if before[str(GROUPED_FP8_GEMM_BACKWARD)] else "forward",
                 "thread": threading.current_thread().name,
-                "targets": list(self.targets),
-                "wgrad_quant": self.wgrad_quant,
+                "wgrad_quants": dict(self.wgrad_quants),
                 "ops_before": dict(before),
                 "ops_after": dict(count_targets(graph, REWRITTEN_OPS + PREQUANT_OPS)),
                 "amax_after": count_targets(graph, (torch.ops.aten.amax.default,))["aten.amax.default"],
@@ -340,19 +341,42 @@ class RoutedExpertBlock(nn.Module):
         self.activation = ClampedSilu(SWIGLU_LIMIT)
         self.gemm = gemm
 
+    def experts(self, routed: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+        gate_up = self.gemm(routed, self.gate_up_proj.transpose(-2, -1), offsets)
+        gate, up = gate_up.chunk(2, dim=-1)
+        hidden = self.activation.apply(gate, up)
+        return self.gemm(hidden, self.down_proj.transpose(-2, -1), offsets)
+
     def forward(
         self, x: torch.Tensor, permuted_indices: torch.Tensor, num_tokens_per_expert: torch.Tensor
     ) -> torch.Tensor:
         x_padded = torch.vstack((x, x.new_zeros((1, x.shape[-1]))))
         routed = _GatherPermutedRows.apply(x_padded, permuted_indices)
-        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-        gate_up = self.gemm(routed, self.gate_up_proj.transpose(-2, -1), offsets)
-        gate, up = gate_up.chunk(2, dim=-1)
-        hidden = self.activation.apply(gate, up)
-        routed_out = self.gemm(hidden, self.down_proj.transpose(-2, -1), offsets)
+        routed_out = self.experts(routed, num_tokens_per_expert)
         out = routed_out.new_empty(x_padded.shape)
         out[permuted_indices] = routed_out
         return out[:-1]
+
+
+class SharedTorchTokenDispatcher(TorchTokenDispatcher):
+    """The trainer's all-to-all dispatcher, shared rather than copied when the block is deep-copied, since its process group cannot be."""
+
+    def __deepcopy__(self, memo: dict) -> SharedTorchTokenDispatcher:
+        return self
+
+
+class DispatchedExpertBlock(RoutedExpertBlock):
+    """The routed block behind the trainer's all-to-all token dispatcher, whose received row count is unbacked under torch.compile."""
+
+    def __init__(self, num_experts: int, hidden: int, expert_dim: int, gemm, top_k: int) -> None:
+        super().__init__(num_experts, hidden, expert_dim, gemm)
+        self.dispatcher = SharedTorchTokenDispatcher(num_experts, top_k, GROUP_ALIGNMENT, dist.group.WORLD)
+
+    def forward(
+        self, x: torch.Tensor, top_scores: torch.Tensor, selected_experts_indices: torch.Tensor
+    ) -> torch.Tensor:
+        return self.dispatcher.run(x, top_scores, selected_experts_indices, self.experts, score_before_experts=False)
 
 
 class ToyModel(nn.Module):
@@ -363,53 +387,73 @@ class ToyModel(nn.Module):
         self.model = nn.Module()
         self.model.layers = nn.ModuleList([block])
 
-    def forward(
-        self, x: torch.Tensor, permuted_indices: torch.Tensor, num_tokens_per_expert: torch.Tensor
-    ) -> torch.Tensor:
-        return self.model.layers[0](x, permuted_indices, num_tokens_per_expert)
+    def forward(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor:
+        return self.model.layers[0](x, *routing)
 
 
 def bf16_grouped_mm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     return torch._grouped_mm(x, weight, offs=offs)
 
 
+def init_single_rank_group() -> None:
+    """One-rank NCCL group, so the trainer's all-to-all dispatcher runs in this process."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    dist.init_process_group(
+        "nccl", init_method=f"tcp://127.0.0.1:{port}", rank=0, world_size=1, device_id=torch.device("cuda", 0)
+    )
+
+
 def build_model(args: argparse.Namespace) -> ToyModel:
-    block = RoutedExpertBlock(args.experts, args.hidden, args.expert_dim, grouped_fp8_gemm).cuda()
+    if args.dispatch == "torch":
+        block = DispatchedExpertBlock(args.experts, args.hidden, args.expert_dim, grouped_fp8_gemm, args.top_k).cuda()
+    else:
+        block = RoutedExpertBlock(args.experts, args.hidden, args.expert_dim, grouped_fp8_gemm).cuda()
     with torch.no_grad():
         for param in block.parameters():
             nn.init.trunc_normal_(param, std=WEIGHT_STD)
     return ToyModel(block.to(torch.bfloat16))
 
 
-def make_inputs(args: argparse.Namespace, num_routed: int, dynamic: bool) -> dict[str, torch.Tensor]:
-    """Routed rows, a gather order that groups them by expert with 128-row padding, padded group sizes and a probe gradient."""
+def make_inputs(args: argparse.Namespace, num_routed: int, dynamic: bool) -> dict:
+    """Rows to route, their routing (a padded expert-grouped gather order, or router outputs for the dispatcher) and a probe gradient."""
     from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
 
     generator = torch.Generator(device="cuda").manual_seed(num_routed)
-    x = torch.randn(num_routed, args.hidden, device="cuda", generator=generator).to(torch.bfloat16)
-    expert_of_row = torch.randint(0, args.experts, (num_routed,), device="cuda", generator=generator)
-    tokens_per_expert = torch.bincount(expert_of_row, minlength=args.experts)
-    max_len = (num_routed + args.experts * GROUP_ALIGNMENT + GROUP_ALIGNMENT - 1) // GROUP_ALIGNMENT * GROUP_ALIGNMENT
-    permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
-        tokens_per_expert, args.experts, 1, max_len, GROUP_ALIGNMENT
-    )
-    grad_output = torch.randn(num_routed, args.hidden, device="cuda", generator=generator).to(torch.bfloat16)
+    if args.dispatch == "torch":
+        tokens = num_routed // args.top_k
+        x = torch.randn(tokens, args.hidden, device="cuda", generator=generator).to(torch.bfloat16)
+        top_scores = torch.rand(tokens, args.top_k, device="cuda", generator=generator)
+        selected_experts_indices = torch.randint(
+            0, args.experts, (tokens, args.top_k), device="cuda", generator=generator
+        )
+        routing = (top_scores, selected_experts_indices)
+    else:
+        x = torch.randn(num_routed, args.hidden, device="cuda", generator=generator).to(torch.bfloat16)
+        expert_of_row = torch.randint(0, args.experts, (num_routed,), device="cuda", generator=generator)
+        tokens_per_expert = torch.bincount(expert_of_row, minlength=args.experts)
+        max_len = (
+            (num_routed + args.experts * GROUP_ALIGNMENT + GROUP_ALIGNMENT - 1) // GROUP_ALIGNMENT * GROUP_ALIGNMENT
+        )
+        permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
+            tokens_per_expert, args.experts, 1, max_len, GROUP_ALIGNMENT
+        )
+        routing = (permuted_indices, num_tokens_per_expert)
+    grad_output = torch.randn(x.shape, device="cuda", generator=generator).to(torch.bfloat16)
     if dynamic:
         torch._dynamo.mark_dynamic(x, 0)
-        torch._dynamo.mark_dynamic(permuted_indices, 0)
-    return {
-        "x": x.requires_grad_(),
-        "permuted_indices": permuted_indices,
-        "num_tokens_per_expert": num_tokens_per_expert,
-        "grad_output": grad_output,
-    }
+        torch._dynamo.mark_dynamic(routing[0], 0)
+        if args.dispatch == "torch":
+            torch._dynamo.mark_dynamic(routing[1], 0)
+    return {"x": x.requires_grad_(), "routing": routing, "grad_output": grad_output}
 
 
-def run_step(module: nn.Module, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
+def run_step(module: nn.Module, inputs: dict) -> torch.Tensor:
     for param in module.parameters():
         param.grad = None
     inputs["x"].grad = None
-    out = module(inputs["x"], inputs["permuted_indices"], inputs["num_tokens_per_expert"])
+    out = module(inputs["x"], *inputs["routing"])
     out.backward(inputs["grad_output"])
     return out
 
@@ -501,7 +545,7 @@ def time_steps(module: nn.Module, inputs: dict[str, torch.Tensor], iters: int) -
     torch.cuda.synchronize()
     start.record()
     for _ in range(iters):
-        module(inputs["x"], inputs["permuted_indices"], inputs["num_tokens_per_expert"])
+        module(inputs["x"], *inputs["routing"])
     end.record()
     torch.cuda.synchronize()
     forward_ms = start.elapsed_time(end) / iters
@@ -529,7 +573,7 @@ def run_block(args: argparse.Namespace, out_dir: Path) -> dict:
             reports[arm]["timing"] = {key: statistics.median(s[key] for s in samples[arm]) for key in samples[arm][0]}
             reports[arm]["timing_reps"] = samples[arm]
             reports[arm]["profile"] = profile_steps(module, inputs, args.iters)
-            reports[arm]["routed_rows_padded"] = inputs["permuted_indices"].numel()
+            reports[arm]["routed_rows"] = args.bench_routed
     reference_block = copy.deepcopy(base)
     reference_block.model.layers[0].gemm = bf16_grouped_mm
     closeness = {}
@@ -555,6 +599,13 @@ def main() -> None:
     parser.add_argument("--sections", default="quant,ops,block", help="comma-separated subset of quant,bench,ops,block")
     parser.add_argument("--experts", type=int, default=32)
     parser.add_argument("--hidden", type=int, default=4096)
+    parser.add_argument(
+        "--dispatch",
+        choices=["gather", "torch"],
+        default="gather",
+        help="gather: precomputed gather order with backed row counts. torch: the trainer's all-to-all dispatcher on a one-rank group, with unbacked row counts as in the proxy",
+    )
+    parser.add_argument("--top-k", type=int, default=6, help="experts per token with --dispatch torch")
     parser.add_argument("--expert-dim", type=int, default=2048)
     parser.add_argument("--routed", type=int, nargs="+", default=[20000, 61000, 100000, 186368])
     parser.add_argument("--bench-routed", type=int, default=186368, help="routed rows before padding, 0 to skip timing")
@@ -574,10 +625,13 @@ def main() -> None:
     args.options = {key: ast.literal_eval(value) for key, value in (option.split("=", 1) for option in args.option)}
     args.out_dir.mkdir(parents=True, exist_ok=True)
     sections = args.sections.split(",")
+    if args.dispatch == "torch":
+        init_single_rank_group()
     summary: dict = {
         "options": args.options,
         "persistent_group_reductions": args.persistent_group_reductions,
         "targets": args.targets,
+        "dispatch": args.dispatch,
     }
     if "quant" in sections:
         summary["quant"] = check_quantizers(args)
@@ -608,7 +662,7 @@ def main() -> None:
             for record in report["pass_records"]:
                 print(f"   pass record: {json.dumps(record)}")
             if "timing" in report:
-                print(f"   timing at {report['routed_rows_padded']} padded rows: {report['timing']}")
+                print(f"   timing at {report['routed_rows']} routed rows: {report['timing']}")
                 for category, bucket in sorted(report["profile"].items()):
                     print(f"   kernels {category}: {bucket['calls']:.0f} launches, {bucket['ms']:.3f} ms per step")
             for name, launch_list in report["launches"].items():

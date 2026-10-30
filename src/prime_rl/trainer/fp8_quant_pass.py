@@ -17,6 +17,8 @@ from torch._inductor.compile_fx import compile_fx, compile_fx_inner
 from torch._inductor.custom_graph_pass import CustomGraphPass, get_hash_for_files
 from torch._inductor.dependencies import MemoryDep
 from torch._inductor.pattern_matcher import Arg, CallFunction, Match, PatternMatcherPass, register_graph_pattern
+from torch._inductor.scheduler import BaseSchedulerNode, Scheduler
+from torch._inductor.utils import sympy_product
 from torch._inductor.virtualized import V
 
 from prime_rl.configs.trainer import FP8QuantDivision, FP8QuantPassTarget, FP8WgradQuant
@@ -155,10 +157,11 @@ REWRITTEN_OPS = (FP8_MM, FP8_MM_BACKWARD, GROUPED_FP8_GEMM, GROUPED_FP8_GEMM_BAC
 
 @functools.cache
 def _patterns(
-    wgrad_quant: FP8WgradQuant, targets: tuple[FP8QuantPassTarget, ...], division: FP8QuantDivision
+    wgrad_quants: tuple[tuple[FP8QuantPassTarget, FP8WgradQuant], ...], division: FP8QuantDivision
 ) -> PatternMatcherPass:
-    patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{wgrad_quant}_{'_'.join(targets)}_{division}")
-    for target in targets:
+    name = "_".join(f"{target}_{wgrad_quant}" for target, wgrad_quant in wgrad_quants)
+    patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{name}_{division}")
+    for target, wgrad_quant in wgrad_quants:
         PATTERN_REGISTRARS[target](patterns, wgrad_quant, division)
     return patterns
 
@@ -192,10 +195,16 @@ class Fp8QuantPass(CustomGraphPass):
     """Rewrites FP8 GEMM ops into torch-op quants, which Inductor fuses into their producers, and pre-quantized GEMMs."""
 
     def __init__(
-        self, wgrad_quant: FP8WgradQuant, targets: Sequence[FP8QuantPassTarget], division: FP8QuantDivision
+        self,
+        wgrad_quant: FP8WgradQuant,
+        targets: Sequence[FP8QuantPassTarget],
+        division: FP8QuantDivision,
+        grouped_gemm_wgrad_quant: FP8WgradQuant | None = None,
     ) -> None:
-        self.wgrad_quant = wgrad_quant
-        self.targets = tuple(sorted(set(targets)))
+        wgrad_quant_overrides = {"grouped_gemm": grouped_gemm_wgrad_quant}
+        self.wgrad_quants = tuple(
+            (target, wgrad_quant_overrides.get(target) or wgrad_quant) for target in sorted(set(targets))
+        )
         self.division = division
 
     def __call__(self, graph: torch.fx.Graph) -> None:
@@ -203,13 +212,13 @@ class Fp8QuantPass(CustomGraphPass):
         ops_before = Counter(
             str(node.target) for node in graph.nodes if node.op == "call_function" and node.target in REWRITTEN_OPS
         )
-        rewritten = _patterns(self.wgrad_quant, self.targets, self.division).apply(graph)
+        rewritten = _patterns(self.wgrad_quants, self.division).apply(graph)
         if not rewritten:
             return
         deduped = _dedupe(graph, set(graph.nodes) - nodes_before)
         graph.eliminate_dead_code()
         get_logger().info(
-            f"FP8 quant pass ({self.wgrad_quant} wgrad quant, targets {list(self.targets)}, {self.division} division) "
+            f"FP8 quant pass (wgrad quant by target {dict(self.wgrad_quants)}, {self.division} division) "
             f"rewrote {rewritten} ops "
             f"{dict(ops_before)}, deduplicated {deduped} repeated quant nodes"
         )
@@ -217,9 +226,8 @@ class Fp8QuantPass(CustomGraphPass):
     def uuid(self) -> bytes:
         source_files = {__file__, fp8_torch_quant.__file__, fp8_linear.__file__, fp8_grouped_gemm.__file__}
         source_files.update(inspect.getfile(register) for register in PATTERN_REGISTRARS.values())
-        return get_hash_for_files(
-            tuple(sorted(source_files)), extra=f"{self.wgrad_quant}-{'-'.join(self.targets)}-{self.division}"
-        )
+        wgrad_quants = "-".join(f"{target}:{wgrad_quant}" for target, wgrad_quant in self.wgrad_quants)
+        return get_hash_for_files(tuple(sorted(source_files)), extra=f"{wgrad_quants}-{self.division}")
 
 
 def _fp8_group_quant_layout(
@@ -252,8 +260,43 @@ def _fp8_group_quant_layout(
     return None
 
 
-class Fp8GroupQuantChoices(InductorChoices):
-    """Inductor heuristics that compile FP8 group quant kernels as persistent reductions with a fixed launch config, other kernels unchanged."""
+def _is_group_amax(node: BaseSchedulerNode) -> bool:
+    """Whether `node` has reductions and all are 128-element maxes, like the FP8 group amax."""
+    reductions = [reduction for reduction in node.get_nodes() if reduction.is_reduction()]
+    return bool(reductions) and all(
+        reduction.node.get_reduction_type() == "max"
+        and V.graph.sizevars.statically_known_equals(sympy_product(reduction.node.get_reduction_size()), BLOCK)
+        for reduction in reductions
+    )
+
+
+def _reads_unbacked_output(producer: BaseSchedulerNode, consumer: BaseSchedulerNode) -> bool:
+    produced = producer.get_buffer_names()
+    return any(dep.name in produced and dep.has_unbacked_symbols() for dep in consumer.read_writes.reads)
+
+
+class Fp8QuantFusionChoices(InductorChoices):
+    """Inductor heuristics that fuse an FP8 group amax with its producer, scale and cast even when its rows are unbacked, like the routed-expert rows sized by the all-to-all, other fusions unchanged."""
+
+    @staticmethod
+    def can_fuse(
+        scheduler: Scheduler, node1: BaseSchedulerNode, node2: BaseSchedulerNode, shared_data_score: int
+    ) -> bool:
+        # Inductor scores shared data from size hints, which are zero for unbacked sizes, and never fuses a reduction without it.
+        if (
+            shared_data_score == 0
+            and (_is_group_amax(node1) or _is_group_amax(node2))
+            and _reads_unbacked_output(node1, node2)
+        ):
+            shared_data_score = 1
+        return InductorChoices.can_fuse(scheduler, node1, node2, shared_data_score)
+
+    def uuid(self) -> str:
+        return get_hash_for_files((__file__, fp8_torch_quant.__file__)).hex()
+
+
+class Fp8GroupQuantChoices(Fp8QuantFusionChoices):
+    """Inductor heuristics that also compile FP8 group quant kernels as persistent reductions with a fixed launch config, other kernels unchanged."""
 
     def triton_kernel_kwargs(
         self,
@@ -267,9 +310,6 @@ class Fp8GroupQuantChoices(InductorChoices):
             return kernel_kwargs
         fixed_config = FixedTritonConfig(dict(FP8_GROUP_QUANT_LAUNCH_CONFIGS[layout]))
         return {**kernel_kwargs, "override_persistent_reduction": True, "fixed_config": fixed_config}
-
-    def uuid(self) -> str:
-        return get_hash_for_files((__file__, fp8_torch_quant.__file__)).hex()
 
 
 class InductorChoicesBackend:

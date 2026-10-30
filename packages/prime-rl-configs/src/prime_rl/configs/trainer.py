@@ -62,6 +62,9 @@ class FP8QuantPassConfig(BaseConfig):
     wgrad_quant: FP8WgradQuant = "triton"
     """Quantizer for the weight gradient's 128-token casts of the output gradient and the input. ``triton`` keeps the Triton kernels inside the weight-gradient op; ``torch`` emits torch ops that Inductor fuses into their producers."""
 
+    grouped_gemm_wgrad_quant: FP8WgradQuant | None = None
+    """Overrides ``wgrad_quant`` for the routed-expert grouped GEMMs, e.g. ``triton`` with ``wgrad_quant = "torch"`` keeps the Triton per-channel cast there, which writes the K-major layout directly, while the dense linears use torch ops. ``None`` uses ``wgrad_quant``."""
+
     division: FP8QuantDivision = "approximate"
     """Rounding of the torch-op quantizers' two fp32 divisions, the group amax by 448 into the scale and each element by its scale. ``approximate`` keeps Inductor's lowering, which multiplies by the reciprocal of 448 and divides elements approximately. ``exact_scale`` rounds the scale division correctly. ``exact`` rounds both correctly, which makes the casts bitwise equal to the Triton quantizers given the same bfloat16 input, at extra cost. When Inductor fuses a cast into its producer, the cast sees the same bfloat16 input only under the Inductor option ``emulate_precision_casts``, which rounds the producer's output to bfloat16 first."""
 
