@@ -33,6 +33,7 @@ def step_values(steps: dict[int, dict[str, float]], peak: float, world_size: int
         values[step] = {
             "seconds": seconds,
             "flops": record["perf/mfu"] / 100 * seconds * peak * world_size,
+            "flops_6dn": record["perf/mfu_6dn"] / 100 * seconds * peak * world_size,
             "tokens": record["perf/throughput"] * seconds,
             "mfu": record["perf/mfu"],
             "mfu_6dn": record["perf/mfu_6dn"],
@@ -64,9 +65,11 @@ def main():
             raise ValueError(f"Step {step} has different token counts: the runs did not see identical rows")
         layer_seconds = (high[step]["seconds"] - low[step]["seconds"]) / (high_layers - low_layers)
         layer_flops = (high[step]["flops"] - low[step]["flops"]) / (high_layers - low_layers)
+        layer_flops_6dn = (high[step]["flops_6dn"] - low[step]["flops_6dn"]) / (high_layers - low_layers)
         extra_layers = args.target_layers - low_layers
         seconds = low[step]["seconds"] + extra_layers * layer_seconds - args.optimizer_seconds
         flops = low[step]["flops"] + extra_layers * layer_flops
+        flops_6dn = low[step]["flops_6dn"] + extra_layers * layer_flops_6dn
         rows.append(
             {
                 "step": step,
@@ -74,6 +77,7 @@ def main():
                 "layer_seconds": layer_seconds,
                 "target_seconds": seconds,
                 "target_mfu": 100 * flops / (seconds * args.peak * args.world_size),
+                "target_mfu_6dn": 100 * flops_6dn / (seconds * args.peak * args.world_size),
                 "target_tok_s_gpu": low[step]["tokens"] / seconds / args.world_size,
                 "low_mfu": low[step]["mfu"],
                 "high_mfu": high[step]["mfu"],
@@ -89,7 +93,8 @@ def main():
             f"| {row['target_mfu']:.2f} | {row['target_tok_s_gpu']:.0f} |"
         )
     print()
-    for key in ["layer_seconds", "target_seconds", "target_mfu", "target_tok_s_gpu", "low_mfu", "high_mfu", "high_mfu_6dn"]:
+    keys = ["layer_seconds", "target_seconds", "target_mfu", "target_mfu_6dn", "target_tok_s_gpu"]
+    for key in keys + ["low_mfu", "high_mfu", "high_mfu_6dn"]:
         series = [row[key] for row in rows]
         print(f"{key}: median {statistics.median(series):.4g}, min {min(series):.4g}, max {max(series):.4g}")
 
