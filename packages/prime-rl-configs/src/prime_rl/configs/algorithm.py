@@ -40,7 +40,7 @@ import verifiers.v1 as vf
 from pydantic import Field, field_validator, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.diff import LIVE
+from prime_rl.configs.diff import Live
 from prime_rl.configs.shared import VLLMClientConfig
 from prime_rl.utils.config import BaseConfig
 
@@ -178,7 +178,7 @@ class BaseAlgoConfig(BaseConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    sampling: SamplingConfig = Field(SamplingConfig(), frozen=True)
+    sampling: SamplingConfig = SamplingConfig()
     """Sampling component: which model generates train rollouts."""
 
     @model_validator(mode="after")
@@ -210,7 +210,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    length_penalty: LengthPenaltyConfig | None = Field(None, json_schema_extra=LIVE)
+    length_penalty: Annotated[LengthPenaltyConfig | None, Live()] = None
     """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
 
     @field_validator("length_penalty", mode="before")
