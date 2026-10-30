@@ -201,6 +201,7 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, DeepEPDispatchState]:
+        assert x.dtype == torch.bfloat16, f"DeepEP dispatch takes bf16 hidden states, got {x.dtype}"
         top_scores = top_scores.float().contiguous()
         selected_experts_indices = selected_experts_indices.masked_fill(top_scores == 0, -1).contiguous()
         recv_x, recv_scores, expert_order, num_tokens_per_expert, handle_id = torch.ops.deepep.dispatch(
@@ -233,10 +234,12 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         return routed_input, num_tokens_per_expert, state
 
     def combine(self, routed_output: torch.Tensor, state: DeepEPDispatchState) -> torch.Tensor:
-        routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
+        output_dtype = routed_output.dtype
+        routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation).float()
         if state.scores_after_experts is not None:
-            routed_output = (routed_output.float() * state.scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
-        dim = routed_output.shape[-1]
-        token_indices = state.token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        routed_output = routed_output.new_zeros((state.num_tokens, dim)).scatter_add(0, token_indices, routed_output)
-        return torch.ops.deepep.combine(routed_output, state.handle_id, state.num_input_tokens)
+            routed_output = routed_output * state.scores_after_experts.reshape(-1, 1)
+        # Each rank sums, per received token, the outputs of the experts it holds (fp32, rounded once); DeepEP's
+        # combine sends these sums back to each token's own rank and adds them there in fp32.
+        token_output = routed_output.new_zeros((state.num_tokens, routed_output.shape[-1]))
+        token_output.index_add_(0, state.token_indices_experts_sorted, routed_output)
+        return torch.ops.deepep.combine(token_output.to(output_dtype), state.handle_id, state.num_input_tokens)
