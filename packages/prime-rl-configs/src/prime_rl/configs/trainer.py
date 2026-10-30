@@ -335,6 +335,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_cudnn_sink_grad: bool = False
     """Let the cuDNN backward of DeepSeek V4's ``cudnn_flashmla`` sparse attention form the attention-sink gradient from FlashMLA's sink-free LSE, instead of a separate TileLang pass over the output and its gradient. Needs ``dsa_backend = "cudnn_flashmla"``."""
 
+    dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
+    """Kernels of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` runs the cuDNN frontend's fused CSA/HCA compressor, one kernel per direction with fp32 softmax weights and products, on SM90 and newer GPUs for bf16 activations and the compress rates it covers (2, 4, and 128 at head_dim 128 or 512), and the torch ops everywhere else. ``torch`` always runs the torch ops, which round the softmax weights to bf16."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
