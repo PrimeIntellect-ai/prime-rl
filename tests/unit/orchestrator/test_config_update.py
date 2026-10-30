@@ -6,7 +6,7 @@ from prime_rl.configs.orchestrator import CheckpointConfig, ConcurrencyConfig, O
 from prime_rl.configs.rl import RLConfig
 from prime_rl.control.controller import validate_update
 from prime_rl.control.types import ConfigUpdate, InvalidConfigError
-from prime_rl.orchestrator.ckpt import CheckpointManager
+from prime_rl.orchestrator.ckpt import CheckpointManager, build_state
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.config import cli, dump_resolved_config
@@ -108,6 +108,6 @@ def test_checkpoint_keeps_config_state(tmp_path):
     config_state = {"base": {"batch_size": 64}, "applied": {"batch_size": 128}, "revision": 2}
     train_source = SimpleNamespace(state_dict=lambda: {"rng": None, "envs": {}})
 
-    manager.save(Progress(), train_source, config_state, step=3)
+    manager.save_state(build_state(Progress(), train_source, config_state, {}), step=3)
 
     assert manager.read_config_state(3) == config_state

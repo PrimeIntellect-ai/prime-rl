@@ -137,3 +137,26 @@ def test_dispatcher_skips_claimed_tasks_still_pending(monkeypatch):
         pending.cancel()
 
     asyncio.run(run())
+
+
+def test_resume_drops_saved_work_whose_arrays_the_env_servers_kept():
+    """Env servers lose kept arrays on a restart: queued traces are dropped, group members rerun."""
+
+    async def run():
+        hook = PayloadHook()
+        s = payload_sink()
+        await s.add(episode([kept(hook)], group="queued"))
+        s.train_envs.get("test").config.group_size = 3
+        await s.add(episode([kept(hook)], group="open"))
+        plain = trace()
+        await s.add(episode([plain], group="open"))
+        state = s.state_dict({"open": ("test", vf.Task(vf.TaskData(idx=0, prompt="task")))})
+
+        r = payload_sink()
+        r.train_envs.get("test").config.group_size = 3
+        requests = r.load_state_dict(state)
+        assert not r.pending_batch and not r.episode_by_trace
+        assert [(request.group_id, request.rollouts) for request in requests] == [("open", 2)]
+        assert [ep.traces[0].id for ep in r.pending_groups["open"]] == [plain.id]
+
+    asyncio.run(run())

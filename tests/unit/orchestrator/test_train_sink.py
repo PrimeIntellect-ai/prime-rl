@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import pickle
 import weakref
 from types import SimpleNamespace
 
@@ -265,6 +266,54 @@ def test_partial_window_and_shutdown_release():
         assert window.attempts == 1
         assert window.metrics.to_dict()["rollout/queued/cancelled"] == 1
         assert s.take_rollout_window(force=True) is None
+
+    asyncio.run(run())
+
+
+def test_resume_restores_queued_traces_and_open_groups():
+    async def run():
+        s = sink()
+        s.progress.step = 9  # trains v8; max_staleness=1 keeps v7 and newer
+        queued = trace()
+        await s.add(episode([queued], group="queued", version=7))
+        s.train_envs.get("test").config.group_size = 3
+        saved = trace()
+        await s.add(episode([saved], group="open", version=7))
+        state = s.state_dict({"open": ("test", vf.Task(vf.TaskData(idx=0, prompt="task")))})
+
+        r = sink()
+        r.train_envs.get("test").config.group_size = 3
+        r.progress.step = 10  # v7 is now past max_staleness
+        requests = r.load_state_dict(state)
+        assert [(request.group_id, request.rollouts) for request in requests] == [("open", 2)]
+        r._drop_stale()  # restored traces go through the same staleness sweep
+        assert not r.pending_batch
+        assert r.rollout_window.metrics.to_dict()["staleness/rollout/dropped"] == 1
+
+        # The stale saved member stays in its group and completes it with the rerun members
+        fresh = [trace(), trace()]
+        for t in fresh:
+            await r.add(episode([t], group="open", version=9))
+        assert "open" not in r.pending_groups
+        assert set(r.pending_batch) == {t.id for t in fresh}
+
+    asyncio.run(run())
+
+
+def test_resume_counts_saved_failures_toward_their_group():
+    async def run():
+        s = sink()
+        s.train_envs.get("test").config.group_size = 3
+        await s.add(episode([trace()], group="open"))
+        failure = DispatchFailure("train", "test", "open", 1, 0, "Task", "key", "hash", vf.Error(type="E", message="x"))
+        await s.fail(failure)
+        state = pickle.loads(pickle.dumps(s.state_dict({"open": ("test", vf.Task(vf.TaskData(idx=0, prompt="t")))})))
+
+        r = sink()
+        r.train_envs.get("test").config.group_size = 3
+        assert [request.rollouts for request in r.load_state_dict(state)] == [1]
+        await r.add(episode([trace()], group="open"))
+        assert "open" not in r.pending_groups and not r.pending_group_failures
 
     asyncio.run(run())
 

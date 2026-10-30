@@ -10,8 +10,10 @@ observations; only queued traces retain verifier objects. The consumer drains
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
+from typing import Any
 
 import numpy as np
 import verifiers.v1 as vf
@@ -23,7 +25,7 @@ from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
-from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
+from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TaskRequest, TrainBatch
 from prime_rl.orchestrator.utils import (
     episode_env_name,
     episode_group_id,
@@ -122,6 +124,11 @@ def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, 
     return masked
 
 
+def _dump(episode: vf.Episode) -> dict[str, Any]:
+    """Full-precision dump with raw-bytes token streams (a JSON dump rounds logprobs)."""
+    return episode.model_dump(context={"token_arrays": True})
+
+
 class TrainSink(Reconfigurable):
     """Score native episodes, admit groups, then compile trainer payloads."""
 
@@ -155,6 +162,74 @@ class TrainSink(Reconfigurable):
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def state_dict(self, open_groups: dict[str, tuple[str, vf.Task]]) -> dict[str, Any]:
+        """Work a resume would otherwise regenerate: the accepted traces waiting
+        for a batch (samples and episode), and every train group still open in the
+        dispatcher (``open_groups``: group id -> env and task) with its finished
+        episodes and failed requests. Copies are shallow: queued samples and finished episodes are not
+        mutated before they ship. Parametrized pydantic episode classes do not
+        pickle, so episodes are saved as dumps."""
+        return {
+            "pending_batch": dict(self.pending_batch),
+            "queued_episodes": {trace_id: _dump(ep) for trace_id, ep in self.episode_by_trace.items()},
+            "open_groups": {
+                group_id: (
+                    env_name,
+                    task,
+                    [_dump(ep) for ep in self.pending_groups.get(group_id, [])],
+                    list(self.pending_group_failures.get(group_id, [])),
+                )
+                for group_id, (env_name, task) in open_groups.items()
+            },
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> list[TaskRequest]:
+        """Re-queue saved traces and finished group members. Like any queued
+        trace, their tokens past ``max_staleness`` are masked by the staleness
+        sweep. Saved failed requests still count toward their group. Returns one
+        request per saved group for its missing members (same task, same group
+        id), which the train source hands out before any new task.
+        Env servers keep training arrays only while they run, so saved work whose arrays
+        they kept is dropped: queued traces are lost and group members are rerun."""
+        self.pending_batch = {
+            trace_id: samples
+            for trace_id, samples in state_dict["pending_batch"].items()
+            if not sample_payload_urls(samples)
+        }
+        self.episode_by_trace = {
+            trace_id: vf.WireEpisode.model_validate(ep)
+            for trace_id, ep in state_dict["queued_episodes"].items()
+            if trace_id in self.pending_batch
+        }
+        dropped = len(state_dict["pending_batch"]) - len(self.pending_batch)
+        requests = []
+        kept = 0
+        for group_id, (env_name, task, dumps, failures) in state_dict["open_groups"].items():
+            group_size = self.group_size_for(env_name)
+            if len(dumps) + len(failures) >= group_size:
+                raise ValueError(
+                    f"Checkpoint has an open group for env {env_name!r} with {len(dumps)} finished episodes and "
+                    f"{len(failures)} failed requests, but its group_size is now {group_size}. "
+                    "Lowering group_size across a resume is not supported."
+                )
+            episodes = [vf.WireEpisode.model_validate(ep) for ep in dumps]
+            episodes = [ep for ep in episodes if not any(trace_payload_urls(trace) for trace in ep.traces)]
+            dropped += len(dumps) - len(episodes)
+            if episodes:
+                self.pending_groups[group_id] = episodes
+                kept += len(episodes)
+            if failures:
+                self.pending_group_failures[group_id] = failures
+            rollouts = group_size - len(episodes) - len(failures)
+            requests.append(
+                TaskRequest(env_name=env_name, task=task, step=self.progress.step, rollouts=rollouts, group_id=group_id)
+            )
+        get_logger().info(
+            f"Resuming with {len(self.pending_batch)} queued traces and {len(requests)} open groups "
+            f"({kept} finished episodes kept, {dropped} traces and episodes dropped with their env-server arrays)"
+        )
+        return requests
 
     def reconfigure(self, update: ConfigUpdate) -> None:
         """Queued traces stay queued: the next readiness check sweeps them against the new
@@ -440,6 +515,11 @@ class TrainSink(Reconfigurable):
         self.pending_batch.clear()
         self.episode_by_trace.clear()
 
+    def _policy_start(self, trace_id: str) -> float:
+        """Dispatch version of a queued trace; ``inf`` for frozen-sourced traces, which never go stale."""
+        policy = train_work(self.episode_by_trace[trace_id]).policy
+        return policy.start if policy is not None else math.inf
+
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
 
@@ -465,7 +545,8 @@ class TrainSink(Reconfigurable):
         )
 
     async def process_batch(self) -> TrainBatch:
-        selected = list(self.pending_batch.items())[: self.batch_size]
+        # Oldest dispatch version first, so leftovers are the traces with the most staleness budget left.
+        selected = sorted(self.pending_batch.items(), key=lambda item: self._policy_start(item[0]))[: self.batch_size]
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)

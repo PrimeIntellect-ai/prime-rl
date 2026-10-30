@@ -181,6 +181,9 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        # Train groups that emitted their last result but may still sit in ``out_q``; the
+        # orchestrator forgets each once the sink has consumed it.
+        self.emitted_train_groups: dict[str, tuple[str, vf.Task]] = {}
         # Policy versions repeat after a resume, with weights that can differ from the
         # previous attempt's, and engines or a KV offload pool may outlive that attempt.
         self.cache_salt_prefix = uuid.uuid4().hex[:8]
@@ -306,6 +309,13 @@ class Dispatcher:
         """Stop scheduling new train rollouts; in-flight train + any
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
+
+    def open_train_groups(self) -> dict[str, tuple[str, vf.Task]]:
+        """Env and task of each train group the sink may not have in full yet."""
+        open_groups = {
+            str(gid): (group.env_name, group.task) for gid, group in self.groups.items() if group.kind == "train"
+        }
+        return open_groups | self.emitted_train_groups
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -681,6 +691,8 @@ class Dispatcher:
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
+                if group.kind == "train":
+                    self.emitted_train_groups[str(meta.group_id)] = (group.env_name, group.task)
         return policy_version
 
     async def emit_episode(
@@ -740,6 +752,8 @@ class Dispatcher:
             kind = group.kind if group is not None else claimed[-1][1].kind
             env_name = group.env_name if group is not None else claimed[-1][1].env_name
             self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled)
+            if group is not None and group.kind == "train":
+                self.emitted_train_groups[str(group_id)] = (group.env_name, group.task)
             get_logger().debug(
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
