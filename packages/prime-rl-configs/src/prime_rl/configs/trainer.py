@@ -503,6 +503,9 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    async_save: bool = False
+    """Write checkpoints in a background thread while training continues. Only applies with CPU optimizer offload (``model.offload`` = ``optimizer`` or ``full``); otherwise saves stay synchronous."""
+
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""
 
