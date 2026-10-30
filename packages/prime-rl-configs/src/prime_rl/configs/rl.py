@@ -568,7 +568,7 @@ class RLConfig(BaseConfig):
         configs are bounded by TRAIN_TOP_K_BOUND). Only opted-in requests capture
         masks; eval requests retain independent sampling settings."""
         policy_samplings = [
-            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
+            env.sampling for env in self.orchestrator.train.source if env.algo.rollout_model == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
         if not any(sampling.truncates_distribution() for sampling in policy_samplings):
             return self
