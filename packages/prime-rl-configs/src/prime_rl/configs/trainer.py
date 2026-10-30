@@ -332,6 +332,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_cp_kv_exchange: Literal["all_gather", "halo"] = "all_gather"
+    """How DeepSeek V4 attention reaches keys on other context-parallel ranks. ``all_gather`` gathers the whole row's sliding-window keys and compressor projections onto every rank, and every rank pools every compressed entry. ``halo`` receives only the few hundred rows before this rank's shard from its left neighbor, pools only the entries whose last token this rank holds, and all-gathers the pooled entries."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 

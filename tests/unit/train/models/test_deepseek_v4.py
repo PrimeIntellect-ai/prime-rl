@@ -1,3 +1,4 @@
+import copy
 import re
 
 import pytest
@@ -574,3 +575,66 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 
     _compare_accumulated_grads(compressor, packed_grads)
     torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=PACKED_RTOL, atol=PACKED_ATOL)
+
+
+# Eight CP ranks of 24 tokens. Boundaries fall on a rank edge (48), one token either side of one (71,
+# 97), inside a halo (140) and nowhere near one, and a 1-token document compresses to nothing.
+HALO_CP_DOCS = (5, 30, 13, 1, 22, 26, 43, 3, 49)
+
+
+def test_halo_shards_give_every_entry_and_window_slot_exactly_once():
+    """Under halo exchange each CP rank pools only the entries whose last token it holds and reads
+    its window keys from its own tokens plus the halo before them. Together the ranks must pool
+    every entry of the row exactly once, from the same source tokens and at the same position, and
+    `gathered_row` must find each entry in the all-gathered slots. Every window slot must name the
+    same token it names under all-gather.
+    """
+    cp_world_size, n_queries = 8, sum(HALO_CP_DOCS) // 8
+    halo_config = copy.deepcopy(MODEL_CONFIG)
+    halo_config.cp_kv_exchange = "halo"
+    with torch.device("cuda"):
+        rotaries = {
+            "all_gather": DeepseekV4RotaryEmbedding(MODEL_CONFIG),
+            "halo": DeepseekV4RotaryEmbedding(halo_config),
+        }
+
+    def build(mode: str, cp_rank: int) -> PackedContext:
+        return PackedContext.build(
+            rotary_emb=rotaries[mode],
+            seq_lens=torch.tensor(HALO_CP_DOCS),
+            device=torch.device("cuda"),
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
+        )
+
+    gathered = [build("all_gather", rank) for rank in range(cp_world_size)]
+    halo = [build("halo", rank) for rank in range(cp_world_size)]
+    rows = halo[0].cp_halo.rows
+    assert rows == 2 * HCA_COMPRESS_RATE - 1
+
+    for rank, (whole, local) in enumerate(zip(gathered, halo)):
+        assert whole.cp_halo is None
+        key_start = rank * n_queries - rows
+        valid = local.window_indices >= 0
+        assert torch.equal(valid, whole.window_indices >= 0)
+        assert torch.equal(local.window_indices[valid] + key_start, whole.window_indices[valid])
+        assert local.window_indices.max() < rows + n_queries
+
+    for rate, layout in gathered[0].compression_layouts.items():
+        capacity = -(-n_queries // rate)
+        pooled_tok_idx = torch.full((cp_world_size * capacity, rate), -1, device="cuda")
+        pooled_local_idx = torch.full((cp_world_size * capacity,), -1, device="cuda")
+        for rank, local in enumerate(halo):
+            shard = local.cp_halo.entry_shards[rate]
+            assert shard.entry_tok_idx.shape == (capacity, rate)
+            assert shard.entry_tok_idx.max() < rows + n_queries
+            slots = slice(rank * capacity, (rank + 1) * capacity)
+            pooled_tok_idx[slots] = shard.entry_tok_idx + rank * n_queries - rows
+            pooled_local_idx[slots] = shard.entry_local_idx
+            assert torch.equal(shard.gathered_row, halo[0].cp_halo.entry_shards[rate].gathered_row)
+        gathered_row = halo[0].cp_halo.entry_shards[rate].gathered_row
+        assert gathered_row.unique().numel() == layout.entry_tok_idx.shape[0], "two entries share a slot"
+        assert torch.equal(pooled_tok_idx[gathered_row], layout.entry_tok_idx)
+        assert torch.equal(pooled_local_idx[gathered_row], layout.entry_local_idx)
+        owner = gathered_row // capacity
+        assert torch.equal(owner, layout.entry_tok_idx[:, -1] // n_queries), "an entry is pooled off its owner"
