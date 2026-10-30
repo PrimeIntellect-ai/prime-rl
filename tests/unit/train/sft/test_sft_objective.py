@@ -5,240 +5,27 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from datasets import Dataset
 from pydantic import ValidationError
 from torch import nn
 from torch.distributed.tensor import DTensor
 from transformers import PretrainedConfig
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
-from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTConfig, SFTDataConfig, SFTObjectiveConfig
+from prime_rl.configs.sft import SFTConfig, SFTObjectiveConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head, token_logprobs
 from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, SFTObjectiveDataset, cat_collate, setup_dataset
-from prime_rl.trainer.sft.objective import (
-    ObjectiveInputs,
-    ObjectiveOutputs,
-    SampleInputs,
-    SFTObjective,
-    load_objective,
-    objective_loss,
-)
+from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs, load_objective, objective_loss
 
 
-class PairObjective:
-    """Two sequences per row (the text, then its reverse), read at their last tokens; the row's label travels as its objective_data."""
-
-    def __init__(self, offset: int = 0):
-        self.offset = offset
-
-    def make_sample(self, inputs: SampleInputs):
-        example = inputs.example  # rows without a chat: inputs.render() is never called
-        ids = [ord(char) + self.offset for char in example["text"]]
-        sequences = [ids, ids[::-1]]
-        input_ids = [token for sequence in sequences for token in sequence]
-        return {
-            "input_ids": input_ids,
-            "target_ids": [0] * len(input_ids),
-            "loss_mask": [i == len(s) - 1 for s in sequences for i in range(len(s))],
-            "position_ids": [i for s in sequences for i in range(len(s))],
-            "objective_data": {"label": example["label"]},
-        }
-
-    def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
-        readout = inputs.hidden_states[inputs.batch["loss_mask"]].sum(-1)
-        labels = torch.tensor(
-            [data["label"] for data in inputs.batch["objective_data"]], dtype=readout.dtype, device=readout.device
-        )
-        errors = readout.view(-1, 2).mean(-1) - labels
-        return ObjectiveOutputs(
-            loss=(errors**2).sum(), count=len(labels), metrics={"abs_error": errors.abs().sum().detach()}
-        )
-
-
-def objective_dataset(texts, seq_len, **kwargs):
-    rows = Dataset.from_list([{"text": text, "label": float(i)} for i, text in enumerate(texts)])
-    return SFTObjectiveDataset(rows, lambda example: None, PairObjective(), shuffle=False, seq_len=seq_len, **kwargs)
-
-
-def test_objective_samples_pack_with_their_objective_data():
-    # Samples of 4, 6, 2 and 8 tokens; packs of 10 tokens.
-    packs = list(CatDataset(objective_dataset(["ab", "cde", "f", "ghij"], seq_len=10, max_epochs=1), 10, 1))
-
-    assert [pack["seq_lens"] for pack in packs] == [[4, 6], [2, 8]]
-    assert [[data["label"] for data in pack["objective_data"]] for pack in packs] == [[0.0, 1.0], [2.0, 3.0]]
-    assert packs[0]["position_ids"] == [0, 1, 0, 1, 0, 1, 2, 0, 1, 2]
-    assert sum(packs[0]["loss_mask"]) == 4
-
-    batch = cat_collate([packs[0]])
-    assert batch["input_ids"].shape == (1, 10)
-    assert batch["objective_data"] == packs[0]["objective_data"]
-
-
-def test_padded_pack_keeps_one_objective_data_per_sample():
-    (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=16, max_epochs=1), 16, pad_to_multiple_of=8)
-    assert pack["seq_lens"] == [4, 2 + 2]  # the padding to a multiple of 8 joins the last sample
-    assert [data["label"] for data in pack["objective_data"]] == [0.0, 1.0]
-
-
-def test_overlong_samples_are_skipped():
-    samples = list(objective_dataset(["ab", "cdefgh", "i"], seq_len=6, max_epochs=1))
-    assert [sample["objective_data"]["label"] for sample in samples] == [0.0, 2.0]
-
-
-def test_resume_keeps_the_pending_sample_and_its_objective_data():
-    texts = ["ab", "cd", "efg", "h", "ij"]  # 4 + 4 tokens, then "efg" (6) overflows and waits as the pending sample
-    reference = list(CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), 10, 1))
-
-    packing = CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), 10, 1)
-    first = next(iter(packing))
-    state = packing.state_dict()
-    assert state["pending_sample"]["objective_data"] == {"label": 2.0}
-
-    resumed = CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), 10, 1)
-    resumed.load_state_dict(state)
-    assert [first, *resumed] == reference
-
-
-def test_packs_without_objective_data_are_unchanged():
-    sample = {
-        "input_ids": [1, 2],
-        "target_ids": [2, 3],
-        "loss_mask": [True, True],
-        "position_ids": [0, 1],
-        "seq_lens": [2],
-        "mm_kwargs": None,
-        "mm_token_type_ids": None,
-    }
-    pack = next(iter(CatDataset([sample, sample], 4, 1)))
-    assert "objective_data" not in pack
-    assert "objective_data" not in cat_collate([pack])
-
-
-def test_objective_loss_on_a_collated_batch():
-    (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=8, max_epochs=1), 8, pad_to_multiple_of=8)
-    batch = cat_collate([pack])
-    hidden_states = torch.ones(1, 8, 3)
-    outputs = PairObjective().loss(ObjectiveInputs(model=None, hidden_states=hidden_states, batch=batch))
-    assert outputs.count == 2
-    assert outputs.metrics["abs_error"].item() == pytest.approx(3 + 2)
-    assert outputs.loss.item() == pytest.approx((3 - 0) ** 2 + (3 - 1) ** 2)
-
-
-class OldSignatureObjective(PairObjective):
-    def make_sample(self, example, renderer):  # the pre-SampleInputs form
-        return None
-
-
-def test_load_objective():
-    config = SFTObjectiveConfig(import_path=f"{__name__}.PairObjective", kwargs={"offset": 1})
-    objective = load_objective(config)
-    assert isinstance(objective, SFTObjective) and objective.offset == 1
-    with pytest.raises(TypeError, match="must implement"):
-        load_objective(SFTObjectiveConfig(import_path="collections.OrderedDict"))
-    with pytest.raises(TypeError, match="one positional argument"):
-        load_objective(SFTObjectiveConfig(import_path=f"{__name__}.OldSignatureObjective"))
-    with pytest.raises(TypeError, match="holds parameters"):
-        load_objective(SFTObjectiveConfig(import_path=f"{__name__}.HeadHoldingObjective"))
-
-
-class HeadHoldingObjective(PairObjective):
-    """Holds a module of its own, which the trainer would never train."""
-
-    def __init__(self):
-        super().__init__()
-        self.head = nn.Linear(2, 1)
-
-
-class BrokenObjective(PairObjective):
-    def __init__(self, bad: str):
-        super().__init__()
-        self.bad = bad
-
-    def make_sample(self, inputs):
-        sample = super().make_sample(inputs)
-        if self.bad == "lengths":
-            sample["loss_mask"] = sample["loss_mask"][:-1]
-        elif self.bad == "type":
-            sample["input_ids"] = tuple(sample["input_ids"])
-        elif self.bad == "seq_lens":
-            sample["seq_lens"] = [1, len(sample["input_ids"]) - 1]
-        elif self.bad == "dict":
-            return list(sample.items())
-        elif self.bad == "empty":
-            sample = {**sample, **{key: [] for key in ("input_ids", "position_ids", "loss_mask", "target_ids")}}
-        return sample
-
-
-@pytest.mark.parametrize(
-    "bad, message",
-    [
-        ("lengths", "different lengths"),
-        ("type", "must return a list"),
-        ("seq_lens", "one entry per sample"),
-        ("dict", "must return a dict"),
-        ("empty", "empty sample"),
-    ],
-)
-def test_malformed_samples_are_rejected_at_the_source(bad, message):
-    rows = Dataset.from_list([{"text": "ab", "label": 0.0}])
-    dataset = SFTObjectiveDataset(
-        rows, lambda example: None, BrokenObjective(bad), shuffle=False, seq_len=8, max_epochs=1
-    )
-    with pytest.raises(ValueError, match=message):
-        next(iter(dataset))
-
-
-def test_samples_see_their_dataset_config():
-    seen = []
-
-    class Recording(PairObjective):
-        def make_sample(self, inputs):
-            seen.append(inputs.data)
-            return super().make_sample(inputs)
-
-    config = SFTDataConfig(name="rows", seq_len=8)
-    rows = Dataset.from_list([{"text": "ab", "label": 0.0}])
-    dataset = setup_dataset(
-        None, config, max_epochs=1, raw_dataset=rows, renderer_config=object(), objective=Recording()
-    )
-    dataset.renderers = lambda example: None  # PairObjective renders nothing
-    next(iter(dataset))
-    assert seen == [config]
-
-
-class RenderingObjective:
-    """Stock rendering through inputs.render(): what stock SFT trains on, unshifted."""
-
-    def make_sample(self, inputs):
-        rendered = inputs.render()
-        ids, mask = list(rendered.token_ids), list(rendered.loss_mask)
-        return {"input_ids": ids, "position_ids": list(range(len(ids))), "loss_mask": mask, "target_ids": ids}
-
-    def loss(self, inputs):
-        raise NotImplementedError
-
-
-def test_render_follows_columns_and_loss_mask(dummy_renderer):
-    rows = Dataset.from_list(
-        [{"q": [{"role": "user", "content": "hi"}], "a": [{"role": "assistant", "content": "yo"}]}]
-    )
-    columns = SFTColumnsConfig(prompt="q", completion="a")
-    for loss_mask in (LossMaskConfig(), LossMaskConfig(user=True)):
-        kwargs = dict(shuffle=False, seq_len=64, max_epochs=1, columns=columns, loss_mask_config=loss_mask)
-        stock = next(iter(SFTDataset(rows, lambda _: dummy_renderer, **kwargs)))
-        ours = next(iter(SFTObjectiveDataset(rows, lambda _: dummy_renderer, RenderingObjective(), **kwargs)))
-        # stock = the rendering shifted by one token
-        assert ours["input_ids"][1:] == stock["target_ids"] and ours["input_ids"][:-1] == stock["input_ids"]
-        assert ours["loss_mask"][1:] == stock["loss_mask"]
-    # [loss_mask] reaches the rendering: without the assistant role nothing is trainable (the dummy renderer renders
-    # the last message only), and the objective dataset hands that back instead of skipping the row
-    kwargs["loss_mask_config"] = LossMaskConfig(assistant=False)
-    none = next(iter(SFTObjectiveDataset(rows, lambda _: dummy_renderer, RenderingObjective(), **kwargs)))
-    assert not any(none["loss_mask"]) and any(ours["loss_mask"])
+def scaled_ce(inputs: ObjectiveInputs, scale: float = 1.0) -> ObjectiveOutputs:
+    """Stock SFT's token cross-entropy, times ``scale``."""
+    batch = inputs.batch
+    logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
+    ce = -(logprobs * batch["loss_mask"]).sum()
+    return ObjectiveOutputs(loss=scale * ce, count=batch["loss_mask"].sum(), metrics={"ce": ce.detach()})
 
 
 class TinyCausalLM(nn.Module):
@@ -273,6 +60,29 @@ def test_forward_runs_a_function_on_the_hidden_states():
     assert out["logits"].shape == (1, 3, 11)
 
 
+def test_objective_loss_calls_the_function_with_its_kwargs():
+    objective = load_objective(SFTObjectiveConfig(import_path=f"{__name__}.scaled_ce", kwargs={"scale": 2.0}))
+    model = tiny_causal_lm()
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    batch = {
+        "input_ids": input_ids,
+        "position_ids": torch.tensor([[0, 1, 2, 0, 1]]),
+        "seq_lens": torch.tensor([3, 2]),
+        "target_ids": torch.tensor([[2, 3, 4, 5, 6]]),
+        "loss_mask": torch.tensor([[True, True, False, True, True]]),
+    }
+    outputs = objective_loss(objective, model, batch)
+
+    # stock SFT's summed cross-entropy on the same micro-batch
+    stock = forward(
+        model, input_ids, batch["position_ids"], seq_lens=batch["seq_lens"],
+        labels=batch["target_ids"].masked_fill(~batch["loss_mask"], -100),
+    )["loss"]  # fmt: skip
+    torch.testing.assert_close(outputs.loss, 2.0 * stock)
+    torch.testing.assert_close(outputs.metrics["ce"], stock.detach())
+    assert outputs.count == 4
+
+
 @pytest.mark.parametrize("chunk_size", [None, 4])  # the vanilla and the fused LM head
 def test_token_logprobs(chunk_size):
     model = tiny_causal_lm(chunk_size)
@@ -285,10 +95,8 @@ def test_token_logprobs(chunk_size):
 
 
 def test_objective_config_rejects_unsupported_setups():
-    objective = {"import_path": f"{__name__}.PairObjective"}
-    assert SFTConfig(objective=objective).objective.import_path.endswith("PairObjective")
-    with pytest.raises(ValidationError, match="objective requires data.type='sft'"):
-        SFTConfig(objective=objective, data={"type": "fake"})
+    objective = {"import_path": f"{__name__}.scaled_ce"}
+    assert SFTConfig(objective=objective).objective.import_path.endswith("scaled_ce")
     with pytest.raises(ValidationError, match="not supported with context parallelism"):
         SFTConfig(objective=objective, model={"cp": 2})
 
@@ -338,19 +146,14 @@ class HeadsModel(PreTrainedModelPrimeRL):
         pass
 
 
-class HeadsObjective:
+def heads_objective(inputs: ObjectiveInputs) -> ObjectiveOutputs:
     """Calls the LM head twice (the summed cross-entropy, then per-token log-probabilities) and the score head."""
-
-    def make_sample(self, inputs: SampleInputs):
-        raise NotImplementedError
-
-    def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
-        batch, head = inputs.batch, inputs.model.score_head
-        ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
-        logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
-        scores = head(inputs.hidden_states[batch["loss_mask"]].to(head.weight.dtype)).float()
-        loss = ce["loss"] - (logprobs * batch["loss_mask"]).sum() + scores.square().sum()
-        return ObjectiveOutputs(loss=loss, count=batch["loss_mask"].sum())
+    batch, head = inputs.batch, inputs.model.score_head
+    ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
+    logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
+    scores = head(inputs.hidden_states[batch["loss_mask"]].to(head.weight.dtype)).float()
+    loss = ce["loss"] - (logprobs * batch["loss_mask"]).sum() + scores.square().sum()
+    return ObjectiveOutputs(loss=loss, count=batch["loss_mask"].sum())
 
 
 def heads_model(tied: bool) -> HeadsModel:
@@ -380,10 +183,10 @@ def fsdp_worker(rank: int, world: int, tied: bool, init_file: str, out_dir: str)
     model = heads_model(tied)
     setup_fsdp(model, config, get_parallel_dims(config))  # prime-rl's real FSDP setup
 
-    objective_loss(HeadsObjective(), model, heads_batch(rank)).loss.backward()
+    objective_loss(heads_objective, model, heads_batch(rank)).loss.backward()
     grads = {name: p.grad.full_tensor() for name, p in model.named_parameters()}
     with torch.no_grad():  # as in validation, which the trainer follows with reshard_module before clipping
-        objective_loss(HeadsObjective(), model, heads_batch(rank))
+        objective_loss(heads_objective, model, heads_batch(rank))
     reshard_module(model)
     resharded = all(isinstance(p, DTensor) for p in model.parameters())
     torch.save({"grads": grads, "resharded": resharded}, os.path.join(out_dir, f"{rank}.pt"))
@@ -397,7 +200,7 @@ def test_objective_loss_under_fsdp(tied, tmp_path):
 
     # The same micro-batches on one process without FSDP, in bf16 as FSDP computes; FSDP averages over ranks.
     model = heads_model(tied).to(torch.bfloat16)
-    sum(objective_loss(HeadsObjective(), model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
+    sum(objective_loss(heads_objective, model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
     for rank in range(world):
         result = torch.load(tmp_path / f"{rank}.pt")
         assert result["resharded"]  # after a loss without a backward, every FSDP unit reshards

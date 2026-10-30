@@ -196,7 +196,6 @@ def train(config: SFTConfig):
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
-        objective=objective,
     )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
@@ -388,7 +387,6 @@ def train(config: SFTConfig):
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
-            objective=objective,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 

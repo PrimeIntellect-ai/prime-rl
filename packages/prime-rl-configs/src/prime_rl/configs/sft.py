@@ -164,16 +164,15 @@ class SFTDataConfig(BaseDataConfig):
 
 
 class SFTObjectiveConfig(BaseConfig):
-    """A custom SFT objective: it builds each sample from a dataset row (optionally starting from the stock
-    rendering) and computes the loss from the backbone's final hidden states, in place of token cross-entropy."""
+    """A custom SFT objective: a loss computed from the backbone's final hidden states, in place of token
+    cross-entropy."""
 
     import_path: str
-    """Import path to the objective class (e.g. ``my_module.MyObjective``), instantiated with ``kwargs``. It implements
-    ``make_sample(inputs: SampleInputs) -> Sample | None`` and ``loss(inputs: ObjectiveInputs) -> ObjectiveOutputs``
-    (see ``prime_rl.trainer.sft.objective.SFTObjective``)."""
+    """Import path to the loss function (e.g. ``my_module.my_loss``), called as ``my_loss(inputs, **kwargs)`` with a
+    ``prime_rl.trainer.sft.objective.ObjectiveInputs`` and returning an ``ObjectiveOutputs``."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the objective's constructor."""
+    """Kwargs forwarded to the loss function."""
 
 
 class SFTValConfig(BaseConfig):
@@ -262,7 +261,7 @@ class SFTConfig(BaseConfig):
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     objective: SFTObjectiveConfig | None = None
-    """Custom SFT objective. If None, trains with token cross-entropy on rendered chat messages."""
+    """Custom SFT objective: a loss in place of token cross-entropy. If None, trains with token cross-entropy."""
 
     ckpt: CheckpointConfig | None = None
 
@@ -600,8 +599,6 @@ class SFTConfig(BaseConfig):
     def validate_objective(self):
         if self.objective is None:
             return self
-        if self.data.type != "sft" or (self.val is not None and self.val.data.type != "sft"):
-            raise ValueError("objective requires data.type='sft' (and val.data.type='sft')")
         if self.model.cp > 1 or self.model.vlm is not None or self.model.offload == "full":
             raise ValueError(
                 "objective is not supported with context parallelism, VLM training or model.offload='full'"
