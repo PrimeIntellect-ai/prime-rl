@@ -94,7 +94,9 @@ def main() -> None:
                 path, target, shape, dtype = record_key
                 total += count * sizes[record_key]
                 shape_text = "x".join(shape)
-                print(f"| {index} | {path} | {target} | {shape_text} | {dtype} | {count * sizes[record_key] / 2**20:.0f} |")
+                print(
+                    f"| {index} | {path} | {target} | {shape_text} | {dtype} | {count * sizes[record_key] / 2**20:.0f} |"
+                )
             print(f"| {index} | **total** | | | | {total / 2**20:.0f} |")
         print()
 
