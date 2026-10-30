@@ -368,6 +368,20 @@ def test_invalid_moe_runtime_configs_fail(model, message):
         TrainerModelConfig.model_validate(model)
 
 
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        ({"ac": {"mode": "selective", "targets": ["@self_attn"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@a@b"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@self_attn"]}, "compile": None}, "require model.compile"),
+    ],
+)
+def test_invalid_ac_targets_fail(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
+
+
 @pytest.mark.parametrize(("cp", "expected"), [(1, 262144), (8, 32768)])
 def test_mega_moe_buffer_defaults_to_a_cp_shard(cp, expected):
     mega_moe = {"type": "mega_moe", "precision": "mxfp8"}

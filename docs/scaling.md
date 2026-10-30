@@ -150,6 +150,17 @@ mode = "selective"
 
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
 
+To retain an operator only at some call sites, append `@` and a module path pattern relative to the transformer block. The pattern is an `fnmatch` glob, and it also matches inside the modules it names. Module-qualified targets require `trainer.model.compile`, whose module metadata identifies each call site, and the trainer raises if a pattern matches no module:
+
+```toml
+[trainer.model.ac]
+mode = "selective"
+targets = [
+  "prime_rl::fp8_blockwise_mm@self_attn.o_b_proj",
+  "prime_rl::fp8_blockwise_mm@mlp.shared_expert",
+]
+```
+
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
 
 `ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only losing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
