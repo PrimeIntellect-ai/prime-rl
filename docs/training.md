@@ -276,16 +276,16 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 ```python
 # my_module.py
 from prime_rl.trainer.models.layers.lm_head import token_logprobs
-from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs
+from prime_rl.trainer.sft.objective import LossInputs, LossOutputs
 
-def focal_loss(inputs: ObjectiveInputs, gamma: float = 2.0) -> ObjectiveOutputs:
+def focal_loss(inputs: LossInputs, gamma: float = 2.0) -> LossOutputs:
     """Token cross-entropy, down-weighting tokens the model already predicts well: -(1 - p)^gamma * log p."""
     batch = inputs.batch
     # one LM-head call for the whole micro-batch: each token's log-probability of its target
     logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
     mask = batch["loss_mask"]
     focal = -((1 - logprobs.exp()) ** gamma) * logprobs
-    return ObjectiveOutputs(
+    return LossOutputs(
         loss=(focal * mask).sum(), count=mask.sum(), metrics={"ce": -(logprobs * mask).sum().detach()}
     )
 ```
@@ -302,13 +302,13 @@ The dataclasses:
 
 ```python
 @dataclass
-class ObjectiveInputs:
+class LossInputs:
     model: nn.Module
     hidden_states: Float[Tensor, "batch seq hidden"]  # post-norm, no vocabulary projection
     batch: Batch                                       # on the device: input_ids, position_ids, target_ids, loss_mask, seq_lens
 
 @dataclass
-class ObjectiveOutputs:
+class LossOutputs:
     loss: Float[Tensor, ""]                   # summed; divided by the global `count`
     count: int | Tensor                       # e.g. samples or tokens in this micro-batch
     metrics: dict[str, Tensor] = {}           # summed; divided like the loss, same names on every call

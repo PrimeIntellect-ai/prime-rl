@@ -17,15 +17,15 @@ from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head, token_logprobs
 from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs, load_objective, objective_loss
+from prime_rl.trainer.sft.objective import LossInputs, LossOutputs, load_objective, objective_loss
 
 
-def scaled_ce(inputs: ObjectiveInputs, scale: float = 1.0) -> ObjectiveOutputs:
+def scaled_ce(inputs: LossInputs, scale: float = 1.0) -> LossOutputs:
     """Stock SFT's token cross-entropy, times ``scale``."""
     batch = inputs.batch
     logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
     ce = -(logprobs * batch["loss_mask"]).sum()
-    return ObjectiveOutputs(loss=scale * ce, count=batch["loss_mask"].sum(), metrics={"ce": ce.detach()})
+    return LossOutputs(loss=scale * ce, count=batch["loss_mask"].sum(), metrics={"ce": ce.detach()})
 
 
 class TinyCausalLM(nn.Module):
@@ -146,14 +146,14 @@ class HeadsModel(PreTrainedModelPrimeRL):
         pass
 
 
-def heads_objective(inputs: ObjectiveInputs) -> ObjectiveOutputs:
+def heads_objective(inputs: LossInputs) -> LossOutputs:
     """Calls the LM head twice (the summed cross-entropy, then per-token log-probabilities) and the score head."""
     batch, head = inputs.batch, inputs.model.score_head
     ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
     logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
     scores = head(inputs.hidden_states[batch["loss_mask"]].to(head.weight.dtype)).float()
     loss = ce["loss"] - (logprobs * batch["loss_mask"]).sum() + scores.square().sum()
-    return ObjectiveOutputs(loss=loss, count=batch["loss_mask"].sum())
+    return LossOutputs(loss=loss, count=batch["loss_mask"].sum())
 
 
 def heads_model(tied: bool) -> HeadsModel:

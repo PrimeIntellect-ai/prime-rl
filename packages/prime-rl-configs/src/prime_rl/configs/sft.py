@@ -169,7 +169,7 @@ class SFTObjectiveConfig(BaseConfig):
 
     import_path: str
     """Import path to the loss function (e.g. ``my_module.my_loss``), called as ``my_loss(inputs, **kwargs)`` with a
-    ``prime_rl.trainer.sft.objective.ObjectiveInputs`` and returning an ``ObjectiveOutputs``."""
+    ``prime_rl.trainer.sft.objective.LossInputs`` and returning a ``LossOutputs``."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
     """Kwargs forwarded to the loss function."""
