@@ -137,15 +137,12 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
     dsv4_swa_kv_fake_quant,
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.kernels.fp8_indexer import VLLM_INDEXER_FP8_AMAX_FLOOR, fp8_indexer
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-
-VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
-"""The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
@@ -532,7 +529,6 @@ class DeepseekV4Indexer(nn.Module):
 
         cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
-        q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -549,6 +545,8 @@ class DeepseekV4Indexer(nn.Module):
             self.index_topk,
             amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
             cp_group_name=cp_group.group_name if cp_world_size > 1 else None,
+            cos_sin_cache=cos_sin_cache,
+            position_ids=packed.position_ids,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
