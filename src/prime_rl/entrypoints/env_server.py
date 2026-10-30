@@ -18,12 +18,16 @@ from prime_rl.utils.utils import clean_exit
 
 
 def setup_worker(
-    log_level: str | None, json_logging: bool, sandbox_labels: list[str], bind_address: str | None
+    log_level: str | None,
+    json_logging: bool,
+    sandbox_labels: list[str],
+    bind_address: str | None,
+    checkpoint_dirs: list[Path],
 ) -> None:
     setup_env_server_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
     # Episode streams never carry training arrays; the hook keeps them for the trainer.
-    set_episode_hook(PayloadHook(bind_address))
+    set_episode_hook(PayloadHook(bind_address, checkpoint_dirs))
 
 
 def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
@@ -56,6 +60,7 @@ def run_server(config: EnvServerConfig):
             config.log.json_logging,
             sandbox_labels,
             config.serve.address,
+            config.checkpoint_dirs,
         ),
         config_data=env_config_data(config.env),
         max_concurrent=config.serve.max_concurrent,

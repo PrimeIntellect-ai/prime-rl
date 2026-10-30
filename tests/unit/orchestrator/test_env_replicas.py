@@ -1,6 +1,9 @@
 """An env spreads its runs over its server's replicas, least loaded first."""
 
 import asyncio
+from types import SimpleNamespace
+
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import Env
 
@@ -17,7 +20,7 @@ class FakeClient:
 
 def test_runs_go_to_the_least_loaded_replica():
     async def run():
-        env = Env(None, None, [])
+        env = Env(SimpleNamespace(env=vf.EnvConfig()), None, [])
         env._env_clients = [FakeClient(), FakeClient()]
         env._in_flight = [0, 0]
         client = None

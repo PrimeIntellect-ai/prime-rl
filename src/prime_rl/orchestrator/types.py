@@ -10,6 +10,7 @@ from prime_rl.transports.batch import TrainingSample
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
+    from verifiers.v1.serve import EpisodeAssembly, RestoreRequest
 
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
 
@@ -112,6 +113,9 @@ class InflightEpisode:
     live: dict[str, LiveTrace] = field(default_factory=dict)
     """The episode's in-flight traces by id, as far as the env server's stream has
     told: which phase each is in and how many turns it has committed."""
+    assembly: EpisodeAssembly | None = None
+    """The episode's stream as it stands: its partial traces and their newest restore
+    points, what an orchestrator checkpoint saves to continue it after a resume."""
 
 
 @dataclass
@@ -128,6 +132,9 @@ class GroupState:
     emitted: int = 0
     policy_version_at_start: int = 0
     group_id: uuid.UUID | None = None
+    restores: list[RestoreRequest] = field(default_factory=list)
+    """In-flight members a resumed run continues from their restore points; the group
+    dispatches them before its fresh members (``episodes_to_schedule`` counts both)."""
 
 
 @dataclass

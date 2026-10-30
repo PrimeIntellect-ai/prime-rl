@@ -13,6 +13,7 @@ from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
+from prime_rl.utils.logger import get_logger
 
 
 class TrainSource(Reconfigurable):
@@ -76,15 +77,18 @@ class TrainSource(Reconfigurable):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Resume the env mix and each env's curriculum. The mix may have changed since
+        the checkpoint: an env it does not know starts fresh, and the state of an env no
+        longer configured is dropped."""
         expected_fields = {"rng", "envs"}
         if set(state_dict) != expected_fields:
             raise ValueError(f"Train-source checkpoint fields must be {sorted(expected_fields)}")
         env_states = state_dict["envs"]
-        if set(env_states) != set(self.curricula):
-            raise ValueError(
-                f"Train-source checkpoint envs {sorted(env_states)} do not match configured envs "
-                f"{sorted(self.curricula)}"
-            )
         self.rng.setstate(state_dict["rng"])
         for name, curriculum in self.curricula.items():
-            curriculum.load_state_dict(env_states[name])
+            if name in env_states:
+                curriculum.load_state_dict(env_states[name])
+            else:
+                get_logger().info(f"Env {name} is new since the checkpoint: its curriculum starts fresh")
+        if removed := sorted(set(env_states) - set(self.curricula)):
+            get_logger().info(f"Dropped the checkpointed state of removed envs {removed}")

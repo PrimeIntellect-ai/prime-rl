@@ -416,10 +416,11 @@ class ScheduledEvalConfig(EvalSourcesConfig):
     """If True, skip the startup eval that otherwise runs before any
     train rollouts."""
 
-    retrigger_on_resume: bool = False
-    """If True, re-trigger evals at the checkpoint step on resume (e.g. after a
-    crash that left in-flight evals unfinished). By default, assumes a clean
-    exit where all evals already completed."""
+    retrigger_on_resume: bool = True
+    """If True, re-trigger evals at the checkpoint step on resume. The trainer
+    broadcasts the checkpoint step's weights after the orchestrator saves that
+    step, so its evals are never in the checkpoint. Set False to skip them, e.g.
+    when the previous run already finished them."""
 
     @property
     def intervals(self) -> dict[str, int]:
@@ -435,6 +436,14 @@ class RLOnlineEvalConfig(ScheduledEvalConfig):
 class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
+
+    rollouts: bool = False
+    """Also checkpoint the in-flight rollouts, which a resumed run continues from their
+    newest restore points, and the in-queue ones (finished, not yet shipped), of train
+    and eval envs alike: an eval epoch in progress resumes where it stopped.
+    Every env agent then keeps its box snapshots for this run (`keep = "all"`,
+    `after = "keep"`), which deletes them once no checkpoint resumes from them. An agent
+    with rollout checkpointing off (`checkpoint = None`) restarts its in-flight rollouts."""
 
 
 class ConcurrencyConfig(BaseConfig):
@@ -731,6 +740,18 @@ class OrchestratorConfig(BaseConfig):
                     f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def resolve_rollout_checkpointing(self):
+        """With ``ckpt.rollouts``, this run deletes its env agents' box snapshots itself:
+        a checkpoint may resume from them after the rollout's server is gone."""
+        if self.ckpt is None or not self.ckpt.rollouts:
+            return self
+        for _, source in self.env_sources:
+            for agent in agent_config_fields(source.env).values():
+                if agent.checkpoint is not None:
+                    agent.checkpoint = agent.checkpoint.model_copy(update={"keep": "all", "after": "keep"})
         return self
 
     @model_validator(mode="after")

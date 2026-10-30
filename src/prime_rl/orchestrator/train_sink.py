@@ -150,6 +150,9 @@ class TrainSink(Reconfigurable):
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
+        self.group_targets: dict[str, int] = {}
+        """Episodes a group resumed from a checkpoint finalizes at: its size when it
+        opened, which the run's current ``group_size`` may no longer match."""
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
@@ -171,6 +174,41 @@ class TrainSink(Reconfigurable):
     def release_samples(self, samples: Iterable[TrainingSample]) -> None:
         """Delete the env-server arrays of samples that will never ship."""
         self._release(sample_payload_urls(samples))
+
+    def state_dict(self) -> dict:
+        """What the sink holds between steps, for the orchestrator checkpoint: groups
+        still collecting members and the unshipped batch with its episodes."""
+        targets = {
+            group_id: self.group_targets.get(group_id) or self.group_size_for(env_name)
+            for group_id, env_name in self._open_groups().items()
+        }
+        return {
+            "group_targets": targets,
+            "pending_groups": dict(self.pending_groups),
+            "pending_group_failures": dict(self.pending_group_failures),
+            "pending_group_cancellations": dict(self.pending_group_cancellations),
+            "pending_batch": dict(self.pending_batch),
+            "episode_by_trace": dict(self.episode_by_trace),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Take a checkpoint's sink back; entries of envs no longer trained on go."""
+        names = set(self.train_envs.names)
+        self.group_targets.update(state["group_targets"])
+        for group_id, group in state["pending_groups"].items():
+            if group and episode_env_name(group[0]) in names:
+                self.pending_groups[group_id] = group
+        for group_id, failures in state["pending_group_failures"].items():
+            if failures and failures[0].env_name in names:
+                self.pending_group_failures[group_id] = failures
+        for group_id, cancellation in state["pending_group_cancellations"].items():
+            if cancellation.env_name in names:
+                self.pending_group_cancellations[group_id] = cancellation
+        for trace_id, samples in state["pending_batch"].items():
+            episode = state["episode_by_trace"][trace_id]
+            if episode_env_name(episode) in names:
+                self.pending_batch[trace_id] = samples
+                self.episode_by_trace[trace_id] = episode
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -227,7 +265,19 @@ class TrainSink(Reconfigurable):
         cancellation = self.pending_group_cancellations.get(group_id)
         cancelled = cancellation.count if cancellation is not None else 0
         failed = len(self.pending_group_failures[group_id])
-        return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
+        target = self.group_targets.get(group_id) or self.group_size_for(env_name)
+        return len(self.pending_groups[group_id]) + failed + cancelled >= target
+
+    def _open_groups(self) -> dict[str, str]:
+        """The groups the sink holds members of, by id, with their env."""
+        groups = {group_id: episode_env_name(group[0]) for group_id, group in self.pending_groups.items() if group}
+        groups |= {
+            group_id: failures[0].env_name for group_id, failures in self.pending_group_failures.items() if failures
+        }
+        groups |= {
+            group_id: cancellation.env_name for group_id, cancellation in self.pending_group_cancellations.items()
+        }
+        return groups
 
     async def take_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
@@ -289,6 +339,7 @@ class TrainSink(Reconfigurable):
         await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
+        self.group_targets.pop(group_id, None)
         traces = [trace for episode in self.pending_groups.get(group_id, []) for trace in episode.traces]
         try:
             await self._process_group(group_id)

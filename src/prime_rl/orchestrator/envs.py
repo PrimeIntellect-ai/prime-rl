@@ -28,7 +28,8 @@ from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.serve import EnvClient
+from verifiers.v1.configs.agent import agent_config_fields
+from verifiers.v1.serve import EnvClient, EpisodeAssembly, RestoreRequest
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
@@ -70,6 +71,12 @@ class Env:
         """Where the replicas of a launcher-managed server publish their addresses; read
         when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
+        # A server that keeps its box snapshots past the run (`after = "keep"`) leaves
+        # their deletion to this run: a checkpoint may still resume from them.
+        self.owns_snapshots = any(
+            agent.checkpoint is not None and agent.checkpoint.after == "keep"
+            for agent in agent_config_fields(config.env).values()
+        )
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
@@ -132,10 +139,14 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        assembly: EpisodeAssembly | None = None,
+        restore: RestoreRequest | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
-        change of one of the episode's traces — as it lands. The run goes to the replica
+        change of one of the episode's traces — as it lands; ``assembly`` collects them
+        into the in-flight traces and their newest restore points. ``restore``
+        continues a trace from one of those restore points. The run goes to the replica
         with the fewest runs in flight."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
@@ -148,9 +159,15 @@ class Env:
                 model=model_name,
                 sampling=sampling,
                 on_delta=on_delta,
+                assembly=assembly,
+                restore=restore,
             )
         finally:
             self._in_flight[replica] -= 1
+
+    async def discard_checkpoints(self, checkpoints: list[str]) -> list[str]:
+        """Delete box snapshots this run owns and no longer needs; returns the deleted."""
+        return await self.env_clients[0].discard(checkpoints)
 
 
 class TrainEnv(Env):

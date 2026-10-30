@@ -985,7 +985,7 @@ const compModels = new Map(); // pane key -> {rows, segments, meanTotal, kids}
 let paneTips = [];
 
 /* phases in the order a rollout runs them; anything unknown follows, by name */
-const PHASE_ORDER = ["boot", "setup", "agent", "model", "harness", "finalize", "scoring"];
+const PHASE_ORDER = ["boot", "setup", "agent", "model", "harness", "checkpoint", "finalize", "scoring"];
 
 function phaseRank(name) {
   const k = PHASE_ORDER.indexOf(name);

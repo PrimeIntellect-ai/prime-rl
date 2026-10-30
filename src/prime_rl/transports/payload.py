@@ -12,29 +12,44 @@ step's blobs once every rank fetched them; the orchestrator deletes the blobs of
 and traces it drops without shipping; the env server deletes the blobs of episodes it
 kept but did not deliver (`PayloadHook.discard`).
 
+An orchestrator checkpoint has each worker write what the checkpointed work still needs
+next to it (`POST <url>/persist`): the blobs of finished but unshipped episodes, and the
+arrays of each in-flight trace's nodes up to its restore point. A resumed run reads the
+blobs from `file://` URLs and hands a restored trace its file (`PayloadHook.restore`).
+
 Nothing here imports torch: every env-server worker imports this module.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import json
+import os
 import queue
+import shutil
 import socket
 import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Sequence
+import uuid
+import weakref
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import msgspec
 import numpy as np
 import verifiers.v1 as vf
+from verifiers.v1.types import decode_ndarray, encode_ndarray
 
 from prime_rl.transports.batch.types import (
+    PAYLOAD_ARRAYS_KEY,
     PAYLOAD_INFO_KEY,
+    PAYLOAD_WORKER_KEY,
     BranchArrays,
     MicroBatch,
     PayloadSlice,
@@ -304,14 +319,41 @@ class _HTTPServer(ThreadingHTTPServer):
 
 class PayloadServer:
     """One env-server worker's arrays, served at `GET <url>/<id>` and freed by
-    `DELETE <url>/<id>`."""
+    `DELETE <url>/<id>`. `POST <url>/persist` hands its JSON body to `persist` and
+    returns its result."""
 
-    def __init__(self, bind_host: str, url_host: str | None = None):
+    def __init__(
+        self,
+        bind_host: str,
+        url_host: str | None = None,
+        persist: Callable[[dict], dict] | None = None,
+    ):
         self.blobs: dict[str, bytes] = {}
         self.lock = threading.Lock()
         server = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                if self.path != "/persist" or persist is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                try:
+                    body = json.dumps(persist(request)).encode()
+                except ValueError as error:
+                    body = str(error).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self) -> None:
                 blob = server.get(self.path.lstrip("/"))
                 self.send_response(200 if blob is not None else 404)
@@ -352,10 +394,51 @@ def _fields(arrays: BranchArrays) -> set[str]:
     return fields
 
 
+NODE_ARRAY_FIELDS = ("routed_experts", "sampling_mask", "top_logprobs")
+
+
+def _encode_node_arrays(nodes: Sequence[Any]) -> bytes:
+    def encode(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            return encode_ndarray(value)
+        return {field.name: encode_ndarray(getattr(value, field.name)) for field in dataclasses.fields(value)}
+
+    return _encoder.encode([{name: encode(getattr(node, name, None)) for name in NODE_ARRAY_FIELDS} for node in nodes])
+
+
+def _decode_node_arrays(data: bytes) -> list[dict[str, Any]]:
+    kinds = {"sampling_mask": vf.SamplingMask, "top_logprobs": vf.TopLogprobs}
+    nodes = []
+    for encoded in msgspec.msgpack.decode(data):
+        arrays: dict[str, Any] = {}
+        for name, value in encoded.items():
+            if value is None:
+                arrays[name] = None
+            elif name == "routed_experts":
+                arrays[name] = decode_ndarray(value)
+            else:
+                arrays[name] = kinds[name](**{field: decode_ndarray(v) for field, v in value.items()})
+        nodes.append(arrays)
+    return nodes
+
+
+def _write(path: Path, data: bytes) -> None:
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
 class PayloadHook:
     """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
 
-    def __init__(self, bind_address: str | None = None):
+    def __init__(self, bind_address: str | None = None, checkpoint_dirs: Sequence[Path] = ()):
+        # Arrays are persisted under the first only; restored from any (`EnvServerConfig`).
+        self.checkpoint_dirs = [Path(path).resolve() for path in checkpoint_dirs]
+        # The worker's traces in flight, for `persist`; a trace goes when its run does.
+        self.traces: weakref.WeakValueDictionary[str, vf.Trace] = weakref.WeakValueDictionary()
+        self.traces_lock = threading.Lock()
         self._hosts = payload_host(bind_address)
         self._server: PayloadServer | None = None
         self._lock = threading.Lock()
@@ -365,13 +448,66 @@ class PayloadHook:
         """Started on first use: a pool broker installs the hook too but never keeps arrays."""
         with self._lock:
             if self._server is None:
-                self._server = PayloadServer(*self._hosts)
+                self._server = PayloadServer(*self._hosts, persist=self.persist)
             return self._server
+
+    def watch(self, trace: vf.Trace) -> None:
+        trace.info[PAYLOAD_WORKER_KEY] = self.server.url
+        with self.traces_lock:
+            self.traces[trace.id] = trace
+
+    def restore(self, trace: vf.Trace) -> None:
+        path = trace.info.pop(PAYLOAD_ARRAYS_KEY, None)
+        if path is None:
+            return
+        path = Path(path).resolve()
+        if not any(path.is_relative_to(d) for d in self.checkpoint_dirs):
+            raise ValueError(f"restored arrays {path} are outside the run's checkpoint directories")
+        for node, arrays in zip(trace.nodes, _decode_node_arrays(path.read_bytes())):
+            for name, value in arrays.items():
+                setattr(node, name, value)
+
+    def persist(self, request: dict) -> dict:
+        """Write the kept blobs `request["blobs"]` names, and for each in-flight trace of
+        `request["traces"]` (`{trace_id: [checkpoint_id, nodes]}`) the arrays of its
+        first `nodes` nodes, under `request["dir"]`. A trace is written only while it
+        still holds that checkpoint: a retry that rewound past it changed those nodes.
+        Returns the blobs and traces written; nothing outside `request["dir"]`, which
+        must be inside the run's checkpoint directory."""
+        directory = Path(request["dir"]).resolve()
+        if not self.checkpoint_dirs or not directory.is_relative_to(self.checkpoint_dirs[0]):
+            raise ValueError(f"{directory} is outside the run's checkpoint directory")
+        directory.mkdir(parents=True, exist_ok=True)
+        blobs = []
+        for key in request["blobs"]:
+            path = (directory / key).resolve()
+            if path.parent != directory:
+                continue
+            if (blob := self.server.get(key)) is not None:
+                _write(path, blob)
+                blobs.append(key)
+        traces = []
+        for trace_id, (checkpoint, num_nodes) in request["traces"].items():
+            path = (directory / trace_id).resolve()
+            if path.parent != directory:
+                continue
+            with self.traces_lock:
+                trace = self.traces.get(trace_id)
+            if trace is None or not any(c.id == checkpoint for c in trace.checkpoints):
+                continue
+            nodes = trace.nodes[:num_nodes]
+            if len(nodes) < num_nodes:
+                continue
+            _write(path, _encode_node_arrays(nodes))
+            traces.append(trace_id)
+        return {"blobs": blobs, "traces": traces}
 
     def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
         stored: list[str] = []
         try:
             for trace in episode.traces:
+                with self.traces_lock:
+                    self.traces.pop(trace.id, None)
                 references: dict[str, dict[str, Any]] = {}
                 for branch in trace.branches:
                     if not branch.trainable:
@@ -414,8 +550,46 @@ class PayloadHook:
         if self._server is None:
             return
         for trace in episode.traces:
+            with self.traces_lock:
+                self.traces.pop(trace.id, None)
             for reference in (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {}).values():
                 self.server.delete(reference["id"])
+
+
+def persist_payloads(
+    url: str, directory: Path, blobs: list[str], traces: dict[str, tuple[str, int]]
+) -> tuple[list[str], list[str]]:
+    """Have the worker at `url` write `blobs` and the arrays of `traces` to `directory`
+    (`PayloadHook.persist`); returns the blobs and traces written. Blobs an earlier
+    checkpoint persisted (a `file://` URL) are linked over."""
+    if url.startswith("file://"):
+        source = Path(urllib.request.url2pathname(urlparse(url).path))
+        directory.mkdir(parents=True, exist_ok=True)
+        linked = []
+        for key in blobs:
+            try:
+                os.link(source / key, directory / key)
+            except FileExistsError:
+                pass
+            except FileNotFoundError:
+                continue
+            except OSError:
+                shutil.copyfile(source / key, directory / key)
+            linked.append(key)
+        return linked, []
+    body = json.dumps(
+        {"dir": str(directory), "blobs": blobs, "traces": {trace_id: list(t) for trace_id, t in traces.items()}}
+    ).encode()
+    request = urllib.request.Request(
+        f"{url}/persist", data=body, method="POST", headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            written = json.loads(response.read())
+    except Exception as error:
+        get_logger().warning(f"Env-server worker {url} did not persist its arrays: {error!r}")
+        return [], []
+    return written["blobs"], written["traces"]
 
 
 def trace_payload_urls(trace: vf.Trace) -> list[str]:
