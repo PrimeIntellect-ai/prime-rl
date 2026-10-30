@@ -3,6 +3,7 @@ delivered trace is either shipped in a batch (the trainer deletes it) or deleted
 sink when it drops the sample or trace."""
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -137,3 +138,15 @@ def test_dispatcher_skips_claimed_tasks_still_pending(monkeypatch):
         pending.cancel()
 
     asyncio.run(run())
+
+
+def test_per_episode_cache_salt_is_fresh_per_train_episode():
+    dispatcher = Dispatcher.__new__(Dispatcher)
+    dispatcher.cache_salt_prefix, dispatcher.per_episode_cache_salt = "abcd1234", False
+    train = SimpleNamespace(kind="train", policy_version_at_start=7)
+    evaluation = SimpleNamespace(kind="eval", policy_version_at_start=7)
+    assert dispatcher._cache_salt(train) == dispatcher._cache_salt(evaluation) == "abcd1234-7"
+    dispatcher.per_episode_cache_salt = True
+    salts = {dispatcher._cache_salt(train) for _ in range(4)}
+    assert len(salts) == 4 and all(re.fullmatch(r"abcd1234-7-[0-9a-f]{16}", salt) for salt in salts)
+    assert dispatcher._cache_salt(evaluation) == "abcd1234-7"

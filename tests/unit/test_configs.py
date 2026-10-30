@@ -1247,6 +1247,48 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
         assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == "0"
 
 
+def test_forced_routing_enables_capture_and_refuses_unsupported_deployments():
+    config = InferenceConfig(forced_routing={"enabled": True})
+    assert config.vllm.enable_return_routed_experts is True
+    assert InferenceConfig().vllm.enable_return_routed_experts is False
+    with pytest.raises(ValidationError, match="requires inference.vllm.enable_return_routed_experts"):
+        InferenceConfig(forced_routing={"enabled": True}, vllm={"enable_return_routed_experts": False})
+    for vllm in ({"enable_expert_parallel": True}, {"data_parallel_size": 2}):
+        with pytest.raises(ValidationError, match="expert or data parallelism"):
+            InferenceConfig(forced_routing={"enabled": True}, vllm=vllm)
+    with pytest.raises(ValidationError, match="disaggregated"):
+        InferenceConfig(forced_routing={"enabled": True}, deployment={"type": "disaggregated"}, slurm={})
+
+
+def test_forced_routing_requires_router_replay_and_per_episode_salts():
+    config = {
+        "trainer": {"enable_router_replay": True},
+        "orchestrator": {"per_episode_cache_salt": True},
+        "inference": {"forced_routing": {"enabled": True}},
+    }
+    assert RLConfig.model_validate(config).inference.vllm.enable_return_routed_experts is True
+    with pytest.raises(ValidationError, match="per_episode_cache_salt"):
+        RLConfig.model_validate({**config, "orchestrator": {}})
+    with pytest.raises(ValidationError, match="enable_router_replay"):
+        RLConfig.model_validate({**config, "trainer": {}})
+
+
+def test_setup_vllm_env_writes_the_forced_routing_switch(monkeypatch):
+    from prime_rl.inference.server import setup_vllm_env
+
+    for name in ("DRIFT", "STASH_MIB", "LOG_INTERVAL"):
+        monkeypatch.delenv(f"PRIME_RL_FORCED_ROUTING_{name}", raising=False)
+    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    monkeypatch.setenv("PRIME_RL_FORCED_ROUTING", "1")
+    setup_vllm_env(InferenceConfig())
+    assert os.environ["PRIME_RL_FORCED_ROUTING"] == "0"  # the config is authoritative
+    setup_vllm_env(InferenceConfig(forced_routing={"enabled": True, "drift": False, "stash_max_mib": 64}))
+    assert os.environ["PRIME_RL_FORCED_ROUTING"] == "1" and os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+    assert (
+        os.environ["PRIME_RL_FORCED_ROUTING_DRIFT"] == "0" and os.environ["PRIME_RL_FORCED_ROUTING_STASH_MIB"] == "64"
+    )
+
+
 def test_pd_role_connectors():
     mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
     deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
