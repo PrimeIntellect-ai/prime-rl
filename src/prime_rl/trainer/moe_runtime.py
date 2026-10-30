@@ -28,11 +28,23 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     MXFP8ExpertCompute,
 )
-from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, reserve_sms_for_comm
+from prime_rl.trainer.models.layers.mega_moe import (
+    MegaMoEExpertCompute,
+    default_nccl_max_ctas,
+    num_concurrent_nccl_kernels,
+    reserve_sms_for_comm,
+)
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_language_model
+
+
+def setup_moe_comm_env(config: ModelConfig) -> None:
+    """Environment the MoE dispatch needs before torch distributed creates NCCL communicators."""
+    dispatch = config.moe.dispatch
+    if isinstance(dispatch, MegaMoeMoEDispatchConfig):
+        default_nccl_max_ctas(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(config.dp_replicate))
 
 
 def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
@@ -64,12 +76,12 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
 
 
 def _resolve_mega_moe_compute(
-    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup
+    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup, dp_replicate: int
 ) -> MegaMoEExpertCompute:
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
             "Mega MoE dispatch needs `model.moe.dispatch.max_tokens_per_rank`; the trainer configs derive it from "
-            "the micro batch, set it explicitly when configuring the model on its own."
+            "the micro batch and model.cp, set it explicitly when configuring the model on its own."
         )
     return MegaMoEExpertCompute(
         num_experts=moe.experts.num_experts,
@@ -78,7 +90,7 @@ def _resolve_mega_moe_compute(
         intermediate_hidden=moe.experts.hidden_dim,
         group=group,
         max_tokens_per_rank=dispatch.max_tokens_per_rank,
-        num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms),
+        num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(dp_replicate)),
         precision=dispatch.precision,
     )
 
@@ -92,9 +104,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     selected_moes = set(moe_layers)
     if config.moe.compute.apply_to != "all":
-        language_model = get_language_model(
-            model, override=config.vlm.language_model_attr if config.vlm is not None else None
-        )
+        language_model = get_language_model(model)
         selected_layers = config.moe.compute.resolve_layers(len(language_model.layers))
         selected_moes = {
             module
@@ -115,7 +125,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
         selected_moes = set(moe_layers)
-        selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group())
+        selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group(), config.dp_replicate)
     else:
         selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
 

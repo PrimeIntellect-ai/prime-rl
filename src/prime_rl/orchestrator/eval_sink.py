@@ -9,6 +9,7 @@ from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation
 from prime_rl.orchestrator.utils import episode_env_name, eval_work
+from prime_rl.transports.payload import delete_payloads, trace_payload_urls
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -24,6 +25,8 @@ class EvalSink:
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
+        # Env servers keep every episode's training arrays; eval never trains on them.
+        delete_payloads(url for trace in episode.traces for url in trace_payload_urls(trace))
         key = (episode_env_name(episode), eval_work(episode).step)
         self.pending_batches[key].append(episode)
         return self._complete(key)

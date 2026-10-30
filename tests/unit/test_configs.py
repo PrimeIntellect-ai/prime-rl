@@ -264,12 +264,6 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
 
-    assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
-    assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
-
-    with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
-        TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
-
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
@@ -372,6 +366,47 @@ def test_moe_compute_apply_to_cli(selection, selected):
 def test_invalid_moe_runtime_configs_fail(model, message):
     with pytest.raises(ValidationError, match=message):
         TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(("cp", "expected"), [(1, 262144), (8, 32768)])
+def test_mega_moe_buffer_defaults_to_a_cp_shard(cp, expected):
+    mega_moe = {"type": "mega_moe", "precision": "mxfp8"}
+    rl = TrainerConfig.model_validate({"model": {"seq_len": 262144, "cp": cp, "moe": {"dispatch": mega_moe}}})
+    sft = SFTConfig.model_validate(
+        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"type": "fake", "seq_len": 262144}}
+    )
+
+    assert rl.model.moe.dispatch.max_tokens_per_rank == expected
+    assert sft.model.moe.dispatch.max_tokens_per_rank == expected
+
+
+def test_mega_moe_buffer_covers_mxfp8_padding():
+    # A 10000-token pack pads to 10240 (a multiple of cp * 32), 1280 tokens per rank
+    config = TrainerConfig.model_validate(
+        {
+            "model": {
+                "seq_len": 10000,
+                "cp": 8,
+                "quantization": {"type": "mxfp8"},
+                "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8"}},
+            }
+        }
+    )
+
+    assert config.model.moe.dispatch.max_tokens_per_rank == 1280
+
+
+def test_mega_moe_buffer_smaller_than_a_cp_shard_fails():
+    with pytest.raises(ValidationError, match="must be at least the tokens a rank holds"):
+        TrainerConfig.model_validate(
+            {
+                "model": {
+                    "seq_len": 262144,
+                    "cp": 8,
+                    "moe": {"dispatch": {"type": "mega_moe", "max_tokens_per_rank": 16384}},
+                }
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -643,7 +678,20 @@ def test_policy_sources_accept_different_top_p_values():
             }
         )
 
-    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+    assert [source.sampling.top_k for source in config.train.source] == [128, 128]
+    assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
+    data = config.model_dump(mode="json")
+    data["eval"] = {
+        "source": [
+            {"name": "nucleus", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}},
+            {"name": "greedy", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"temperature": 0}},
+        ]
+    }
+    mixed = OrchestratorConfig.model_validate(data)
+    for source in mixed.eval.source:
+        assert source.sampling.top_k == -1
+        assert source.sampling.logprobs is None
+    assert OrchestratorConfig.model_validate_json(mixed.model_dump_json()) == mixed
 
 
 @pytest.mark.parametrize("frozen", [False, True])
@@ -781,36 +829,6 @@ def test_disaggregated_inference_inherits_deployment_gpus_per_node():
     config["inference"]["deployment"]["gpus_per_node"] = 4
     with pytest.raises(ValidationError, match="gpus_per_node must match"):
         RLConfig.model_validate(config)
-
-
-def test_orchestrator_vlm_requires_renderer():
-    with pytest.raises(ValidationError, match="renderer"):
-        OrchestratorConfig.model_validate(
-            {
-                "model": {
-                    "name": "Qwen/Qwen3-VL-4B-Instruct",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                },
-                "renderer": None,
-            }
-        )
-
-    config = OrchestratorConfig.model_validate(
-        {
-            "model": {
-                "name": "Qwen/Qwen3-VL-4B-Instruct",
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
-                },
-            },
-        }
-    )
-
-    assert config.renderer is not None
 
 
 def test_ac_none_disables_ac_offloading():
@@ -1242,14 +1260,17 @@ def test_explicit_inference_parser_wins_over_auto():
 
 
 @pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
+@pytest.mark.parametrize("top_p_first", [None, False, True])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    monkeypatch.setenv("PRL_TOP_P_BEFORE_TOP_K", "0")
     config = InferenceConfig(
         deployment=deployment,
         slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
+        **({"top_p_before_top_k": top_p_first} if top_p_first is not None else {}),
         vllm={"enable_return_routed_experts": True},
     )
 
@@ -1258,6 +1279,16 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+    assert config.top_p_before_top_k is (top_p_first is not False)
+    assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == ("0" if top_p_first is False else "1")
+    if top_p_first is not False:
+        monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "0")
+        with pytest.raises(ValueError, match="requires VLLM_USE_V2_MODEL_RUNNER"):
+            setup_vllm_env(config)
+        config.enable_return_sampling_mask = False
+        setup_vllm_env(config)
+        assert os.environ["PRL_TOP_P_BEFORE_TOP_K"] == "0"
 
 
 def test_pd_role_connectors():
@@ -1360,3 +1391,28 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
+
+
+@pytest.mark.parametrize("top_k", [32, 256])
+@pytest.mark.parametrize("top_p", [0.9, 1.0])
+def test_score_centering_captures_complete_bounded_support(top_k, top_p):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "orchestrator": {
+                "train": {
+                    "source": [
+                        {
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_k": top_k, "top_p": top_p},
+                        }
+                    ]
+                }
+            },
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.train.source[0].sampling.logprobs == top_k
+    assert config.inference.vllm.max_logprobs >= top_k + 2
+    assert config.inference.enable_return_sampling_mask
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config

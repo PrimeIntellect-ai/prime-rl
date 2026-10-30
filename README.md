@@ -33,7 +33,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 3. Native integration with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments through the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), including built-in support for SWE and agentic environments.
 4. End-to-end post-training: SFT, RL training, and evals.
 5. Multi-node deployment with Slurm support.
-6. Multimodal support for VLMs such as Qwen3.5.
+6. Multimodal support for Qwen3.5 and Qwen3.8 VLMs, with [image RL and SFT examples](examples/extra/vlm/README.md).
 7. Hackable, modular, and extensible by design.
 8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.3/).
 
@@ -46,9 +46,11 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | Family | Example IDs | MoE | EP | CP |
 |--------|-------------|-----|----|-----|
 | GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | yes | ✅ | ✅ |
+| GLM-5.3 Flash, text only (`glm5_next`) | `zai-org/GLM-5.3-Flash-BF16` | yes | ✅ | ✅ |
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
+| Qwen3.8 Flash Next VLM (`qwen4_exp`) | `Qwen/Qwen3.8-Flash-Next` | yes | ✅ | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Muse Glimmer, text only (`muse_glimmer`) | `meta-models/Muse-Glimmer-30B` | no | — | ✅ |
@@ -194,7 +196,7 @@ Check out the [docs](docs) directory for in-depth guides on how to use prime-rl.
 - [**Training**](docs/training.md) - RL, SFT, checkpointing, observability, rules of thumb
 - [**Eval**](docs/eval.md) - Standalone evals against any inference server, online evals, resume, platform upload
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
-- [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
+- [**Algorithms**](docs/algorithms.md) - Async training and staleness, the AIPO loss, advantage and filter plugins, trajectory merging
 - [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA
 - [**Development**](docs/development.md) - Test suite, pre-commit hooks, adding a new model
 

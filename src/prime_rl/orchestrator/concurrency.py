@@ -19,7 +19,7 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
 
 The cap starts at ``initial_inflight`` (else the pessimistic bound
 ``KV capacity / max_model_len``) and is clamped to
-``[min_inflight, max_inflight]`` throughout.
+``[min_inflight, max_inflight]`` throughout, unless a manual target pins it.
 
 The controller is a pure state machine — it owns no tasks or clients. The
 metrics collector pushes ``observe(samples)`` every poll; the dispatcher
@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num
 
@@ -113,7 +114,7 @@ class EngineLoadSample:
     preemptions_delta: int
 
 
-class ConcurrencyController:
+class ConcurrencyController(Reconfigurable):
     def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
         self.config = config
         self.floor = config.min_inflight
@@ -123,6 +124,8 @@ class ConcurrencyController:
         self.cap = float(config.initial_inflight or self.floor)
         self.max_inflight = self.clamp(self.cap)
         self.bootstrapped = config.initial_inflight is not None
+        # A manual cap that overrides the band and the adaptive loop until cleared
+        self.target: int | None = None
         self.engine_max_len: int | None = None
         self.capacity_by_engine: dict[str, int] = {}
 
@@ -179,7 +182,8 @@ class ConcurrencyController:
             # growing on it floods the engines once the environment recovers
             return
         if (
-            self.can_grow
+            self.target is None
+            and self.can_grow
             and time.monotonic() < self.can_grow_until
             and inflight >= BINDING_FRACTION * self.max_inflight
         ):
@@ -251,6 +255,8 @@ class ConcurrencyController:
         self.can_grow = worst == "clear" and total_queued == 0 and not self.draining
         self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(0.0, 1.0 - max_usage / KV_USAGE_SOFT_CAP)
         self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
+        if self.target is not None:
+            return
 
         # First capacity observation without a user-set start: derive the
         # pessimistic starting cap, once
@@ -291,6 +297,25 @@ class ConcurrencyController:
                 cancel=hard,
             )
             self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
+
+    def set_target(self, target: int | None) -> None:
+        """Pin the cap at ``target``, outside the configured band too, or hand it back to the
+        adaptive loop with None. A lower cap cancels nothing: admission waits for the pool
+        to drain below it."""
+        self.target = target
+        self.cap = float(target) if target is not None else self.clamp(self.cap)
+        self.apply_limit(int(self.cap), reason="manual target" if target is not None else "adaptive")
+
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        """Move the band and clamp the cap into it. A manual target stays pinned, and a lower
+        cap cancels nothing: admission waits for the pool to drain below it. ``initial_inflight``
+        only seeds the startup cap, so a new value (e.g. to stay below a lowered
+        ``max_inflight``) changes nothing."""
+        self.config = update.config.concurrency
+        self.floor = self.config.min_inflight
+        if self.target is None:
+            self.cap = self.clamp(self.cap)
+            self.apply_limit(int(self.cap), reason="config update")
 
     # ── internals ────────────────────────────────────────────────────────────
 

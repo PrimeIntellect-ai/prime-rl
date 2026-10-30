@@ -20,7 +20,10 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
-from prime_rl.transports.batch.types import RoutedExperts, SamplingMask, TopLogprobs
+from prime_rl.transports.batch.types import (
+    PAYLOAD_INFO_KEY,
+    PayloadSlice,
+)
 from prime_rl.utils.logger import get_logger
 
 
@@ -63,58 +66,7 @@ def _build_mm_refs(urls: list[str], token_types: list[int]) -> MMRefs | None:
     )
 
 
-def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExperts | None:
-    """The branch's router-replay array (`[tokens, layers, top_k]`) -> the transport
-    `RoutedExperts` the trainer replays. Defensively realigns the token axis to `num_tokens`
-    (the trainer asserts `routed_experts.shape[0] == len(token_ids)`): truncate if longer,
-    zero-pad the tail if shorter. `Branch.routed_experts` already guarantees alignment, so this
-    is a backstop."""
-    if arr is None:
-        return None
-    arr = np.ascontiguousarray(arr)
-    if arr.shape[0] > num_tokens:
-        arr = arr[:num_tokens]
-    elif arr.shape[0] < num_tokens:
-        pad = np.zeros((num_tokens - arr.shape[0], *arr.shape[1:]), dtype=arr.dtype)
-        arr = np.concatenate([arr, pad], axis=0)
-    return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
-
-
-def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> SamplingMask | None:
-    """Encode a branch sampling mask for a fixed token count.
-
-    The mask stores row sizes in `counts` and concatenates every row in `ids`.
-    For example, `counts=[2, 1]` and `ids=[4, 7, 9]` become `counts=[2]` and
-    `ids=[4, 7]` for one token. For three tokens, they become
-    `counts=[2, 1, 0]` with unchanged ids. Zero-count rows disable replay.
-    """
-    if mask is None:
-        return None
-    ids, counts = mask.ids, mask.counts
-    if len(counts) > num_tokens:
-        counts = counts[:num_tokens]
-        ids = ids[: int(counts.sum())]
-    elif len(counts) < num_tokens:
-        counts = np.concatenate([counts, np.zeros(num_tokens - len(counts), dtype=np.int32)])
-    return SamplingMask(
-        ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
-        counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
-    )
-
-
-def _encode_top_logprobs(head: vf.TopLogprobs | None, num_tokens: int) -> TopLogprobs | None:
-    if head is None:
-        return None
-    if len(head.counts) != num_tokens or int(head.counts.sum()) != len(head.ids) or len(head.ids) != len(head.logprobs):
-        raise ValueError("Top logprobs are not aligned to branch tokens")
-    return TopLogprobs(
-        ids=np.ascontiguousarray(head.ids, dtype=np.int32).tobytes(),
-        logprobs=np.ascontiguousarray(head.logprobs, dtype=np.float32).tobytes(),
-        counts=np.ascontiguousarray(head.counts, dtype=np.int32).tobytes(),
-    )
-
-
-def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
+def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, np.ndarray]]:
     """Yield each branch that yields a training sample, with its trainable-token mask.
 
     Branches excluded by trace semantics are skipped before shared-node accounting.
@@ -128,35 +80,39 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[b
     for branch in trace.branches:
         if not branch.trainable:
             continue
-        mask: list[bool] = []
+        parts: list[np.ndarray] = []
         for node in branch.nodes:
-            if node.sampled and any(node.mask) and id(node) in trained_nodes:
-                mask.extend([False] * len(node.mask))
+            node_mask = np.asarray(node.mask, dtype=bool)
+            if node.sampled and node_mask.any() and id(node) in trained_nodes:
+                parts.append(np.zeros(len(node_mask), dtype=bool))
             else:
-                if node.sampled and any(node.mask):
+                if node.sampled and node_mask.any():
                     trained_nodes.add(id(node))
-                mask.extend(node.mask)
-        if any(mask):
+                parts.append(node_mask)
+        mask = np.concatenate(parts) if parts else np.zeros(0, dtype=bool)
+        if mask.any():
             yield branch, mask
 
 
-def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list[float] | None:
-    """Flatten one graph-native loss stream, training each shared node once."""
-    weights: list[float] = []
+def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> np.ndarray | None:
+    """Flatten one graph-native loss stream (float32), training each shared node once."""
+    parts: list[np.ndarray] = []
     for node in branch.nodes:
         node_weights = (node.loss_weights or {}).get(name)
         if node_weights is None or id(node) in trained_nodes:
-            weights.extend([0.0] * len(node.token_ids))
+            parts.append(np.zeros(len(node.token_ids), dtype=np.float32))
             continue
         if len(node_weights) != len(node.token_ids):
             raise ValueError(
                 f"loss weight stream {name!r} must align with node token_ids: "
                 f"got {len(node_weights)}, expected {len(node.token_ids)}"
             )
-        weights.extend(node_weights)
-        if any(node_weights):
+        node_weights = np.asarray(node_weights, dtype=np.float32)
+        parts.append(node_weights)
+        if node_weights.any():
             trained_nodes.add(id(node))
-    return weights if any(weights) else None
+    weights = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+    return weights if weights.any() else None
 
 
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
@@ -170,10 +126,12 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
     """
     samples: list[TrainingSample] = []
+    # Set by the env server when it keeps the arrays (`prime_rl.transports.payload`).
+    references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
-        mm_token_type_ids: list[int] | None = None
+        mm_token_type_ids: np.ndarray | None = None
         mm_refs: MMRefs | None = None
         image_urls = _image_urls(branch)
         if image_urls:
@@ -186,20 +144,24 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 token_ids=token_ids,
                 mask=mask,
                 logprobs=branch.logprobs,
-                temperatures=[],  # filled by TrainSink.process_group
+                temperatures=np.zeros(0, dtype=np.float32),  # filled by TrainSink.process_group
                 env_name=env_name,
                 ref_logprobs=branch.reference_logprobs,
                 mm_refs=mm_refs,
                 mm_token_type_ids=mm_token_type_ids,
-                routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
                 rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
-                sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
-                top_logprobs=_encode_top_logprobs(branch.top_logprobs, len(token_ids)),
                 trace_id=trace.id,
                 branch_index=branch.index,
+                payload=PayloadSlice(
+                    url=trace.info[PAYLOAD_INFO_KEY]["url"],
+                    num_tokens=len(token_ids),
+                    **references[str(branch.index)],
+                )
+                if str(branch.index) in references
+                else None,
             )
         )
     if not samples:

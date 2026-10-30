@@ -24,6 +24,8 @@ import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.control.server import serve
+from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
@@ -41,6 +43,7 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     set_default_executor,
 )
+from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_config_dir
@@ -57,6 +60,7 @@ class EvalRunner:
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
+        self.control_task: asyncio.Task | None = None
 
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
@@ -119,7 +123,6 @@ class EvalRunner:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             dispatch_per_minute=config.dispatch_per_minute,
-            max_off_policy_steps=0,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -161,6 +164,9 @@ class EvalRunner:
 
     async def start(self) -> None:
         self.dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
+        if self.config.control is not None:
+            app = create_app(self.concurrency)
+            self.control_task = asyncio.create_task(serve(app, self.config.control), name="control")
         await self.periodic_logger.start()
 
     async def run_epoch(
@@ -254,37 +260,48 @@ class EvalRunner:
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
-        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
+        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict. Aggregation
+        runs in worker threads, as it takes seconds for a large epoch."""
         if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
-        await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes.vf_episodes)
-
         episodes = batch.episodes
         effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        if batch.cancelled:
-            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
-            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
-        metrics["step"] = float(batch.step)
-        await monitors.log(metrics, step=batch.step)
+        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        if effective_episodes:
+            await monitors.log(effective_episodes, batch.step, "eval", "effective")
+            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
+            await monitors.log_annotations(annotations)
+        await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.vf_episodes)
 
-        eff, full = effective.metrics, episodes.metrics
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+
+        def epoch_metrics() -> dict[str, float]:
+            metrics: dict[str, float] = {}
+            for subset, pool in (("all", episodes), ("effective", effective)):
+                metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+            metrics |= dispatch_failure_metrics(
+                batch.failures,
+                prefix=f"eval/{batch.env_name}/all",
+                total_attempts=total_attempts,
+            )
+            if batch.cancelled:
+                metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
+                metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
+            metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
+            metrics["step"] = float(batch.step)
+            return metrics
+
+        await monitors.log(await asyncio.to_thread(epoch_metrics), step=batch.step)
+
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        await asyncio.to_thread(self.log_eval_batch, batch, total_attempts=total_attempts, elapsed=elapsed)
+
+    def log_eval_batch(self, batch: EvalBatch, *, total_attempts: int, elapsed: float) -> None:
+        episodes = batch.episodes
+        eff, full = episodes.effective.metrics, episodes.metrics
         if batch.cancelled:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
@@ -328,6 +345,8 @@ class EvalRunner:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
+        if self.control_task is not None:
+            await safe_cancel(self.control_task)
         if self.periodic_logger is not None:
             await self.periodic_logger.stop()
         if self.inference_metrics is not None:

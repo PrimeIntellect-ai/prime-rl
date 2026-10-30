@@ -461,7 +461,7 @@ const INFERENCE_PANELS = [
 ];
 
 const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_ratio|is_masked|masked_|unmasked_|max_vio|routing_|ref_kl|val)[/_]?/;
-const ORCH_KEY_RE = /^(train|batch|off_policy|curriculum|eval)\//;
+const ORCH_KEY_RE = /^(train|batch|staleness|curriculum|eval)\//;
 
 function rowProducer(row, meta) {
   if (typeof row.producer === "string") return row.producer; // stamped by FileMonitor
@@ -1512,7 +1512,7 @@ const PANEL_INFO = [
   ["progress/num_tokens", "total tokens", "tokens trained on so far"],
   ["perf/mfu", "MFU", "model FLOPs utilization of the trainer"],
   ["perf/throughput", "throughput", "trainer tokens per second"],
-  ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer"],
+  ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer from all sources, max over ranks"],
   ["time/step", "step time", "wall time of one training step"],
   ["time/trainer_step", "RL trainer step time", "wall time of one RL trainer step"],
   ["time/orch_step", "orchestrator step time", "wall time of one orchestrator step"],

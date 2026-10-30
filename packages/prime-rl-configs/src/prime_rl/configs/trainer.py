@@ -11,10 +11,12 @@ from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    GCConfig,
     HeartbeatConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -24,11 +26,6 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
-
-
-class GCConfig(BaseConfig):
-    interval: int = Field(50, ge=1)
-    """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -228,22 +225,36 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
-    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
-    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
+    micro batch under context parallelism (``model.seq_len / model.cp`` for RL,
+    ``data.micro_batch_size * data.seq_len / model.cp`` for SFT) and cannot be smaller."""
 
-    num_reserved_sms: int = Field(16, ge=1)
-    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+    num_reserved_sms: int = Field(16, ge=2)
+    """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
+    at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
+    a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
 
 
-def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+def rl_micro_batch_multiple(model: "ModelConfig") -> int:
+    """RL micro batches are padded to a multiple of this: one shard per CP rank, and MXFP8 linears quantize
+    grad_output in 32-token blocks per CP rank."""
+    if isinstance(model.quantization, MXFP8Config):
+        return model.cp * 32
+    return model.cp
+
+
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int, cp: int) -> int:
     """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
-    buffer must hold the full micro batch."""
+    buffer must hold the rank's full share of the micro batch. Context parallelism splits every micro
+    batch evenly over the ``cp`` ranks, so that share is ``micro_batch_tokens / cp``."""
+    rank_tokens = -(-micro_batch_tokens // cp)
     if max_tokens_per_rank is None:
-        return micro_batch_tokens
-    if max_tokens_per_rank < micro_batch_tokens:
+        return rank_tokens
+    if max_tokens_per_rank < rank_tokens:
         raise ValueError(
-            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
-            f"({micro_batch_tokens} tokens)."
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the tokens a rank "
+            f"holds per micro batch ({micro_batch_tokens} tokens over cp={cp}: {rank_tokens})."
         )
     return max_tokens_per_rank
 
@@ -262,6 +273,9 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    vlm: VLMConfig | None = None
+    """VLM configuration. Setting this enables vision-language model support."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
@@ -528,48 +542,14 @@ class IcePopLossConfig(BaseConfig):
 
     score_centering_topk: int = Field(128, ge=1)
     """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
+    Probabilities retain full-vocabulary normalization. With sampling replay, the
+    complete recorded support is captured instead."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
         return self
-
-
-class PPOLossConfig(BaseConfig):
-    type: Literal["ppo"] = "ppo"
-
-    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
-    """Lower ratio bound for the clipped surrogate."""
-
-    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
-    """Upper ratio bound for the clipped surrogate."""
-
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the unbounded side of the surrogate while preserving its gradient."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    @model_validator(mode="after")
-    def validate_max_importance_ratio(self):
-        if self.max_importance_ratio < self.ratio_high:
-            raise ValueError("max_importance_ratio must be at least ratio_high")
-        return self
-
-
-class CISPOLossConfig(BaseConfig):
-    type: Literal["cispo"] = "cispo"
-
-    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
-    """Lower bound for the detached importance weight; zero disables lower clipping."""
-
-    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
-    """Upper bound for the detached importance weight."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -583,7 +563,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 
@@ -594,6 +574,15 @@ class FakeDataLoaderConfig(BaseConfig):
 
     generate_samples: bool = False
     """Generate separate samples and pack them into a single micro-batch instead of using random tensors."""
+
+    doc_len: int | None = Field(None, ge=1)
+    """Length of each generated sample, the last one cut to fill the micro batch. If None, lengths are random up to a micro batch's length / 8. Requires generate_samples."""
+
+    @model_validator(mode="after")
+    def doc_len_requires_generate_samples(self):
+        if self.doc_len is not None and not self.generate_samples:
+            raise ValueError("data.fake.doc_len requires data.fake.generate_samples")
+        return self
 
 
 class DataLoaderConfig(BaseConfig):
@@ -751,7 +740,7 @@ class TrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
@@ -760,10 +749,13 @@ class TrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
-        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
+        ``rl_micro_batch_multiple`` and split over the CP ranks."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
+            multiple = rl_micro_batch_multiple(self.model)
+            micro_batch_tokens = -(-self.model.seq_len // multiple) * multiple
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, self.model.seq_len
+                dispatch.max_tokens_per_rank, micro_batch_tokens, self.model.cp
             )
         return self

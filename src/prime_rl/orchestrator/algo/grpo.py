@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import verifiers.v1 as vf
 from verifiers.v1.trace import min_new_input_tokens
 
@@ -53,6 +54,9 @@ class GRPOAlgorithm(Algorithm):
         self.length_weighted_baseline = config.length_weighted_baseline
         self.loss_aggregation = config.loss_aggregation
 
+    def reconfigure(self, config: GRPOAlgoConfig) -> None:
+        self.length_penalty = config.length_penalty
+
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
 
@@ -81,7 +85,8 @@ class GRPOAlgorithm(Algorithm):
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
             lengths = torch.tensor(
-                [sum(sum(node.mask) for node in trainable_nodes(trace)) for trace in traces], dtype=rewards.dtype
+                [sum(int(np.count_nonzero(node.mask)) for node in trainable_nodes(trace)) for trace in traces],
+                dtype=rewards.dtype,
             )
             baseline = (lengths * shaped_rewards).sum() / lengths.sum()
         advantages = shaped_rewards - baseline
@@ -91,6 +96,7 @@ class GRPOAlgorithm(Algorithm):
         if self.loss_aggregation == "prompt" and nodes:
             # rl weight 1/T_q per token: each group's weights sum to 1, and the trainer divides the
             # rl loss by the sum of rl weights, i.e. the number of groups.
-            weight = 1.0 / sum(sum(node.mask) for node in nodes)
+            weight = 1.0 / sum(int(np.count_nonzero(node.mask)) for node in nodes)
             for node in nodes:
-                node.loss_weights = {**(node.loss_weights or {}), "rl": [weight if m else 0.0 for m in node.mask]}
+                rl = np.where(np.asarray(node.mask, dtype=bool), weight, 0.0).astype(np.float32)
+                node.loss_weights = {**(node.loss_weights or {}), "rl": rl}
