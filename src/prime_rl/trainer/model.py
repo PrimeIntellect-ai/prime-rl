@@ -36,7 +36,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper, unmatched_module_patterns
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -701,17 +701,22 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
+    checkpointed_blocks = []
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+        checkpointed_blocks.append(transformer_block)
+
+    if ac_config.mode == "selective" and ac_config.targets is not None:
+        unmatched = unmatched_module_patterns(ac_config.targets, checkpointed_blocks)
+        if unmatched:
+            raise ValueError(f"Activation checkpointing module patterns match no checkpointed submodule: {unmatched}")
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied {ac_config.mode} activation checkpointing to {len(checkpointed_blocks)} layers (freq={ac_config.freq})"
     )
 
 

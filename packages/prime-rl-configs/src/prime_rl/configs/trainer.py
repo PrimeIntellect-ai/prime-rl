@@ -36,7 +36,19 @@ class ActivationCheckpointConfig(BaseConfig):
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] | None = None
-    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them. Append ``@<module path pattern>`` to retain an operator only inside matching modules, for example ``"prime_rl::fp8_blockwise_mm@self_attn.o_b_proj"``. The pattern is an ``fnmatch`` glob over module paths relative to the checkpointed block, and it also covers the matching modules' descendants. Module-qualified targets require ``model.compile``."""
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets(cls, targets: list[str] | None) -> list[str] | None:
+        for target in targets or []:
+            operation, separator, module_pattern = target.partition("@")
+            if not operation or (separator and (not module_pattern or "@" in module_pattern)):
+                raise ValueError(
+                    f"Invalid activation checkpointing target {target!r}: expected an operator or namespace, "
+                    "optionally followed by '@<module path pattern>'."
+                )
+        return targets
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -348,6 +360,12 @@ class ModelConfig(BaseModelConfig):
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        return self
+
+    @model_validator(mode="after")
+    def module_qualified_ac_targets_require_compile(self):
+        if self.compile is None and self.ac is not None and any("@" in target for target in self.ac.targets or []):
+            raise ValueError("Module-qualified model.ac.targets require model.compile.")
         return self
 
     @model_validator(mode="after")
