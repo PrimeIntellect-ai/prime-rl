@@ -161,7 +161,7 @@ def run_variant(variant, params, grads, partitions=None, mesh=None, **kwargs):
         for p, grad in zip(params, step_grads):
             p.grad = grad
         optimizer.step()
-    return params
+    return optimizer
 
 
 @pytest.mark.parametrize("bf16_momentum", [False, True])
@@ -169,7 +169,8 @@ def test_dimuon_matches_reference(bf16_momentum):
     torch.manual_seed(0)
     W = torch.randn(24, 16)
     grads = torch.randn(3, 24, 16)
-    (whole,) = run_variant("dimuon", [nn.Parameter(W.clone())], grads[:, None], bf16_momentum=bf16_momentum)
+    whole = nn.Parameter(W.clone())
+    run_variant("dimuon", [whole], grads[:, None], bf16_momentum=bf16_momentum)
     # a packed parameter trains like its matrices on their own
     packed = nn.Parameter(W.clone())
     run_variant("dimuon", [packed], grads[:, None], {packed: (16, 8)}, bf16_momentum=bf16_momentum)
@@ -193,26 +194,36 @@ def test_muown_matches_reference():
     assert (delta - expected_delta).norm() < 0.01 * expected_delta.norm()
 
 
-def sharded_variants(rank, world_size, init_file, weights, grads):
+def sharded_variants(rank, world_size, init_file, weights, grads, shard_dim):
     dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size)
     mesh = init_device_mesh("cpu", (world_size,))
+
+    def shard(t):
+        return distribute_tensor(t, mesh, [Shard(0 if shard_dim == 0 else t.ndim - 1)])
+
     for variant in ["dimuon", "muown"]:
         expected = [nn.Parameter(w.clone()) for w in weights]
-        run_variant(variant, expected, grads, {expected[0]: (16, 9), expected[1]: (16, 9)})
-        sharded = [nn.Parameter(distribute_tensor(w.clone(), mesh, [Shard(0)])) for w in weights]
-        sharded_grads = [[distribute_tensor(g, mesh, [Shard(0)]) for g in step] for step in grads]
-        run_variant(variant, sharded, sharded_grads, {sharded[0]: (16, 9), sharded[1]: (16, 9)}, mesh=mesh)
+        expected_state = run_variant(variant, expected, grads, {expected[0]: (16, 9), expected[1]: (16, 9)}).state
+        sharded = [nn.Parameter(shard(w.clone())) for w in weights]
+        sharded_grads = [[shard(g) for g in step] for step in grads]
+        partitions = {sharded[0]: (16, 9), sharded[1]: (16, 9)}
+        sharded_state = run_variant(variant, sharded, sharded_grads, partitions, mesh=mesh).state
         for actual, full in zip(sharded, expected):
             torch.testing.assert_close(actual.full_tensor(), full.detach(), rtol=1e-4, atol=1e-6)
+            # the state, Muown's per-row state included, is laid out as without sharding
+            for key, value in expected_state[full].items():
+                torch.testing.assert_close(sharded_state[actual][key].full_tensor(), value, rtol=1e-4, atol=1e-6)
     dist.destroy_process_group()
 
 
-def test_sharded_variants_match_unsharded(tmp_path):
-    """Two packed matrices with uneven row shards and one batch of experts sharded by expert."""
+@pytest.mark.parametrize("shard_dim", [0, -1])
+def test_sharded_variants_match_unsharded(tmp_path, shard_dim):
+    """Two packed matrices with uneven row shards (or column shards) and one batch of experts sharded by expert
+    (or by column)."""
     torch.manual_seed(0)
     weights = [torch.randn(25, 12), torch.randn(25, 12), torch.randn(2, 12, 8)]
     grads = [[torch.randn_like(w) for w in weights] for _ in range(3)]
-    mp.spawn(sharded_variants, args=(2, tmp_path / "init", weights, grads), nprocs=2)
+    mp.spawn(sharded_variants, args=(2, tmp_path / "init", weights, grads, shard_dim), nprocs=2)
 
 
 class TinyModel(nn.Module):
