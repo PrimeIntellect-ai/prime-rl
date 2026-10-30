@@ -2,6 +2,61 @@
 
 Goal: rerun on B300 the exact trainer-only proxy runs measured on 8x H200, for DeepSeek V4 Flash (DSv4), GLM-4.5-Air and GLM-5.3 (DeepSeek sparse attention, `glm_moe_dsa`), and report the same metrics side by side.
 
+## Execution scope for this B300 pass (supersedes "Run matrix" below)
+
+The question: does the roofline prediction that B300's MFU is about 0.83x H200's for DSv4 with the same software hold, and do model-specific roofline predictions hold for GLM-4.5-Air and GLM-5.3? Measured B300/H200 MFU ratios are compared with roofline predictions per model. Comparing at the same layer count and config as an H200 run is enough for the ratio; no layer-count extrapolation is needed in this pass. Do the steps in order and report after each.
+
+### Allocation
+
+Use Slurm job 3183 (`garrett-b300-repro`, 1 node, exclusive, 3 h), queued on 2026-10-30. It waits behind another job that will be cancelled when its work is done; check with `squeue --me` and start GPU work only once 3183 is `RUNNING`. Wait with a loop on `squeue -j 3183 -h -o %T` reaching `RUNNING`, not on process-name matching. Use only that job (`srun --jobid=3183 --overlap ...`, which `run_arm.sh` does when given 3183). Never allocate more nodes, never use sudo or Slurm reservations, never touch other users' jobs. Steps 1 and the report need no GPU and can start right away; never run pytest, model builds or heavy compute on the login node.
+
+### Environment
+
+- Worktree: this branch's worktree at `~/github/PrimeIntellect-ai/prime-rl-exp-dsv4-b300-repro` (already set up: submodules as recorded, venv from `uv sync --all-extras --all-packages`, `--check` clean). If you pull new commits, rerun `git submodule update --init --recursive` and `uv sync --all-extras --all-packages`. Always `uv run --no-sync`.
+- Shared HF cache: `run_arm.sh` does not set it, and the default `~/.cache/huggingface` is wrong on this cluster. In the shell that launches `run_arm.sh`, `export HF_HUB_CACHE=/home/huggingface/hub HF_XET_CACHE=/home/huggingface/xet HF_HUB_OFFLINE=1` (`srun` inherits them). All three checkpoints are cached there and already converted (`<snapshot>/prime/.prime-v1` exists): `PrimeIntellect/DeepSeek-V4-Flash-0731-bf16`, `zai-org/GLM-4.5-Air`, `zai-org/GLM-5.3-BF16`.
+- `CUDA_HOME=/usr/local/cuda-13.0` in `run_arm.sh` is correct here.
+- Before the first launch of each config, dump the fully resolved trainer config (`prime_rl.configs.trainer.TrainerConfig` via `prime_rl.utils.config.cli` with the same `@ proxy.toml` and overrides) and check that it differs from `proxy.toml` only as intended: no activation or optimizer offloading, `force_balanced_routing = true`, and the precision fields you set. Also import `prime_rl.trainer.rl.train` once on the node to catch import errors before a 10 minute compile.
+- Blockwise FP8 should be accepted on B300: the gate in `src/prime_rl/trainer/model.py` (~line 778) allows compute capability major 9 or 10, and B300 is SM103. If it still refuses at runtime, report MXFP8 only and say so.
+
+### Step 1: roofline predictions (no GPU)
+
+Tool: `~/.claude/skills/profiling/scripts/roofline.py` (read its module docstring; run with `uv run --script`). Existing B300 ops files: `~/tmp/profiling/dsv4-perf-proxy/inputs/{dsv4_flash,glm53,glm45air}_b300_ops.toml` (per-op FLOPs and compulsory HBM bytes per micro batch, full activation checkpointing, B300 peaks from NVIDIA's HGX B300 table; each file's `assumptions` list documents its model). Do not modify the skill script; put new input files in `~/tmp/profiling/dsv4-perf-proxy/inputs/` and outputs in `.../derived/`, and append every command to `~/tmp/profiling/dsv4-perf-proxy/commands.sh`.
+1. Make an H200 copy of each ops file that changes only the device section: dense BF16, FP8 tensor and FP32 peaks and HBM bandwidth for one H200 GPU, each sourced from NVIDIA's published H200 spec (record the URL; dense, not sparse figures; mark anything unsourced UNVERIFIED). H200 has no MXFP8, so H200 runs map to the FP8 peak.
+2. Set each file's workload to match the runs below with `--set` (e.g. `--set n_layers=6 doc_len=... T=32768`); short documents average `doc_len = 6144` (uniform 4096 to 8192), long context `doc_len = 245760`. Check how each file names these parameters before setting them.
+3. For each run config below, compute the ideal MFU (both the `prime-rl perf/mfu` and `causal attention` definitions the files report) on H200 and on B300, and the predicted ratio B300/H200 for `perf/mfu` and for `mfu_6dn` (6N only; derive it from the files' parameters). Table it.
+
+### Step 2: MXFP8 on B300 (3 runs, ~45 min)
+
+Common overrides: `--model.debug.force-balanced-routing --model.ep 8 --model.quantization.type mxfp8 --model.quantization.recipe mxfp8_rceil_wgrad_with_hp --model.moe.compute.type mxfp8` (production's recipes; the MoE recipe defaults to `mxfp8_rceil`). Confirm the field names against `packages/prime-rl-configs/src/prime_rl/configs/trainer.py`.
+
+Setting overrides:
+- Long context (`long`): `--model.seq-len 262144 --model.cp 8 --data.fake.batch-size 8 --data.fake.doc-len-range '[229376, 262144]'`
+- Short documents (`short`): `--model.seq-len 32768 --model.cp 1 --data.fake.batch-size 64 --data.fake.doc-len-range '[4096, 8192]'`
+
+Model overrides:
+- DSv4 Flash: none (`proxy.toml` model).
+- GLM-4.5-Air: `--model.name zai-org/GLM-4.5-Air`
+- GLM-5.3: `--model.name zai-org/GLM-5.3-BF16 --model.debug.random-init --model.conversion-dir <private scratch dir>`
+
+| run name | model | setting | layers | H200 reference (FP8): s/step, tok/s/GPU, perf/mfu, mfu_6dn |
+|---|---|---|---|---|
+| `b300-dsv4-long-6L-mxfp8` | DSv4 Flash | long | 6 | 14.5 s, 17.0k, 30.8%, 23.6% |
+| `b300-air-short-12L-mxfp8` | GLM-4.5-Air | short | 12 | 19.8 s, 11.9k, 40.9%, 27.4% |
+| `b300-glm53-short-4L-mxfp8` | GLM-5.3 | short | 4 | 12.0 s, 19.7k, 35.4%, 31.9% |
+
+The H200 references are fwd+bwd seconds per step, so compare against B300's `time/forward_backward`. Pass layers with `--model.debug.num-layers <n>`. For GLM-5.3, random init plus a private conversion dir is required even though the shared snapshot is converted. If GLM-4.5-Air's snapshot lacks a usable conversion, also give it a private `--model.conversion-dir`. Steps: keep `max_steps = 20` from `proxy.toml` (or `--max-steps 12` with steady state 4 to 12 if time is short; say which).
+
+### Step 3: FP8 blockwise on B300 (3 runs, ~45 min)
+
+The same three runs without the MXFP8 overrides (`proxy.toml` defaults: `quantization.type = "fp8"`, `moe.compute.type = "deepgemm_fp8"`), named `...-fp8`. These give the clean same-software ratio against H200; Step 2 against Step 3 gives the MXFP8-vs-FP8 difference on B300.
+
+### Measurement and report
+
+- Medians over steps 4 to the last step from `<run dir>/monitors/file/metrics.jsonl` (merge records by `step`): `time/forward_backward`, `perf/throughput_per_gpu`, `perf/mfu`, `perf/mfu_6dn`, `perf/peak_memory`. Prefer the profiling skill's `run_metrics.py --summarize` (`~/.claude/skills/profiling/scripts/`) over ad hoc parsing.
+- Recompiles: all layer-graph recompiles should be in step 1. Use `compile_events.py <run dir>` (its defaults match this launcher's `logs/attempt_1/` layout); if it prints a "no records" note, the logs were not found, which is not evidence of zero recompiles. Report any late recompile with its guard.
+- Report one table per precision: model, config, B300 vs H200 for each metric, measured B300/H200 ratios (`perf/mfu`, `mfu_6dn`, tok/s/GPU), and the Step 1 predicted ratios beside them. State what was measured where (truncated layer counts, fake data, balanced routing) and any failure or fallback.
+- Commit result summaries (not run directories) and any script changes to this branch under `benchmarks/scripts/dsv4-perf-proxy/`. Do not push. Cancel job 3183 (`scancel 3183`) when all steps are done.
+
 ## Code state
 
 This branch, `exp/dsv4-b300-repro`, is prime-rl `main` at f98f9937a (includes #4330 indexer CP balancing and #4333 DeepGEMM mHC pre-pass projection) plus:
