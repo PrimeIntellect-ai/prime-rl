@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from math import prod
 from threading import Event
 from typing import TYPE_CHECKING, Any, cast
@@ -17,7 +19,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import abort_layerwise_reload, update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -48,6 +50,27 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
+
+ABORT_POLL_INTERVAL_S = 0.5
+
+
+def poll_abort(abort_path: str | None) -> Callable[[], bool]:
+    """``abort_path`` existence, checked at most every ``ABORT_POLL_INTERVAL_S``: NIXL waits poll
+    their cancel hook every 0.5 ms."""
+    if abort_path is None:
+        return lambda: False
+    next_check = 0.0
+    aborted = False
+
+    def requested() -> bool:
+        nonlocal next_check, aborted
+        now = time.monotonic()
+        if not aborted and now >= next_check:
+            aborted = os.path.exists(abort_path)
+            next_check = now + ABORT_POLL_INTERVAL_S
+        return aborted
+
+    return requested
 
 
 @dataclass
@@ -115,6 +138,10 @@ class NIXLWeightUpdateWorker(Worker):
         self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
         self.weight_transfer_timeout = timeout
         self.weight_transfer_plan: WeightTransferPlan | None = None
+        # Kept registered across trainer replacements: a replacement stages the same layout.
+        self.receive_arenas: dict[torch.dtype, torch.Tensor] = {}
+        self.receive_arena_registrations: list[Any] = []
+        self.stale_trainer_instances: set[str] = set()
         logger.info(
             "NIXL worker configured: global_rank=%d, ModelExpress=%s, session=%s",
             global_rank,
@@ -123,26 +150,47 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
     @torch.no_grad()
-    def initialize_transfer(self) -> WeightTransferPlan:
+    def initialize_transfer(self, cancelled: Callable[[], bool] | None = None) -> WeightTransferPlan:
         if self.weight_transfer_plan is not None:
             return self.weight_transfer_plan
 
-        trainer_ref = self.model_express.wait_for(
-            "trainer",
-            count=1,
+        table = self.model_express.wait_for_trainer_table(
+            exclude=self.stale_trainer_instances,
             timeout=self.weight_transfer_timeout,
-        )[0]
-        table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
+            cancelled=cancelled,
+        )
         copies = self.trace_weight_loads(table)
         plan = self.build_transfer_plan(table, copies)
         self.weight_transfer_plan = plan
         self.group_generations = [0] * len(plan.groups)
         logger.info(
-            "Initialized NIXL transfer plan on rank %d with %d groups",
+            "Initialized NIXL transfer plan on rank %d with %d groups from trainer %s",
             self.model_express.rank,
             len(plan.groups),
+            table.instance_id,
         )
         return plan
+
+    def reset_weight_transfer(self, stale_trainer_instances: list[str]) -> None:
+        """Drop the transfer plan with a replaced trainer, whose staging buffers and agents are gone.
+        The next update waits for a trainer table that is not listed."""
+        self.stale_trainer_instances.update(stale_trainer_instances)
+        self.release_transfer_plan()
+
+    def release_transfer_plan(self) -> None:
+        plan, self.weight_transfer_plan = self.weight_transfer_plan, None
+        if plan is not None:
+            self.release_plan(plan)
+
+    def release_plan(self, plan: WeightTransferPlan) -> None:
+        releases = [partial(self.nixl_agent.release_read, read) for group in plan.groups for read in group.pulls]
+        releases += [partial(self.nixl_agent.remove_remote_agent, peer) for peer in plan.trainer_peers]
+        for release in releases:
+            try:
+                release()
+            except Exception as error:
+                # Releasing requests to a dead trainer must not keep the worker from building a new plan.
+                logger.warning("Releasing NIXL transfer state failed on rank %d: %r", self.model_express.rank, error)
 
     def trace_weight_loads(
         self,
@@ -247,26 +295,22 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_elements,
             receive_buffer_count,
         )
-        peers: list[NixlPeer] = []
-        for agent in table.agents:
-            peer = self.nixl_agent.add_remote_agent(agent.metadata)
-            self.nixl_agent.make_connection(peer)
-            peers.append(peer)
-        groups = self.build_transfer_groups(
-            table,
-            copies,
-            replay_plans,
-            receive_buffer_elements,
-            receive_arenas,
-            receive_buffer_count,
-            peers,
-        )
-        return WeightTransferPlan(
+        # The plan owns each remote agent and READ as soon as it exists, so a failed build releases them.
+        plan = WeightTransferPlan(
             receive_arenas=receive_arenas,
             receive_buffer_count=receive_buffer_count,
-            trainer_peers=peers,
-            groups=groups,
+            trainer_peers=[],
+            groups=[],
         )
+        try:
+            for agent in table.agents:
+                plan.trainer_peers.append(self.nixl_agent.add_remote_agent(agent.metadata))
+                self.nixl_agent.make_connection(plan.trainer_peers[-1])
+            self.build_transfer_groups(table, copies, replay_plans, receive_buffer_elements, plan)
+        except BaseException:
+            self.release_plan(plan)
+            raise
+        return plan
 
     def plan_tensor_replays(
         self,
@@ -306,19 +350,22 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_buffer_count: int,
     ) -> dict[torch.dtype, torch.Tensor]:
+        sizes = {
+            dtype: receive_buffer_count * elements for dtype, elements in receive_buffer_elements.items() if elements
+        }
+        if sizes == {dtype: arena.numel() for dtype, arena in self.receive_arenas.items()}:
+            return self.receive_arenas
+        for registration in self.receive_arena_registrations:
+            self.nixl_agent.deregister(registration)
+        # Arenas are reused only once every one is registered; a failed registration leaves none to reuse
+        # and the registrations made so far for the next allocation to release.
+        self.receive_arenas, self.receive_arena_registrations = {}, []
         with use_cuda_malloc_pool():
-            receive_arenas = {
-                dtype: torch.empty(
-                    receive_buffer_count * elements,
-                    dtype=dtype,
-                    device=self.device,
-                )
-                for dtype, elements in receive_buffer_elements.items()
-                if elements
-            }
-        for arena in receive_arenas.values():
-            self.nixl_agent.register_tensor(arena)
-        return receive_arenas
+            arenas = {dtype: torch.empty(numel, dtype=dtype, device=self.device) for dtype, numel in sizes.items()}
+        for arena in arenas.values():
+            self.receive_arena_registrations.append(self.nixl_agent.register_tensor(arena))
+        self.receive_arenas = arenas
+        return arenas
 
     def build_transfer_groups(
         self,
@@ -326,10 +373,8 @@ class NIXLWeightUpdateWorker(Worker):
         copies: list[RecordedCopy],
         replay_plans: dict[int, TensorReplayPlan],
         receive_buffer_elements: dict[torch.dtype, int],
-        receive_arenas: dict[torch.dtype, torch.Tensor],
-        receive_buffer_count: int,
-        peers: list[NixlPeer],
-    ) -> list[WeightTransferGroup]:
+        plan: WeightTransferPlan,
+    ) -> None:
         tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
             tensor.name: group_index for group_index, group in enumerate(table.groups) for tensor in group.tensors
@@ -357,7 +402,6 @@ class NIXLWeightUpdateWorker(Worker):
                 )
 
         agent_devices = {agent_index: agent.device_id for agent_index, agent in enumerate(table.agents)}
-        transfer_groups: list[WeightTransferGroup] = []
 
         for group_index, group in enumerate(table.groups):
             copy_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
@@ -365,7 +409,7 @@ class NIXLWeightUpdateWorker(Worker):
             local_descs: dict[int, list[MemDesc]] = defaultdict(list)
             remote_descs: dict[int, list[MemDesc]] = defaultdict(list)
             cursors = {
-                dtype: (group_index % receive_buffer_count) * elements
+                dtype: (group_index % plan.receive_buffer_count) * elements
                 for dtype, elements in receive_buffer_elements.items()
             }
 
@@ -375,7 +419,9 @@ class NIXLWeightUpdateWorker(Worker):
                 source_dtype = getattr(torch, source.wire_dtype)
                 numel = prod(replay_plan.source_shape)
                 cursor = cursors[source_dtype]
-                staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(replay_plan.source_shape)
+                staging_tensor = (
+                    plan.receive_arenas[source_dtype].narrow(0, cursor, numel).view(replay_plan.source_shape)
+                )
                 cursors[source_dtype] += numel
                 copy_plan = TensorCopyPlan(
                     recorded_copy=copy,
@@ -389,22 +435,17 @@ class NIXLWeightUpdateWorker(Worker):
                     local_descs[route.agent].append((route.destination_addr, route.nbytes, self.device.index))
                     remote_descs[route.agent].append((route.source_addr, route.nbytes, agent_devices[route.agent]))
 
-            transfer_groups.append(
-                WeightTransferGroup(
-                    name=group.name,
-                    layers=self.build_layer_transfer_plans(
-                        reload_layers,
-                        copy_plans_by_layer,
-                        persistent_plans_by_layer,
-                    ),
-                    pulls=self.prepare_group_pulls(
-                        local_descs,
-                        remote_descs,
-                        peers,
-                    ),
-                )
+            transfer_group = WeightTransferGroup(
+                name=group.name,
+                layers=self.build_layer_transfer_plans(
+                    reload_layers,
+                    copy_plans_by_layer,
+                    persistent_plans_by_layer,
+                ),
+                pulls=[],
             )
-        return transfer_groups
+            plan.groups.append(transfer_group)
+            self.prepare_group_pulls(local_descs, remote_descs, plan.trainer_peers, transfer_group.pulls)
 
     def build_layer_transfer_plans(
         self,
@@ -454,8 +495,9 @@ class NIXLWeightUpdateWorker(Worker):
         local_descs: dict[int, list[MemDesc]],
         remote_descs: dict[int, list[MemDesc]],
         peers: list[NixlPeer],
-    ) -> list[PreparedRead]:
-        pulls: list[PreparedRead] = []
+        pulls: list[PreparedRead],
+    ) -> None:
+        """Prepare the group's READs into ``pulls``, one per trainer agent."""
         agent_indices = sorted(remote_descs)
         rotation = self.model_express.rank % len(agent_indices) if agent_indices else 0
         agent_indices = agent_indices[rotation:] + agent_indices[:rotation]
@@ -471,15 +513,22 @@ class NIXLWeightUpdateWorker(Worker):
                     remote_prepared,
                 )
             )
-        return pulls
 
     @torch.no_grad()
-    def update_weights_from_path(self, weight_dir: str | None = None) -> None:
+    def update_weights_from_path(self, weight_dir: str | None = None, abort_path: str | None = None) -> None:
+        """Pull the published policy. Waits stop once ``abort_path`` exists: the coordinator replaced
+        the trainer serving it."""
         del weight_dir
-        plan = self.initialize_transfer()
+        abort_requested = poll_abort(abort_path)
+        plan = self.initialize_transfer(cancelled=abort_requested)
 
         started = time.perf_counter()
-        self.apply_transfer_plan(plan)
+        try:
+            self.apply_transfer_plan(plan, abort_requested)
+        except BaseException:
+            # Failed reads were released; the next update builds a new plan.
+            self.release_transfer_plan()
+            raise
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
         logger.info(
@@ -488,7 +537,11 @@ class NIXLWeightUpdateWorker(Worker):
             time.perf_counter() - started,
         )
 
-    def apply_transfer_plan(self, plan: WeightTransferPlan) -> None:
+    def apply_transfer_plan(
+        self,
+        plan: WeightTransferPlan,
+        abort_requested: Callable[[], bool] = lambda: False,
+    ) -> None:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
         from vllm.model_executor.model_loader.reload.layerwise import (
             LAYERWISE_INFO,
@@ -502,6 +555,9 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         cancelled = Event()
 
+        def stop() -> bool:
+            return cancelled.is_set() or abort_requested()
+
         def pull_group(group_index: int) -> WeightTransferGroup:
             transfer_group = plan.groups[group_index]
             notification = group_notification(group_index, self.group_generations[group_index])
@@ -509,7 +565,7 @@ class NIXLWeightUpdateWorker(Worker):
                 plan.trainer_peers,
                 notification,
                 timeout=self.weight_transfer_timeout,
-                cancelled=cancelled.is_set,
+                cancelled=stop,
             )
 
             for read in transfer_group.pulls:
@@ -519,7 +575,7 @@ class NIXLWeightUpdateWorker(Worker):
                     read,
                     context=f"weight pull for {transfer_group.name}",
                     timeout=self.weight_transfer_timeout,
-                    cancelled=cancelled.is_set,
+                    cancelled=stop,
                 )
 
             self.group_generations[group_index] += 1
@@ -563,22 +619,28 @@ class NIXLWeightUpdateWorker(Worker):
             pipelined = plan.receive_buffer_count > 1
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nixl-prefetch") if pipelined else None
             try:
-                pull = executor.submit(prefetch_group, 0) if executor is not None else None
-                for group_index in range(len(plan.groups)):
-                    transfer_group = pull.result() if pull is not None else pull_group(group_index)
+                try:
+                    pull = executor.submit(prefetch_group, 0) if executor is not None else None
+                    for group_index in range(len(plan.groups)):
+                        transfer_group = pull.result() if pull is not None else pull_group(group_index)
 
-                    torch.cuda.synchronize(self.device)
-                    if executor is not None and group_index + 1 < len(plan.groups):
-                        pull = executor.submit(prefetch_group, group_index + 1)
+                        torch.cuda.synchronize(self.device)
+                        if executor is not None and group_index + 1 < len(plan.groups):
+                            pull = executor.submit(prefetch_group, group_index + 1)
 
-                    replay_group(transfer_group)
-                    torch.cuda.synchronize(self.device)
-            finally:
-                cancelled.set()
-                if executor is not None:
-                    executor.shutdown(wait=True, cancel_futures=True)
+                        replay_group(transfer_group)
+                        torch.cuda.synchronize(self.device)
+                finally:
+                    cancelled.set()
+                    if executor is not None:
+                        executor.shutdown(wait=True, cancel_futures=True)
 
-            finalize_layerwise_reload(model, self.model_runner.model_config)
+                finalize_layerwise_reload(model, self.model_runner.model_config)
+            except BaseException:
+                # Layers already replayed keep the new values: inference stays paused until a
+                # complete update.
+                abort_layerwise_reload(model)
+                raise
 
     @staticmethod
     def replay_tensor_copy(plan: TensorCopyPlan) -> None:

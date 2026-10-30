@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -42,8 +43,12 @@ class NixlAgent:
         self._agent = nixl_agent(name, nixl_agent_config(backends=["UCX"]))
         self._notifications: dict[str, list[bytes]] = {}
 
-    def register_tensor(self, tensor: Tensor) -> None:
-        self._agent.register_memory(tensor, backends=["UCX"])
+    def register_tensor(self, tensor: Tensor) -> Any:
+        """Register ``tensor`` for transfers; returns the registration for ``deregister``."""
+        return self._agent.register_memory(tensor, backends=["UCX"])
+
+    def deregister(self, registration: Any) -> None:
+        self._agent.deregister_memory(registration, backends=["UCX"])
 
     def get_metadata(self) -> bytes:
         return self._agent.get_agent_metadata()
@@ -56,6 +61,11 @@ class NixlAgent:
 
     def make_connection(self, peer: NixlPeer) -> None:
         self._agent.make_connection(peer.remote_agent_name)
+
+    def remove_remote_agent(self, peer: NixlPeer) -> None:
+        """Forget a peer that is gone, including notifications it left unread."""
+        self._agent.remove_remote_agent(peer.remote_agent_name)
+        self._notifications.pop(peer.remote_agent_name, None)
 
     def prepare_xfer_dlist(self, descs: Sequence[MemDesc], peer: NixlPeer | None = None) -> Any:
         return self._agent.prep_xfer_dlist(
@@ -79,6 +89,19 @@ class NixlAgent:
             remote_descriptors=remote,
             handle=handle,
         )
+
+    def release_read(self, read: PreparedRead) -> None:
+        """Free a prepared READ and its descriptor lists, including after ``wait`` released its handle."""
+        try:
+            self._release_handle(read)
+        finally:
+            self._agent.release_dlist_handle(read.local_descriptors)
+            self._agent.release_dlist_handle(read.remote_descriptors)
+
+    def _release_handle(self, read: PreparedRead) -> None:
+        handle, read.handle = read.handle, None
+        if handle is not None:
+            self._agent.release_xfer_handle(handle)
 
     def post_read(self, read: PreparedRead, notification: str) -> None:
         state = self._agent.transfer(read.handle, notification.encode())
@@ -124,16 +147,21 @@ class NixlAgent:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             if cancelled is not None and cancelled():
-                self._agent.release_xfer_handle(read.handle)
+                self._release_handle(read)
                 raise RuntimeError(f"NIXL transfer cancelled, context={context!r}")
-            state = self._agent.check_xfer_state(read.handle)
+            try:
+                state = self._agent.check_xfer_state(read.handle)
+            except Exception as error:
+                # A dead remote agent raises (NIXL_ERR_REMOTE_DISCONNECT) instead of reporting ERR.
+                self._release_handle(read)
+                raise RuntimeError(f"NIXL transfer failed: {error!r}, context={context!r}") from error
             if state in ("DONE", "SUCCESS"):
                 return
             if state in ("ERR", "ERROR", "FAIL"):
-                self._agent.release_xfer_handle(read.handle)
+                self._release_handle(read)
                 raise RuntimeError(f"NIXL transfer failed with state={state}, context={context!r}")
             if deadline is not None and time.monotonic() >= deadline:
-                self._agent.release_xfer_handle(read.handle)
+                self._release_handle(read)
                 raise TimeoutError(f"NIXL transfer timed out after {timeout}s, context={context!r}")
             time.sleep(0.0005)
 
@@ -145,7 +173,9 @@ class NixlPeer:
 
 
 def make_agent_name(role: str, global_rank: int) -> str:
-    return f"{role}-{socket.gethostname()}-r{global_rank}"
+    """Unique per process: a replacement process never shares a name, or notifications, with the
+    agent it replaces."""
+    return f"{role}-{socket.gethostname()}-r{global_rank}-{uuid.uuid4().hex[:8]}"
 
 
 def set_ucx_env_defaults(device_index: int) -> None:

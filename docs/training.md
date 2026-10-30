@@ -365,7 +365,7 @@ Receivers of a broadcast generally do not observe a dead publisher as an NCCL er
 
 Weight updates leave engines paused on errors or cancellation. Collective updates are not blindly retried after an HTTP failure: the original operation may still be running. The vLLM server rejects `/resume` after a failed update until a complete replacement reload succeeds. Interrupted layerwise reloads discard deferred tensors and restore the model's original tensor references. This preserves storage references, not old values: some weights may already have changed, so a complete reload is required.
 
-[Trainer recovery](#trainer-recovery) turns this on for NCCL and drives the reconnection. NIXL agent reconnection is not supported; LoRA still requires filesystem transfer.
+[Trainer recovery](#trainer-recovery) turns this on for NCCL and drives the reconnection. LoRA still requires filesystem transfer.
 
 ### Trainer Recovery
 
@@ -379,7 +379,7 @@ interval = 25
 max_restarts = 3
 ```
 
-`[trainer_recovery]` enables the [batch journal](#batch-journal) and, for NCCL, [recoverable weight transfers](#recoverable-nccl-weight-transfers). It requires periodic checkpoints and the ZMQ rollout transport, and does not support NIXL weight transfer.
+`[trainer_recovery]` enables the [batch journal](#batch-journal) and, for NCCL, [recoverable weight transfers](#recoverable-nccl-weight-transfers). It requires periodic checkpoints and the ZMQ rollout transport.
 
 The `rl` launcher runs the trainer under `torchrun --max-restarts`: when any trainer rank fails, torchrun stops every rank and starts a new group, up to `max_restarts` times. Multi-node SLURM runs use torchrun's c10d rendezvous, so the agents on every trainer node replace their ranks together. Another supervisor (for example a Kubernetes controller) can replace the trainer instead: it must stop every rank of the failed group, including its checkpoint writers, then start the trainer with `--resume`. With recovery enabled, a replacement attempt or a bare `--resume` restores the newest checkpoint with a committed `batch.json` (a newer step directory may hold an interrupted save). The ranks decide collectively, because torchrun restarts the ranks of a healthy node without counting the restart and a recreated node starts its count at zero; a supervisor that recreates every trainer process should therefore pass a bare `--resume`.
 
@@ -387,13 +387,13 @@ A failed trainer stops requesting batches, so the orchestrator stops shipping th
 
 Before admitting the replacement, the orchestrator reconciles the weight channel:
 
-- It ends the failed trainer's last weight update. A filesystem transfer waiting on a dead publisher is abandoned without touching inference. An in-flight NCCL transfer is cancelled through its abort marker and leaves the engines paused with possibly incomplete weights.
-- It discards every offered broadcast and, for NCCL, joins the inference workers to the replacement's new transfer group.
+- It ends the failed trainer's last weight update. A filesystem transfer waiting on a dead publisher is abandoned without touching inference. An in-flight NCCL or NIXL transfer is cancelled through its abort marker and leaves the engines paused with possibly incomplete weights.
+- It discards every offered broadcast and, for NCCL, joins the inference workers to the replacement's new transfer group. For NIXL, it marks the trainer table ModelExpress holds as replaced (the replacement publishes its own only after it is admitted); inference workers drop their transfer plan with the failed trainer, keep their receive buffers, and build a new plan from the replacement's table on the next update. A NIXL read from a dead trainer also fails on its own, after about 15 seconds.
 - It tells the replacement the policy version inference serves. The replacement recomputes the policies up to that version from replayed batches without publishing them, then publishes as usual. Policy versions never move backwards: if an interrupted update left inference with incomplete weights, the engines stay paused while the replacement recomputes that version and publishes it complete; if inference serves a policy older than the restored checkpoint, the replacement publishes its restored policy first.
 
 Replayed steps log again under their original step numbers. A second failure during replay recovers the same way from the latest committed checkpoint. Training continues from the restored checkpoint on the same batches, so replayed steps reproduce the original ones up to kernel nondeterminism (which RL can amplify over a few steps); rollouts generated during the outage keep their policy versions and are subject to `orchestrator.max_staleness` as usual. If an update leaves inference with incomplete weights and no trainer publishes a complete policy within `weight_broadcast.timeout`, the orchestrator fails the run.
 
-With NCCL, a trainer failure after it joined the orchestrator's session but before its first transfer group formed is not recovered: the orchestrator waits in the initial rendezvous until `weight_broadcast.timeout` and then ends the run. A failure of the orchestrator or an inference server also ends the run.
+With NCCL, a trainer failure after it joined the orchestrator's session but before its first transfer group formed is not recovered: the orchestrator waits in the initial rendezvous until `weight_broadcast.timeout` and then ends the run. A failure of the orchestrator or an inference server also ends the run, as does trainer recovery with NIXL on Dynamo inference.
 
 ### Resuming a Run
 

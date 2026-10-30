@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from prime_rl.orchestrator.clients import init_nixl_broadcast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import wait_for_master
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.base import ABORTED_MARKER, BroadcastAborted, WeightReceiver, WeightSender
 from prime_rl.transports.weights.nixl.agent import (
     NixlAgent,
     NixlPeer,
@@ -84,6 +85,8 @@ class NIXLWeightSender(WeightSender):
             set_ucx_env_defaults(torch.cuda.current_device())
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
         self.initialized = False
+        # The published table carries the master's ID; consumers use it to tell a replacement apart.
+        self.instance_id = uuid.uuid4().hex
         self.transfer_group_names: list[str] = []
         self.staged_shards: list[StagedTensorShard] = []
         self.staged_shards_by_group: dict[int, list[StagedTensorShard]] = {}
@@ -261,6 +264,7 @@ class NIXLWeightSender(WeightSender):
             )
 
         return TrainerTensorTable(
+            instance_id=self.instance_id,
             agents=[
                 TrainerAgent(
                     name=self.nixl_agent.name,
@@ -316,6 +320,7 @@ class NIXLWeightSender(WeightSender):
                 tensor.shards.sort(key=lambda shard: shard.offset)
 
         return TrainerTensorTable(
+            instance_id=self.instance_id,
             agents=agents,
             staging_buffer_count=self.staging_buffer_count,
             groups=[
@@ -459,6 +464,8 @@ class NIXLWeightReceiver(WeightReceiver):
         set_ucx_env_defaults(0)
         self.nixl_agent = NixlAgent(make_agent_name("orchestrator", 0))
         self.trainer_peer: NixlPeer | None = None
+        # Trainer tables of replaced trainers; their entry stays in ModelExpress until overwritten.
+        self.stale_trainer_instances: set[str] = set()
         self.model_express = ModelExpressSession(
             client=MxClient(server_url=f"{self.config.host}:{self.config.port}"),
             role="orchestrator",
@@ -478,29 +485,54 @@ class NIXLWeightReceiver(WeightReceiver):
         )
         self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
 
+    def clear_offers(self) -> None:
+        """Also forget the replaced trainer. Its replacement publishes a table only after it was
+        admitted, so every trainer table ModelExpress holds now belongs to a replaced trainer."""
+        super().clear_offers()
+        self.stale_trainer_instances.update(table.instance_id for table in self.model_express.trainer_tables())
+        peer, self.trainer_peer = self.trainer_peer, None
+        if peer is not None:
+            try:
+                self.nixl_agent.remove_remote_agent(peer)
+            except Exception as error:
+                self.logger.warning(f"Could not release replaced trainer agent {peer.remote_agent_name}: {error!r}")
+
+    async def reconnect(self) -> None:
+        # Workers drop their transfer plan with the replaced trainer; the next update pulls from the
+        # replacement's table.
+        await self.admin_plane.reset_weight_transfer(sorted(self.stale_trainer_instances))
+
     async def receive(self, step: int) -> None:
         self._ack(step)
-        if self.trainer_peer is None:
-            trainer_refs = await asyncio.to_thread(
-                self.model_express.wait_for,
-                "trainer",
-                count=1,
+        try:
+            if self.trainer_peer is None:
+                table = await asyncio.to_thread(
+                    self.model_express.wait_for_trainer_table,
+                    exclude=self.stale_trainer_instances,
+                    timeout=self.config.timeout,
+                    cancelled=self.aborted.is_set,
+                )
+                self.trainer_peer = self.nixl_agent.add_remote_agent(table.agents[0].metadata)
+                self.nixl_agent.make_connection(self.trainer_peer)
+            await asyncio.to_thread(
+                self.nixl_agent.wait_for_notification,
+                [self.trainer_peer],
+                policy_notification(step, "ready"),
                 timeout=self.config.timeout,
+                cancelled=self.aborted.is_set,
             )
-            trainer_worker = await asyncio.to_thread(self.model_express.fetch, trainer_refs[0])
-            trainer_table = TrainerTensorTable.decode(trainer_worker.nixl_metadata)
-            self.trainer_peer = self.nixl_agent.add_remote_agent(trainer_table.agents[0].metadata)
-            self.nixl_agent.make_connection(self.trainer_peer)
-
-        trainer_peer = self.trainer_peer
-        await asyncio.to_thread(
-            self.nixl_agent.wait_for_notification,
-            [trainer_peer],
-            policy_notification(step, "ready"),
-            timeout=self.config.timeout,
+        except Exception as error:
+            if self.aborted.is_set():
+                raise BroadcastAborted(f"Stopped waiting for policy v{step} of a replaced trainer") from error
+            raise
+        await self.admin_plane.update_weights(
+            None,
+            transport="nixl",
+            step=step,
+            abort_path=self.step_dir(step) / ABORTED_MARKER,
         )
-        await self.admin_plane.update_weights(None, transport="nixl", step=step)
-        self.nixl_agent.send_notification(
-            trainer_peer,
-            policy_notification(step, "complete"),
-        )
+        try:
+            self.nixl_agent.send_notification(self.trainer_peer, policy_notification(step, "complete"))
+        except Exception as error:
+            # Inference holds the complete policy; a trainer that misses this times out and is replaced.
+            self.logger.warning(f"Could not confirm policy v{step} to the trainer: {error!r}")

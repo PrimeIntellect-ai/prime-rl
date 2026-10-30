@@ -276,7 +276,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     }
 {% if launch_modelexpress %}
 
-    if [ "$SLURM_PROCID" -eq "$NUM_INFER_NODES" ]; then
+    # Every component dials ModelExpress at MASTER_ADDR, which trainer recovery picks by node name.
+    if [ "$SLURMD_NODENAME" = "$MASTER_ADDR" ]; then
         MX_BIN="$PROJECT_DIR/third_party/modelexpress/bin"
         if [ ! -x "$MX_BIN/modelexpress-server" ] || [ ! -x "$MX_BIN/redis-server" ]; then
             echo "ModelExpress server dependencies are missing; run scripts/install_modelexpress.sh" >&2
