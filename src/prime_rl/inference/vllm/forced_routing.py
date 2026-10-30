@@ -22,7 +22,8 @@ Rank 0 broadcasts its plan to every TP rank. Later sources win where they overla
 disagreements are counted). The router uses the known ids; the combine weights come from this forward's gate scores
 at those ids. Known positions without rows route normally and are counted (``known_unforced``,
 ``resumed_unforced``). A stored block whose known positions were not all forced when it was computed is tainted: it
-is never forced later (``store_tainted``).
+is never forced later (``store_tainted``). So is a block two requests published with different rows (concurrent traces
+of one episode share its cache salt; ``store_conflicts``), and a stashed tail with such a twin (``stash_conflicts``).
 
 The ops are static-shape on persistent device buffers, so they stay valid inside CUDA graphs; decode-only FULL graphs
 are captured without them. Drift: for every forced (token, MoE layer) pair, whether the forced top-k set differs
@@ -86,6 +87,7 @@ _RANK0_COUNTERS = (
     "stash_hits",
     "stash_misses",
     "stash_tainted",
+    "stash_conflicts",
     "keys_short",
     "plan_bytes",
     "lookup_failures",
@@ -121,11 +123,11 @@ _CAPTURING_DECODE_ONLY_GRAPH = False
 # Policy version of the loaded weights, identical on every worker (set by the EngineCore.set_weight_version wrapper).
 _WEIGHT_VERSION = UNKNOWN
 # key -> (version, tainted) of blocks about to be published; filled before the put is queued, popped by the writer.
-# If two requests publish the same key before the writer gets to the first put (only possible with a shared cache
-# salt), the slot gets the later label.
+# If two requests publish the same key before the writer gets to the first put (only with a shared cache salt, e.g.
+# concurrent traces of one episode), the slot gets the later version and either taint.
 _PUBLISH_META: dict[str, tuple[int, bool]] = {}
 # TP rank 0, written on the store's writer thread.
-_STORE_COUNTERS = {"store_published": 0, "store_published_tainted": 0}
+_STORE_COUNTERS = {"store_published": 0, "store_published_tainted": 0, "store_conflicts": 0}
 
 
 def age_bucket(src: int, version: int, current: int) -> int:
@@ -165,31 +167,48 @@ def resident_slots(inner) -> int:
 
 
 def _patch_store(store_cls) -> None:
-    """Stamp each newly allocated slot with its block's provenance (weight version, taint) and count publications."""
+    """Stamp each newly allocated slot with its block's provenance (weight version, taint) and count publications.
+
+    A key published untainted with rows that differ from the rows it already holds (or twice in one put with different
+    rows) had two first passes, from two requests sharing a cache salt; its slot is tainted (``store_conflicts``). A
+    forced recompute republishes identical rows.
+    """
     original_put = store_cls.put
 
     def put(self, objects, *, retain_keys=(), release_keys=()):
         table = slot_table(self)
-        keys = list(dict.fromkeys(obj.key for obj in objects))
-        meta = {key: _PUBLISH_META.pop(key, None) for key in keys}
-        fresh = [key for key in keys if slot_of(table, key) is None]
+        payloads: dict[str, bytes] = {}
+        conflicts = set()
+        for obj in objects:
+            if payloads.setdefault(obj.key, obj.payload) != obj.payload:
+                conflicts.add(obj.key)
+        meta = {key: _PUBLISH_META.pop(key, None) for key in payloads}
+        resident = {key for key in payloads if slot_of(table, key) is not None}
         original_put(self, objects, retain_keys=retain_keys, release_keys=release_keys)
-        if not fresh:
+        if not payloads:
             return
         versions = self.__dict__.get("_prime_slot_version")
         if versions is None:
             versions = self._prime_slot_version = np.full(self.num_slots, UNKNOWN, dtype=np.int64)
             self._prime_slot_taint = np.zeros(self.num_slots, dtype=bool)
-        table = slot_table(self)
-        for key in fresh:
+        table, size = slot_table(self), self.object_nbytes
+        for key, payload in payloads.items():
             slot = slot_of(table, key)
             if slot is None:
                 continue
             version, tainted = meta[key] or (_WEIGHT_VERSION, False)
-            versions[slot] = version
-            self._prime_slot_taint[slot] = tainted
-            _STORE_COUNTERS["store_published"] += 1
-            _STORE_COUNTERS["store_published_tainted"] += int(tainted)
+            if key in resident:  # the first publication's rows stay
+                # Tainted rows are not a first pass, so they say nothing about the stored ones.
+                if not tainted and self._arena[slot * size : (slot + 1) * size] != payload:
+                    conflicts.add(key)
+            else:
+                versions[slot] = version
+                self._prime_slot_taint[slot] = tainted
+                _STORE_COUNTERS["store_published"] += 1
+                _STORE_COUNTERS["store_published_tainted"] += int(tainted)
+            if key in conflicts and not self._prime_slot_taint[slot]:
+                self._prime_slot_taint[slot] = True
+                _STORE_COUNTERS["store_conflicts"] += 1
 
     store_cls.put = put
 
@@ -215,7 +234,10 @@ def label_published_blocks(connector, batches) -> None:
             prov[start] = current
         for start, _ in [*pending, *completed]:
             if start < keyed_end:
-                _PUBLISH_META[keys[start // block]] = (prov.pop(start, current), start // block in taint)
+                key = keys[start // block]
+                earlier = _PUBLISH_META.get(key)  # another request's label the writer has not consumed yet
+                tainted = start // block in taint or (earlier is not None and earlier[1])
+                _PUBLISH_META[key] = (prov.pop(start, current), tainted)
 
 
 def lookup_rows(connector, stash, items) -> tuple[dict, dict]:
@@ -428,16 +450,25 @@ class TailStash:
             if parent >= len(keys):
                 stats["stash_misses"] += 1
                 return None
-            for entry in reversed(self.by_parent.get(keys[parent], ())):
-                if entry.start == start and len(entry.tokens) >= n and np.array_equal(entry.tokens[:n], tokens):
-                    self.entries.move_to_end(id(entry))
-                    if entry.tainted:
-                        stats["stash_tainted"] += 1
-                        return None
-                    stats["stash_hits"] += 1
-                    return start, entry.rows[:n].copy(), SRC_STASH, entry.version
-            stats["stash_misses"] += 1
-            return None
+            matches = [
+                entry
+                for entry in self.by_parent.get(keys[parent], ())
+                if entry.start == start and len(entry.tokens) >= n and np.array_equal(entry.tokens[:n], tokens)
+            ]
+            if not matches:
+                stats["stash_misses"] += 1
+                return None
+            entry = matches[-1]
+            self.entries.move_to_end(id(entry))
+            if entry.tainted:
+                stats["stash_tainted"] += 1
+                return None
+            # Untainted tails with the same salt and tokens but other rows: concurrent traces of one episode.
+            if any(not other.tainted and not np.array_equal(other.rows[:n], entry.rows[:n]) for other in matches[:-1]):
+                stats["stash_conflicts"] += 1
+                return None
+            stats["stash_hits"] += 1
+            return start, entry.rows[:n].copy(), SRC_STASH, entry.version
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -865,9 +896,10 @@ def format_log_lines(st: dict, drift: np.ndarray | None) -> list[str]:
         f"{st['known_unforced']}, resumed unforced {st['resumed_unforced']} (readmitted {st['readmitted']}); store "
         f"lookups {st['store_hits']} hit / {st['store_misses']} miss / {st['store_tainted']} tainted, keys short "
         f"{st['keys_short']}; stash {st.get('stash_hits', 0)} hit / {st.get('stash_misses', 0)} miss / "
-        f"{st.get('stash_tainted', 0)} tainted, {st.get('stash_entries', 0)} entries, "
-        f"{st.get('stash_evictions', 0)} evicted; store {st.get('store_slots_used', 0)}/{st.get('store_slots', 0)} "
-        f"slots, {st.get('store_evicted', 0)} evicted, {st.get('store_published_tainted', 0)} published tainted; "
+        f"{st.get('stash_tainted', 0)} tainted / {st['stash_conflicts']} conflicting, {st.get('stash_entries', 0)} "
+        f"entries, {st.get('stash_evictions', 0)} evicted; store {st.get('store_slots_used', 0)}/"
+        f"{st.get('store_slots', 0)} slots, {st.get('store_evicted', 0)} evicted, "
+        f"{st.get('store_published_tainted', 0)} published tainted, {st.get('store_conflicts', 0)} conflicting; "
         f"admit {st['admit_ms'] / admissions:.1f} ms/admission (max {st['admit_ms_max']:.1f}); weight version "
         f"{st['weight_version']}"
     ]

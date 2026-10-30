@@ -36,7 +36,7 @@ def module_state(monkeypatch):
     monkeypatch.setattr(fr, "_STATE", None)
     monkeypatch.setattr(fr, "_WEIGHT_VERSION", fr.UNKNOWN)
     monkeypatch.setattr(fr, "_PUBLISH_META", {})
-    monkeypatch.setattr(fr, "_STORE_COUNTERS", {"store_published": 0, "store_published_tainted": 0})
+    monkeypatch.setattr(fr, "_STORE_COUNTERS", dict.fromkeys(fr._STORE_COUNTERS, 0))
     monkeypatch.setattr(fr, "_CAPTURING_DECODE_ONLY_GRAPH", False)
     monkeypatch.delenv("PRIME_RL_FORCED_ROUTING", raising=False)
 
@@ -251,6 +251,56 @@ def test_store_stamps_first_publication_and_counts_evictions(monkeypatch):
     assert store._prime_slot_version[store._lru["d"]] == 3 and store._prime_slot_taint[store._lru["d"]]
     assert "d" not in fr._PUBLISH_META and fr._STORE_COUNTERS["store_published_tainted"] == 1
     store.close()
+
+
+def test_store_taints_a_key_published_with_other_rows():
+    store_cls = type("Store", (BlockObjectStore,), {})
+    fr._patch_store(store_cls)
+    store = store_cls(max_bytes=4 * NB, object_nbytes=NB)
+    block, other = _rows(0, B).tobytes(), _rows(0, B, base=1).tobytes()
+    store.put([BlockObject("a", block)])
+    store.put([BlockObject("a", block)])  # a forced recompute republishes the same rows
+    assert not store._prime_slot_taint[store._lru["a"]] and fr._STORE_COUNTERS["store_conflicts"] == 0
+    store.put([BlockObject("a", other)])  # a second first pass: the stored rows are not this publisher's
+    store.put([BlockObject("a", other)])  # already tainted: counted once
+    store.put([BlockObject("b", block), BlockObject("b", other)])  # two publishers in one put
+    assert store._prime_slot_taint[[store._lru["a"], store._lru["b"]]].all()
+    store.put([BlockObject("c", block)])
+    fr._PUBLISH_META["c"] = (fr.UNKNOWN, True)  # a recompute with unforced known positions: not a first pass
+    store.put([BlockObject("c", other)])
+    assert not store._prime_slot_taint[store._lru["c"]]
+    assert fr._STORE_COUNTERS["store_conflicts"] == 2 and fr._STORE_COUNTERS["store_published"] == 3
+    store.close()
+
+
+def test_concurrent_traces_of_one_episode_are_not_forced_to_each_others_rows(monkeypatch):
+    """Best-of-n style envs run several trainable traces in one episode, so under one cache salt. Two of them compute
+    the same blocks; each next turn recomputes from position 0 and must not be forced to its sibling's rows."""
+    rng = np.random.default_rng(0)  # two passes over the same tokens route differently
+    monkeypatch.setitem(globals(), "_natural", lambda tokens, *_: rng.integers(0, E, (len(tokens), L, K), np.uint16))
+    sim = Sim()
+    try:
+        for rid in "ab":
+            sim.add(rid, range(1, 11), salt="episode")
+        sim.step({"a": 10, "b": 10})  # admitted together: both compute blocks 0 and 1
+        for rid in "ab":
+            sim.decode(rid, 3)  # identical sampled tokens: both paths are 1..10, 1010..1013 (rows of [0, 13))
+        first = {rid: dict(sim.captured[rid]) for rid in "ab"}
+        paths = {rid: list(sim.reqs[rid]["tokens"]) for rid in "ab"}
+        for rid in "ab":
+            sim.finish(rid)
+        sim.step({})
+        for rid in "ab":
+            sim.add(rid + "2", paths[rid] + [500], salt="episode", prompt_start=13)  # prefix KV evicted
+            mask = sim.step({rid + "2": 15})
+            forced = [p for p in range(13) if mask[p]]
+            assert all(np.array_equal(sim.captured[rid + "2"][p], first[rid][p]) for p in forced)
+        st = sim.state.stats
+        assert st["forced"] == 0 and st["known_unforced"] == 2 * 13
+        assert st["store_tainted"] == 2 * 3 and fr._STORE_COUNTERS["store_conflicts"] == 3
+        assert st["stash_conflicts"] == 2  # both tails [12, 13): same salt and tokens, other rows
+    finally:
+        sim.close()
 
 
 def test_block_completed_before_its_key_keeps_the_version_it_was_computed_at(sim, monkeypatch):
