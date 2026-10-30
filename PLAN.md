@@ -17,7 +17,7 @@ Setup: check out this branch, `git submodule update --init --recursive`, `uv syn
 
 `proxy.toml` settings shared by every run: `seq_len` and `cp` set per run, `ep = 8`, FP8 blockwise (`quantization.type = "fp8"` with `extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']`, `moe.compute.type = "deepgemm_fp8"`), torch MoE dispatch, full activation checkpointing (freq 1), `compile.fullgraph = true`, `offload = "none"`, `ac_offloading = None`, Muon (lr 1e-6, weight decay 0, max norm 1.0), icepop loss, `matmul_precision = "highest"`, `dist_timeout_seconds = 14400`, 20 steps, `data.fake.generate_samples = true`. Model default: `PrimeIntellect/DeepSeek-V4-Flash-0731-bf16` (real weights). Any DSv4 Flash bf16 checkpoint with the same architecture works if that one is not cached.
 
-B300 note: prime-rl's blockwise FP8 path requires SM90 or SM100. If it refuses this GPU, say so and run the MXFP8 variant (below) as the main arm.
+Precision: run every timing run in both FP8 blockwise (the `proxy.toml` default, matching the H200 runs) and MXFP8 (production precision on Blackwell), if both are available on B300. prime-rl's blockwise FP8 path requires SM90 or SM100. If it refuses this GPU, say so and report MXFP8 only. MXFP8 overrides: `--model.quantization.type mxfp8 --model.quantization.recipe mxfp8_rceil_wgrad_with_hp --model.moe.compute.type mxfp8` (check the exact CLI against `packages/prime-rl-configs/src/prime_rl/configs/trainer.py`).
 
 ## Run matrix (balanced routing everywhere)
 
@@ -35,12 +35,11 @@ Both give 32,768 tokens per GPU and 8 micro batches per rank per step.
 
 Use `--model.debug.num-layers <n>` for the layer count. For GLM-5.3, always pass `--model.debug.random-init` and a private `--model.conversion-dir`: a conversion run with a truncated model writes an incomplete cache and still marks it done, which would poison a shared snapshot. With balanced routing, random weights do not change the compute.
 
-That is 12 timing runs (3 models x 2 settings x 2 layer counts). With B300's larger memory, also try 12 layers for DSv4 and 12 or 16 for GLM-5.3 if time allows (better slopes).
+That is 24 timing runs (3 models x 2 settings x 2 layer counts x 2 precisions). With B300's larger memory, also try 12 layers for DSv4 and 12 or 16 for GLM-5.3 if time allows (better slopes).
 
 Extra arms if time allows:
 1. Padding check: DSv4 at 6 layers in both settings with `--data.fake.pad-to-seq-len` (pads rows to `seq_len`).
-2. MXFP8 (production precision on Blackwell): DSv4 at 4 and 6 layers in both settings with `--model.quantization.type mxfp8 --model.quantization.recipe mxfp8_rceil_wgrad_with_hp --model.moe.compute.type mxfp8` (check the exact CLI against `packages/prime-rl-configs/src/prime_rl/configs/trainer.py`).
-3. One trace per model in the short-document setting at the higher layer count: `--max-steps 4 --data.fake.batch-size 16 --trace-path <dir>` (2 micro batches per rank).
+2. One trace per model in the short-document setting at the higher layer count: `--max-steps 4 --data.fake.batch-size 16 --trace-path <dir>` (2 micro batches per rank).
 
 ## Measurements
 
