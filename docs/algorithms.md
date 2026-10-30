@@ -296,8 +296,6 @@ class LossOutputs:
 
 Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics.
 
-The SFT trainer's counterpart is the [custom objective](training.md#custom-objective).
-
 ## Advantage
 
 The per-token training signal is set by `algo.type` and the [algorithm](#the-algorithm-abstraction)'s parameters — every signal is a per-token advantage stream, varying in evaluation site (orchestrator vs. trainer). The `algo.type` values:
