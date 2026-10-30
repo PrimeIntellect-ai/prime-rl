@@ -1,4 +1,4 @@
-"""Check the grouped FP8 torch-op quantizers, pre-quantized ops and pass, then run a routed-expert toy block with and without the pass."""
+"""Check the trainer's grouped FP8 torch-op quantizers and pre-quantized ops, then compile a routed-expert toy block through apply_ac and apply_compile with and without the FP8 quant pass."""
 
 from __future__ import annotations
 
@@ -8,55 +8,70 @@ import copy
 import json
 import re
 import statistics
-import sys
+import threading
+from collections import Counter
 from pathlib import Path
 
 import torch
 import triton
 from torch import nn
-from torch._inductor.choices import InductorChoices
-from torch._inductor.codegen.simd_kernel_features import SIMDKernelFeatures
 from torch._inductor.graph import GraphLowering
 from torch._inductor.utils import run_and_get_code
 from torch._inductor.virtualized import V
 from torch.autograd import DeviceType
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from grouped_prequant import PASS_RECORDS, GroupedFp8QuantPass, quant_grouped_128x1_kmajor  # noqa: E402
-from quant_torch import BLOCK, quant_1x128  # noqa: E402
-
-from prime_rl.configs.trainer import ActivationCheckpointConfig  # noqa: E402
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper  # noqa: E402
-from prime_rl.trainer.distributed.token_dispatcher import _GatherPermutedRows  # noqa: E402
-from prime_rl.trainer.models.kernels.fp8_utils import (  # noqa: E402
+import prime_rl.trainer.model as trainer_model
+from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, FP8QuantPassConfig
+from prime_rl.trainer.distributed.token_dispatcher import _GatherPermutedRows
+from prime_rl.trainer.fp8_quant_pass import GROUPED_FP8_GEMM_BACKWARD, REWRITTEN_OPS, Fp8QuantPass
+from prime_rl.trainer.model import apply_ac, apply_compile
+from prime_rl.trainer.models.kernels.fp8_torch_quant import BLOCK, quant_1x128, quant_grouped_128x1_kmajor
+from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
     build_grouped_layout,
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
 )
-from prime_rl.trainer.models.layers.activations import ClampedSilu  # noqa: E402
-from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm  # noqa: E402
+from prime_rl.trainer.models.layers.activations import ClampedSilu
+from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
 SWIGLU_LIMIT = 10.0
 WEIGHT_STD = 0.02
-ARMS = {"nopass": None, "pass-torch": "torch", "pass-torch-inline": "torch-inline", "pass-triton": "triton"}
+ARMS = {"nopass": None, "pass-torch": "torch", "pass-triton": "triton"}
+PREQUANT_OPS = (
+    torch.ops.prime_rl.grouped_fp8_gemm_prequant.default,
+    torch.ops.prime_rl.grouped_fp8_gemm_dgrad_prequant.default,
+    torch.ops.prime_rl.grouped_fp8_gemm_wgrad_prequant.default,
+    torch.ops.prime_rl.grouped_fp8_gemm_wgrad.default,
+)
+PASS_RECORDS: list[dict] = []
 
 
-class PersistentGroupReductionChoices(InductorChoices):
-    """Inductor heuristics that make 128-element reductions persistent even when they are not along the inner axis."""
+def count_targets(graph: torch.fx.Graph, targets: tuple) -> Counter:
+    return Counter(str(node.target) for node in graph.nodes if node.op == "call_function" and node.target in targets)
 
-    @staticmethod
-    def should_use_persistent_reduction(features: SIMDKernelFeatures, cooperative_reduction: bool) -> bool:
-        from torch._inductor import config as inductor_config
 
-        if inductor_config.triton.persistent_reductions and V.graph.sizevars.statically_known_equals(
-            features.reduction_numel, BLOCK
-        ):
-            return True
-        return InductorChoices.should_use_persistent_reduction(features, cooperative_reduction)
+class RecordingFp8QuantPass(Fp8QuantPass):
+    """The trainer's pass, plus a record of what it rewrote and the compile context it ran in."""
 
-    def uuid(self) -> str:
-        return "persistent-group-reduction-v1"
+    def __call__(self, graph: torch.fx.Graph) -> None:
+        before = count_targets(graph, REWRITTEN_OPS)
+        super().__call__(graph)
+        PASS_RECORDS.append(
+            {
+                "graph": "backward" if before[str(GROUPED_FP8_GEMM_BACKWARD)] else "forward",
+                "thread": threading.current_thread().name,
+                "targets": list(self.targets),
+                "wgrad_quant": self.wgrad_quant,
+                "ops_before": dict(before),
+                "ops_after": dict(count_targets(graph, REWRITTEN_OPS + PREQUANT_OPS)),
+                "amax_after": count_targets(graph, (torch.ops.aten.amax.default,))["aten.amax.default"],
+                "inductor_choices": type(V.choices).__name__,
+            }
+        )
+
+
+trainer_model.Fp8QuantPass = RecordingFp8QuantPass
 
 
 def grouped_rows(counts: list[int], tail_rows: int, channels: int, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -130,6 +145,7 @@ def check_quantizers(args: argparse.Namespace) -> dict:
                 ("compiled", compiled_1x128, compiled_kmajor),
             ):
                 fp8, scale = quant(x)
+                fp8 = fp8.flatten(1)
                 t_fp8, t_scale = quant_t(x, offs)
                 blocks = grouped_total // GROUP_ALIGNMENT
                 report[f"{mode} C={channels} {name}"] = {
@@ -244,9 +260,10 @@ def check_ops(args: argparse.Namespace) -> dict:
         grouped_total = sum(ks_tensor.tolist())
 
         def triton_1x128(t):
-            return grouped_per_token_cast_to_fp8_triton(
+            fp8, scale = grouped_per_token_cast_to_fp8_triton(
                 t, rows, block_to_group, starts, actual_ms, block_starts, False, GROUP_ALIGNMENT
             )
+            return fp8.view(rows, -1, BLOCK), scale
 
         def triton_kmajor(t):
             return grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
@@ -338,16 +355,30 @@ class RoutedExpertBlock(nn.Module):
         return out[:-1]
 
 
+class ToyModel(nn.Module):
+    """One routed-expert block under `model.layers`, where the trainer's `get_language_model` finds decoder layers."""
+
+    def __init__(self, block: RoutedExpertBlock) -> None:
+        super().__init__()
+        self.model = nn.Module()
+        self.model.layers = nn.ModuleList([block])
+
+    def forward(
+        self, x: torch.Tensor, permuted_indices: torch.Tensor, num_tokens_per_expert: torch.Tensor
+    ) -> torch.Tensor:
+        return self.model.layers[0](x, permuted_indices, num_tokens_per_expert)
+
+
 def bf16_grouped_mm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     return torch._grouped_mm(x, weight, offs=offs)
 
 
-def build_block(args: argparse.Namespace) -> RoutedExpertBlock:
+def build_model(args: argparse.Namespace) -> ToyModel:
     block = RoutedExpertBlock(args.experts, args.hidden, args.expert_dim, grouped_fp8_gemm).cuda()
     with torch.no_grad():
         for param in block.parameters():
             nn.init.trunc_normal_(param, std=WEIGHT_STD)
-    return block.to(torch.bfloat16)
+    return ToyModel(block.to(torch.bfloat16))
 
 
 def make_inputs(args: argparse.Namespace, num_routed: int, dynamic: bool) -> dict[str, torch.Tensor]:
@@ -384,9 +415,7 @@ def run_step(module: nn.Module, inputs: dict[str, torch.Tensor]) -> torch.Tensor
 
 
 def collect(module: nn.Module, inputs: dict[str, torch.Tensor], out: torch.Tensor) -> dict[str, torch.Tensor]:
-    grads = {
-        f"{name.removeprefix('_checkpoint_wrapped_module.')}.grad": p.grad for name, p in module.named_parameters()
-    }
+    grads = {f"{name.replace('._checkpoint_wrapped_module', '')}.grad": p.grad for name, p in module.named_parameters()}
     return {"out": out.detach(), "x.grad": inputs["x"].grad} | grads
 
 
@@ -394,20 +423,25 @@ def rel_err(a: torch.Tensor, b: torch.Tensor) -> float:
     return ((a.float() - b.float()).norm() / b.float().norm()).item()
 
 
-def compile_block(block: RoutedExpertBlock, wgrad_quant: str | None, options: dict) -> nn.Module:
-    wrapped = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode="full"))(block)
-    options = dict(options)
+def compile_model(args: argparse.Namespace, base: ToyModel, wgrad_quant: str | None) -> ToyModel:
+    fp8_quant_pass = None
     if wgrad_quant is not None:
-        options["post_grad_custom_pre_pass"] = GroupedFp8QuantPass(wgrad_quant)
-    wrapped.compile(fullgraph=True, options=options)
-    return wrapped
+        fp8_quant_pass = FP8QuantPassConfig(
+            targets=args.targets,
+            wgrad_quant=wgrad_quant,
+            persistent_group_reductions=args.persistent_group_reductions,
+        )
+    model = copy.deepcopy(base)
+    apply_ac(model, ActivationCheckpointConfig(mode="full"))
+    apply_compile(model, CompileConfig(fullgraph=True, fp8_quant_pass=fp8_quant_pass, inductor_options=args.options))
+    return model
 
 
-def run_arm(args: argparse.Namespace, base: RoutedExpertBlock, arm: str, out_dir: Path) -> tuple[dict, dict, nn.Module]:
+def run_arm(args: argparse.Namespace, base: ToyModel, arm: str, out_dir: Path) -> tuple[dict, dict, nn.Module]:
     torch._dynamo.reset()
     PASS_RECORDS.clear()
     unique_graphs_before = torch._dynamo.utils.counters["stats"]["unique_graphs"]
-    module = compile_block(copy.deepcopy(base), ARMS[arm], args.options)
+    module = compile_model(args, base, ARMS[arm])
     sources: list[str] = []
     GraphLowering.save_output_code = sources.append
     results = {}
@@ -481,7 +515,7 @@ def time_steps(module: nn.Module, inputs: dict[str, torch.Tensor], iters: int) -
 
 def run_block(args: argparse.Namespace, out_dir: Path) -> dict:
     torch.manual_seed(0)
-    base = build_block(args)
+    base = build_model(args)
     reports, results, modules = {}, {}, {}
     for arm in args.arms:
         reports[arm], results[arm], modules[arm] = run_arm(args, base, arm, out_dir)
@@ -497,7 +531,7 @@ def run_block(args: argparse.Namespace, out_dir: Path) -> dict:
             reports[arm]["profile"] = profile_steps(module, inputs, args.iters)
             reports[arm]["routed_rows_padded"] = inputs["permuted_indices"].numel()
     reference_block = copy.deepcopy(base)
-    reference_block.gemm = bf16_grouped_mm
+    reference_block.model.layers[0].gemm = bf16_grouped_mm
     closeness = {}
     for num_routed in args.routed:
         inputs = make_inputs(args, num_routed, dynamic=False)
@@ -531,16 +565,20 @@ def main() -> None:
         "--option", action="append", default=[], help="Inductor option KEY=VALUE, e.g. emulate_precision_casts=True"
     )
     parser.add_argument("--persistent-group-reductions", action="store_true")
+    parser.add_argument(
+        "--targets", nargs="+", default=["linear", "grouped_gemm"], help="model.compile.fp8_quant_pass.targets"
+    )
     parser.add_argument("--arms", nargs="+", choices=list(ARMS), default=list(ARMS))
     args = parser.parse_args()
 
     args.options = {key: ast.literal_eval(value) for key, value in (option.split("=", 1) for option in args.option)}
-    if args.persistent_group_reductions:
-        args.options["inductor_choices_class"] = PersistentGroupReductionChoices
-        V.set_choices_handler(PersistentGroupReductionChoices())
     args.out_dir.mkdir(parents=True, exist_ok=True)
     sections = args.sections.split(",")
-    summary: dict = {"options": {key: str(value) for key, value in args.options.items()}}
+    summary: dict = {
+        "options": args.options,
+        "persistent_group_reductions": args.persistent_group_reductions,
+        "targets": args.targets,
+    }
     if "quant" in sections:
         summary["quant"] = check_quantizers(args)
         print(

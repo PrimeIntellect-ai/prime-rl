@@ -38,7 +38,7 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.fp8_quant_pass import Fp8QuantPass, InductorChoicesBackend, PersistentGroupReductionChoices
+from prime_rl.trainer.fp8_quant_pass import Fp8GroupQuantChoices, Fp8QuantPass, InductorChoicesBackend
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -777,9 +777,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, rms_norm_back
     backend = "inductor"
     fp8_quant_pass = compile_config.fp8_quant_pass
     if fp8_quant_pass is not None:
-        options["post_grad_custom_pre_pass"] = Fp8QuantPass(fp8_quant_pass.wgrad_quant)
+        options["post_grad_custom_pre_pass"] = Fp8QuantPass(fp8_quant_pass.wgrad_quant, fp8_quant_pass.targets)
         if fp8_quant_pass.persistent_group_reductions:
-            backend = InductorChoicesBackend(PersistentGroupReductionChoices)
+            backend = InductorChoicesBackend(Fp8GroupQuantChoices)
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading

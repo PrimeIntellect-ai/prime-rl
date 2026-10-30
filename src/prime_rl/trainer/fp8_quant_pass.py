@@ -6,27 +6,41 @@ import functools
 import inspect
 from collections import Counter
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 
+import sympy
 import torch
-from torch._inductor import config as inductor_config
 from torch._inductor.choices import InductorChoices
 from torch._inductor.codegen.simd_kernel_features import SIMDKernelFeatures
+from torch._inductor.codegen.triton import FixedTritonConfig, TritonKernel
 from torch._inductor.compile_fx import compile_fx, compile_fx_inner
 from torch._inductor.custom_graph_pass import CustomGraphPass, get_hash_for_files
+from torch._inductor.dependencies import MemoryDep
 from torch._inductor.pattern_matcher import Arg, CallFunction, Match, PatternMatcherPass, register_graph_pattern
 from torch._inductor.virtualized import V
 
-from prime_rl.configs.trainer import FP8WgradQuant
+from prime_rl.configs.trainer import FP8QuantPassTarget, FP8WgradQuant
 from prime_rl.trainer.models.kernels import fp8_torch_quant
-from prime_rl.trainer.models.kernels.fp8_torch_quant import BLOCK, quant_1x128, quant_128x1_tp
-from prime_rl.trainer.models.layers import fp8_linear
+from prime_rl.trainer.models.kernels.fp8_torch_quant import (
+    BLOCK,
+    quant_1x128,
+    quant_128x1_tp,
+    quant_grouped_128x1_kmajor,
+)
+from prime_rl.trainer.models.layers import fp8_grouped_gemm, fp8_linear
 from prime_rl.utils.logger import get_logger
 
 PatternRegistrar = Callable[[PatternMatcherPass, FP8WgradQuant], None]
 
 FP8_MM = torch.ops.prime_rl.fp8_blockwise_mm.default
 FP8_MM_BACKWARD = torch.ops.prime_rl.fp8_blockwise_mm_backward.default
+GROUPED_FP8_GEMM = torch.ops.prime_rl.grouped_fp8_gemm.default
+GROUPED_FP8_GEMM_BACKWARD = torch.ops.prime_rl.grouped_fp8_gemm_backward.default
+# Tuned on H200 against the Triton quantizers, keyed by whether the 128-element groups are contiguous or strided in memory.
+FP8_GROUP_QUANT_LAUNCH_CONFIGS = {
+    "strided": {"XBLOCK": 128, "num_warps": 4},
+    "contiguous": {"XBLOCK": 16, "num_warps": 4},
+}
 
 
 def register_fp8_linear_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant) -> None:
@@ -79,15 +93,67 @@ def register_fp8_linear_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8W
         match.replace_by_example(replacement, [grad_output, x, weight])
 
 
-PATTERN_REGISTRARS: tuple[PatternRegistrar, ...] = (register_fp8_linear_patterns,)
-REWRITTEN_OPS = (FP8_MM, FP8_MM_BACKWARD)
+def register_fp8_grouped_gemm_patterns(patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant) -> None:
+    """Register rewrites of `prime_rl::grouped_fp8_gemm` and its backward into torch-op quants and pre-quantized grouped GEMMs."""
+
+    @register_graph_pattern(CallFunction(GROUPED_FP8_GEMM, Arg(), Arg(), Arg()), pass_dict=patterns)
+    def rewrite_grouped_fp8_gemm(match: Match, x: torch.fx.Node, weight: torch.fx.Node, offs: torch.fx.Node) -> None:
+        def replacement(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+            x_fp8, x_scale = quant_1x128(x)
+            return torch.ops.prime_rl.grouped_fp8_gemm_prequant(x_fp8, x_scale, weight, offs)
+
+        match.replace_by_example(replacement, [x, weight, offs])
+
+    @register_graph_pattern(
+        CallFunction(GROUPED_FP8_GEMM_BACKWARD, Arg(), Arg(), Arg(), Arg(), Arg(), Arg(), Arg()), pass_dict=patterns
+    )
+    def rewrite_grouped_fp8_gemm_backward(
+        match: Match,
+        grad_output: torch.fx.Node,
+        x: torch.fx.Node,
+        weight: torch.fx.Node,
+        offs: torch.fx.Node,
+        needs_grad_x: bool,
+        needs_grad_weight: bool,
+        grad_weight_transposed: bool,
+    ) -> None:
+        def replacement(
+            grad_output: torch.Tensor, x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            grad_x = torch.empty_like(x)
+            grad_weight = torch.empty_like(weight)
+            if needs_grad_x:
+                grad_output_fp8, grad_output_scale = quant_1x128(grad_output)
+                grad_x = torch.ops.prime_rl.grouped_fp8_gemm_dgrad_prequant(
+                    grad_output_fp8, grad_output_scale, weight, offs
+                )
+            if needs_grad_weight and wgrad_quant == "torch":
+                x_t_fp8, x_t_scale = quant_grouped_128x1_kmajor(x, offs)
+                grad_output_t_fp8, grad_output_t_scale = quant_grouped_128x1_kmajor(grad_output, offs)
+                grad_weight = torch.ops.prime_rl.grouped_fp8_gemm_wgrad_prequant(
+                    x_t_fp8, x_t_scale, grad_output_t_fp8, grad_output_t_scale, weight, offs, grad_weight_transposed
+                )
+            elif needs_grad_weight:
+                grad_weight = torch.ops.prime_rl.grouped_fp8_gemm_wgrad(
+                    grad_output, x, weight, offs, grad_weight_transposed
+                )
+            return grad_x, grad_weight
+
+        match.replace_by_example(replacement, [grad_output, x, weight, offs])
+
+
+PATTERN_REGISTRARS: dict[FP8QuantPassTarget, PatternRegistrar] = {
+    "linear": register_fp8_linear_patterns,
+    "grouped_gemm": register_fp8_grouped_gemm_patterns,
+}
+REWRITTEN_OPS = (FP8_MM, FP8_MM_BACKWARD, GROUPED_FP8_GEMM, GROUPED_FP8_GEMM_BACKWARD)
 
 
 @functools.cache
-def _patterns(wgrad_quant: FP8WgradQuant) -> PatternMatcherPass:
-    patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{wgrad_quant}")
-    for register in PATTERN_REGISTRARS:
-        register(patterns, wgrad_quant)
+def _patterns(wgrad_quant: FP8WgradQuant, targets: tuple[FP8QuantPassTarget, ...]) -> PatternMatcherPass:
+    patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{wgrad_quant}_{'_'.join(targets)}")
+    for target in targets:
+        PATTERN_REGISTRARS[target](patterns, wgrad_quant)
     return patterns
 
 
@@ -119,40 +185,76 @@ def _dedupe(graph: torch.fx.Graph, candidates: set[torch.fx.Node]) -> int:
 class Fp8QuantPass(CustomGraphPass):
     """Rewrites FP8 GEMM ops into torch-op quants, which Inductor fuses into their producers, and pre-quantized GEMMs."""
 
-    def __init__(self, wgrad_quant: FP8WgradQuant) -> None:
+    def __init__(self, wgrad_quant: FP8WgradQuant, targets: Sequence[FP8QuantPassTarget]) -> None:
         self.wgrad_quant = wgrad_quant
+        self.targets = tuple(sorted(set(targets)))
 
     def __call__(self, graph: torch.fx.Graph) -> None:
         nodes_before = set(graph.nodes)
         ops_before = Counter(
             str(node.target) for node in graph.nodes if node.op == "call_function" and node.target in REWRITTEN_OPS
         )
-        rewritten = _patterns(self.wgrad_quant).apply(graph)
+        rewritten = _patterns(self.wgrad_quant, self.targets).apply(graph)
         if not rewritten:
             return
         deduped = _dedupe(graph, set(graph.nodes) - nodes_before)
         graph.eliminate_dead_code()
         get_logger().info(
-            f"FP8 quant pass ({self.wgrad_quant} wgrad quant) rewrote {rewritten} ops {dict(ops_before)}, "
-            f"deduplicated {deduped} repeated quant nodes"
+            f"FP8 quant pass ({self.wgrad_quant} wgrad quant, targets {list(self.targets)}) rewrote {rewritten} ops "
+            f"{dict(ops_before)}, deduplicated {deduped} repeated quant nodes"
         )
 
     def uuid(self) -> bytes:
-        source_files = {__file__, fp8_torch_quant.__file__, fp8_linear.__file__}
-        source_files.update(inspect.getfile(register) for register in PATTERN_REGISTRARS)
-        return get_hash_for_files(tuple(sorted(source_files)), extra=self.wgrad_quant)
+        source_files = {__file__, fp8_torch_quant.__file__, fp8_linear.__file__, fp8_grouped_gemm.__file__}
+        source_files.update(inspect.getfile(register) for register in PATTERN_REGISTRARS.values())
+        return get_hash_for_files(tuple(sorted(source_files)), extra=f"{self.wgrad_quant}-{'-'.join(self.targets)}")
 
 
-class PersistentGroupReductionChoices(InductorChoices):
-    """Inductor heuristics that make every 128-element reduction persistent, including the strided 128x1 quant amax."""
+def _fp8_group_quant_layout(
+    features: SIMDKernelFeatures, kernel_kwargs: dict[str, Any]
+) -> Literal["contiguous", "strided"] | None:
+    """Layout of the groups an FP8 group quant kernel reduces, by its reads' stride along the reduction, or None for any other kernel."""
+    if not features.is_reduction() or kernel_kwargs.get("mix_order_reduction"):
+        return None
+    if not V.graph.sizevars.statically_known_equals(features.reduction_numel, BLOCK):
+        return None
+    reductions = features.reduction_nodes()
+    if any(node.node.get_reduction_type() != "max" for node in reductions):
+        return None
+    if not any(
+        buffer.node.get_dtype() == torch.float8_e4m3fn
+        for node in features.scheduler_nodes()
+        for buffer in node.get_outputs()
+    ):
+        return None
+    contiguous_reads = {
+        dep.stride1_for_last_dim(result_for_complex_expression=False)
+        for node in reductions
+        for dep in node.read_writes.reads
+        if isinstance(dep, MemoryDep) and dep.var_names and dep.var_names[-1] in dep.index.free_symbols
+    }
+    if contiguous_reads == {True}:
+        return "contiguous"
+    if contiguous_reads == {False}:
+        return "strided"
+    return None
 
-    @staticmethod
-    def should_use_persistent_reduction(features: SIMDKernelFeatures, cooperative_reduction: bool) -> bool:
-        if inductor_config.triton.persistent_reductions and V.graph.sizevars.statically_known_equals(
-            features.reduction_numel, BLOCK
-        ):
-            return True
-        return InductorChoices.should_use_persistent_reduction(features, cooperative_reduction)
+
+class Fp8GroupQuantChoices(InductorChoices):
+    """Inductor heuristics that compile FP8 group quant kernels as persistent reductions with a fixed launch config, other kernels unchanged."""
+
+    def triton_kernel_kwargs(
+        self,
+        kernel_cls: type[TritonKernel],
+        features: SIMDKernelFeatures,
+        groups: list[sympy.Expr],
+        kernel_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        layout = _fp8_group_quant_layout(features, kernel_kwargs)
+        if layout is None:
+            return kernel_kwargs
+        fixed_config = FixedTritonConfig(dict(FP8_GROUP_QUANT_LAUNCH_CONFIGS[layout]))
+        return {**kernel_kwargs, "override_persistent_reduction": True, "fixed_config": fixed_config}
 
     def uuid(self) -> str:
         return get_hash_for_files((__file__, fp8_torch_quant.__file__)).hex()

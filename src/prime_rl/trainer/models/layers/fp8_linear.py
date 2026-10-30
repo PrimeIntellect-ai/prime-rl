@@ -144,13 +144,13 @@ PREQUANT_SM90_ONLY = "the torch-op quantizers emit fp32 scales, which DeepGEMM a
 def _fp8_blockwise_mm_prequant(
     x_fp8: torch.Tensor, x_scale: torch.Tensor, weight: torch.Tensor, block_size: int
 ) -> torch.Tensor:
-    """`prime_rl::fp8_blockwise_mm` of a 2D input already cast to FP8 in 1x128 groups."""
+    """`prime_rl::fp8_blockwise_mm` of an input already cast to FP8 in 1x128 groups, shaped `[tokens, in_features / 128, 128]`."""
     import deep_gemm
 
     assert not ue8m0_for_device(weight.device), PREQUANT_SM90_ONLY
     weight_fp8 = per_block_cast_to_fp8_triton(weight, False, block_size)
     out = torch.empty((x_fp8.size(0), weight.size(0)), device=x_fp8.device, dtype=torch.bfloat16)
-    deep_gemm.fp8_gemm_nt((x_fp8, x_scale), weight_fp8, out)
+    deep_gemm.fp8_gemm_nt((x_fp8.flatten(1), x_scale), weight_fp8, out)
     return out
 
 
@@ -165,13 +165,13 @@ def _fp8_blockwise_mm_prequant_fake(
 def _fp8_blockwise_mm_dgrad_prequant(
     grad_output_fp8: torch.Tensor, grad_output_scale: torch.Tensor, weight: torch.Tensor, block_size: int
 ) -> torch.Tensor:
-    """Input gradient of `prime_rl::fp8_blockwise_mm` from a 2D output gradient already cast to FP8 in 1x128 groups."""
+    """Input gradient of `prime_rl::fp8_blockwise_mm` from an output gradient already cast to FP8 in 1x128 groups, shaped `[tokens, out_features / 128, 128]`."""
     import deep_gemm
 
     assert not ue8m0_for_device(weight.device), PREQUANT_SM90_ONLY
     weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, False, block_size)
     grad_x = torch.empty((grad_output_fp8.size(0), weight.size(1)), device=weight.device, dtype=torch.bfloat16)
-    deep_gemm.fp8_gemm_nt((grad_output_fp8, grad_output_scale), weight_dx_fp8, grad_x)
+    deep_gemm.fp8_gemm_nt((grad_output_fp8.flatten(1), grad_output_scale), weight_dx_fp8, grad_x)
     return grad_x
 
 
@@ -190,9 +190,9 @@ def _fp8_blockwise_mm_wgrad_prequant(
     x_t_scale: torch.Tensor,
     weight: torch.Tensor,
 ) -> torch.Tensor:
-    """Weight gradient of `prime_rl::fp8_blockwise_mm` from output gradient and input already cast in 128x1 groups."""
+    """Weight gradient of `prime_rl::fp8_blockwise_mm` from output gradient and input already cast in 128x1 groups, shaped `[channels, padded_tokens / 128, 128]`."""
     assert not ue8m0_for_device(weight.device), PREQUANT_SM90_ONLY
-    return _fp8_wgrad_gemm((grad_output_t_fp8, grad_output_t_scale), (x_t_fp8, x_t_scale), weight)
+    return _fp8_wgrad_gemm((grad_output_t_fp8.flatten(1), grad_output_t_scale), (x_t_fp8.flatten(1), x_t_scale), weight)
 
 
 @_fp8_blockwise_mm_wgrad_prequant.register_fake
