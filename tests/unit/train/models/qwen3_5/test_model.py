@@ -15,6 +15,7 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
+from prime_rl.trainer.vlm import get_vision_encoder
 from prime_rl.utils.cp import CPContext
 
 
@@ -70,8 +71,8 @@ def get_vlm_config(text_config) -> Qwen3_5Config:
     )
 
 
-def get_model(config, device="cuda"):
-    runtime_config = ModelConfig()
+def get_model(config, device="cuda", attn="auto"):
+    runtime_config = ModelConfig(attn=attn)
     resolve_auto_attn(runtime_config)
     with torch.device(device):
         model = (get_custom_vlm_cls(config) or AutoModelForCausalLMPrimeRL).from_config(
@@ -109,6 +110,18 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     assert vlm_model.model.cp_context is vlm_cp_context
     assert vlm_model.model.language_model.cp_context is vlm_cp_context
     assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
+
+
+def test_language_model_only_has_no_vision_encoder(text_config):
+    config = get_vlm_config(text_config)
+    config.language_model_only = True
+    config = type(config).from_dict(config.to_dict())
+    model = get_model(config, device="meta", attn="flash_attention_2")
+
+    assert config.language_model_only
+    assert not model.is_vlm and not model.supports_packed_multimodal_training
+    assert get_vision_encoder(model) is None
+    assert all(key.startswith(("model.language_model.", "lm_head.")) for key in model.state_dict())
 
 
 @pytest.mark.gpu
