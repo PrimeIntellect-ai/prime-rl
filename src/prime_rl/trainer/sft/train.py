@@ -481,8 +481,8 @@ def train(config: SFTConfig):
             micro_moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
             for name, values in micro_moe_stats.items():
                 moe_stats[f"{name}/mean"] = values.mean()
-                if name == "max_vio":
-                    moe_stats["max_vio/max"] = values.max()
+                if name != "routing_confidence":
+                    moe_stats[f"{name}/max"] = values.max()
             expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
 
         if gradient_manager is None:
@@ -569,7 +569,11 @@ def train(config: SFTConfig):
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
+        for name, label in (
+            ("max_vio/mean", "Max Vio"),
+            ("ep_imbalance/rank/mean", "EP Imbalance"),
+            ("routing_confidence/mean", "Routing Conf."),
+        ):
             if name in moe_stats and (value := moe_stats[name].item()) > 0:
                 step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
