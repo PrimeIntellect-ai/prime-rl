@@ -1,6 +1,4 @@
 import math
-from collections import defaultdict
-from itertools import chain
 
 import dion
 import torch
@@ -9,8 +7,6 @@ from dion.opt_utils import AsyncRuntime, AsyncTask, create_param_batches, pad_ba
 from torch import Tensor
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DTensor
-
-DEEPSEEK_V4_NEWTON_SCHULZ = [(3.4445, -4.7750, 2.0315)] * 8 + [(2.0, -1.5, 0.5)] * 2
 
 # Polar Express (arXiv 2505.16932), divided by the safety factor 1.01 except for the last polynomial, which repeats
 POLAR_EXPRESS = [
@@ -27,47 +23,67 @@ POLAR_EXPRESS = [
 ] + [(1.875, -1.25, 0.375)]
 
 
-def _odd_polynomials(G: Tensor, coefficients: list, dtype: torch.dtype, epsilon: float, safety: float = 1.0) -> Tensor:
-    X = G.to(dtype=torch.bfloat16)
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-    X = (X / (X.norm(dim=(-2, -1), keepdim=True) * safety + epsilon)).to(dtype)
-    for a, b, c in coefficients:
-        A = X @ X.mT
-        X = a * X + (b * A + c * (A @ A)) @ X
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-    return X
+def newton_schulz(coefficients: list[tuple[float, float, float]], safety=1.0, dtype=torch.bfloat16, epsilon=None):
+    """Orthogonalization by odd polynomials: X <- aX + (bA + cA²)X with A = XXᵀ, one (a, b, c) per iteration, on
+    X = G / (safety·‖G‖_F + epsilon) normalized in bf16 and iterated in ``dtype``. A given ``epsilon`` replaces the
+    caller's."""
+    fixed_epsilon = epsilon
+
+    @torch.compile(fullgraph=True)
+    def orthogonalize(G: Tensor, epsilon: float | Tensor = 1e-7) -> Tensor:
+        X = G.to(dtype=torch.bfloat16)
+        if G.size(-2) > G.size(-1):
+            X = X.mT
+        if fixed_epsilon is not None:
+            epsilon = fixed_epsilon
+        X = (X / (X.norm(dim=(-2, -1), keepdim=True) * safety + epsilon)).to(dtype)
+        for a, b, c in coefficients:
+            A = X @ X.mT
+            X = a * X + (b * A + c * (A @ A)) @ X
+        if G.size(-2) > G.size(-1):
+            X = X.mT
+        return X
+
+    return orthogonalize
 
 
-def newton_schulz_deepseek_v4(G: Tensor, epsilon: float = 1e-7) -> Tensor:
-    """DeepSeek-V4's hybrid Newton-Schulz: 8 fast-converging steps, then 2 steps that pin the singular values at 1."""
-    return _odd_polynomials(G, DEEPSEEK_V4_NEWTON_SCHULZ, torch.bfloat16, epsilon)
+NEWTON_SCHULZ = {
+    # dion's zeropower_via_newtonschulz5
+    "default": newton_schulz(
+        [(4.0848, -6.8946, 2.9270), (3.9505, -6.3029, 2.6377), (3.7418, -5.5913, 2.3037), (2.8769, -3.1427, 1.2046)]
+        + [(2.8366, -3.0525, 1.2012)]
+    ),
+    # DeepSeek-V4: 8 fast-converging steps, then 2 that pin the singular values at 1
+    "deepseek_v4": newton_schulz([(3.4445, -4.7750, 2.0315)] * 8 + [(2.0, -1.5, 0.5)] * 2),
+    "polar_express": newton_schulz(POLAR_EXPRESS[:5], safety=1.01),
+    # Step 3.5 Flash: 6 Polar Express steps in fp16 (bf16 spiked)
+    "step3p5": newton_schulz(POLAR_EXPRESS[:6], safety=1.01, dtype=torch.float16),
+}
+# Dimuon's orthogonalizer
+DIMUON_NEWTON_SCHULZ = newton_schulz(POLAR_EXPRESS[:5], safety=1.01, dtype=torch.float16, epsilon=1e-7)
 
 
-def polar_express(G: Tensor, epsilon: float = 1e-7, steps: int = 5, dtype: torch.dtype = torch.bfloat16) -> Tensor:
-    """Polar Express: ``steps`` of its per-step optimal polynomials on X / (1.01 ||X||_F), normalized in bf16 and
-    iterated in ``dtype``."""
-    coefficients = POLAR_EXPRESS[:steps] + POLAR_EXPRESS[-1:] * (steps - len(POLAR_EXPRESS))
-    return _odd_polynomials(G, coefficients, dtype, epsilon, safety=1.01)
+def _shard_groups(param: Tensor, dim: int) -> list[ProcessGroup]:
+    """The process groups of the mesh dims that shard ``dim`` of ``param``."""
+    if not isinstance(param, DTensor):
+        return []
+    mesh = param.device_mesh
+    return [
+        mesh.get_group(mesh_dim)
+        for mesh_dim, placement in enumerate(param.placements)
+        if getattr(placement, "dim", None) == dim and mesh.size(mesh_dim) > 1
+    ]
 
 
-def polar_express_step3p5(G: Tensor, epsilon: float = 1e-7) -> Tensor:
-    """Step 3.5 Flash: 6 Polar Express steps in fp16 (bf16 spiked)."""
-    return polar_express(G, epsilon, steps=6, dtype=torch.float16)
-
-
-@torch.compile(fullgraph=True)
-def _dimuon_polar_express(G: Tensor, epsilon: float = 1e-7) -> Tensor:
-    return polar_express(G, 1e-7, steps=5, dtype=torch.float16)
+def _all_reduce(tensor: Tensor, groups: list[ProcessGroup], op=dist.ReduceOp.SUM) -> Tensor:
+    for group in groups:
+        dist.all_reduce(tensor, op=op, group=group)
+    return tensor
 
 
 def _norms(U: Tensor, dim: int, groups: list[ProcessGroup]) -> Tensor:
     """L2 norms of U along ``dim``, summed over the process groups that shard that dimension."""
-    squares = U.square().sum(dim=dim)
-    for group in groups:
-        dist.all_reduce(squares, group=group)
-    return squares.sqrt()
+    return _all_reduce(U.square().sum(dim=dim), groups).sqrt()
 
 
 def sinkhorn_update(
@@ -92,10 +108,7 @@ def sinkhorn_update(
     M.lerp_(G.to(M.dtype), 1 - momentum)
     U = G.to(M.dtype).lerp(M, momentum).float()
     row_norms = _norms(U, 1, row_groups)
-    mean_row_norm = row_norms.sum()
-    for group in col_groups:
-        dist.all_reduce(mean_row_norm, group=group)
-    mean_row_norm /= shape[0]
+    mean_row_norm = _all_reduce(row_norms.sum(), col_groups) / shape[0]
     U = U * (row_norms > tau * mean_row_norm).unsqueeze(1)
     for k in range(iters):
         if k % 2 == 0:
@@ -103,35 +116,6 @@ def sinkhorn_update(
         else:
             U = U / (_norms(U, 0, col_groups) + epsilon).unsqueeze(0)
     X.sub_(U.to(X.dtype), alpha=lr * update_rms * math.sqrt(shape[1]))
-
-
-def _shard_groups(param: Tensor, dim: int) -> list[ProcessGroup]:
-    if not isinstance(param, DTensor):
-        return []
-    mesh = param.device_mesh
-    return [
-        mesh.get_group(mesh_dim)
-        for mesh_dim, placement in enumerate(param.placements)
-        if getattr(placement, "dim", None) == dim and mesh.size(mesh_dim) > 1
-    ]
-
-
-def _sinkhorn_task(param: Tensor, state: dict, group: dict, update_rms: float):
-    sinkhorn_update(
-        to_local(param),
-        to_local(param.grad),
-        to_local(state["momentum"]),
-        lr=group["lr"] * group["lr_scale"],
-        momentum=group["mu"],
-        update_rms=update_rms,
-        tau=group["tau"],
-        epsilon=group["epsilon"],
-        iters=group["iters"],
-        shape=tuple(param.shape),
-        row_groups=_shard_groups(param, 1),
-        col_groups=_shard_groups(param, 0),
-    )
-    yield
 
 
 def _segment_reduce(values: Tensor, sizes: list[int], reduce: str) -> Tensor:
@@ -143,12 +127,6 @@ def _segment_reduce(values: Tensor, sizes: list[int], reduce: str) -> Tensor:
     if reduce == "sum":
         return torch.stack([chunk.sum(1) for chunk in chunks], 1)
     return torch.stack([torch.cat([chunk, pad], 1).amax(1) for chunk in chunks], 1)
-
-
-def _all_reduce(tensor: Tensor, groups: list[ProcessGroup], op=dist.ReduceOp.SUM) -> Tensor:
-    for group in groups:
-        dist.all_reduce(tensor, op=op, group=group)
-    return tensor
 
 
 def _conditioner(energy: Tensor, peak: Tensor, damping: float) -> Tensor:
@@ -193,15 +171,16 @@ class _DimuonShard:
 
 
 class Muon(dion.Muon):
-    """dion's Muon with an update RMS of ``update_rms`` and more algorithms. ``variant`` ``dimuon`` or ``muown``
-    updates the Muon groups with Dimuon or Muown. ``sinkhorn`` groups take the Sinkhorn-balanced momentum update,
-    with their lr times ``lr_scale``. Both scales apply inside the step, so the groups' lr stays the scheduled lr."""
+    """dion's Muon with an update RMS of ``update_rms`` and more update rules, one task per batch: dion's AdamW for
+    ``adamw`` groups, Sinkhorn for ``sinkhorn`` groups (lr times the group's ``lr_scale``), and the ``variant`` rule
+    (``muon``, ``dimuon``, ``muown``) for ``muon`` groups, all on dion's gathering and orthogonalization. Both scales
+    apply inside the step, so the groups' lr stays the scheduled lr."""
 
-    def __init__(self, *args, update_rms: float, variant: str = "muon", bf16_momentum: bool = False, **kwargs):
+    def __init__(self, *args, update_rms: float = 0.2, variant: str = "muon", bf16_momentum: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self.update_rms = update_rms
-        self.variant = variant
         self.bf16_momentum = bf16_momentum
+        self._muon_rule = {"muon": self._muon, "dimuon": self._dimuon, "muown": self._muown}[variant]
         self._dimuon_shards = {}
 
     @torch.no_grad()
@@ -210,42 +189,48 @@ class Muon(dion.Muon):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        groups = defaultdict(list)
         for group in self.param_groups:
             group["step"] += 1
-            groups[group["algorithm"]].append(group)
-        if self.variant == "muon":
-            muon_tasks = self._create_muon_tasks([self._dion_group(g) for g in groups["muon"]])
-        else:
-            update = self._dimuon_batch if self.variant == "dimuon" else self._muown_batch
-            muon_tasks = (
-                AsyncTask(update(batch, group))
-                for group in groups["muon"]
-                for batch in create_param_batches(
-                    [p for p in group["params"] if p.grad is not None],
-                    batch_size=self._get_group_mesh_info(group)[1],
-                    matrix_partitions=self._matrix_partitions,
-                )
-            )
-        sinkhorn_tasks = (
-            AsyncTask(_sinkhorn_task(p, self._get_or_initialize_state(p, "sinkhorn"), group, self.update_rms))
-            for group in groups["sinkhorn"]
-            for p in group["params"]
-            if p.grad is not None
-        )
-        tasks = chain(muon_tasks, self._create_adamw_tasks(groups["adamw"]), sinkhorn_tasks)
-        AsyncRuntime(tasks, max_concurrent_tasks=3).run()
+        AsyncRuntime(self._tasks(), max_concurrent_tasks=3).run()
         return loss
 
-    def _dion_group(self, group: dict) -> dict:
-        """dion scales Muon updates to RMS 0.2 and decays weights by the group lr: rescale the lr, keep lr * wd."""
-        scale = self.update_rms / 0.2
-        return dict(group, lr=group["lr"] * scale, weight_decay=group["weight_decay"] / scale)
+    def _tasks(self):
+        for group in self.param_groups:
+            params = [p for p in group["params"] if p.grad is not None]
+            if group["algorithm"] == "adamw":
+                yield from self._create_adamw_tasks([group])
+            elif group["algorithm"] == "sinkhorn":
+                yield from (AsyncTask(self._sinkhorn(p, group)) for p in params)
+            else:
+                batch_size = self._get_group_mesh_info(group)[1]
+                for batch in create_param_batches(params, batch_size, matrix_partitions=self._matrix_partitions):
+                    yield AsyncTask(self._muon_rule(batch, group))
 
-    def _dion_muon_update(self, params, X, G, M, group, *, newton_schulz_func):
-        """dion's Muon update of the local tensors ``X`` (shards shaped like ``params``) with gradients ``G`` and
-        momentum ``M``, with the group's lr, momentum, weight decay and lr adjustment. Matrices are orthogonalized
-        where dion gathers them whole."""
+    def _momentum(self, p: Tensor) -> Tensor:
+        state = self.state[p]
+        if not state:
+            state["momentum"] = torch.zeros_like(p, dtype=torch.bfloat16 if self.bf16_momentum else None)
+        elif self.bf16_momentum and state["momentum"].dtype != torch.bfloat16:
+            # Optimizer.load_state_dict casts the loaded state to the parameter dtype
+            state["momentum"] = state["momentum"].to(torch.bfloat16)
+        return to_local(state["momentum"])
+
+    def _dion_update(self, params, X, G, M, group, *, weight_decay=0.0, orthogonalize_only=False):
+        """dion's Muon update (momentum, orthogonalization, scaled step) of the local tensors ``X`` (shards shaped like
+        ``params``) with gradients ``G`` and momentum ``M``, orthogonalizing where dion gathers whole matrices.
+
+        dion has no hook for the update rule, so this is where it is bent: it redoes dion's batch setup (global
+        DTensor shapes, padding); it scales the update to RMS ``update_rms`` (dion fixes 0.2 and decays by the lr, so
+        the lr is rescaled and lr * weight_decay kept); and with ``orthogonalize_only`` (zero momentum, lr -1, no
+        decay or lr adjustment) dion writes the orthogonalized ``G``, by Dimuon's Newton-Schulz, to ``X``."""
+        if orthogonalize_only:
+            lr, momentum, nesterov, adjust_lr = -1.0, 0.0, False, None
+            ns, epsilon = DIMUON_NEWTON_SCHULZ, group["epsilon"]
+        else:
+            scale = self.update_rms / 0.2
+            lr, weight_decay = group["lr"] * scale, weight_decay / scale
+            momentum, nesterov, adjust_lr = group["mu"], group["nesterov"], group["adjust_lr"]
+            ns, epsilon = self._newton_schulz_func, group["epsilon"]
         device_rank, world_size, process_group, _ = self._get_group_mesh_info(group)
         shard_dim, is_local = None, False
         if isinstance(params[0], DTensor):
@@ -260,39 +245,54 @@ class Muon(dion.Muon):
             X=X,
             G=G,
             M=M,
-            lr=torch.tensor(group["lr"]),
-            momentum=torch.tensor(group["mu"]),
-            weight_decay=torch.tensor(group["weight_decay"]),
-            epsilon=torch.tensor(group["epsilon"]),
-            nesterov=group["nesterov"],
+            lr=torch.tensor(lr),
+            momentum=torch.tensor(momentum),
+            weight_decay=torch.tensor(weight_decay),
+            epsilon=torch.tensor(epsilon),
+            nesterov=nesterov,
             flatten=group["flatten"],
-            adjust_lr=group["adjust_lr"],
+            adjust_lr=adjust_lr,
             device_rank=device_rank,
             world_size=world_size,
             shard_dim=shard_dim,
             is_local=is_local,
             process_group=process_group,
-            newton_schulz_func=newton_schulz_func,
+            newton_schulz_func=ns,
             partitions=self._matrix_partitions.get(params[0]),
         )
 
-    def _dimuon_batch(self, params, group):
+    def _muon(self, params, group):
+        G = [to_local(p.grad) for p in params]
+        M = [self._momentum(p) for p in params]
+        yield from self._dion_update(params, to_local(params), G, M, group, weight_decay=group["weight_decay"])
+
+    def _sinkhorn(self, p, group):
+        sinkhorn_update(
+            to_local(p),
+            to_local(p.grad),
+            self._momentum(p),
+            lr=group["lr"] * group["lr_scale"],
+            momentum=group["mu"],
+            update_rms=self.update_rms,
+            tau=group["tau"],
+            epsilon=group["epsilon"],
+            iters=group["iters"],
+            shape=tuple(p.shape),
+            row_groups=_shard_groups(p, 1),
+            col_groups=_shard_groups(p, 0),
+        )
+        yield
+
+    def _dimuon(self, params, group):
         """Dimuon (github.com/anpaure/dimuon) on a batch of parameters with one shape and sharding: EMA momentum,
         conditioners from the previous momentum around Polar Express, and a fixed update norm, so each matrix's
         update has RMS ``update_rms`` times the lr."""
         beta = group["mu"]
-        partitions = self._matrix_partitions.get(params[0])
         shards, conditioners, inputs = [], [], []
         for p in params:
             if p not in self._dimuon_shards:
-                self._dimuon_shards[p] = _DimuonShard(p, partitions)
-            state = self.state[p]
-            if not state:
-                state["momentum"] = torch.zeros_like(p, dtype=torch.bfloat16 if self.bf16_momentum else None)
-            elif self.bf16_momentum and state["momentum"].dtype != torch.bfloat16:
-                # Optimizer.load_state_dict casts the loaded state to the parameter dtype
-                state["momentum"] = state["momentum"].to(torch.bfloat16)
-            M = to_local(state["momentum"])
+                self._dimuon_shards[p] = _DimuonShard(p, self._matrix_partitions.get(p))
+            M = self._momentum(p)
             G = to_local(p.grad).reshape(-1, *M.shape[-2:]).float()
             M_old = M.reshape(G.shape).float()
             L, C = self._dimuon_shards[p].conditioners(M_old, damping=1e-4)
@@ -303,13 +303,9 @@ class Muon(dion.Muon):
             conditioners.append((L, C))
             inputs.append((L * U * C).reshape(M.shape))
 
-        # With zero momentum, lr -1, no decay and no lr adjustment, dion writes the orthogonalized inputs to outputs
         outputs = [torch.zeros_like(u) for u in inputs]
-        identity = dict(group, lr=-1.0, mu=0.0, weight_decay=0.0, nesterov=False, adjust_lr=None)
         zeros = [torch.zeros_like(u) for u in inputs]
-        yield from self._dion_muon_update(
-            params, outputs, inputs, zeros, identity, newton_schulz_func=_dimuon_polar_express
-        )
+        yield from self._dion_update(params, outputs, inputs, zeros, group, orthogonalize_only=True)
 
         lr = group["lr"]
         for p, shard, (L, C), output in zip(params, shards, conditioners, outputs):
@@ -320,16 +316,16 @@ class Muon(dion.Muon):
             X.mul_(1 - lr * group["weight_decay"])
             X.sub_((torch.where(norm > 0, target / norm, 0.0) * D).reshape(X.shape).to(X.dtype))
 
-    def _muown_batch(self, params, group):
+    def _muown(self, params, group):
         """Muown (arXiv 2605.10797, Algorithm 1) on a batch of parameters with one shape and sharding: W = diag(g/r) R.
         dion's Muon updates the direction R with the tangential gradient; Adam (the AdamW betas and epsilon, the
         same lr) updates the row norms g. Decoupled weight decay shrinks W, then g is reset to W's row norms."""
-        directions, gradients, momentums, states = [], [], [], []
+        directions, gradients, momentums, rows = [], [], [], []
         for p in params:
             W, groups = to_local(p), _shard_groups(p, p.ndim - 1)
             state = self.state[p]
-            if not state:
-                state["momentum"] = torch.zeros_like(p)
+            momentums.append(self._momentum(p))
+            if "row_norm" not in state:
                 state["row_norm"] = torch.zeros_like(p[..., :1])
                 to_local(state["row_norm"]).copy_(_norms(W, -1, groups).unsqueeze(-1))
                 state["direction_norm"] = state["row_norm"].clone()
@@ -338,21 +334,15 @@ class Muon(dion.Muon):
             g, r = to_local(state["row_norm"]), to_local(state["direction_norm"])
             G = to_local(p.grad).to(W.dtype)
             unit_rows = W / g.clamp_min(torch.finfo(g.dtype).tiny)
-            grad_g = (G * unit_rows).sum(-1, keepdim=True)
-            for shard_group in groups:
-                dist.all_reduce(grad_g, group=shard_group)
+            grad_g = _all_reduce((G * unit_rows).sum(-1, keepdim=True), groups)
             directions.append(unit_rows * r)
             gradients.append(g / r.clamp_min(torch.finfo(r.dtype).tiny) * (G - unit_rows * grad_g))
-            momentums.append(to_local(state["momentum"]))
-            states.append((state, grad_g, groups))
+            rows.append((state, grad_g, groups))
 
-        muon_group = dict(self._dion_group(group), weight_decay=0.0)
-        yield from self._dion_muon_update(
-            params, directions, gradients, momentums, muon_group, newton_schulz_func=self._newton_schulz_func
-        )
+        yield from self._dion_update(params, directions, gradients, momentums, group)
 
         lr, (beta1, beta2), step = group["lr"], (group["beta1"], group["beta2"]), group["step"]
-        for p, R, (state, grad_g, groups) in zip(params, directions, states):
+        for p, R, (state, grad_g, groups) in zip(params, directions, rows):
             g, r = to_local(state["row_norm"]), to_local(state["direction_norm"])
             exp_avg, exp_avg_sq = to_local(state["row_norm_exp_avg"]), to_local(state["row_norm_exp_avg_sq"])
             exp_avg.lerp_(grad_g, 1 - beta1)

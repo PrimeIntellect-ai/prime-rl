@@ -10,7 +10,7 @@ from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
-from prime_rl.trainer.optim.muon import Muon, newton_schulz_deepseek_v4, polar_express, polar_express_step3p5
+from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -20,13 +20,6 @@ from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
-
-NEWTON_SCHULZ = {
-    "default": None,
-    "deepseek_v4": torch.compile(newton_schulz_deepseek_v4, fullgraph=True),
-    "polar_express": torch.compile(polar_express, fullgraph=True),
-    "step3p5": torch.compile(polar_express_step3p5, fullgraph=True),
-}
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
@@ -171,8 +164,10 @@ def _create_muon_optimizer(
         for module in model.modules():
             if isinstance(module, GroupedLinear) and module.weight in muon_params:
                 matrix_partitions[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
-        if config.heads_per_block is not None:
-            matrix_partitions |= muon_head_partitions(model, muon_params, config.heads_per_block, config.split_values)
+        if config.heads is not None:
+            matrix_partitions |= muon_head_partitions(
+                model, muon_params, config.heads.per_block, config.heads.split_values
+            )
 
     optimizer = Muon(
         params=param_groups,
@@ -185,8 +180,8 @@ def _create_muon_optimizer(
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
         update_rms=config.update_rms,
-        variant=config.muon_variant,
-        bf16_momentum=config.bf16_momentum,
+        variant=config.variant.type,
+        bf16_momentum=config.variant.type == "dimuon" and config.variant.bf16_momentum,
         newton_schulz_func=NEWTON_SCHULZ[config.newton_schulz],
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
@@ -250,7 +245,7 @@ def muon_param_groups(
     for n, p in named_params:
         if not p.requires_grad:
             continue
-        if config.embedding_optimizer == "sinkhorn" and is_embedding(n, p):
+        if config.embeddings.type == "sinkhorn" and is_embedding(n, p):
             (ngram_params if p in ngram_table_params else embedding_params).append(p)
         elif muon_enabled(n, p):
             if "mlp.experts" in n:
@@ -276,20 +271,20 @@ def muon_param_groups(
     if no_decay_params:
         param_groups.append(dict(params=no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0))
 
-    sinkhorn_group = dict(
-        algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=config.sinkhorn_tau, iters=config.sinkhorn_iters
-    )
-    if embedding_params:
-        param_groups.append(dict(params=embedding_params, lr_scale=1.0, **sinkhorn_group))
-    if ngram_params:
-        param_groups.append(dict(params=ngram_params, lr_scale=config.ngram_lr_scale, **sinkhorn_group))
+    if embedding_params or ngram_params:
+        sinkhorn = config.embeddings
+        group = dict(algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=sinkhorn.tau, iters=sinkhorn.iters)
+        if embedding_params:
+            param_groups.append(dict(params=embedding_params, lr_scale=1.0, **group))
+        if ngram_params:
+            param_groups.append(dict(params=ngram_params, lr_scale=sinkhorn.ngram_lr_scale, **group))
     return param_groups
 
 
 def muon_head_partitions(
     model: nn.Module, muon_params: set[nn.Parameter], heads_per_block: int, split_values: bool
 ) -> dict[nn.Parameter, tuple[int, ...]]:
-    """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads_per_block``).
+    """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads``).
 
     Each attention module returns its own parameters, partitioned or ``None`` to stay whole, and must account for
     every Muon parameter it owns. Head partitions refine the packed ``qkv_proj`` partitions, since each head block
@@ -298,7 +293,7 @@ def muon_head_partitions(
     for name, module in model.named_modules():
         if not hasattr(module, "muon_head_partitions"):
             if name.endswith("self_attn"):
-                raise NotImplementedError(f"optim.heads_per_block does not support {type(module).__name__} ({name})")
+                raise NotImplementedError(f"optim.heads does not support {type(module).__name__} ({name})")
             continue
         module_partitions = module.muon_head_partitions(heads_per_block, split_values)
         missed = [n for n, p in module.named_parameters() if p in muon_params and p not in module_partitions]

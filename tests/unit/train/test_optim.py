@@ -13,14 +13,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.optim import muon_param_groups
-from prime_rl.trainer.optim.muon import (
-    POLAR_EXPRESS,
-    Muon,
-    newton_schulz_deepseek_v4,
-    polar_express,
-    polar_express_step3p5,
-    sinkhorn_update,
-)
+from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon, sinkhorn_update
 
 SINKHORN = dict(lr=0.1, momentum=0.9, update_rms=0.18, tau=1e-3, epsilon=1e-20, iters=11)
 
@@ -81,19 +74,11 @@ REFERENCE_POLAR_EXPRESS = [
 ]
 
 
-def test_polar_express_coefficients():
-    safe = [(a / 1.01, b / 1.01**3, c / 1.01**5) for a, b, c in REFERENCE_POLAR_EXPRESS[:-1]]
-    assert POLAR_EXPRESS == safe + REFERENCE_POLAR_EXPRESS[-1:]
-
-
-@pytest.mark.parametrize(
-    "orthogonalize, tolerance",
-    [(newton_schulz_deepseek_v4, 0.02), (polar_express, 0.25), (polar_express_step3p5, 0.02)],
-)
-def test_orthogonalization_singular_values(orthogonalize, tolerance):
+@pytest.mark.parametrize("schedule, tolerance", [("deepseek_v4", 0.02), ("polar_express", 0.25), ("step3p5", 0.02)])
+def test_orthogonalization_singular_values(schedule, tolerance):
     torch.manual_seed(0)
     for shape in [(64, 32), (32, 96)]:
-        singular_values = torch.linalg.svdvals(orthogonalize(torch.randn(shape)).float())
+        singular_values = torch.linalg.svdvals(NEWTON_SCHULZ[schedule](torch.randn(shape)).float())
         assert (singular_values - 1).abs().max() < tolerance
 
 
@@ -246,7 +231,7 @@ def test_muon_param_groups_route_dsv41_recipe():
 
     adamw_shapes = [(2,), (32, 8), (8,), (8,), (32, 8)]
     assert groups() == [("muon", 1.0, 0.1, [(8, 8)]), ("adamw", 1.0, 0.1, adamw_shapes)]
-    recipe = groups(update_rms=0.18, decay_bias_and_scales=False, embedding_optimizer="sinkhorn")
+    recipe = groups(update_rms=0.18, decay_bias_and_scales=False, embeddings={"type": "sinkhorn"})
     assert recipe == [
         ("muon", 1.0, 0.1, [(8, 8)]),
         ("adamw", 1.0, 0.1, [(8,)]),  # the norm weight
@@ -270,7 +255,7 @@ def test_update_scales_hold_at_the_schedule_floor():
             fsdp_mesh_dim=0,
             world_mesh=None,
             adjust_lr="rms_norm",
-            newton_schulz_func=newton_schulz_deepseek_v4,
+            newton_schulz_func=NEWTON_SCHULZ["deepseek_v4"],
         )
         scheduler = CosineAnnealingLR(optimizer, T_max=4, eta_min=0.1)
         for _ in range(4):

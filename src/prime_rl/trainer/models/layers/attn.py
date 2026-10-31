@@ -445,7 +445,7 @@ def head_partitions(num_heads: int, head_rows: tuple[int, ...], heads_per_block:
     """Muon matrix partitions of a projection whose rows hold ``num_heads`` heads of ``head_rows`` matrices each
     (e.g. MLA's W_UK and W_UV): one partition per head and matrix, or one per block of ``heads_per_block`` heads."""
     if num_heads % heads_per_block:
-        raise ValueError(f"optim.heads_per_block = {heads_per_block} does not divide {num_heads} heads")
+        raise ValueError(f"optim.heads.per_block = {heads_per_block} does not divide {num_heads} heads")
     if heads_per_block == 1:
         return head_rows * num_heads
     return (heads_per_block * sum(head_rows),) * (num_heads // heads_per_block)
