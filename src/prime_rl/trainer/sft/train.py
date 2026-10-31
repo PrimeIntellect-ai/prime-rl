@@ -1,6 +1,8 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import math
+import os
+from pathlib import Path
 import time
 import asyncio
 from contextlib import nullcontext
@@ -30,7 +32,7 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
-    get_load_balance_stats,
+    take_moe_routing_stats,
     is_tt_moe_model,
     reshard_module,
     setup_processor,
@@ -239,6 +241,11 @@ def train(config: SFTConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
+    ep_dump_dir = Path(os.environ["EP_IMBALANCE_DUMP_DIR"]) if "EP_IMBALANCE_DUMP_DIR" in os.environ else None
+    ep_group_ranks = dist.get_process_group_ranks(ep_group) if ep_group is not None else [dist.get_rank()]
+    ep_local_rank = ep_group_ranks.index(dist.get_rank())
+    if ep_dump_dir is not None:
+        ep_dump_dir.mkdir(parents=True, exist_ok=True)
     cp_size = parallel_dims.cp
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -358,7 +365,7 @@ def train(config: SFTConfig):
             val_dataloader.close()
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
-            get_load_balance_stats(model)
+            take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
@@ -439,15 +446,8 @@ def train(config: SFTConfig):
         step_real_tokens = 0
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
-        moe_stats = (
-            {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
-            }
-            if is_moe_model
-            else {}
-        )
+        moe_stats = {}
+        routing_stats = []
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
             or (not is_first_step and progress.step % config.val.interval == 0)
@@ -472,10 +472,17 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
-        step_tokens_per_expert = 0
         step_local_num_tokens = 0
+        micro_batch_meta = []
         for micro_step, micro_batch in enumerate(micro_batches):
             step_real_tokens += micro_batch["num_tokens"]
+            micro_batch_meta.append(
+                {
+                    "row_len": int(micro_batch["input_ids"].shape[1]),
+                    "num_tokens": int(micro_batch["num_tokens"]),
+                    "seq_lens": micro_batch["seq_lens"].tolist(),
+                }
+            )
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
             if config.log.log_data:
                 print_sample(
@@ -502,15 +509,34 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in micro_moe_stats.items():
-                    moe_stats[f"{name}/mean"] += value / grad_accum_steps
-                    if name == "max_vio":
-                        moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
-                step_tokens_per_expert += tokens_per_expert
+                routing_stats.append(take_moe_routing_stats(model))
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        expert_load_stats = {}
+        if is_moe_model:
+            micro_moe_stats, step_tokens_per_expert, ep_counts = get_global_moe_stats(
+                model, routing_stats, ep_group, dp_cp_group
+            )
+            for name, values in micro_moe_stats.items():
+                moe_stats[f"{name}/mean"] = values.mean()
+                if name != "routing_confidence":
+                    moe_stats[f"{name}/max"] = values.max()
+            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
+            if ep_dump_dir is not None and ep_local_rank == 0:
+                # Measurement only: each EP group's leader saves the group's EP-reduced counts, which the metric uses.
+                torch.save(
+                    {
+                        "step": progress.step,
+                        "ep_group_ranks": ep_group_ranks,
+                        "ep_counts": ep_counts.to(torch.int32).cpu(),
+                        "rank_imbalance": micro_moe_stats["ep_imbalance/rank"].cpu(),
+                        "compute_imbalance": micro_moe_stats["ep_imbalance/compute"].cpu(),
+                        "max_vio": micro_moe_stats["max_vio"].cpu(),
+                        "micro_batches": micro_batch_meta,
+                        "forward_backward_time": forward_backward_time,
+                    },
+                    ep_dump_dir / f"step_{progress.step:05d}_group_{ep_group_ranks[0]:04d}.pt",
+                )
         real_tokens = torch.tensor(step_real_tokens, dtype=torch.int64, device="cuda")
         dist.all_reduce(real_tokens, op=dist.ReduceOp.SUM, group=dp_cp_group)
         real_token_count = real_tokens.item() // cp_size
@@ -602,9 +628,12 @@ def train(config: SFTConfig):
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_moe_model:
-            for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
-                value = moe_stats[name].item()
-                if value > 0:
+            for name, label in (
+                ("max_vio/mean", "Max Vio"),
+                ("ep_imbalance/rank/mean", "EP Imbalance"),
+                ("routing_confidence/mean", "Routing Conf."),
+            ):
+                if name in moe_stats and (value := moe_stats[name].item()) > 0:
                     step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
 
