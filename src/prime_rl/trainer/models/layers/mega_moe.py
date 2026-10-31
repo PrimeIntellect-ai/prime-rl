@@ -288,6 +288,78 @@ def mega_moe_forward_mxfp8(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     return y
 
 
+def _qat_cast(w: torch.Tensor, seed: torch.Tensor | None, salt: torch.Tensor | None, expert_offset: int):
+    """E4M3 and UE8M0 bytes of ``[E, N, K]`` cast along K exactly as MXFP8 QAT casts that weight: nearest, or with the
+    stochastic stream keyed by ``seed ^ salt`` and the element's index in the global ``[num_experts, N, K]`` tensor."""
+    from prime_rl.trainer.models.kernels import mxfp8_quant
+
+    if seed is None:
+        return mxfp8_quant.quantize(w)
+    offset = expert_offset * w.shape[1] * w.shape[2]
+    return mxfp8_quant.quantize(w, rounding_seed=seed, rounding_salt=salt, rounding_offset=offset)
+
+
+def _mega_weight_sf(scales: torch.Tensor) -> torch.Tensor:
+    """UE8M0 bytes ``[E, MN, K / 32]`` -> the packed, MN-major, UTCCP-ordered scales of the Mega MoE kernels."""
+    from deep_gemm.mega import _transpose_sf_for_utccp
+
+    return _transpose_sf_for_utccp(scales.view(torch.int32).transpose(1, 2).contiguous().transpose(1, 2))
+
+
+def mxfp8_qat_forward_weights(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
+) -> MegaMoeMXFP8ExpertWeights:
+    """Forward operands quantized as MXFP8 QAT quantizes the expert weights. ``rounding_salts``: the L1 parameters'
+    salts (``gate_up_proj``, or ``gate_proj`` and ``up_proj``) then ``down_proj``'s. The L1 rows are cast in their natural
+    order, so every element keeps its stochastic stream, then interleaved for the kernel."""
+    from deep_gemm.mega import _interleave_weights
+
+    inter = down_proj.shape[2]
+    gate_up = gate_up_proj.to(torch.bfloat16)
+    parts = (
+        [gate_up] if rounding_salts is None or rounding_salts.numel() == 2 else [gate_up[:, :inter], gate_up[:, inter:]]
+    )
+    salt = (lambda i: rounding_salts[i]) if rounding_seed is not None else (lambda i: None)
+    l1 = [_qat_cast(part, rounding_seed, salt(i), expert_offset) for i, part in enumerate(parts)]
+    l1_fp8 = torch.cat([q.view(torch.uint8) for q, _ in l1], dim=1)
+    l1_sf = torch.cat([sf for _, sf in l1], dim=1)
+    l2_fp8, l2_sf = _qat_cast(down_proj.to(torch.bfloat16), rounding_seed, salt(-1), expert_offset)
+    return MegaMoeMXFP8ExpertWeights(
+        l1=(_interleave_weights(l1_fp8).view(torch.float8_e4m3fn), _mega_weight_sf(_interleave_weights(l1_sf))),
+        l2=(l2_fp8, _mega_weight_sf(l2_sf)),
+        l1_t=None,
+        l2_t=None,
+    )
+
+
+def qat_cast_tokens(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """E4M3 tokens and their packed UE8M0 scales ``[T, H / 128]``, rounded to nearest as MXFP8 QAT casts activations."""
+    from prime_rl.trainer.models.kernels import mxfp8_quant
+
+    x_fp8, x_sf = mxfp8_quant.quantize(x)
+    return x_fp8, x_sf.view(torch.int32)
+
+
+def mega_moe_forward_mxfp8_qat(
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, rounding=(None, None, 0)
+):
+    import deep_gemm
+
+    weights = mxfp8_qat_forward_weights(gate_up_proj, down_proj, *rounding)
+    num_tokens = x.shape[0]
+    x_fp8, x_sf = qat_cast_tokens(x)
+    buffer.x[:num_tokens].copy_(x_fp8)
+    buffer.x_sf[:num_tokens].copy_(x_sf)
+    _stage_routing(buffer, num_tokens, topk_idx, topk_weights)
+    y = torch.empty_like(x)
+    deep_gemm.mxfp8_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
+    return y
+
+
 def mxfp8_rounded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Tensor, torch.Tensor]:
     """The bf16 weights an MXFP8 forward computes with (``[E, 2I, H]`` natural gate/up rows, ``[E, H, I]``), decoded
     from its quantized operands."""
@@ -303,11 +375,10 @@ def mxfp8_rounded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Ten
 
 
 def mega_moe_backward_mxfp8_qat(
-    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp, rounding=(None, None, 0)
 ):
     """BF16 backward on the weights the MXFP8 forward computed with (the straight-through estimator of QAT)."""
-    weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False)
-    gate_up, down = mxfp8_rounded_weights(weights)
+    gate_up, down = mxfp8_rounded_weights(mxfp8_qat_forward_weights(gate_up_proj, down_proj, *rounding))
     return mega_moe_backward_bf16(dy, x, topk_idx, topk_weights, gate_up, down, buffer, dw_dtype, activation_clamp)
 
 
@@ -400,7 +471,7 @@ def mega_moe_backward_fp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj
 MEGA_MOE_IMPLS: dict[str, tuple[Callable, Callable]] = {
     "bf16": (mega_moe_forward_bf16, mega_moe_backward_bf16),
     "mxfp8": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8),
-    "mxfp8_qat": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8_qat),
+    "mxfp8_qat": (mega_moe_forward_mxfp8_qat, mega_moe_backward_mxfp8_qat),
     "fp8": (mega_moe_forward_fp8, mega_moe_backward_fp8),
     "fp8_bwd": (mega_moe_forward_bf16, mega_moe_backward_fp8),
 }
@@ -419,9 +490,13 @@ def mega_moe_forward_op(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
 ) -> torch.Tensor:
     precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
     forward, _ = MEGA_MOE_IMPLS[precision]
+    rounding = {"rounding": (rounding_seed, rounding_salts, expert_offset)} if precision == "mxfp8_qat" else {}
     with _deep_gemm_num_sms(num_sms):
         y = forward(
             x.to(torch.bfloat16).contiguous(),
@@ -431,6 +506,7 @@ def mega_moe_forward_op(
             down_proj,
             buffers.forward,
             activation_clamp,
+            **rounding,
         )
     return y.to(x.dtype)
 
@@ -444,6 +520,9 @@ def _mega_moe_forward_fake(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
 ) -> torch.Tensor:
     return torch.empty_like(x)
 
@@ -458,9 +537,13 @@ def mega_moe_backward_op(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
     _, backward = MEGA_MOE_IMPLS[precision]
+    rounding = {"rounding": (rounding_seed, rounding_salts, expert_offset)} if precision == "mxfp8_qat" else {}
     with _deep_gemm_num_sms(num_sms):
         dx, dw1, dw2, dtopk = backward(
             dy.to(torch.bfloat16).contiguous(),
@@ -472,6 +555,7 @@ def mega_moe_backward_op(
             buffers.backward,
             _dw_dtype(gate_up_proj),
             activation_clamp,
+            **rounding,
         )
     return dx.to(x.dtype), dw1.to(gate_up_proj.dtype), dw2.to(down_proj.dtype), dtopk
 
@@ -486,6 +570,9 @@ def _mega_moe_backward_fake(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return (
         torch.empty_like(x),
@@ -496,21 +583,52 @@ def _mega_moe_backward_fake(
 
 
 def _mega_moe_setup_context(ctx, inputs, output) -> None:
-    x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer_key, activation_clamp = inputs
-    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj)
+    (
+        x,
+        topk_idx,
+        topk_weights,
+        gate_up_proj,
+        down_proj,
+        buffer_key,
+        activation_clamp,
+        rounding_seed,
+        rounding_salts,
+        expert_offset,
+    ) = inputs
+    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj, rounding_seed, rounding_salts)
     ctx.buffer_key = buffer_key
     ctx.activation_clamp = activation_clamp
+    ctx.expert_offset = expert_offset
 
 
 def _mega_moe_backward(ctx, grad_y: torch.Tensor):
-    x, topk_idx, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, rounding_seed, rounding_salts = ctx.saved_tensors
     dx, dw1, dw2, dtopk = torch.ops.prime_rl.mega_moe_backward(
-        grad_y, x, topk_idx, topk_weights, gate_up_proj, down_proj, ctx.buffer_key, ctx.activation_clamp
+        grad_y,
+        x,
+        topk_idx,
+        topk_weights,
+        gate_up_proj,
+        down_proj,
+        ctx.buffer_key,
+        ctx.activation_clamp,
+        rounding_seed,
+        rounding_salts,
+        ctx.expert_offset,
     )
-    return dx, None, dtopk, dw1, dw2, None, None
+    return dx, None, dtopk, dw1, dw2, None, None, None, None, None
 
 
 mega_moe_forward_op.register_autograd(_mega_moe_backward, setup_context=_mega_moe_setup_context)
+
+
+def mxfp8_rounding_args(experts) -> tuple[torch.Tensor | None, torch.Tensor | None, int]:
+    """``(seed, salts, expert_offset)`` of the experts' MXFP8 QAT stochastic weight rounding (``setup_fp8_rounding``),
+    or no rounding: the L1 parameters' salts (``gate_up_proj``, or ``gate_proj`` and ``up_proj``) then ``down_proj``'s."""
+    state = getattr(experts, "fp8_rounding", None)
+    if state is None:
+        return None, None, 0
+    return state.seed, experts.mega_rounding_salts, experts.fp8_expert_offset
 
 
 def _activation_clamp(activation: type[Activation] | Activation) -> float | None:
@@ -536,7 +654,9 @@ class MegaMoEExpertCompute:
         max_tokens_per_rank: int,
         num_sms: int,
         precision: MegaMoePrecision = "bf16",
+        stochastic_rounding: bool = False,
     ) -> None:
+        self.stochastic_rounding = stochastic_rounding
         if not mega_moe_available(precision):
             kernels = " and ".join(f"`{name}`" for name in _REQUIRED_KERNELS[precision])
             raise RuntimeError(
@@ -606,4 +726,5 @@ class MegaMoEExpertCompute:
             to_local(experts.down_proj),
             self.buffer_key,
             _activation_clamp(experts.activation),
+            *mxfp8_rounding_args(experts),
         )

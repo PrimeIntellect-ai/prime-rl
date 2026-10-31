@@ -80,9 +80,8 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
-def _resolve_mega_moe_compute(
-    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup, dp_replicate: int
-) -> FusedDispatchExpertCompute:
+def _resolve_mega_moe_compute(moe: MoE, config: ModelConfig, group: ProcessGroup) -> FusedDispatchExpertCompute:
+    dispatch, compute = config.moe.dispatch, config.moe.compute
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
             "Mega MoE dispatch needs `model.moe.dispatch.max_tokens_per_rank`; the trainer configs derive it from "
@@ -95,7 +94,12 @@ def _resolve_mega_moe_compute(
         intermediate_hidden=moe.experts.hidden_dim,
         group=group,
         max_tokens_per_rank=dispatch.max_tokens_per_rank,
-        num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(dp_replicate)),
+        num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(config.dp_replicate)),
+        # `mxfp8_qat` rounds the expert weights as the MXFP8 QAT compute config asks
+        stochastic_rounding=dispatch.precision == "mxfp8_qat"
+        and isinstance(compute, MXFP8MoEComputeConfig)
+        and compute.qat
+        and compute.stochastic_rounding,
     )
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
@@ -134,7 +138,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
         selected_moes = set(moe_layers)
-        selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group(), config.dp_replicate)
+        selected_compute = _resolve_mega_moe_compute(moe_layers[0], config, ep_mesh.get_group())
     else:
         selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
 

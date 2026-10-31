@@ -14,15 +14,16 @@ import torch
 from torch.distributed import ProcessGroup
 
 from prime_rl.configs.trainer import LLEPConfig
-from prime_rl.trainer.models.kernels.mega_moe_mxfp8 import mx_cast, pack_ue8m0_k_major
 from prime_rl.trainer.models.layers.expert_compute import to_local
 from prime_rl.trainer.models.layers.mega_moe import (
-    MegaMoeMXFP8ExpertWeights,
     _activation_clamp,
     _dw_dtype,
     check_mega_moe_dims,
     mega_moe_available,
+    mxfp8_qat_forward_weights,
     mxfp8_rounded_weights,
+    mxfp8_rounding_args,
+    qat_cast_tokens,
 )
 
 if TYPE_CHECKING:
@@ -60,22 +61,34 @@ def llep_mega_moe_forward_op(
     down_proj: torch.Tensor,
     state_key: int,
     activation_clamp: float | None = None,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
 ) -> torch.Tensor:
     state = _STATES[state_key]
     if state.precision == "bf16":
         return state.forward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
     # MXFP8: each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
-    weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False)
-    x_fp8, x_sf = mx_cast(x.to(torch.bfloat16).contiguous(), along_rows=False)
-    y = state.forward_mxfp8(
-        x_fp8, pack_ue8m0_k_major(x_sf), vids, foreign, plan_id, topk_weights, weights.l1, weights.l2, activation_clamp
-    )
+    weights = mxfp8_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    x_fp8, x_sf = qat_cast_tokens(x.to(torch.bfloat16).contiguous())
+    y = state.forward_mxfp8(x_fp8, x_sf, vids, foreign, plan_id, topk_weights, weights.l1, weights.l2, activation_clamp)
     return y.to(x.dtype)
 
 
 @llep_mega_moe_forward_op.register_fake
 def _llep_mega_moe_forward_fake(
-    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, state_key, activation_clamp=None
+    x,
+    vids,
+    foreign,
+    plan_id,
+    topk_weights,
+    gate_up_proj,
+    down_proj,
+    state_key,
+    activation_clamp=None,
+    rounding_seed=None,
+    rounding_salts=None,
+    expert_offset=0,
 ):
     return torch.empty_like(x)
 
@@ -92,12 +105,17 @@ def llep_mega_moe_backward_op(
     down_proj: torch.Tensor,
     state_key: int,
     activation_clamp: float | None = None,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salts: torch.Tensor | None = None,
+    expert_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     state = _STATES[state_key]
     if state.precision == "bf16":
         return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
     # MXFP8 QAT: a bf16 backward on the weights the forward computed with (re-quantized, so bitwise the same)
-    gate_up, down = mxfp8_rounded_weights(MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False))
+    gate_up, down = mxfp8_rounded_weights(
+        mxfp8_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    )
     return state.backward(
         dy, x, vids, foreign, plan_id, topk_weights, gate_up, down, activation_clamp, _dw_dtype(gate_up_proj)
     )
@@ -105,7 +123,19 @@ def llep_mega_moe_backward_op(
 
 @llep_mega_moe_backward_op.register_fake
 def _llep_mega_moe_backward_fake(
-    dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, state_key, activation_clamp=None
+    dy,
+    x,
+    vids,
+    foreign,
+    plan_id,
+    topk_weights,
+    gate_up_proj,
+    down_proj,
+    state_key,
+    activation_clamp=None,
+    rounding_seed=None,
+    rounding_salts=None,
+    expert_offset=0,
 ):
     return (
         torch.empty_like(x),
@@ -116,18 +146,46 @@ def _llep_mega_moe_backward_fake(
 
 
 def _setup_context(ctx, inputs, output) -> None:
-    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, state_key, activation_clamp = inputs
-    ctx.save_for_backward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj)
+    (
+        x,
+        vids,
+        foreign,
+        plan_id,
+        topk_weights,
+        gate_up_proj,
+        down_proj,
+        state_key,
+        activation_clamp,
+        rounding_seed,
+        rounding_salts,
+        expert_offset,
+    ) = inputs
+    ctx.save_for_backward(
+        x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, rounding_seed, rounding_salts
+    )
     ctx.state_key = state_key
     ctx.activation_clamp = activation_clamp
+    ctx.expert_offset = expert_offset
 
 
 def _backward(ctx, grad_y):
-    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
+    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, rounding_seed, rounding_salts = ctx.saved_tensors
     dx, dtopk, dw1, dw2 = torch.ops.prime_rl.llep_mega_moe_backward(
-        grad_y, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, ctx.state_key, ctx.activation_clamp
+        grad_y,
+        x,
+        vids,
+        foreign,
+        plan_id,
+        topk_weights,
+        gate_up_proj,
+        down_proj,
+        ctx.state_key,
+        ctx.activation_clamp,
+        rounding_seed,
+        rounding_salts,
+        ctx.expert_offset,
     )
-    return dx, None, None, None, dtopk.to(topk_weights.dtype), dw1, dw2, None, None
+    return dx, None, None, None, dtopk.to(topk_weights.dtype), dw1, dw2, None, None, None, None, None
 
 
 llep_mega_moe_forward_op.register_autograd(_backward, setup_context=_setup_context)
@@ -147,7 +205,9 @@ class LLEPMegaMoEExpertCompute:
         num_sms: int,
         options: LLEPConfig,
         precision: str = "bf16",
+        stochastic_rounding: bool = False,
     ) -> None:
+        self.stochastic_rounding = stochastic_rounding
         major = 9 if precision == "bf16" else 10
         if precision not in ("bf16", "mxfp8_qat"):
             raise ValueError(f"LLEP Mega MoE supports precision 'bf16' and 'mxfp8_qat', got {precision!r}.")
@@ -227,4 +287,5 @@ class LLEPMegaMoEExpertCompute:
             to_local(experts.down_proj),
             self.state_key,
             _activation_clamp(experts.activation),
+            *mxfp8_rounding_args(experts),
         )

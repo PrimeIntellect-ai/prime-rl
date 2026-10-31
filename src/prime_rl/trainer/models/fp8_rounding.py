@@ -23,17 +23,14 @@ class FP8RoundingState:
 
 def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
-    from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute, MXFP8QATLinear
+    from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATLinear
 
     state = None
     parameter_names = {id(parameter): name for name, parameter in model.named_parameters()}
     for module in model.modules():
         dense = isinstance(module, MXFP8QATLinear) and module.stochastic_rounding
-        grouped = (
-            isinstance(module, GroupedExperts)
-            and isinstance(module.compute, MXFP8QATExpertCompute)
-            and module.compute.stochastic_rounding
-        )
+        # Mega MoE `mxfp8_qat` expert computes carry the same flag
+        grouped = isinstance(module, GroupedExperts) and getattr(module.compute, "stochastic_rounding", False)
         if not (dense or grouped):
             continue
         if state is None:
@@ -54,6 +51,10 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
             }
             if not hasattr(module, "fp8_expert_offset"):
                 module.fp8_expert_offset = 0
+            # The Mega MoE kernels take the L1 parameters' salts then the down projection's in one tensor
+            names = (["gate_up_proj"] if module.gate_up_proj is not None else ["gate_proj", "up_proj"]) + ["down_proj"]
+            if all(name in module.rounding_salts for name in names):
+                module.mega_rounding_salts = torch.stack([module.rounding_salts[name] for name in names])
     model.fp8_rounding = state
 
 

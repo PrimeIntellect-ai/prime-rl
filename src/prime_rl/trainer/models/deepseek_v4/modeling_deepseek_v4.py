@@ -30,7 +30,6 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
-
 # Experiment instrumentation: when a list, the eager layer loop records (layer, start, end) CUDA events of each forward
 LAYER_TIMING: list | None = None
 
