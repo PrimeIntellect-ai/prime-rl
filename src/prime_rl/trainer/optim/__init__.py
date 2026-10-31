@@ -1,15 +1,19 @@
+from collections import defaultdict
+
 import torch
 import torch.distributed as dist
-from dion import Muon
+from fla.modules import FusedRMSNormGated
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
+from prime_rl.configs.trainer import MuonConfig, MuonHeadsConfig, OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -19,6 +23,9 @@ from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+
+# Normalization layers: prime-rl's own (``Norm``) and the ones our models use from torch and fla
+NORMS = (Norm, nn.LayerNorm, nn.RMSNorm, FusedRMSNormGated)
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
@@ -136,100 +143,22 @@ def _create_optimizer(
 
 
 def _create_muon_optimizer(
-    config: OptimizerConfig,
+    config: MuonConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
-    ngram_table_params = set()
-    if model is not None:
-        ngram_table_params = {
-            p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()
-        }
-
-    def muon_enabled(n, p):
-        if p.ndim < 2:
-            return False
-        if "lm_head" in n:
-            return False
-        if "embed_tokens" in n:
-            return False
-        if p in ngram_table_params:
-            return False
-        # Expert biases should not go to Muon (and would also raise under EP).
-        if "mlp.experts" in n and n.endswith("_bias"):
-            return False
-        return True
-
-    muon_params = []
-    expert_params = []
-    router_params = []
-    adamw_params = []
-    for n, p in named_params:
-        if p.requires_grad and muon_enabled(n, p):
-            if "mlp.experts" in n:
-                expert_params.append(p)
-            elif "mlp.router" in n:
-                router_params.append(p)
-            else:
-                muon_params.append(p)
-        elif p.requires_grad:
-            adamw_params.append(p)
-        else:
-            pass
-
-    param_groups = []
-
-    param_groups.append(
-        dict(params=muon_params, algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
-    )
-    if expert_params:
-        experts_mesh_name = None
-        if parallel_dims.ep_enabled:
-            experts_mesh_name = "dp_shard_mod_ep"
-        param_groups.append(
-            dict(
-                params=expert_params,
-                algorithm="muon",
-                lr=lr,
-                weight_decay=config.weight_decay,
-                adjust_lr="rms_norm",
-                distributed_mesh_name=experts_mesh_name,
-            )
-        )
-    if router_params:
-        param_groups.append(
-            dict(
-                params=router_params,
-                algorithm="muon",
-                lr=lr,
-                weight_decay=config.weight_decay,
-                adjust_lr="rms_norm",
-            )
-        )
-
-    param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
+    param_groups = muon_param_groups(config, named_params, model, lr, parallel_dims.ep_enabled)
 
     if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
         distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
     else:
         distributed_mesh = parallel_dims.world_mesh
 
-    # Runtime fusions pack several logical matrices into one physical parameter. Muon
-    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
-    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
-    matrix_partitions = {}
-    if model is not None:
-        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        for packed_info in get_model_packed_parameters(model):
-            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
-            if partitions is not None and packed_info.parameter in muon_params:
-                matrix_partitions[packed_info.parameter] = partitions
-
     optimizer = Muon(
         params=param_groups,
-        matrix_partitions=matrix_partitions,
+        matrix_partitions={} if model is None else muon_matrix_partitions(model, param_groups, config.heads),
         lr=lr,
         mu=config.mu,
         nesterov=config.nesterov,
@@ -237,6 +166,10 @@ def _create_muon_optimizer(
         epsilon=config.eps,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
+        update_rms=config.update_rms,
+        variant=config.variant.type,
+        bf16_momentum=config.variant.type == "dimuon" and config.variant.bf16_momentum,
+        newton_schulz_func=NEWTON_SCHULZ[config.newton_schulz],
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
@@ -244,6 +177,104 @@ def _create_muon_optimizer(
     # Keep both warm-ups after Muon construction and before its first step. The
     # main and expert groups establish independent NCCL peer connections.
     _warmup_muon_mesh(distributed_mesh)
-    if expert_params and parallel_dims.ep_enabled:
+    if any(group.get("distributed_mesh_name") for group in param_groups):
         _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer
+
+
+def muon_param_groups(
+    config: MuonConfig,
+    named_params: list[tuple[str, nn.Parameter]],
+    model: nn.Module | None,
+    lr: float,
+    ep_enabled: bool,
+) -> list[dict]:
+    ngram_table_params = set()
+    norm_params = set()
+    if model is not None:
+        ngram_table_params = {
+            p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()
+        }
+        norm_params = {p for module in model.modules() if isinstance(module, NORMS) for p in module.parameters()}
+
+    def is_embedding(n, p):
+        return "lm_head" in n or "embed_tokens" in n or p in ngram_table_params
+
+    def muon_enabled(n, p):
+        if p.ndim < 2:
+            return False
+        if is_embedding(n, p):
+            return False
+        # Expert biases should not go to Muon (and would also raise under EP).
+        if "mlp.experts" in n and n.endswith("_bias"):
+            return False
+        return True
+
+    def decayed(n, p):
+        return config.decay_bias_and_scales or not (n.endswith("bias") or (p.ndim < 2 and p not in norm_params))
+
+    def route(n, p):
+        if config.embeddings is not None and is_embedding(n, p):
+            return "ngram" if p in ngram_table_params else "embeddings"
+        if muon_enabled(n, p):
+            return "experts" if "mlp.experts" in n else "router" if "mlp.router" in n else "muon"
+        return "adamw" if decayed(n, p) else "no_decay"
+
+    routed = defaultdict(list)
+    for n, p in named_params:
+        if p.requires_grad:
+            routed[route(n, p)].append(p)
+
+    muon = dict(algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
+    groups = {
+        "muon": muon,
+        "experts": dict(muon, distributed_mesh_name="dp_shard_mod_ep" if ep_enabled else None),
+        "router": muon,
+        "adamw": dict(algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
+        "no_decay": dict(algorithm="adamw", lr=lr, weight_decay=0.0),
+    }
+    if config.embeddings is not None:
+        e = config.embeddings
+        sinkhorn = dict(algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=e.tau, iters=e.iters)
+        groups |= {"embeddings": dict(sinkhorn, lr_scale=1.0), "ngram": dict(sinkhorn, lr_scale=e.ngram_lr_scale)}
+    # The main Muon and AdamW groups always exist, even if empty
+    return [dict(params=routed[k], **g) for k, g in groups.items() if routed[k] or k in ("muon", "adamw")]
+
+
+def muon_matrix_partitions(
+    model: nn.Module, param_groups: list[dict], heads: MuonHeadsConfig | None
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    # Runtime fusions pack several logical matrices into one physical parameter. Muon
+    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
+    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
+    muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+    matrix_partitions = {}
+    for packed_info in get_model_packed_parameters(model):
+        partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+        if partitions is not None and packed_info.parameter in muon_params:
+            matrix_partitions[packed_info.parameter] = partitions
+    if heads is not None:
+        matrix_partitions |= muon_head_partitions(model, muon_params, heads)
+    return matrix_partitions
+
+
+def muon_head_partitions(
+    model: nn.Module, muon_params: set[nn.Parameter], heads: MuonHeadsConfig
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads``).
+
+    Each attention module returns its own parameters, partitioned or ``None`` to stay whole, and must account for
+    every Muon parameter it owns. Head partitions refine the packed ``qkv_proj`` partitions, since each head block
+    lies inside one of q, k, v."""
+    partitions = {}
+    for name, module in model.named_modules():
+        if not hasattr(module, "muon_head_partitions"):
+            if name.endswith("self_attn"):
+                raise NotImplementedError(f"optim.heads does not support {type(module).__name__} ({name})")
+            continue
+        module_partitions = module.muon_head_partitions(heads.per_block, heads.split_values)
+        missed = [n for n, p in module.named_parameters() if p in muon_params and p not in module_partitions]
+        if missed:
+            raise ValueError(f"{type(module).__name__} ({name}) does not partition or keep whole: {missed}")
+        partitions |= {p: sizes for p, sizes in module_partitions.items() if sizes is not None and p in muon_params}
+    return partitions

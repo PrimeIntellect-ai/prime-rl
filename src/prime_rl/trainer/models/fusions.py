@@ -201,6 +201,16 @@ def write_back_loaded_packed_parameters(model: nn.Module, state_dict: dict[str, 
             )
 
 
+def packs_like(spec: PackedParameterSpec, value: Any, reference: torch.Tensor) -> bool:
+    """Whether an optimizer state value is packed like ``reference``: a tensor of its rank and of its size along the
+    packing dimension. Besides state shaped like the parameter, this covers per-row state such as Muown's row norms."""
+    return (
+        isinstance(value, torch.Tensor)
+        and value.ndim == reference.ndim
+        and value.shape[spec.dim] == reference.shape[spec.dim]
+    )
+
+
 def split_packed_optimizer_state_for_checkpoint(model: nn.Module, state_dict: dict[str, Any]) -> dict[str, Any]:
     """Expose packed optimizer tensors under their logical names for DCP."""
     # DCP returns {} when no optimizers are supplied, including model-only loads.
@@ -221,7 +231,7 @@ def split_packed_optimizer_state_for_checkpoint(model: nn.Module, state_dict: di
             packed_param_state = checkpoint_state_dict["state"].pop(packed_info.fqn)
             logical_param_states: dict[str, dict[str, Any]] = {fqn: {} for fqn in packed_info.logical_fqns}
             for state_key, value in packed_param_state.items():
-                if isinstance(value, torch.Tensor) and value.shape == packed_info.parameter.shape:
+                if packs_like(packed_info.spec, value, packed_info.parameter):
                     for fqn, logical_view in zip(
                         packed_info.logical_fqns, packed_info.spec.split_into_logical_views(value)
                     ):
@@ -254,7 +264,7 @@ def write_back_loaded_packed_optimizer_state(
                 logical_param_states = [checkpoint_state_dict["state"][fqn] for fqn in packed_info.logical_fqns]
                 for state_key, value in state.items():
                     loaded_value = logical_param_states[0][state_key]
-                    if isinstance(value, torch.Tensor) and value.shape == packed_info.parameter.shape:
+                    if packs_like(packed_info.spec, value, packed_info.parameter):
                         loaded_value = packed_info.spec.pack_logical_tensors(
                             [logical_param_state[state_key] for logical_param_state in logical_param_states]
                         )
@@ -288,7 +298,7 @@ def join_loaded_optimizer_state_for_runtime(
             logical_param_states = [checkpoint_state_dict["state"][fqn] for fqn in packed_info.logical_fqns]
             first_logical_view = packed_info.spec.split_into_logical_views(packed_info.parameter)[0]
             for state_key, value in logical_param_states[0].items():
-                if isinstance(value, torch.Tensor) and value.shape == first_logical_view.shape:
+                if packs_like(packed_info.spec, value, first_logical_view):
                     with torch.no_grad():
                         packed_param_state[state_key].copy_(
                             packed_info.spec.pack_logical_tensors(

@@ -464,6 +464,54 @@ class AdamWConfig(BaseOptimizerConfig):
     """Adam epsilon, added to the denominator of the update."""
 
 
+class MuonHeadsConfig(BaseConfig):
+    """Per-head Muon: orthogonalize attention projections that hold heads along their rows in blocks of heads, each block on its own: query/key/value (GQA key/value by their own heads), per-channel output gates, the MLA up-projections ``q_b_proj`` and ``kv_b_proj``, and DeepSeek-V4's grouped ``o_a_proj`` by its groups. Other output projections (heads along columns) and latent projections stay whole."""
+
+    per_block: int = Field(1, ge=1)
+    """Heads per block (``1`` = per head). At ``1``, matrices packed in one head ([query; gate], MLA [W_UK; W_UV]) are split too."""
+
+    split_values: bool = True
+    """Split value projections by head too. If False, only queries and keys (and output gates) are split, as in DeepSeek-V4.1: value projections stay whole, and so does MLA ``kv_b_proj``, which holds keys and values per head."""
+
+
+class SinkhornConfig(BaseConfig):
+    """Nesterov momentum with Sinkhorn balancing (DeepSeek-V4.1, Algorithm 1), no weight decay, one momentum buffer per parameter."""
+
+    iters: int = Field(11, ge=1)
+    """Alternating row/column L2 normalizations. Must be odd, so the last one normalizes rows."""
+
+    tau: float = Field(1e-3, ge=0)
+    """Rows of the update whose L2 norm is at most ``tau`` times the mean row norm are zeroed."""
+
+    ngram_lr_scale: float = Field(1.0, gt=0)
+    """Learning-rate multiplier for n-gram tables (DeepSeek-V4.1 uses 5 for Engram). Applied in the optimizer step, so it holds through the learning-rate schedule."""
+
+    @model_validator(mode="after")
+    def iters_odd(self):
+        if self.iters % 2 == 0:
+            raise ValueError(f"optim.embeddings.iters must be odd, got {self.iters}")
+        return self
+
+
+class MuonVariantConfig(BaseConfig):
+    type: Literal["muon"] = "muon"
+
+
+class DimuonVariantConfig(BaseConfig):
+    """Dimuon, Tinker's optimizer (github.com/anpaure/dimuon): EMA momentum with ``mu`` (Nesterov if ``nesterov``), diagonal row/column conditioning from the previous momentum around 5 Polar Express steps in fp16, and a fixed update norm: each matrix's update has RMS ``update_rms`` (instead of Tinker's LoRA-rank rule). Tinker: ``mu = 0.9``, ``nesterov = false``, ``weight_decay = 0``."""
+
+    type: Literal["dimuon"] = "dimuon"
+
+    bf16_momentum: bool = False
+    """Keep the momentum in bf16 between steps, rounded after its use (as Tinker)."""
+
+
+class MuownVariantConfig(BaseConfig):
+    """Muown (arXiv 2605.10797), used by MiMo-V2.6: W = diag(g) · R with unit-norm rows of R. Muon updates the direction and Adam (``betas1``, ``betas2``, ``eps``) the row norms g, with the same lr."""
+
+    type: Literal["muown"] = "muown"
+
+
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
 
@@ -481,6 +529,32 @@ class MuonConfig(BaseOptimizerConfig):
 
     eps: float = Field(1e-8, gt=0)
     """Epsilon for the AdamW sub-optimizer used on non-Muon params."""
+
+    update_rms: float = Field(0.2, gt=0)
+    """RMS of each Muon update matrix (and the Sinkhorn learning-rate correction), so Muon reuses the AdamW learning rate. Applied in the optimizer step, so it holds through the learning-rate schedule. DeepSeek-V4.1 uses 0.18."""
+
+    newton_schulz: Literal["default", "deepseek_v4", "polar_express", "step3p5"] = "default"
+    """Newton-Schulz schedule. ``default``: dion's 5 steps. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1. ``polar_express``: 5 steps of Polar Express (arXiv 2505.16932) in bf16, with its 1.01 safety factor. ``step3p5``: 6 Polar Express steps in fp16, as in Step 3.5 Flash."""
+
+    decay_bias_and_scales: bool = True
+    """If False, AdamW parameters that are biases (named ``*bias``) or are 1-D and not owned by a normalization layer, such as scaling factors, gates and attention sinks, get no weight decay. Normalization weights are still decayed (DeepSeek-V4.1)."""
+
+    heads: MuonHeadsConfig | None = None
+    """Per-head Muon. If None, each projection is one matrix."""
+
+    embeddings: SinkhornConfig | None = None
+    """Sinkhorn update for the token embeddings, the LM head and n-gram tables. If None, they use AdamW."""
+
+    variant: Annotated[MuonVariantConfig | DimuonVariantConfig | MuownVariantConfig, Field(discriminator="type")] = (
+        MuonVariantConfig()
+    )
+    """Update rule for the Muon parameters."""
+
+    @model_validator(mode="after")
+    def dimuon_newton_schulz(self):
+        if self.variant.type == "dimuon" and self.newton_schulz != "default":
+            raise ValueError("optim.variant.type = 'dimuon' has its own Polar Express: unset newton_schulz")
+        return self
 
 
 class SignSGDConfig(BaseOptimizerConfig):
@@ -662,6 +736,12 @@ class BaseTrainerConfig(BaseConfig):
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
+        return self
+
+    @model_validator(mode="after")
+    def muon_heads_incompatible_with_lora(self):
+        if self.model.lora is not None and self.optim.type == "muon" and self.optim.heads is not None:
+            raise ValueError("optim.heads is incompatible with LoRA: the adapters are not split by head")
         return self
 
     @model_validator(mode="after")

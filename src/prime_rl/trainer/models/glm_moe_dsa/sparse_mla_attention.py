@@ -7,7 +7,7 @@ from torch import nn
 from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
-from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
+from prime_rl.trainer.models.layers.attn import head_partitions, quadratic_attention_flops
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -157,6 +157,22 @@ class GlmMoeDsaAttention(nn.Module):
             )
 
         self.cp_context = CPContext()
+
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        # The down-projections are latent, and o_proj holds its heads along the columns
+        return {
+            self.q_b_proj.weight: head_partitions(self.num_heads, (self.qk_head_dim,), heads_per_block),
+            self.kv_b_proj.weight: head_partitions(
+                self.num_heads, (self.qk_nope_head_dim, self.v_head_dim), heads_per_block
+            )
+            if split_values
+            else None,
+            self.q_a_proj.weight: None,
+            self.kv_a_proj_with_mqa.weight: None,
+            self.o_proj.weight: None,
+        }
 
     def attention_flops(self, seq_len: int) -> int:
         # MLA counted un-absorbed (qk = nope + rope); sparse attention attends `index_topk` tokens, and

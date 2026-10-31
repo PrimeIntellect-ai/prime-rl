@@ -4,15 +4,16 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 from prime_rl.trainer.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerConfig, MuseGlimmerTextConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-class MuseGlimmerRMSNorm(nn.Module):
+class MuseGlimmerRMSNorm(Norm):
     """RMSNorm computed in fp32 and cast back to the input dtype.
 
     Without `dim` the norm has no weight (QK-norm and the token-embedding norm). Decoder-layer norms
@@ -68,6 +69,13 @@ class MuseGlimmerAttention(FlashAttention):
         self.qk_norm = MuseGlimmerRMSNorm(eps=config.rms_norm_eps)
         self.query_scale = config.query_scale
         self.gate_proj = nn.Linear(config.hidden_size, config.num_attention_heads * config.head_dim, bias=False)
+
+    def muon_head_partitions(
+        self, heads_per_block: int, split_values: bool
+    ) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = super().muon_head_partitions(heads_per_block, split_values)
+        partitions[self.gate_proj.weight] = head_partitions(self.num_heads, (self.head_dim,), heads_per_block)
+        return partitions
 
     def forward(
         self,
