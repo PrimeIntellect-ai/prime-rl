@@ -548,6 +548,7 @@ class DeepseekV4Indexer(nn.Module):
             entry_stop,
             self.index_topk,
             amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
+            cp_group_name=cp_group.group_name if cp_world_size > 1 else None,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT

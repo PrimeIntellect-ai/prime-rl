@@ -269,6 +269,10 @@ Full multi-node configs ship under [`examples/advanced/`](https://github.com/Pri
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
 
+### ModelExpress weight broadcast
+
+See [ModelExpress](model-express.md) for the `modelexpress` weight transport.
+
 ### NIXL weight broadcast
 
 Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. Before the first SLURM run, install the NIXL/UCX build and the ModelExpress service binaries on the shared filesystem:

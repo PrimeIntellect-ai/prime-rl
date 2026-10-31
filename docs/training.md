@@ -394,7 +394,7 @@ Only these fields are live; every other field is frozen:
 | `eval.source[*].interval` | Changes eval cadence from the next policy update. |
 | `train.source[*].algo.length_penalty` | Changes a GRPO source's length penalty: its weights, its type, or turning it on (a config) or off (`null`). It applies to every group scored from the next step on, including groups already running, since a group is scored when its last rollout finishes. Set it per source: the group-level `train.algo` is only a default for the sources and is frozen. |
 
-Frozen fields include the model, tokenizer, renderer, transports, monitors, logging, checkpointing, output directory, padding and the trainer topology, which are fixed at launch. `seq_len` and `max_steps` are frozen because the trainer depends on them. Group sizes, algorithms (except the length penalty), curricula, eval sampling and task selection are frozen, as are adding, removing, renaming or reordering sources and turning eval on or off. In the config, a live field is marked `Field(json_schema_extra=LIVE)` (from `prime_rl.configs.diff`); every other field is frozen.
+Frozen fields include the model, tokenizer, renderer, transports, monitors, logging, checkpointing, output directory, padding and the trainer topology, which are fixed at launch. `seq_len` and `max_steps` are frozen because the trainer depends on them. Group sizes, algorithms (except the length penalty), curricula, eval sampling and task selection are frozen, as are adding, removing, renaming or reordering sources and turning eval on or off. In the config, a live field is annotated with `Annotated[T, Live()]` (from `prime_rl.configs.diff`); every other field is frozen.
 
 ### Exporting Checkpoints
 
