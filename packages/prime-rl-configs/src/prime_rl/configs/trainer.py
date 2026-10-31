@@ -252,9 +252,10 @@ class LLEPConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
+    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -269,12 +270,13 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` on SM90."""
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
+    ``"mxfp8_qat"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision != "bf16":
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision = 'bf16'.")
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
+            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
         return self
 
     @model_validator(mode="after")
