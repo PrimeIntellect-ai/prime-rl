@@ -26,6 +26,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     BF16ExpertCompute,
     DeepGemmFP8ExpertCompute,
     ExpertCompute,
+    FusedDispatchExpertCompute,
     MXFP8ExpertCompute,
 )
 from prime_rl.trainer.models.layers.mega_moe import (
@@ -77,13 +78,13 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
 
 def _resolve_mega_moe_compute(
     moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup, dp_replicate: int
-) -> MegaMoEExpertCompute:
+) -> FusedDispatchExpertCompute:
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
             "Mega MoE dispatch needs `model.moe.dispatch.max_tokens_per_rank`; the trainer configs derive it from "
             "the micro batch and model.cp, set it explicitly when configuring the model on its own."
         )
-    return MegaMoEExpertCompute(
+    kwargs = dict(
         num_experts=moe.experts.num_experts,
         top_k=moe.router.top_k,
         hidden=moe.experts.down_proj.shape[1],
@@ -91,8 +92,12 @@ def _resolve_mega_moe_compute(
         group=group,
         max_tokens_per_rank=dispatch.max_tokens_per_rank,
         num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(dp_replicate)),
-        precision=dispatch.precision,
     )
+    if dispatch.llep is not None:
+        from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
+
+        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep)
+    return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision)
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:

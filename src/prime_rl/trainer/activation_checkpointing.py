@@ -72,6 +72,8 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "prime_rl::fp8_blockwise_bmm",
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::mega_moe_forward",
+        "prime_rl::llep_mega_moe_forward",
+        "prime_rl::llep_plan",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",
         "quack::gemm_act_out",

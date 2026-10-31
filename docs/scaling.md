@@ -121,6 +121,18 @@ CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 ```
 
+With `[trainer.model.moe.dispatch.llep]`, bf16 Mega MoE on SM90 runs least-loaded expert parallelism ([LLEP](https://arxiv.org/abs/2601.17111)): when routing overloads a rank's experts, some of their routes are computed on the least-loaded ranks, which receive a copy of those experts' weights over NVLink. Every rank plans on the GPU from all ranks' per-expert counts (no host sync, no recompiles as the routing changes), and the weight copies overlap with the expert computation. Outputs are bitwise identical to plain Mega MoE and expert gradients are as accurate. Because the plan bounds what a rank receives, the symmetric buffers are about 3x smaller than plain Mega MoE's; `chunk_tokens` runs long sequences in several calls over a buffer sized for one chunk. It needs the prime-mega-moe build with LLEP support.
+
+```toml
+[trainer.model.moe.dispatch.llep]
+alpha = 1.05       # a rank is full at alpha x the mean routes per rank
+min_chunk = 1024   # fewest routes worth copying an expert's weights for
+lam = 1.1          # below this busiest/mean rank load, nothing moves
+max_foreign = 8    # experts a rank can compute for others (weights + fp32 gradients of memory each)
+max_recv = 2.0     # routes a rank's buffers hold, as a multiple of its own routes
+chunk_tokens = 16384  # optional: tokens per rank per kernel call (long sequences)
+```
+
 ### Context Parallelism
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded and all-gather their keys instead, which needs no head sharding.

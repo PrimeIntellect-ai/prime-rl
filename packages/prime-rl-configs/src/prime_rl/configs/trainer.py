@@ -218,6 +218,38 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class LLEPConfig(BaseConfig):
+    """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
+    part of their routes, with a copy of the experts' weights, to the least-loaded ranks. The computation stays exact."""
+
+    alpha: float = Field(1.05, ge=1.0)
+    """A rank counts as full at ``alpha`` times the mean routes per rank."""
+
+    min_chunk: int = Field(1024, ge=1)
+    """Fewest routes worth copying an expert's weights to another rank."""
+
+    lam: float = Field(1.1, ge=0.0)
+    """Below this busiest-rank over mean-rank load, every expert stays on its own rank (standard EP)."""
+
+    max_foreign: int = Field(8, ge=1)
+    """Experts a rank can compute for other ranks; each costs one expert's weights (and gradients) of memory."""
+
+    chunk_tokens: int | None = Field(None, ge=1)
+    """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
+    instead of the whole batch (for long sequences). ``None``: one call per layer."""
+
+    max_recv: float = Field(2.0, gt=0.0)
+    """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
+    every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
+    reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""
+
+    @model_validator(mode="after")
+    def validate_max_recv(self):
+        if self.max_recv < max(self.alpha, self.lam):
+            raise ValueError("model.moe.dispatch.llep.max_recv must be at least max(alpha, lam).")
+        return self
+
+
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
     precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
@@ -234,6 +266,15 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
     this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+
+    llep: LLEPConfig | None = None
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` on SM90."""
+
+    @model_validator(mode="after")
+    def validate_llep_precision(self):
+        if self.llep is not None and self.precision != "bf16":
+            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision = 'bf16'.")
+        return self
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:
