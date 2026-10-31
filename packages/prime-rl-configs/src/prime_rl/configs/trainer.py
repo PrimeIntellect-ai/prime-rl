@@ -1,13 +1,14 @@
 import re
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    CallableConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -532,14 +533,11 @@ class CISPOLossConfig(BaseConfig):
     """Temperature for the advantage term."""
 
 
-class CustomLossConfig(BaseConfig):
+class CustomLossConfig(CallableConfig):
+    """A custom loss function, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.rl.loss.LossInputs``
+    and returning a ``LossOutputs``."""
+
     type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the loss function (e.g. ``my_module.my_loss``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the loss function."""
 
 
 LossConfig: TypeAlias = Annotated[

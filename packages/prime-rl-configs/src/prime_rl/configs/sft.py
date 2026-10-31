@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
@@ -13,6 +13,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
+    CallableConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -163,16 +164,10 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-class SFTCustomLossConfig(BaseConfig):
+class SFTCustomLossConfig(CallableConfig):
     """A custom SFT loss: a function computed from the backbone's final hidden states, in place of token
-    cross-entropy."""
-
-    import_path: str
-    """Import path to the loss function (e.g. ``my_module.my_loss``), called as ``my_loss(inputs, **kwargs)`` with a
-    ``prime_rl.trainer.sft.loss.LossInputs`` and returning a ``LossOutputs``."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the loss function."""
+    cross-entropy, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.sft.loss.LossInputs`` and
+    returning a ``LossOutputs``."""
 
 
 class SFTValConfig(BaseConfig):

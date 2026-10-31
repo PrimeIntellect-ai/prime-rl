@@ -34,13 +34,13 @@ count; per-token component weights ship on the wire and the trainer just
 executes them.
 """
 
-from typing import Annotated, Any, ClassVar, Literal, TypeAlias
+from typing import Annotated, ClassVar, Literal, TypeAlias
 
 import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.shared import VLLMClientConfig
+from prime_rl.configs.shared import CallableConfig, VLLMClientConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -127,7 +127,7 @@ class EchoRolesConfig(BaseConfig):
         return self
 
 
-class EchoFilterConfig(BaseConfig):
+class EchoFilterConfig(CallableConfig):
     """User-supplied per-token filter narrowing the role-selected echo tokens.
 
     The callable is imported at startup and invoked once per rollout as
@@ -138,12 +138,6 @@ class EchoFilterConfig(BaseConfig):
     exposes message text and sampling logprobs, so content filters (e.g.
     dropping tool-output warnings) and sampling-probability filters need no
     extra framework surface."""
-
-    import_path: str
-    """Import path to the filter callable (e.g. ``my_module.drop_warnings``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the filter."""
 
 
 # ---------------------------------------------------------------------------
