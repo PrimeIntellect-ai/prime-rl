@@ -54,8 +54,8 @@ def get_vlm_config():
     )
 
 
-def get_model(config, device="cuda"):
-    runtime_config = ModelConfig()
+def get_model(config, device="cuda", attn="auto"):
+    runtime_config = ModelConfig(attn=attn)
     resolve_auto_attn(runtime_config)
     with torch.device(device):
         model = Qwen3_5ForCausalLM.from_config(config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16)
@@ -195,7 +195,7 @@ def test_vlm_meta_device_and_buffer_reinit():
 def test_vlm_ties_lm_head_to_embeddings():
     config = get_vlm_config()
     config.tie_word_embeddings = True
-    model = get_model(config, device="meta")
+    model = get_model(config, device="meta", attn="flash_attention_2")
     assert model.lm_head.weight is model.model.language_model.embed_tokens.weight
 
 
