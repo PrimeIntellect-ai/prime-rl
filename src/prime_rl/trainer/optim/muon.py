@@ -86,38 +86,6 @@ def _norms(U: Tensor, dim: int, groups: list[ProcessGroup]) -> Tensor:
     return _all_reduce(U.square().sum(dim=dim), groups).sqrt()
 
 
-def sinkhorn_update(
-    X: Tensor,
-    G: Tensor,
-    M: Tensor,
-    *,
-    lr: float,
-    momentum: float,
-    update_rms: float,
-    tau: float,
-    epsilon: float,
-    iters: int,
-    shape: tuple[int, int],
-    row_groups: list[ProcessGroup],
-    col_groups: list[ProcessGroup],
-) -> None:
-    """Momentum update with Sinkhorn balancing (DeepSeek-V4.1, Algorithm 1) on local shards of an m x n matrix.
-
-    ``row_groups`` shard the columns (row norms reduce over them), ``col_groups`` shard the rows (column norms and
-    the mean row norm reduce over them)."""
-    M.lerp_(G.to(M.dtype), 1 - momentum)
-    U = G.to(M.dtype).lerp(M, momentum).float()
-    row_norms = _norms(U, 1, row_groups)
-    mean_row_norm = _all_reduce(row_norms.sum(), col_groups) / shape[0]
-    U = U * (row_norms > tau * mean_row_norm).unsqueeze(1)
-    for k in range(iters):
-        if k % 2 == 0:
-            U = U / (_norms(U, 1, row_groups) + epsilon).unsqueeze(1)
-        else:
-            U = U / (_norms(U, 0, col_groups) + epsilon).unsqueeze(0)
-    X.sub_(U.to(X.dtype), alpha=lr * update_rms * math.sqrt(shape[1]))
-
-
 def _segment_reduce(values: Tensor, sizes: list[int], reduce: str) -> Tensor:
     """Sum or max of ``values`` [B, rows, ...] over consecutive row segments of ``sizes``: [B, len(sizes), ...].
     Splits instead of index_add/scatter_reduce, whose CUDA kernels are not deterministic. The max assumes values
@@ -267,20 +235,23 @@ class Muon(dion.Muon):
         yield from self._dion_update(params, to_local(params), G, M, group, weight_decay=group["weight_decay"])
 
     def _sinkhorn(self, p, group):
-        sinkhorn_update(
-            to_local(p),
-            to_local(p.grad),
-            self._momentum(p),
-            lr=group["lr"] * group["lr_scale"],
-            momentum=group["mu"],
-            update_rms=self.update_rms,
-            tau=group["tau"],
-            epsilon=group["epsilon"],
-            iters=group["iters"],
-            shape=tuple(p.shape),
-            row_groups=_shard_groups(p, 1),
-            col_groups=_shard_groups(p, 0),
-        )
+        """Momentum update with Sinkhorn balancing (DeepSeek-V4.1, Algorithm 1) on the local shard of an m x n matrix.
+        Row norms reduce over the mesh dims that shard the columns; column norms and the mean row norm over those
+        that shard the rows."""
+        X, G, M = to_local(p), to_local(p.grad), self._momentum(p)
+        row_groups, col_groups = _shard_groups(p, 1), _shard_groups(p, 0)
+        momentum, epsilon = group["mu"], group["epsilon"]
+        M.lerp_(G.to(M.dtype), 1 - momentum)
+        U = G.to(M.dtype).lerp(M, momentum).float()
+        row_norms = _norms(U, 1, row_groups)
+        mean_row_norm = _all_reduce(row_norms.sum(), col_groups) / p.shape[0]
+        U = U * (row_norms > group["tau"] * mean_row_norm).unsqueeze(1)
+        for k in range(group["iters"]):
+            if k % 2 == 0:
+                U = U / (_norms(U, 1, row_groups) + epsilon).unsqueeze(1)
+            else:
+                U = U / (_norms(U, 0, col_groups) + epsilon).unsqueeze(0)
+        X.sub_(U.to(X.dtype), alpha=group["lr"] * group["lr_scale"] * self.update_rms * math.sqrt(p.shape[1]))
         yield
 
     def _dimuon(self, params, group):
@@ -288,18 +259,17 @@ class Muon(dion.Muon):
         conditioners from the previous momentum around Polar Express, and a fixed update norm, so each matrix's
         update has RMS ``update_rms`` times the lr."""
         beta = group["mu"]
-        shards, conditioners, inputs = [], [], []
+        conditioners, inputs = [], []
         for p in params:
             if p not in self._dimuon_shards:
                 self._dimuon_shards[p] = _DimuonShard(p, self._matrix_partitions.get(p))
             M = self._momentum(p)
-            G = to_local(p.grad).reshape(-1, *M.shape[-2:]).float()
+            G = to_local(p.grad).reshape(math.prod(M.shape[:-2]), *M.shape[-2:]).float()  # shards may be empty
             M_old = M.reshape(G.shape).float()
             L, C = self._dimuon_shards[p].conditioners(M_old, damping=1e-4)
             M_new = M_old.lerp(G, 1 - beta)
             M.copy_(M_new.reshape(M.shape))
             U = G.lerp(M_new, beta) if group["nesterov"] else M_new
-            shards.append(self._dimuon_shards[p])
             conditioners.append((L, C))
             inputs.append((L * U * C).reshape(M.shape))
 
@@ -308,8 +278,9 @@ class Muon(dion.Muon):
         yield from self._dion_update(params, outputs, inputs, zeros, group, orthogonalize_only=True)
 
         lr = group["lr"]
-        for p, shard, (L, C), output in zip(params, shards, conditioners, outputs):
-            D = L * output.reshape(L.shape[0], -1, C.shape[-1]) * C
+        for p, (L, C), output in zip(params, conditioners, outputs):
+            shard = self._dimuon_shards[p]
+            D = L * output.reshape(C.shape) * C
             norm = shard.norms(D)
             target = lr * self.update_rms * (shard.rows[shard.segments].unsqueeze(-1) * shard.n).sqrt()
             X = to_local(p)

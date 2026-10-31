@@ -1,10 +1,12 @@
+from collections import defaultdict
+
 import torch
 import torch.distributed as dist
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import MuonConfig, OffloadMode, OptimizerConfig
+from prime_rl.configs.trainer import MuonConfig, MuonHeadsConfig, OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.ngram import NGramTable
@@ -165,9 +167,7 @@ def _create_muon_optimizer(
             if isinstance(module, GroupedLinear) and module.weight in muon_params:
                 matrix_partitions[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
         if config.heads is not None:
-            matrix_partitions |= muon_head_partitions(
-                model, muon_params, config.heads.per_block, config.heads.split_values
-            )
+            matrix_partitions |= muon_head_partitions(model, muon_params, config.heads)
 
     optimizer = Muon(
         params=param_groups,
@@ -235,54 +235,36 @@ def muon_param_groups(
     def decayed(n, p):
         return config.decay_bias_and_scales or not (n.endswith("bias") or (p.ndim < 2 and p not in norm_params))
 
-    muon_params = []
-    expert_params = []
-    router_params = []
-    adamw_params = []
-    no_decay_params = []
-    embedding_params = []
-    ngram_params = []
-    for n, p in named_params:
-        if not p.requires_grad:
-            continue
+    def route(n, p):
         if config.embeddings.type == "sinkhorn" and is_embedding(n, p):
-            (ngram_params if p in ngram_table_params else embedding_params).append(p)
-        elif muon_enabled(n, p):
-            if "mlp.experts" in n:
-                expert_params.append(p)
-            elif "mlp.router" in n:
-                router_params.append(p)
-            else:
-                muon_params.append(p)
-        elif decayed(n, p):
-            adamw_params.append(p)
-        else:
-            no_decay_params.append(p)
+            return "ngram" if p in ngram_table_params else "embeddings"
+        if muon_enabled(n, p):
+            return "experts" if "mlp.experts" in n else "router" if "mlp.router" in n else "muon"
+        return "adamw" if decayed(n, p) else "no_decay"
 
-    muon_group = dict(algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
-    param_groups = [dict(params=muon_params, **muon_group)]
-    if expert_params:
-        experts_mesh_name = "dp_shard_mod_ep" if ep_enabled else None
-        param_groups.append(dict(params=expert_params, **muon_group, distributed_mesh_name=experts_mesh_name))
-    if router_params:
-        param_groups.append(dict(params=router_params, **muon_group))
+    routed = defaultdict(list)
+    for n, p in named_params:
+        if p.requires_grad:
+            routed[route(n, p)].append(p)
 
-    param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
-    if no_decay_params:
-        param_groups.append(dict(params=no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0))
-
-    if embedding_params or ngram_params:
-        sinkhorn = config.embeddings
-        group = dict(algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=sinkhorn.tau, iters=sinkhorn.iters)
-        if embedding_params:
-            param_groups.append(dict(params=embedding_params, lr_scale=1.0, **group))
-        if ngram_params:
-            param_groups.append(dict(params=ngram_params, lr_scale=sinkhorn.ngram_lr_scale, **group))
-    return param_groups
+    muon = dict(algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
+    groups = {
+        "muon": muon,
+        "experts": dict(muon, distributed_mesh_name="dp_shard_mod_ep" if ep_enabled else None),
+        "router": muon,
+        "adamw": dict(algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
+        "no_decay": dict(algorithm="adamw", lr=lr, weight_decay=0.0),
+    }
+    if config.embeddings.type == "sinkhorn":
+        e = config.embeddings
+        sinkhorn = dict(algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=e.tau, iters=e.iters)
+        groups |= {"embeddings": dict(sinkhorn, lr_scale=1.0), "ngram": dict(sinkhorn, lr_scale=e.ngram_lr_scale)}
+    # The main Muon and AdamW groups always exist, even if empty
+    return [dict(params=routed[k], **g) for k, g in groups.items() if routed[k] or k in ("muon", "adamw")]
 
 
 def muon_head_partitions(
-    model: nn.Module, muon_params: set[nn.Parameter], heads_per_block: int, split_values: bool
+    model: nn.Module, muon_params: set[nn.Parameter], heads: MuonHeadsConfig
 ) -> dict[nn.Parameter, tuple[int, ...]]:
     """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads``).
 
@@ -295,7 +277,7 @@ def muon_head_partitions(
             if name.endswith("self_attn"):
                 raise NotImplementedError(f"optim.heads does not support {type(module).__name__} ({name})")
             continue
-        module_partitions = module.muon_head_partitions(heads_per_block, split_values)
+        module_partitions = module.muon_head_partitions(heads.per_block, heads.split_values)
         missed = [n for n, p in module.named_parameters() if p in muon_params and p not in module_partitions]
         if missed:
             raise ValueError(f"{type(module).__name__} ({name}) does not partition or keep whole: {missed}")

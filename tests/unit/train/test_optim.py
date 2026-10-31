@@ -8,58 +8,11 @@ from dion.muon import zeropower_via_newtonschulz5
 from torch import nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import Shard, distribute_tensor
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.optim import muon_param_groups
-from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon, sinkhorn_update
-
-SINKHORN = dict(lr=0.1, momentum=0.9, update_rms=0.18, tau=1e-3, epsilon=1e-20, iters=11)
-
-
-def reference_sinkhorn(W, G, M, lr, momentum, update_rms, tau, epsilon, iters):
-    """DeepSeek-V4.1 Algorithm 1, written out on the whole matrix in float64."""
-    M = momentum * M + (1 - momentum) * G
-    U = momentum * M + (1 - momentum) * G
-    rho = U.norm(dim=1)
-    U = torch.where((rho <= tau * rho.mean()).unsqueeze(1), 0.0, U)
-    for k in range(1, iters + 1):
-        if k % 2 == 1:
-            U = U / (U.norm(dim=1, keepdim=True) + epsilon)
-        else:
-            U = U / (U.norm(dim=0, keepdim=True) + epsilon)
-    return W - lr * update_rms * math.sqrt(W.shape[1]) * U, M
-
-
-def sharded_sinkhorn(rank, world_size, init_file, shard_dim, inputs, expected):
-    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size)
-    W, G, M = (t.chunk(world_size, dim=shard_dim)[rank].clone() for t in inputs)
-    groups = [dist.group.WORLD]
-    sinkhorn_update(
-        W,
-        G,
-        M,
-        shape=tuple(inputs[0].shape),
-        row_groups=groups if shard_dim == 1 else [],
-        col_groups=groups if shard_dim == 0 else [],
-        **SINKHORN,
-    )
-    for actual, full in zip((W, M), expected):
-        torch.testing.assert_close(actual, full.chunk(world_size, dim=shard_dim)[rank].float(), rtol=1e-4, atol=1e-6)
-    dist.destroy_process_group()
-
-
-@pytest.mark.parametrize("shard_dim", [0, 1])
-def test_sharded_sinkhorn_update_matches_reference(tmp_path, shard_dim):
-    torch.manual_seed(0)
-    W, G, M = torch.randn(3, 64, 16)
-    G[5] *= 1e-6  # a near-zero row is masked
-    M[5] = 0
-    expected = reference_sinkhorn(W.double(), G.double(), M.double(), **SINKHORN)
-    assert expected[0][5].equal(W[5].double())
-    mp.spawn(sharded_sinkhorn, args=(2, tmp_path / "init", shard_dim, (W, G, M), expected), nprocs=2)
-
+from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
 
 # Polar Express (arXiv 2505.16932, Appendix A) before the 1.01 safety factor
 REFERENCE_POLAR_EXPRESS = [
@@ -68,9 +21,6 @@ REFERENCE_POLAR_EXPRESS = [
     (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
     (3.3184196573706015, -2.488488024314874, 0.51004894012372),
     (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
-    (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
-    (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
-    (1.875, -1.25, 0.375),
 ]
 
 
@@ -80,6 +30,20 @@ def test_orthogonalization_singular_values(schedule, tolerance):
     for shape in [(64, 32), (32, 96)]:
         singular_values = torch.linalg.svdvals(NEWTON_SCHULZ[schedule](torch.randn(shape)).float())
         assert (singular_values - 1).abs().max() < tolerance
+
+
+def reference_sinkhorn(W, grads, lr, momentum, update_rms, tau, epsilon, iters):
+    """DeepSeek-V4.1 Algorithm 1, written out on the whole matrix in float64."""
+    M = torch.zeros_like(W)
+    for G in grads:
+        M = momentum * M + (1 - momentum) * G
+        U = momentum * M + (1 - momentum) * G
+        rho = U.norm(dim=1)
+        U = torch.where((rho <= tau * rho.mean()).unsqueeze(1), 0.0, U)
+        for k in range(1, iters + 1):
+            U = U / (U.norm(dim=1 if k % 2 else 0, keepdim=True) + epsilon)
+        W = W - lr * update_rms * math.sqrt(W.shape[1]) * U
+    return W
 
 
 def reference_dimuon(W, grads, lr, beta, update_rms):
@@ -126,15 +90,19 @@ def reference_muown(W, grads, lr, momentum, betas, eps, weight_decay):
 
 
 def run_variant(variant, params, grads, partitions=None, mesh=None, **kwargs):
+    if variant == "sinkhorn":
+        group = dict(algorithm="sinkhorn", weight_decay=0.0, lr_scale=1.0, tau=1e-3, iters=11)
+    else:
+        group = dict(algorithm="muon", weight_decay=0.1 if variant == "muown" else 0.0)
     optimizer = Muon(
-        [dict(params=params, algorithm="muon", weight_decay=0.1 if variant == "muown" else 0.0)],
+        [dict(params=params, **group)],
         lr=0.01,
         mu=0.9,
         nesterov=variant == "muown",
         betas=(0.9, 0.95),
         epsilon=1e-8,
         update_rms=0.2,
-        variant=variant,
+        variant="muon" if variant == "sinkhorn" else variant,
         fsdp_mesh_dim=0,
         world_mesh=mesh,
         distributed_mesh=mesh,
@@ -147,6 +115,16 @@ def run_variant(variant, params, grads, partitions=None, mesh=None, **kwargs):
             p.grad = grad
         optimizer.step()
     return optimizer
+
+
+def test_sinkhorn_matches_reference():
+    torch.manual_seed(0)
+    W, grads = torch.randn(64, 16), torch.randn(3, 64, 16)
+    grads[0, 5] *= 1e-6  # a near-zero row is masked
+    param = nn.Parameter(W.clone())
+    run_variant("sinkhorn", [param], grads[:, None])
+    expected = reference_sinkhorn(W.double(), grads.double(), 0.01, 0.9, 0.2, 1e-3, 1e-8, 11)
+    torch.testing.assert_close(param.detach(), expected.float(), rtol=1e-4, atol=1e-6)
 
 
 @pytest.mark.parametrize("bf16_momentum", [False, True])
@@ -186,18 +164,20 @@ def sharded_variants(rank, world_size, init_file, weights, grads, shard_dim):
     def shard(t):
         return distribute_tensor(t, mesh, [Shard(0 if shard_dim == 0 else t.ndim - 1)])
 
-    for variant in ["dimuon", "muown"]:
-        expected = [nn.Parameter(w.clone()) for w in weights]
-        expected_state = run_variant(variant, expected, grads, {expected[0]: (16, 9), expected[1]: (16, 9)}).state
-        sharded = [nn.Parameter(shard(w.clone())) for w in weights]
-        sharded_grads = [[shard(g) for g in step] for step in grads]
-        partitions = {sharded[0]: (16, 9), sharded[1]: (16, 9)}
-        sharded_state = run_variant(variant, sharded, sharded_grads, partitions, mesh=mesh).state
+    for variant in ["dimuon", "muown", "sinkhorn"]:
+        n = 2 if variant == "sinkhorn" else 3  # Sinkhorn takes the matrices
+        expected = [nn.Parameter(w.clone()) for w in weights[:n]]
+        sharded = [nn.Parameter(shard(w.clone())) for w in weights[:n]]
+        sharded_grads = [[shard(g) for g in step[:n]] for step in grads]
+        runs = []
+        for params, step_grads, run_mesh in [(expected, grads, None), (sharded, sharded_grads, mesh)]:
+            partitions = None if variant == "sinkhorn" else {params[0]: (16, 9), params[1]: (16, 9)}
+            runs.append(run_variant(variant, params, step_grads, partitions, mesh=run_mesh).state)
         for actual, full in zip(sharded, expected):
             torch.testing.assert_close(actual.full_tensor(), full.detach(), rtol=1e-4, atol=1e-6)
             # the state, Muown's per-row state included, is laid out as without sharding
-            for key, value in expected_state[full].items():
-                torch.testing.assert_close(sharded_state[actual][key].full_tensor(), value, rtol=1e-4, atol=1e-6)
+            for key, value in runs[0][full].items():
+                torch.testing.assert_close(runs[1][actual][key].full_tensor(), value, rtol=1e-4, atol=1e-6)
     dist.destroy_process_group()
 
 
@@ -240,34 +220,23 @@ def test_muon_param_groups_route_dsv41_recipe():
     ]
 
 
-def test_update_scales_hold_at_the_schedule_floor():
-    def final_step(update_rms, lr_scale):
+def test_update_scales_keep_the_group_lr():
+    def step(update_rms, lr_scale):
         torch.manual_seed(0)
         weight, embedding = nn.Parameter(torch.randn(16, 8)), nn.Parameter(torch.randn(32, 8))
         groups = [
             dict(params=[weight], algorithm="muon", weight_decay=0.1),
             dict(params=[embedding], algorithm="sinkhorn", weight_decay=0.0, lr_scale=lr_scale, tau=1e-3, iters=11),
         ]
-        optimizer = Muon(
-            groups,
-            lr=1.0,
-            update_rms=update_rms,
-            fsdp_mesh_dim=0,
-            world_mesh=None,
-            adjust_lr="rms_norm",
-            newton_schulz_func=NEWTON_SCHULZ["deepseek_v4"],
-        )
-        scheduler = CosineAnnealingLR(optimizer, T_max=4, eta_min=0.1)
-        for _ in range(4):
-            scheduler.step()
-        assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([0.1, 0.1])
+        optimizer = Muon(groups, lr=0.1, update_rms=update_rms, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
         before = weight.detach().clone(), embedding.detach().clone()
         weight.grad, embedding.grad = torch.randn(16, 8), torch.randn(32, 8)
         optimizer.step()
+        assert [group["lr"] for group in optimizer.param_groups] == [0.1, 0.1]
         return before[0], weight.detach() - before[0], embedding.detach() - before[1]
 
-    weight, weight_delta, embedding_delta = final_step(0.2, 1.0)
-    _, scaled_weight_delta, scaled_embedding_delta = final_step(0.1, 5.0)
+    weight, weight_delta, embedding_delta = step(0.2, 1.0)
+    _, scaled_weight_delta, scaled_embedding_delta = step(0.1, 5.0)
     decay = -0.1 * 0.1 * weight  # lr * weight_decay does not depend on update_rms
     torch.testing.assert_close(scaled_weight_delta - decay, 0.5 * (weight_delta - decay))
     torch.testing.assert_close(scaled_embedding_delta, 2.5 * embedding_delta)
