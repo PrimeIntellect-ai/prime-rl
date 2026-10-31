@@ -295,7 +295,7 @@ def train(config: SFTConfig):
                 "seq_lens": seq_lens,
             }
             with maybe_activation_offloading(config.model.ac_offloading):
-                outputs = run_loss_fn(loss_fn, model, batch)
+                outputs = run_loss_fn(loss_fn, model, batch, seq_lens_are_pre_shard=seq_lens_are_pre_shard)
             count = torch.as_tensor(outputs.count, device="cuda")
             if count.ndim != 0 or count.is_floating_point():
                 raise TypeError(f"custom loss count must be an integer, got {outputs.count!r}")

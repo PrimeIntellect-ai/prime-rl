@@ -47,7 +47,13 @@ def setup_sft_loss_fn(config: SFTCustomLossConfig) -> Callable[[LossInputs], Los
     return partial(fn, **config.kwargs)
 
 
-def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, batch: Batch) -> LossOutputs:
+def run_loss_fn(
+    loss_fn: Callable[[LossInputs], LossOutputs],
+    model: nn.Module,
+    batch: Batch,
+    *,
+    seq_lens_are_pre_shard: bool = False,
+) -> LossOutputs:
     """The custom loss on one micro-batch, computed inside the model's forward pass on the backbone's final
     hidden states, where stock SFT computes its cross-entropy: FSDP keeps the root unit gathered for it and treats the
     modules it calls, such as the LM head, as part of the forward."""
@@ -58,6 +64,11 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
         return {"loss": outputs.loss, "count": outputs.count, "metrics": outputs.metrics}
 
     outputs = forward(
-        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss
+        model,
+        batch["input_ids"],
+        batch["position_ids"],
+        seq_lens=batch["seq_lens"],
+        seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+        hidden_states_fn=loss,
     )
     return LossOutputs(**outputs)
