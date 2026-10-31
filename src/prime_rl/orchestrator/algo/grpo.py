@@ -75,19 +75,14 @@ class GRPOAlgorithm(Algorithm):
                 total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
                 input = total - output
             turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
-            # Rollouts the penalty reaches; each term is normalized by its max over them.
+            penalty_frac = (
+                length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
+                + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
+                + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
+            )
             if length_penalty.apply_to == "solved":
-                scope = rewards >= 1.0
-            else:
-                scope = torch.ones_like(rewards, dtype=torch.bool)
-            if scope.any():
-                penalty_frac = (
-                    length_penalty.num_output_tokens_weight * (output / output[scope].max().clamp(min=1))
-                    + length_penalty.num_input_tokens_weight * (input / input[scope].max().clamp(min=1))
-                    + length_penalty.num_turns_weight * (turns / turns[scope].max().clamp(min=1))
-                ) * scope
-            else:
-                penalty_frac = torch.zeros_like(rewards)
+                # Normalized over the whole group as above, then only solved rollouts pay it.
+                penalty_frac = penalty_frac * (rewards >= 1.0)
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
         baseline = shaped_rewards.mean()

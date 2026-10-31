@@ -101,7 +101,7 @@ class LinearLengthPenaltyConfig(BaseConfig):
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
 
     apply_to: Literal["all", "solved"] = "all"
-    """Which rollouts the penalty reaches. ``"all"`` penalizes every rollout in the group. ``"solved"`` penalizes only rollouts with reward >= 1 and normalizes each term by its max over those rollouts, so a failed rollout keeps its reward whatever its length and length never ranks failures against each other."""
+    """Which rollouts the penalty reaches. ``"all"`` penalizes every rollout in the group. ``"solved"`` computes the same penalty, each term normalized by its max over the whole group, but applies it only to rollouts with reward >= 1, so a failed rollout keeps its reward whatever its length and length never ranks failures against each other."""
 
 
 class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):

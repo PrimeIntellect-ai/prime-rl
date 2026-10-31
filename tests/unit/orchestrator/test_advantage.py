@@ -292,17 +292,31 @@ def test_linear_turns_term_penalizes_more_turns():
 
 def test_linear_solved_scope_leaves_failed_rollouts_unshaped():
     """With ``apply_to="solved"``, failed rollouts of any length share one advantage, while
-    solved ones are ranked by length against the longest solved rollout only."""
+    solved ones pay the penalty normalized by the longest rollout of the whole group."""
     cfg = LinearLengthPenaltyConfig(
         num_output_tokens_weight=0.2, num_input_tokens_weight=0.0, num_turns_weight=0.0, apply_to="solved"
     )
     advs = _grpo(_make_group(rewards=[1.0, 1.0, 0.0, 0.0], completion_lengths=[10, 20, 5, 400]), length_penalty=cfg)
     assert advs[2] == pytest.approx(advs[3], abs=1e-6)
     assert advs[0] > advs[1] > advs[2]
-    # pass rate 0.5; the longest solved rollout (20) takes the full 0.2 term, the shorter one half of it.
-    shaped = [1.0 - 0.5 * 0.2 * 0.5, 1.0 - 0.5 * 0.2, 0.0, 0.0]
+    # pass rate 0.5; the group's longest rollout (the 400-token failure) sets the scale.
+    shaped = [1.0 - 0.5 * 0.2 * 10 / 400, 1.0 - 0.5 * 0.2 * 20 / 400, 0.0, 0.0]
     baseline = sum(shaped) / 4
     assert advs == pytest.approx([s - baseline for s in shaped], abs=1e-6)
+
+
+def test_linear_solved_scope_single_solve_is_ranked_against_the_group():
+    """A lone solved rollout pays in proportion to its length relative to the group's longest
+    rollout, not the full penalty it would pay as its own max."""
+    cfg = LinearLengthPenaltyConfig(
+        num_output_tokens_weight=0.2, num_input_tokens_weight=0.0, num_turns_weight=0.0, apply_to="solved"
+    )
+    short = _grpo(_make_group(rewards=[1.0, 0.0, 0.0, 0.0], completion_lengths=[10, 40, 40, 40]), length_penalty=cfg)
+    long = _grpo(_make_group(rewards=[1.0, 0.0, 0.0, 0.0], completion_lengths=[40, 10, 10, 10]), length_penalty=cfg)
+    assert short[0] > long[0]
+    # pass rate 0.25; the short solve pays a quarter of the 0.2 term, the long one all of it.
+    shaped = [1.0 - 0.25 * 0.2 * 10 / 40, 0.0, 0.0, 0.0]
+    assert short == pytest.approx([s - sum(shaped) / 4 for s in shaped], abs=1e-6)
 
 
 def test_linear_solved_scope_without_solves_is_plain_grpo():
