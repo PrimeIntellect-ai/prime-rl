@@ -67,6 +67,8 @@ cp = 8
 offload = "full"
 # Host RAM sits at ~99% with AdamW state offloaded; activation offloading tipped a trainer node into a stall.
 ac_offloading = "None"
+# Compute the LM head logits as a bf16 x bf16 -> fp32 GEMM, as vLLM does with inference.enable_fp32_lm_head (on by default).
+fp32_lm_head = true
 
 [trainer.model.ac]
 mode = "full"
