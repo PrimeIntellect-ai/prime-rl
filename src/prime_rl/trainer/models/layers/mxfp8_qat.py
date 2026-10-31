@@ -17,11 +17,24 @@ def _kernel():
     return mxfp8_quant
 
 
-def _quantize(x, rounding_seed=None, rounding_salt=None, rounding_offset=0):
+def _quantize(x, rounding_seed=None, rounding_salt=None, rounding_offset=0, packed=True):
     q, scales = _kernel().quantize(
         x, rounding_seed=rounding_seed, rounding_salt=rounding_salt, rounding_offset=rounding_offset
     )
-    return q, scales.view(torch.float8_e8m0fnu).float()
+    if not packed:
+        return q, scales.view(torch.float8_e8m0fnu).float()
+    return q, _packed_scales(scales)
+
+
+def _packed_scales(scales: torch.Tensor) -> torch.Tensor:
+    """UE8M0 bytes ``[..., MN, K / 32]`` -> the int32 scales DeepGEMM takes as they are: four per word along K, MN-major,
+    MN padded to 4. Unlike fp32 scales they keep code 0 (all-zero blocks, e.g. padding rows), which DeepGEMM's fp32
+    packing rejects as a subnormal."""
+    packed = scales.view(torch.int32)
+    mn, packed_k = packed.shape[-2:]
+    storage = packed.new_empty((*packed.shape[:-2], packed_k, -(-mn // 4) * 4))
+    storage[..., :mn].copy_(packed.transpose(-1, -2))
+    return storage.transpose(-1, -2)[..., :mn, :]
 
 
 @torch.library.custom_op("prime_rl::mxfp8_qat_linear", mutates_args=())
@@ -37,8 +50,9 @@ def mxfp8_qat_linear(
     output = x.new_empty((*x.shape[:-1], weight.shape[0] // groups))
     if x.numel() == 0:
         return output
-    xq, xs = _quantize(x.reshape(-1, x.shape[-1]))
-    wq, ws = _quantize(weight, rounding_seed, rounding_salt)
+    # The grouped einsum reshapes the scales, so it takes them as fp32
+    xq, xs = _quantize(x.reshape(-1, x.shape[-1]), packed=groups == 1)
+    wq, ws = _quantize(weight, rounding_seed, rounding_salt, packed=groups == 1)
     if groups == 1:
         deep_gemm.fp8_gemm_nt((xq, xs), (wq, ws), output.view(-1, weight.shape[0]), recipe_a=(1, 32), recipe_b=(1, 32))
     else:
