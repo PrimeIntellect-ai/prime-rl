@@ -8,10 +8,15 @@ from dion.muon import zeropower_via_newtonschulz5
 from torch import nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import Shard, distribute_tensor
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
 from prime_rl.configs.trainer import MuonConfig
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models.fusions import apply_model_fusions, get_model_packed_parameters
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.optim import muon_param_groups
+from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
+from prime_rl.trainer.optim import muon_matrix_partitions, muon_param_groups
 from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
 
 # Polar Express (arXiv 2505.16932, Appendix A) before the 1.01 safety factor
@@ -240,3 +245,74 @@ def test_update_scales_keep_the_group_lr():
     decay = -0.1 * 0.1 * weight  # lr * weight_decay does not depend on update_rms
     torch.testing.assert_close(scaled_weight_delta - decay, 0.5 * (weight_delta - decay))
     torch.testing.assert_close(scaled_embedding_delta, 2.5 * embedding_delta)
+
+
+QWEN3_8 = dict(
+    vocab_size=32,
+    bos_token_id=31,
+    eos_token_id=31,
+    hidden_size=16,
+    num_hidden_layers=2,
+    layer_types=["linear_attention", "full_attention"],
+    linear_num_key_heads=1,
+    linear_num_value_heads=1,
+    linear_key_head_dim=16,
+    linear_value_head_dim=16,
+    hc_count=2,
+    hc_lowrank=4,
+    num_experts=2,
+    num_experts_per_tok=1,
+    moe_intermediate_size=16,
+    shared_expert_intermediate_size=16,
+    ple_layer_ids=[1],
+    ple_embed_dim=16,
+    heads_per_ngram=2,
+    ngram_vocab_size_base=17,
+    make_ngram_vocab_size_divisible_by=8,
+    split_ngram_parts=3,
+)
+
+
+def build_on_meta(model_type):
+    with torch.device("meta"):
+        if model_type == "qwen3_8":
+            model = Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextTextConfig(**QWEN3_8))
+        else:
+            kwargs = dict(dsa_backend="tilelang") if model_type == "deepseek_v4" else {}
+            model = AutoModelForCausalLMPrimeRL.from_config(CONFIG_MAPPING[model_type](**kwargs))
+    apply_model_fusions(model, ["qkv", "gate_up"])
+    return model
+
+
+@pytest.mark.parametrize(
+    "model_type", ["qwen3", "qwen3_5_text", "glm5_next_text", "qwen3_8", "nemotron_h", "deepseek_v4", "gpt_oss"]
+)
+def test_default_muon_routing_and_norms(model_type):
+    """By default Muon takes every trainable matrix except embeddings, the LM head, n-gram tables and expert biases
+    (depthwise convolutions and grouped linears included, as on main), and splits only runtime-packed parameters.
+    Without decay for scales, every normalization weight is still decayed."""
+    model = build_on_meta(model_type)
+    named_params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    ngram = {p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()}
+    groups = muon_param_groups(MuonConfig(), named_params, model, 1.0, False)
+    muon = {p for group in groups if group["algorithm"] == "muon" for p in group["params"]}
+    excluded = ("lm_head", "embed_tokens")
+    assert muon == {
+        p
+        for n, p in named_params
+        if p.ndim >= 2
+        and not any(e in n for e in excluded)
+        and p not in ngram
+        and not ("mlp.experts" in n and n.endswith("_bias"))
+    }
+    packed = {
+        info.parameter: info.spec.muon_matrix_partitions(info.parameter) for info in get_model_packed_parameters(model)
+    }
+    assert muon_matrix_partitions(model, groups, None) == {
+        p: s for p, s in packed.items() if s is not None and p in muon
+    }
+
+    groups = muon_param_groups(MuonConfig(decay_bias_and_scales=False), named_params, model, 1.0, False)
+    undecayed = {p for group in groups if group["weight_decay"] == 0.0 for p in group["params"]}
+    norm_weights = [p for n, p in named_params if p.ndim == 1 and "norm" in n.split(".")[-2]]
+    assert norm_weights and not any(p in undecayed for p in norm_weights)

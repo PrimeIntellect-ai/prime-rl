@@ -2,14 +2,15 @@ from collections import defaultdict
 
 import torch
 import torch.distributed as dist
+from fla.modules import FusedRMSNormGated
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import MuonConfig, MuonHeadsConfig, OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
-from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
@@ -22,6 +23,9 @@ from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+
+# Normalization layers: prime-rl's own (``Norm``) and the ones our models use from torch and fla
+NORMS = (Norm, nn.LayerNorm, nn.RMSNorm, FusedRMSNormGated)
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
@@ -152,26 +156,9 @@ def _create_muon_optimizer(
     else:
         distributed_mesh = parallel_dims.world_mesh
 
-    # Runtime fusions pack several logical matrices into one physical parameter. Muon
-    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
-    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
-    matrix_partitions = {}
-    if model is not None:
-        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        for packed_info in get_model_packed_parameters(model):
-            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
-            if partitions is not None and packed_info.parameter in muon_params:
-                matrix_partitions[packed_info.parameter] = partitions
-        # A grouped linear is n_groups independent matrices stacked along the output rows.
-        for module in model.modules():
-            if isinstance(module, GroupedLinear) and module.weight in muon_params:
-                matrix_partitions[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
-        if config.heads is not None:
-            matrix_partitions |= muon_head_partitions(model, muon_params, config.heads)
-
     optimizer = Muon(
         params=param_groups,
-        matrix_partitions=matrix_partitions,
+        matrix_partitions={} if model is None else muon_matrix_partitions(model, param_groups, config.heads),
         lr=lr,
         mu=config.mu,
         nesterov=config.nesterov,
@@ -202,28 +189,19 @@ def muon_param_groups(
     lr: float,
     ep_enabled: bool,
 ) -> list[dict]:
-    # Depthwise convolutions (gated delta net, Mamba, PLE) hold per-channel filters, not matrices: Muon would
-    # orthogonalize each channel's taps on their own, so they go to AdamW.
-    conv_weights = set()
     ngram_table_params = set()
     norm_params = set()
     if model is not None:
-        conv_weights = {f"{name}.weight" for name, module in model.named_modules() if isinstance(module, nn.Conv1d)}
         ngram_table_params = {
             p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()
         }
-        # Normalization modules by class name, which also covers Hugging Face models' own norm classes
-        norm_params = {
-            p for module in model.modules() if "Norm" in type(module).__name__ for p in module.parameters(recurse=False)
-        }
+        norm_params = {p for module in model.modules() if isinstance(module, NORMS) for p in module.parameters()}
 
     def is_embedding(n, p):
         return "lm_head" in n or "embed_tokens" in n or p in ngram_table_params
 
     def muon_enabled(n, p):
         if p.ndim < 2:
-            return False
-        if n in conv_weights:
             return False
         if is_embedding(n, p):
             return False
@@ -261,6 +239,23 @@ def muon_param_groups(
         groups |= {"embeddings": dict(sinkhorn, lr_scale=1.0), "ngram": dict(sinkhorn, lr_scale=e.ngram_lr_scale)}
     # The main Muon and AdamW groups always exist, even if empty
     return [dict(params=routed[k], **g) for k, g in groups.items() if routed[k] or k in ("muon", "adamw")]
+
+
+def muon_matrix_partitions(
+    model: nn.Module, param_groups: list[dict], heads: MuonHeadsConfig | None
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    # Runtime fusions pack several logical matrices into one physical parameter. Muon
+    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
+    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
+    muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+    matrix_partitions = {}
+    for packed_info in get_model_packed_parameters(model):
+        partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+        if partitions is not None and packed_info.parameter in muon_params:
+            matrix_partitions[packed_info.parameter] = partitions
+    if heads is not None:
+        matrix_partitions |= muon_head_partitions(model, muon_params, heads)
+    return matrix_partitions
 
 
 def muon_head_partitions(

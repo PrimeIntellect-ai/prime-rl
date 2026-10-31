@@ -465,7 +465,7 @@ class AdamWConfig(BaseOptimizerConfig):
 
 
 class MuonHeadsConfig(BaseConfig):
-    """Per-head Muon: orthogonalize attention projections that hold heads along their rows in blocks of heads, each block on its own: query/key/value (GQA key/value by their own heads), per-channel output gates, and the MLA up-projections ``q_b_proj`` and ``kv_b_proj``. Output projections (heads along columns) and latent projections stay whole."""
+    """Per-head Muon: orthogonalize attention projections that hold heads along their rows in blocks of heads, each block on its own: query/key/value (GQA key/value by their own heads), per-channel output gates, the MLA up-projections ``q_b_proj`` and ``kv_b_proj``, and DeepSeek-V4's grouped ``o_a_proj`` by its groups. Other output projections (heads along columns) and latent projections stay whole."""
 
     per_block: int = Field(1, ge=1)
     """Heads per block (``1`` = per head). At ``1``, matrices packed in one head ([query; gate], MLA [W_UK; W_UV]) are split too."""
@@ -537,7 +537,7 @@ class MuonConfig(BaseOptimizerConfig):
     """Newton-Schulz schedule. ``default``: dion's 5 steps. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1. ``polar_express``: 5 steps of Polar Express (arXiv 2505.16932) in bf16, with its 1.01 safety factor. ``step3p5``: 6 Polar Express steps in fp16, as in Step 3.5 Flash."""
 
     decay_bias_and_scales: bool = True
-    """If False, AdamW parameters that are biases (named ``*bias``) or are 1-D and not owned by a normalization module (a module whose class name contains ``Norm``), such as scaling factors, gates and attention sinks, get no weight decay. Normalization weights are still decayed (DeepSeek-V4.1)."""
+    """If False, AdamW parameters that are biases (named ``*bias``) or are 1-D and not owned by a normalization layer, such as scaling factors, gates and attention sinks, get no weight decay. Normalization weights are still decayed (DeepSeek-V4.1)."""
 
     heads: MuonHeadsConfig | None = None
     """Per-head Muon. If None, each projection is one matrix."""

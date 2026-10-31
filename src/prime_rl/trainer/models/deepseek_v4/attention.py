@@ -720,11 +720,15 @@ class DeepseekV4Attention(nn.Module):
     def muon_head_partitions(
         self, heads_per_block: int, split_values: bool
     ) -> dict[nn.Parameter, tuple[int, ...] | None]:
-        # kv_proj is one key/value head shared by all query heads, o_a_proj is partitioned by its groups, q_a_proj
-        # and o_b_proj are latent, and the compressor's series are not heads
-        whole = [self.q_a_proj, self.kv_proj, self.o_a_proj, self.o_b_proj, self.compressor]
+        # kv_proj is one key/value head shared by all query heads, q_a_proj and o_b_proj are latent, and the
+        # compressor's series are not heads. o_a_proj is one matrix per group of heads, stacked along its rows.
+        whole = [self.q_a_proj, self.kv_proj, self.o_b_proj, self.compressor]
         partitions = {p: None for module in whole if module is not None for p in module.parameters()}
-        return partitions | {self.q_b_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
+        o_groups = (self.o_a_proj.out_features // self.o_a_proj.n_groups,) * self.o_a_proj.n_groups
+        return partitions | {
+            self.q_b_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block),
+            self.o_a_proj.weight: o_groups,
+        }
 
     def attention_flops(self, seq_len: int) -> int:
         # Each query attends the local window plus the compressed entries (CSA: the indexer scores

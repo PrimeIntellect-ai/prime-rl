@@ -7,12 +7,13 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 from prime_rl.trainer.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerConfig, MuseGlimmerTextConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-class MuseGlimmerRMSNorm(nn.Module):
+class MuseGlimmerRMSNorm(Norm):
     """RMSNorm computed in fp32 and cast back to the input dtype.
 
     Without `dim` the norm has no weight (QK-norm and the token-embedding norm). Decoder-layer norms
