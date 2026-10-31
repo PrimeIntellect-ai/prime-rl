@@ -2,7 +2,6 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 
 import math
 import os
-from pathlib import Path
 import time
 import asyncio
 from contextlib import nullcontext
@@ -241,7 +240,10 @@ def train(config: SFTConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
-    ep_dump_dir = Path(os.environ["EP_IMBALANCE_DUMP_DIR"]) if "EP_IMBALANCE_DUMP_DIR" in os.environ else None
+    # A relative EP_IMBALANCE_DUMP_DIR resolves under the run directory.
+    ep_dump_dir = (
+        config.run_dir / os.environ["EP_IMBALANCE_DUMP_DIR"] if "EP_IMBALANCE_DUMP_DIR" in os.environ else None
+    )
     ep_group_ranks = dist.get_process_group_ranks(ep_group) if ep_group is not None else [dist.get_rank()]
     ep_local_rank = ep_group_ranks.index(dist.get_rank())
     if ep_dump_dir is not None:
