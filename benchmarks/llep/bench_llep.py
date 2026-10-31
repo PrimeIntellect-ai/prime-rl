@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lam", type=float, default=1.1)
     parser.add_argument("--max-foreign", type=int, default=8)
     parser.add_argument("--chunk-tokens", type=int, default=None)
+    parser.add_argument("--precision", default="bf16", help="Mega MoE precision of the mega* and llep_mega* methods")
+    parser.add_argument("--back-to-back", action="store_true", help="time iterations without a sync in between")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--check", action="store_true", help="compare against an fp32 reference (needs full weights)")
@@ -135,6 +137,7 @@ def method_mega(ctx, x, scores, topk):
             group=ctx.group,
             max_tokens_per_rank=ctx.tokens_per_rank,
             num_sms=reserve_sms_for_comm(16, 2),
+            precision=ctx.precision,
         )
         ctx.cache["mega_experts"] = types.SimpleNamespace(
             gate_up_proj=ctx.gate_up,
@@ -180,6 +183,7 @@ def method_mega_ag(ctx, x, scores, topk):
             ctx.group,
             ctx.tokens_per_rank,
             reserve_sms_for_comm(16, 2),
+            ctx.precision,
         )
     return ctx.cache["mega_ag"](_experts(ctx), x, scores, topk)
 
@@ -199,6 +203,7 @@ def method_llep_mega_ag(ctx, x, scores, topk):
             ctx.tokens_per_rank,
             reserve_sms_for_comm(16, 2),
             ctx.options,
+            ctx.precision,
         )
     return ctx.cache["llep_mega_ag"](_experts(ctx), x, scores, topk)
 
@@ -208,7 +213,10 @@ def method_llep_mega_ag_repush(ctx, x, scores, topk):
     from prime_rl.trainer.models.layers.llep_mega_moe import _STATES
 
     y = method_llep_mega_ag(ctx, x, scores, topk)
-    _STATES[ctx.cache["llep_mega_ag"].state_key].slots.plan_id = None
+    state = _STATES[ctx.cache["llep_mega_ag"].state_key]
+    state.slots.plan_id = None
+    if state.precision == "mxfp8":
+        state.fp8_slots.plan_id = None
     return y
 
 
@@ -247,7 +255,10 @@ def static_bytes(ctx, name: str) -> int:
         return buffers.backward.buffer.nbytes
     if name in ("llep_mega", "llep_mega_ag", "llep_mega_ag_repush"):
         state = _STATES[cache["llep_mega_ag"].state_key]
-        return state.buffer.buffer.nbytes + sum(p.buffer.nbytes for p in state.slots.weights + state.slots.grads)
+        parts = (
+            state.slots.weights + state.slots.grads + (state.fp8_slots.weights if state.precision == "mxfp8" else [])
+        )
+        return state.buffer.buffer.nbytes + sum(p.buffer.nbytes for p in parts)
     if name == "llep_torch":
         return slots_bytes
     if name == "deepep":
@@ -257,10 +268,19 @@ def static_bytes(ctx, name: str) -> int:
     return 0
 
 
-def timed(fn, warmup: int, iters: int) -> list[float]:
+def timed(fn, warmup: int, iters: int, back_to_back: bool = False) -> list[float]:
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
+    if back_to_back:
+        dist.barrier()
+        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(iters):
+            fn()
+        end.record()
+        torch.cuda.synchronize()
+        return [start.elapsed_time(end) / iters]
     times = []
     for _ in range(iters):
         dist.barrier()
@@ -294,6 +314,7 @@ def main() -> None:
         intermediate=args.intermediate,
         limit=args.limit,
         tokens_per_rank=args.tokens_per_rank,
+        precision=args.precision,
         options=LLEPConfig(
             alpha=args.alpha,
             min_chunk=args.min_chunk,
@@ -373,11 +394,11 @@ def main() -> None:
                         return out
 
                     out = step().detach()
-                    times = timed(step, args.warmup, args.iters)
+                    times = timed(step, args.warmup, args.iters, args.back_to_back)
                 else:
                     with torch.no_grad():
                         out = fn(ctx, x, scores, topk)
-                        times = timed(lambda: fn(ctx, x, scores, topk), args.warmup, args.iters)
+                        times = timed(lambda: fn(ctx, x, scores, topk), args.warmup, args.iters, args.back_to_back)
                 error = None
             except torch.OutOfMemoryError:
                 times, out, error = [float("nan")], None, "OOM"

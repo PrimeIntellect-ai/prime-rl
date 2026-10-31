@@ -75,6 +75,7 @@ def main() -> None:
     parser.add_argument("--scenarios", default="balanced,hot:50:4,hot:95:16,hot:95:1,zipf:1.2")
     parser.add_argument("--repush", action="store_true", help="mark LLEP's slots stale between forward and backward")
     parser.add_argument("--chunk-tokens", type=int, default=None, help="LLEP tokens per rank per kernel call")
+    parser.add_argument("--precision", default="bf16", help="Mega MoE precision (bf16, mxfp8_qat)")
     args = parser.parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
@@ -96,7 +97,14 @@ def main() -> None:
     num_sms = reserve_sms_for_comm(16, 2)
     computes = {
         "mega": MegaMoEExpertCompute(
-            args.num_experts, args.top_k, args.hidden, args.intermediate, group, args.tokens_per_rank, num_sms
+            args.num_experts,
+            args.top_k,
+            args.hidden,
+            args.intermediate,
+            group,
+            args.tokens_per_rank,
+            num_sms,
+            args.precision,
         ),
         "llep_mega": LLEPMegaMoEExpertCompute(
             args.num_experts,
@@ -107,6 +115,7 @@ def main() -> None:
             args.tokens_per_rank,
             num_sms,
             LLEPConfig(chunk_tokens=args.chunk_tokens),
+            args.precision,
         ),
     }
     for scenario in args.scenarios.split(","):
@@ -127,7 +136,10 @@ def main() -> None:
             if args.repush and name == "llep_mega":
                 from prime_rl.trainer.models.layers.llep_mega_moe import _STATES
 
-                _STATES[compute.state_key].slots.plan_id = None
+                state = _STATES[compute.state_key]
+                state.slots.plan_id = None
+                if state.precision == "mxfp8":
+                    state.fp8_slots.plan_id = None
             y.backward(dy)
             results[name] = (y.detach(), x.grad, scores.grad, gate_up.grad, down.grad)
         for name, (y, dx, ds, dw1, dw2) in results.items():
