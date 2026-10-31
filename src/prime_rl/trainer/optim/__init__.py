@@ -236,7 +236,7 @@ def muon_param_groups(
         return config.decay_bias_and_scales or not (n.endswith("bias") or (p.ndim < 2 and p not in norm_params))
 
     def route(n, p):
-        if config.embeddings.type == "sinkhorn" and is_embedding(n, p):
+        if config.embeddings is not None and is_embedding(n, p):
             return "ngram" if p in ngram_table_params else "embeddings"
         if muon_enabled(n, p):
             return "experts" if "mlp.experts" in n else "router" if "mlp.router" in n else "muon"
@@ -255,7 +255,7 @@ def muon_param_groups(
         "adamw": dict(algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
         "no_decay": dict(algorithm="adamw", lr=lr, weight_decay=0.0),
     }
-    if config.embeddings.type == "sinkhorn":
+    if config.embeddings is not None:
         e = config.embeddings
         sinkhorn = dict(algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=e.tau, iters=e.iters)
         groups |= {"embeddings": dict(sinkhorn, lr_scale=1.0), "ngram": dict(sinkhorn, lr_scale=e.ngram_lr_scale)}

@@ -474,14 +474,8 @@ class MuonHeadsConfig(BaseConfig):
     """Split value projections by head too. If False, only queries and keys (and output gates) are split, as in DeepSeek-V4.1: value projections stay whole, and so does MLA ``kv_b_proj``, which holds keys and values per head."""
 
 
-class AdamWEmbeddingsConfig(BaseConfig):
-    type: Literal["adamw"] = "adamw"
-
-
-class SinkhornEmbeddingsConfig(BaseConfig):
+class SinkhornConfig(BaseConfig):
     """Nesterov momentum with Sinkhorn balancing (DeepSeek-V4.1, Algorithm 1), no weight decay, one momentum buffer per parameter."""
-
-    type: Literal["sinkhorn"] = "sinkhorn"
 
     iters: int = Field(11, ge=1)
     """Alternating row/column L2 normalizations. Must be odd, so the last one normalizes rows."""
@@ -548,10 +542,8 @@ class MuonConfig(BaseOptimizerConfig):
     heads: MuonHeadsConfig | None = None
     """Per-head Muon. If None, each projection is one matrix."""
 
-    embeddings: Annotated[AdamWEmbeddingsConfig | SinkhornEmbeddingsConfig, Field(discriminator="type")] = (
-        AdamWEmbeddingsConfig()
-    )
-    """Optimizer for the token embeddings, the LM head and n-gram tables."""
+    embeddings: SinkhornConfig | None = None
+    """Sinkhorn update for the token embeddings, the LM head and n-gram tables. If None, they use AdamW."""
 
     variant: Annotated[MuonVariantConfig | DimuonVariantConfig | MuownVariantConfig, Field(discriminator="type")] = (
         MuonVariantConfig()

@@ -165,7 +165,7 @@ def sharded_variants(rank, world_size, init_file, weights, grads, shard_dim):
         return distribute_tensor(t, mesh, [Shard(0 if shard_dim == 0 else t.ndim - 1)])
 
     for variant in ["dimuon", "muown", "sinkhorn"]:
-        n = 2 if variant == "sinkhorn" else 3  # Sinkhorn takes the matrices
+        n = 2 if variant == "sinkhorn" else len(weights)  # Sinkhorn takes the matrices
         expected = [nn.Parameter(w.clone()) for w in weights[:n]]
         sharded = [nn.Parameter(shard(w.clone())) for w in weights[:n]]
         sharded_grads = [[shard(g) for g in step[:n]] for step in grads]
@@ -183,10 +183,10 @@ def sharded_variants(rank, world_size, init_file, weights, grads, shard_dim):
 
 @pytest.mark.parametrize("shard_dim", [0, -1])
 def test_sharded_variants_match_unsharded(tmp_path, shard_dim):
-    """Two packed matrices with uneven row shards (or column shards) and one batch of experts sharded by expert
-    (or by column)."""
+    """Two packed matrices with uneven row shards (or column shards) and a single expert sharded by expert, which
+    leaves the second rank an empty shard (or by column)."""
     torch.manual_seed(0)
-    weights = [torch.randn(25, 12), torch.randn(25, 12), torch.randn(2, 12, 8)]
+    weights = [torch.randn(25, 12), torch.randn(25, 12), torch.randn(1, 12, 8)]
     grads = [[torch.randn_like(w) for w in weights] for _ in range(3)]
     mp.spawn(sharded_variants, args=(2, tmp_path / "init", weights, grads, shard_dim), nprocs=2)
 
@@ -211,7 +211,7 @@ def test_muon_param_groups_route_dsv41_recipe():
 
     adamw_shapes = [(2,), (32, 8), (8,), (8,), (32, 8)]
     assert groups() == [("muon", 1.0, 0.1, [(8, 8)]), ("adamw", 1.0, 0.1, adamw_shapes)]
-    recipe = groups(update_rms=0.18, decay_bias_and_scales=False, embeddings={"type": "sinkhorn"})
+    recipe = groups(update_rms=0.18, decay_bias_and_scales=False, embeddings={})
     assert recipe == [
         ("muon", 1.0, 0.1, [(8, 8)]),
         ("adamw", 1.0, 0.1, [(8,)]),  # the norm weight
