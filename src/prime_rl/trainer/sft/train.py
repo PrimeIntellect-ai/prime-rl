@@ -182,7 +182,7 @@ def train(config: SFTConfig):
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     loss_fn = None
-    if config.loss is not None:
+    if config.loss.type == "custom":
         logger.info(f"Loading custom loss ({config.loss})")
         loss_fn = setup_sft_loss_fn(config.loss)
 

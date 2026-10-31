@@ -95,7 +95,8 @@ def test_token_logprobs(chunk_size):
 
 
 def test_custom_loss_config_rejects_unsupported_setups():
-    loss = {"import_path": f"{__name__}.scaled_ce"}
+    assert SFTConfig().loss.type == "ce"
+    loss = {"type": "custom", "import_path": f"{__name__}.scaled_ce"}
     assert SFTConfig(loss=loss).loss.import_path.endswith("scaled_ce")
     with pytest.raises(ValidationError, match="not supported with context parallelism"):
         SFTConfig(loss=loss, model={"cp": 2})

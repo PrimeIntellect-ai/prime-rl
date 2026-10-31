@@ -164,10 +164,21 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class SFTCrossEntropyLossConfig(BaseConfig):
+    """Token cross-entropy: the stock SFT loss."""
+
+    type: Literal["ce"] = "ce"
+
+
 class SFTCustomLossConfig(CallableConfig):
     """A custom SFT loss: a function computed from the backbone's final hidden states, in place of token
     cross-entropy, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.sft.loss.LossInputs`` and
     returning a ``LossOutputs``."""
+
+    type: Literal["custom"] = "custom"
+
+
+SFTLossConfig: TypeAlias = Annotated[SFTCrossEntropyLossConfig | SFTCustomLossConfig, Field(discriminator="type")]
 
 
 class SFTValConfig(BaseConfig):
@@ -255,8 +266,8 @@ class SFTConfig(BaseConfig):
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
-    loss: SFTCustomLossConfig | None = None
-    """Custom SFT loss in place of token cross-entropy. If None, trains with token cross-entropy."""
+    loss: SFTLossConfig = SFTCrossEntropyLossConfig()
+    """The training loss: token cross-entropy (``type = "ce"``, the default) or a custom loss (``type = "custom"``)."""
 
     ckpt: CheckpointConfig | None = None
 
@@ -592,7 +603,7 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_loss(self):
-        if self.loss is None:
+        if self.loss.type != "custom":
             return self
         if self.model.cp > 1 or self.model.vlm is not None or self.model.offload == "full":
             raise ValueError(
