@@ -18,10 +18,10 @@ from prime_rl.trainer.models.layers.expert_compute import to_local
 from prime_rl.trainer.models.layers.mega_moe import (
     _activation_clamp,
     _dw_dtype,
+    cached_qat_forward_weights,
+    cached_qat_rounded_weights,
     check_mega_moe_dims,
     mega_moe_available,
-    mxfp8_qat_forward_weights,
-    mxfp8_rounded_weights,
     mxfp8_rounding_args,
     qat_cast_tokens,
 )
@@ -69,7 +69,7 @@ def llep_mega_moe_forward_op(
     if state.precision == "bf16":
         return state.forward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
     # MXFP8: each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
-    weights = mxfp8_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    weights = cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
     x_fp8, x_sf = qat_cast_tokens(x.to(torch.bfloat16).contiguous())
     y = state.forward_mxfp8(x_fp8, x_sf, vids, foreign, plan_id, topk_weights, weights.l1, weights.l2, activation_clamp)
     return y.to(x.dtype)
@@ -113,9 +113,7 @@ def llep_mega_moe_backward_op(
     if state.precision == "bf16":
         return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
     # MXFP8 QAT: a bf16 backward on the weights the forward computed with (re-quantized, so bitwise the same)
-    gate_up, down = mxfp8_rounded_weights(
-        mxfp8_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
-    )
+    gate_up, down = cached_qat_rounded_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
     return state.backward(
         dy, x, vids, foreign, plan_id, topk_weights, gate_up, down, activation_clamp, _dw_dtype(gate_up_proj)
     )

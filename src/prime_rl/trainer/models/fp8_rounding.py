@@ -59,6 +59,9 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
 
 
 def set_fp8_rounding_step(model: nn.Module, step: int) -> None:
+    from prime_rl.trainer.models.layers.mega_moe import clear_mega_moe_weight_cache
+
+    clear_mega_moe_weight_cache()
     state = model.fp8_rounding
     if state is not None:
         state.set_step(step)

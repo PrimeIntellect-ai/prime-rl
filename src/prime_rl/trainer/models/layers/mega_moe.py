@@ -336,6 +336,50 @@ def mxfp8_qat_forward_weights(
     )
 
 
+# Experiment: the quantized expert weights of the current optimizer step, per layer (keyed by the layer's rounding salts).
+# With stochastic rounding the stream is keyed by step, so a step's micro steps and its activation-checkpoint
+# recomputes quantize every layer identically; `set_fp8_rounding_step` clears the cache at each step.
+# MEGA_MOE_WEIGHT_CACHE_LAYERS: layers to keep (0: off); MEGA_MOE_WEIGHT_CACHE_BF16=1 also keeps the bf16 weights.
+_WEIGHT_CACHE: dict[int, list] = {}
+_WEIGHT_CACHE_LAYERS = int(os.environ.get("MEGA_MOE_WEIGHT_CACHE_LAYERS", "0"))
+_WEIGHT_CACHE_BF16 = os.environ.get("MEGA_MOE_WEIGHT_CACHE_BF16", "0") == "1"
+
+
+def clear_mega_moe_weight_cache() -> None:
+    _WEIGHT_CACHE.clear()
+
+
+def _cache_entry(rounding_seed, rounding_salts) -> list | None:
+    if rounding_seed is None or _WEIGHT_CACHE_LAYERS == 0:
+        return None
+    key = rounding_salts.data_ptr()
+    if key not in _WEIGHT_CACHE and len(_WEIGHT_CACHE) < _WEIGHT_CACHE_LAYERS:
+        _WEIGHT_CACHE[key] = [None, None]
+    return _WEIGHT_CACHE.get(key)
+
+
+def cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed=None, rounding_salts=None, expert_offset=0):
+    entry = _cache_entry(rounding_seed, rounding_salts)
+    if entry is not None and entry[0] is not None:
+        return entry[0]
+    weights = mxfp8_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    if entry is not None:
+        entry[0] = weights
+    return weights
+
+
+def cached_qat_rounded_weights(gate_up_proj, down_proj, rounding_seed=None, rounding_salts=None, expert_offset=0):
+    entry = _cache_entry(rounding_seed, rounding_salts)
+    if entry is not None and entry[1] is not None:
+        return entry[1]
+    rounded = mxfp8_rounded_weights(
+        cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    )
+    if entry is not None and _WEIGHT_CACHE_BF16:
+        entry[1] = rounded
+    return rounded
+
+
 def qat_cast_tokens(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """E4M3 tokens and their packed UE8M0 scales ``[T, H / 128]``, rounded to nearest as MXFP8 QAT casts activations."""
     from prime_rl.trainer.models.kernels import mxfp8_quant
@@ -349,7 +393,7 @@ def mega_moe_forward_mxfp8_qat(
 ):
     import deep_gemm
 
-    weights = mxfp8_qat_forward_weights(gate_up_proj, down_proj, *rounding)
+    weights = cached_qat_forward_weights(gate_up_proj, down_proj, *rounding)
     num_tokens = x.shape[0]
     x_fp8, x_sf = qat_cast_tokens(x)
     buffer.x[:num_tokens].copy_(x_fp8)
@@ -378,7 +422,7 @@ def mega_moe_backward_mxfp8_qat(
     dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp, rounding=(None, None, 0)
 ):
     """BF16 backward on the weights the MXFP8 forward computed with (the straight-through estimator of QAT)."""
-    gate_up, down = mxfp8_rounded_weights(mxfp8_qat_forward_weights(gate_up_proj, down_proj, *rounding))
+    gate_up, down = cached_qat_rounded_weights(gate_up_proj, down_proj, *rounding)
     return mega_moe_backward_bf16(dy, x, topk_idx, topk_weights, gate_up, down, buffer, dw_dtype, activation_clamp)
 
 
