@@ -1,8 +1,11 @@
 import prime_rl._compat  # noqa: F401
 
+import json
 import math
+import os
 import time
 import asyncio
+from pathlib import Path
 from contextlib import nullcontext
 from datetime import timedelta
 
@@ -10,6 +13,7 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
+import prime_rl.trainer.models.deepseek_v4.modeling_deepseek_v4 as dsv4_modeling
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
@@ -440,6 +444,7 @@ def train(config: SFTConfig):
             )
 
         routing_stats = []
+        forward_times, layer_times = [], []
         perf_counter = get_perf_counter(model)
         step_local_num_tokens = 0
         step_local_flops = 0
@@ -451,8 +456,17 @@ def train(config: SFTConfig):
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
                 )
 
+            # Experiment: time the forward alone (synchronized, so neither the previous backward nor CPU offload is
+            # counted) and each decoder layer's forward (CUDA events in the eager layer loop)
+            torch.cuda.synchronize()
+            forward_start = time.perf_counter()
+            dsv4_modeling.LAYER_TIMING = []
             with maybe_record_function("forward"):
                 local_loss_sum, batch_token_count = compute_loss(micro_batch)
+            torch.cuda.synchronize()
+            forward_times.append(time.perf_counter() - forward_start)
+            layer_times.append([(i, s.elapsed_time(e)) for i, s, e in dsv4_modeling.LAYER_TIMING])
+            dsv4_modeling.LAYER_TIMING = None
 
             if gradient_manager is None:
                 step_local_token_count += batch_token_count
@@ -476,6 +490,12 @@ def train(config: SFTConfig):
         # Wait for the queued backward kernels so this times GPU work, not kernel launches.
         torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+        if os.environ.get("LAYER_TIMING_DIR"):
+            # Every rank writes its own forward and per-layer times (ms), so the max over ranks can be taken offline
+            timing_dir = Path(os.environ["LAYER_TIMING_DIR"])
+            timing_dir.mkdir(parents=True, exist_ok=True)
+            with open(timing_dir / f"rank{dist.get_rank():03d}.jsonl", "a") as f:
+                f.write(json.dumps({"step": progress.step, "forward_s": forward_times, "layer_ms": layer_times}) + "\n")
         moe_stats, expert_load_stats = {}, {}
         if is_moe_model:
             micro_moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
@@ -639,6 +659,8 @@ def train(config: SFTConfig):
             "time/save_ckpt": save_ckpt_time,
             "time/broadcast_weights": broadcast_weights_time,
             "time/forward_backward": forward_backward_time,
+            "time/forward": sum(forward_times),
+            "time/forward_layers": sum(t for micro in layer_times for _, t in micro) / 1e3,
             "step": progress.step,
         }
         asyncio.run(monitors.log(time_metrics, step=progress.step))

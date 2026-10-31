@@ -31,6 +31,10 @@ from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
 
+# Experiment instrumentation: when a list, the eager layer loop records (layer, start, end) CUDA events of each forward
+LAYER_TIMING: list | None = None
+
+
 class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     """One hyper-connected block: mHC, attention, mHC, MoE.
 
@@ -248,12 +252,19 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
                 if tensor is not None:
                     torch._dynamo.maybe_mark_dynamic(tensor, 1)
             # By keyword: DYNAMIC_TENSOR_ARG_DIMS in trainer/model.py marks its sequence axis dynamic by name.
+            if LAYER_TIMING is not None:
+                start = torch.cuda.Event(enable_timing=True)
+                start.record()
             mhc_states = decoder_layer(
                 mhc_states=mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
             )
+            if LAYER_TIMING is not None:
+                end = torch.cuda.Event(enable_timing=True)
+                end.record()
+                LAYER_TIMING.append((layer_idx, start, end))
 
         hidden_states = self.norm(self.hc_head(mhc_states))
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)
