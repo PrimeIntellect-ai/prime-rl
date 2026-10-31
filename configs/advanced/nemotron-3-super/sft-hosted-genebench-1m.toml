@@ -1,0 +1,161 @@
+# Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 GeneBench-Pro trajectories (rlm harness).
+# Same recipe as sft-hosted-nl2repo-1m.toml (1M context, cp16/ep16, lr 1e-5, warmup 10% of epoch 1, cosine to 1e-6,
+# best/last retention, text-only HF export at the end) for 4 epochs.
+# prime train configs/advanced/nemotron-3-super/sft-hosted-genebench-1m.toml --volume nemotron-sft-genebench \
+#     -e ~/.config/prime-export/hf.env -y          # forwards HF_TOKEN for the end-of-run push; without it the
+#                                                  # exports stay on the volume
+#
+# Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
+# trained as its text-only language model (/volume/models/nemotron-3.5-super-text). Check before every
+# launch: data-prep/verify_checkpoint.py --revision fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe (exit 0).
+#
+# Data: datasets/nemotron-distill-sft-genebench-1m, subset genebench, from export
+# genebench-pro-glm53-measure-sft-20261030 after the redraw swap (sha256 5aba8b91...85ca1; 968 rows = 121 tasks x 8,
+# collected with verifiers rlm = nano-rlm 4cd7f399, tools ipython + wait, teacher internal/glm-5.3-high-throughput).
+# Every rollout is kept: no reward filter (796 reward-0 rows kept), nothing dropped, nothing redacted.
+# Build: handoff/nemotron-3.5-super-sft-genebench/data-prep.
+#   train        808 rows, 101 tasks, 107.0M tokens, 65.4M loss tokens, longest row 444,938 tokens
+#   validation   160 rows,  20 tasks = the RL held-out split (genebench-env configs/genebench-hosted.toml select
+#                lists; data-prep/genebench-val-tasks.txt), 24.4M tokens. Never trained on.
+# Packed as the trainer packs them (seed 42, 2 data ranks x 2 workers, data-prep/packing.py): 18.79 steps per epoch
+# at batch_size 6, 449 packed rows over 4 epochs (74.83 steps), ~5.72M tokens per step.
+#
+# Disk (5 TiB volume): a full checkpoint (fp32 params + AdamW state) is ~1.45 TB, the best snapshot (fp32 params
+# only) ~0.48 TB, each HF export ~0.25 TB, models/ + datasets/ ~0.25 TB. Peak ~3.6 TB in all: the previous
+# checkpoint + the one being written + best. End of run: 1.45 + 0.48 + 2 x 0.25 = 2.43 TB of run data.
+
+image_tag = "v0.10.1.dev74"
+# exp/nemotron-sft-genebench = exp/nemotron-sft-v3 @ 9132030e2 (68deedf7c + configs) + this config. Code is
+# identical to the nl2repo / swe-marathon 1M runs.
+source_ref = "exp/nemotron-sft-genebench"
+gpu_type = "H200_141GB"
+
+# 4 epochs: 449 packed rows / 6 = 74.83 steps. 74 is the floor (as nl2repo's 410).
+max_steps = 74
+dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
+
+[scheduler]
+type = "cosine"
+warmup_steps = 2    # 10% of epoch 1 (18.79 steps); linear 1e-6 (step 1, start = min_lr) -> 1e-5 (step 3)
+min_lr = 1e-6       # then cosine decay to 1e-6 at max_steps
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 4
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "nemotron-3.5-super-distill-sft-genebench-1m-4ep"
+
+[ckpt]
+# Resumable checkpoints for crash recovery at 19, 38, 57 (~1 epoch, ~1.2 h apart; never on a validation step).
+# The final step is saved once, after the loop.
+interval = 19
+# Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
+# is always saved. The best weights are kept separately ([val] keep_best).
+keep_last = 1
+
+[resume]
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+# seq_len 1048576 (1M) at cp=16 / ep=16 on 32 GPUs: as the nl2repo and swe-marathon 1M runs.
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
+
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
+name = "nemotron-3.5"
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-genebench-1m"
+seq_len = 1048576
+batch_size = 6   # packed rows: ~5.7M tokens per step; 2 data ranks x 3 grad-accum micro-steps
+micro_batch_size = 1
+num_workers = 2
+stopping_strategy = "all_exhausted"
+shuffle = true
+seed = 42
+subsets = [
+    "genebench",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# Validation on the held-out tasks: 26 packed rows per pass (13 per data rank; nl2repo's pass was 68). The rows are
+# stored in an order that packs evenly on the 2 data ranks (world 32 / cp 16 x num_workers 1): built with
+# --val-data-ranks 2, keep shuffle = false and num_workers = 1.
+# after_optimizer_step: val/loss at step N is the loss of the weights after N updates, and the final step is
+# validated too: base (eval_on_start, before step 1), then after steps 5, 10, ..., 70 and 74 (15 candidates,
+# ~quarter-epoch spacing).
+# keep_best: the lowest of those losses keeps a weights-only snapshot in runs/<id>/best-weights/ (best.json: step,
+# loss, every candidate's loss); the eval_on_start pass is not a candidate.
+[val]
+interval = 5
+eval_on_start = true
+after_optimizer_step = true
+keep_best = true
+
+[val.data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-genebench-1m"
+subsets = [
+    "genebench",
+]
+splits = [
+    "validation",
+]
+seq_len = 1048576
+batch_size = 6
+micro_batch_size = 1
+num_workers = 1
+shuffle = false
+
+[val.data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# After the final step and checkpoint: the best and the last weights as text-only NemotronHForCausalLM models,
+# written into the layout of /volume/models/nemotron-3.5-super-text (63 shards, 42,683 tensors; the untrained
+# mtp.* tensors copied as they are) under runs/<id>/hf-export/{best,last}/, then pushed to private repos.
+[hf_export]
+checkpoints = ["best", "last"]
+best_repo = "PrimeIntellect/Nemotron-3.5-Super-genebench-sft-best"
+last_repo = "PrimeIntellect/Nemotron-3.5-Super-genebench-sft-last"
+private = true
+model_card = """
+- Base: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision fb0ee0bc), its language model only.
+- Data: every GLM-5.3 GeneBench-Pro trajectory in the rlm harness (nano-rlm 4cd7f399, tools ipython + wait; export
+  genebench-pro-glm53-measure-sft-20261030 after the redraw swap, no reward filter), 101 training tasks (the 20 RL
+  held-out tasks excluded), 1M-token packed sequences, 4 epochs, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
+- Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
+  `chat_template_kwargs={"truncate_history_thinking": false}`.
+"""
