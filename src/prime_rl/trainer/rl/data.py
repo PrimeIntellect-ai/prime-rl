@@ -227,7 +227,13 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        # Drop each decoded micro batch once converted, so the whole decoded batch (a DP replica's, on every rank)
+        # and all of its tensors are never held in host memory at the same time.
+        micro_batches.reverse()
+        tensors = []
+        while micro_batches:
+            tensors.append(self._micro_batch_to_tensor(micro_batches.pop()))
+        return tensors
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""

@@ -72,12 +72,15 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
+from prime_rl.trainer.rl.final_export_plan import ExportPaths, read_json, read_outcome
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
+from prime_rl.utils.ckpt_retention import DONE, SKIPPED, EvalRecorder, fork_steps, scan_ckpt_dir
+from prime_rl.utils.gb_settings import check_resume_step, load_gb_settings, validate_orchestrator_settings
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_resume, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -129,6 +132,7 @@ class Orchestrator:
     receiver: WeightReceiver
     resume_step: int | None
     lag_task: asyncio.Task | None
+    eval_recorder: EvalRecorder | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
@@ -141,6 +145,24 @@ class Orchestrator:
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+
+        # GeneBench keep-3 settings (GB_* in [orchestrator.env_vars]); inert when unset. With them on, the
+        # orchestrator writes one record per eval epoch for the trainer's checkpoint retention.
+        self.gb, gb_warnings = load_gb_settings(config.env_vars)
+        gb_warnings += validate_orchestrator_settings(
+            self.gb,
+            eval_intervals=config.eval.intervals if config.eval is not None else None,
+            ckpt_interval=config.ckpt.interval if config.ckpt is not None else None,
+            retrigger_on_resume=config.eval.retrigger_on_resume if config.eval is not None else False,
+        )
+        for warning in gb_warnings:
+            get_logger().warning(warning)
+        get_logger().info(self.gb.describe())
+        self.eval_recorder = (
+            EvalRecorder(self.ckpt_manager.ckpt_dir, ckpt_interval=config.ckpt.interval, log=get_logger())
+            if self.gb.records_enabled and config.ckpt is not None
+            else None
+        )
         self.controller = None
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
@@ -236,13 +258,11 @@ class Orchestrator:
         if config.eval is not None:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
 
-        if config.resume is not None:
-            if config.resume.dir is not None:
-                self.resume_step = config.resume.dir_step
-            else:
-                self.resume_step = config.resume.step
-                if self.resume_step is None:
-                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir, ("trainer", "orchestrator"))
+        # A fork's resume.dir is used only until the run has its own checkpoint (same decision as the trainer)
+        self.resume_step, fork_dir = resolve_resume(config.resume, self.ckpt_manager.ckpt_dir)
+        check_resume_step(self.gb, self.resume_step)
+        if self.eval_recorder is not None:
+            self.reconcile_eval_records()
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
@@ -278,8 +298,7 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
         if self.resume_step is not None:
-            resume = self.config.resume
-            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
+            resume_path = fork_dir / "orchestrator" if fork_dir is not None else None
             self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
             self.progress.step = self.resume_step + 1
 
@@ -429,6 +448,16 @@ class Orchestrator:
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
 
+        # GB_FINAL_EXPORT: an attempt resumed at the final step only waits for the trainer's final export; drain
+        # right away instead of filling a batch that can never train.
+        if (
+            self.gb.final_export
+            and config.max_steps is not None
+            and self.resume_step is not None
+            and self.resume_step >= config.max_steps
+        ):
+            await self.start_draining(f"Resumed at the final step {self.resume_step}")
+
         # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
         # logs a forced-cleanup warning instead of a clean-exit success.
@@ -458,6 +487,8 @@ class Orchestrator:
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
+                if self.gb.final_export and config.max_steps is not None and self.progress.step >= config.max_steps:
+                    await self.wait_for_final_export(config.max_steps)
                 # The background loggers write through the monitors, so they must
                 # stop before finalize marks the run finished
                 if self.inference_metrics is not None:
@@ -475,6 +506,46 @@ class Orchestrator:
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
             await asyncio.to_thread(trim_process_memory)
+
+    async def wait_for_final_export(self, final_step: int) -> None:
+        """GB_FINAL_EXPORT: the trainer exports the final checkpoints once the final eval (run here) is done. Stay
+        up until it writes its outcome, since finalizing marks the run finished and the platform could tear the
+        run down mid-upload. Bounded by GB_WAIT_FOR_EXPORT_S; a timeout or a failed export is logged loudly and
+        the run is finalized anyway (the checkpoints are on the volume)."""
+        paths = ExportPaths(self.config.output_dir)
+        armed = read_json(paths.armed)
+        if armed is None or armed.get("final_step") != final_step:
+            get_logger().warning(
+                f"GB_FINAL_EXPORT=1, but the trainer did not arm a final export for step {final_step} ({paths.armed}: "
+                f"{armed}); not waiting for it. Is GB_FINAL_EXPORT=1 in [trainer.env_vars]?"
+            )
+            return
+        timeout = self.gb.wait_for_export_s
+        get_logger().info(f"Waiting up to {format_time(timeout)} for the trainer's final export ({paths.root})")
+        start = time.perf_counter()
+        last_log = start
+        while True:
+            status, payload = read_outcome(paths, final_step)
+            if status == "done":
+                get_logger().success(f"Trainer's final export done: {payload.get('repos')}")
+                return
+            if status == "failed":
+                get_logger().error(
+                    f"TRAINER'S FINAL EXPORT FAILED: errors {payload.get('errors')}, problems {payload.get('problems')} "
+                    f"({paths.failed}); finalizing the run anyway"
+                )
+                return
+            now = time.perf_counter()
+            if now - start > timeout:
+                get_logger().error(
+                    f"THE TRAINER'S FINAL EXPORT DID NOT FINISH within {format_time(timeout)} ({paths.root}); "
+                    "finalizing the run anyway, which may stop the export mid-upload"
+                )
+                return
+            if now - last_log > 600:
+                get_logger().info(f"Still waiting for the trainer's final export ({format_time(now - start)})")
+                last_log = now
+            await asyncio.sleep(30)
 
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
@@ -780,6 +851,35 @@ class Orchestrator:
             f"train episode(s); any in-flight evals will complete)"
         )
 
+    def reconcile_eval_records(self) -> None:
+        """Align the keep-3 eval records with the timeline this attempt resumes (see EvalRecorder.reconcile).
+        Runs once ``resume_step`` is known, before the startup policy triggers its eval."""
+        assert self.eval_recorder is not None and self.config.eval is not None
+        env_names = [source.resolved_name for source in self.config.eval.source]
+        lines = self.eval_recorder.reconcile(
+            env_names=env_names,
+            resume_step=self.resume_step,
+            complete_steps=scan_ckpt_dir(self.ckpt_manager.ckpt_dir).complete,
+            retrigger_on_resume=self.config.eval.retrigger_on_resume,
+            # The forked step (resume.dir in another run) is evaluated here but never checkpointed here
+            external_steps=fork_steps(
+                self.config.resume.dir if self.config.resume is not None else None, self.ckpt_manager.ckpt_dir
+            )[0],
+        )
+        for line in lines:
+            get_logger().info(f"Eval records: {line}")
+        self.eval_recorder.write_writer_info(
+            {
+                "eval_envs": env_names,
+                "resume_step": self.resume_step,
+                "settings": self.gb.as_dict(),
+                # For the final export's model cards (the trainer does not see this config)
+                "batch_size": self.config.batch_size,
+                "max_steps": self.config.max_steps,
+                "eval_group_size": {source.resolved_name: source.group_size for source in self.config.eval.source},
+            }
+        )
+
     async def trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
         fires. No-op when eval is not configured."""
@@ -787,8 +887,29 @@ class Orchestrator:
             return
         if self.resume_step == step and self.config.eval is not None and not self.config.eval.retrigger_on_resume:
             return
+        # Keep-3 records: an eval of the resume step that finished before the restart is not run again (hours of
+        # eval for a result that is already recorded). A failed one is, and so is a fork's step (no record here).
+        if (
+            self.resume_step == step
+            and self.eval_recorder is not None
+            and self.eval_envs is not None
+            and self.eval_recorder.terminal_at(step, self.eval_envs.names, statuses=(DONE, SKIPPED))
+        ):
+            get_logger().info(
+                f"Eval of step {step} finished before this attempt (records are terminal); not re-running"
+            )
+            return
         is_final = self.config.max_steps is not None and step >= self.config.max_steps
         fired, _ = self.eval_source.trigger(step, force=is_final)
+        assert self.eval_envs is not None
+        census = {
+            env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
+            for env_name in fired
+        }
+        if self.eval_recorder is not None:
+            self.eval_recorder.on_trigger(
+                step, fired=fired, env_names=self.eval_envs.names, expected=census, is_final=is_final
+            )
         if not fired:
             return
         self.eval_triggered_steps.add(step)
@@ -797,11 +918,6 @@ class Orchestrator:
         now = time.perf_counter()
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
-        assert self.eval_envs is not None
-        census = {
-            env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
-            for env_name in fired
-        }
         for env_name, expected in census.items():
             await monitors.log_eval_plan(env_name, step, expected)
         get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
@@ -909,6 +1025,8 @@ class Orchestrator:
         """Persist + log one completed eval epoch through the monitors."""
         if not batch.episodes and not batch.failures:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
+            if self.eval_recorder is not None:
+                self.eval_recorder.on_failed(batch.env_name, batch.step, reason="no attempts returned")
             return
 
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
@@ -939,6 +1057,16 @@ class Orchestrator:
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
+        if self.eval_recorder is not None:
+            self.eval_recorder.on_done(
+                batch.env_name,
+                batch.step,
+                metrics=metrics,
+                n_episodes=len(episodes),
+                n_failures=len(batch.failures),
+                n_cancelled=batch.cancelled,
+                policy_version=policy_version,
+            )
 
         # Success line — quality metrics over the effective set, error rate over the full returned
         # cohort. ``Stat.mean()`` is 0.0 for an empty set.

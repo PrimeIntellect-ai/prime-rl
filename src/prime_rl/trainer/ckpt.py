@@ -163,6 +163,10 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
 
+        # The newest step this attempt saved, or resumed from in its own directory (not a fork's external
+        # step). Keep-3 retention never deletes it or anything above it.
+        self.last_saved_step: int | None = None
+
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
         if resume is not None and resume.step is not None:
             self.ckpt_steps = [s for s in all_steps if s <= resume.step]
@@ -264,6 +268,8 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        if path is None:
+            self.last_saved_step = step
 
     def save(
         self,
@@ -284,6 +290,7 @@ class CheckpointManager:
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
+        self.last_saved_step = step
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""

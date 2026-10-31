@@ -2,6 +2,7 @@ import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
 from functools import partial
+import os
 import time
 import asyncio
 from datetime import timedelta
@@ -82,7 +83,10 @@ from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.trainer.rl.final_export import FinalExport
+from prime_rl.utils.ckpt_retention import Keep3Retention, RetentionConfig, fork_steps
+from prime_rl.utils.gb_settings import check_resume_step, load_gb_settings, validate_trainer_settings
+from prime_rl.utils.pathing import resolve_resume, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -136,18 +140,54 @@ def train(config: TrainerConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    # Check for checkpoint to resume from
-    checkpoint_step = None
+    # GeneBench keep-3 retention / final export settings (GB_* in [trainer.env_vars]); inert when unset.
+    # Validated before anything slow so a bad combination fails at startup, not after training.
+    gb, gb_warnings = load_gb_settings(config.env_vars)
+    validate_trainer_settings(
+        gb,
+        ckpt_enabled=config.ckpt is not None and config.ckpt.interval is not None,
+        keep_last=config.ckpt.keep_last if config.ckpt else None,
+        keep_interval=config.ckpt.keep_interval if config.ckpt else None,
+        has_hf_token=bool(os.environ.get("HF_TOKEN") or config.env_vars.get("HF_TOKEN")),
+    )
+    for warning in gb_warnings:
+        logger.warning(warning)
+    logger.info(gb.describe())
+
+    # Check for checkpoint to resume from (a fork's resume.dir only until the run has its own checkpoint)
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
+    checkpoint_step, fork_dir = resolve_resume(config.resume, ckpt_manager.ckpt_dir)
+    check_resume_step(gb, checkpoint_step)
 
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ("trainer", "orchestrator"))
+    # Keep-3: the master is the only deleter. A forked step lives in another run's directory: it can hold a
+    # best role through its eval record here, but it is never deleted.
+    external_steps, protected_steps = fork_steps(config.resume.dir if config.resume else None, ckpt_manager.ckpt_dir)
+    retention = None
+    if gb.keep3 and world.is_master:
+        retention = Keep3Retention(
+            ckpt_manager.ckpt_dir,
+            cfg=RetentionConfig(metric_keys=gb.metric_keys, max_eval_error=gb.max_eval_error),
+            eval_env=gb.eval_env,
+            external_steps=external_steps,
+            protected_steps=protected_steps,
+            log=logger,
+        )
+
+    # GB_FINAL_EXPORT: after the final checkpoint and its eval, the keep-3 role holders go to Hugging Face from here.
+    # A restarted attempt that resumed from the final checkpoint only finishes that export (export_only).
+    final_export = None
+    export_only = False
+    if gb.final_export:
+        final_export = FinalExport(
+            config,
+            gb,
+            ckpt_dir=ckpt_manager.ckpt_dir,
+            retention=retention,
+            external_steps=external_steps,
+            fork_dir=fork_dir,
+        )
+        export_only = final_export.startup(checkpoint_step, fork_dir)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
@@ -222,14 +262,13 @@ def train(config: TrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        resume_dir = config.resume.dir if config.resume else None
         ckpt_manager.load(
             checkpoint_step,
             model,
             [optimizer],
             scheduler,
             progress,
-            path=resume_dir / "trainer" if resume_dir is not None else None,
+            path=fork_dir / "trainer" if fork_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
@@ -299,6 +338,10 @@ def train(config: TrainerConfig):
             logger.debug(
                 f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
             )
+        if export_only:
+            # Training finished in an earlier attempt. The startup broadcast above still ran, since the orchestrator
+            # waits for it; no batch will come.
+            break
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
@@ -676,6 +719,10 @@ def train(config: TrainerConfig):
         else:
             save_ckpt_time = 0
 
+        # Keep-3 runs every step, not only after a save: an eval finishing frees its checkpoint right away.
+        if retention is not None:
+            retention.run_safely(ckpt_manager.last_saved_step)
+
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
@@ -784,18 +831,31 @@ def train(config: TrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    # Write final checkpoint
+    # Write final checkpoint (an export-only attempt resumed from it)
+    final_step = checkpoint_step if export_only else progress.step
     if config.ckpt is not None or paused:
-        logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        if export_only:
+            logger.info(f"Final checkpoint at step {final_step} was saved by an earlier attempt")
+        else:
+            logger.info(f"Saving final checkpoint at step {progress.step}")
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         if paused:
-            controller.mark_saved(progress.step)
+            controller.mark_saved(final_step)
         else:
             ckpt_manager.maybe_clean()
+            # The final step's eval is still running and the orchestrator writes its marker only after that
+            # eval, so here it is protected as the newest saved step rather than kept as last. The final keep
+            # set is computed once that eval is done: Keep3Retention.run(final_step, assume_complete=[final_step]).
+            if retention is not None:
+                retention.run_safely(ckpt_manager.last_saved_step)
 
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
+
+    # Waits for the final eval (hours), then exports; never raises on an export failure (see final_export.py)
+    if final_export is not None and not paused and config.max_steps is not None and final_step >= config.max_steps:
+        final_export.run(model, optimizer, final_step, heart=heart)
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")

@@ -1,5 +1,6 @@
 import pytest
 
+from prime_rl.configs.shared import ResumeConfig
 from prime_rl.utils.pathing import (
     clean_future_steps,
     create_attempt_dirs,
@@ -7,6 +8,7 @@ from prime_rl.utils.pathing import (
     get_broadcast_dir,
     get_step_path,
     resolve_latest_ckpt_step,
+    resolve_resume,
     validate_run_dir,
 )
 
@@ -160,3 +162,48 @@ def test_resolve_latest_ckpt_step_starts_fresh_without_any_trainer_checkpoint(tm
     orch_only.mkdir(parents=True)
     (orch_only / "progress.pt").touch()
     assert resolve_latest_ckpt_step(tmp_path / "orch_only", ("trainer", "orchestrator")) is None
+
+
+def _touch_step(ckpt_dir, step, files=("trainer/.metadata", "orchestrator/progress.pt")):
+    for file in files:
+        path = get_step_path(ckpt_dir, step) / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+
+def test_resolve_resume_forks_only_until_the_run_has_its_own_checkpoint(tmp_path):
+    fork = tmp_path / "other" / "checkpoints" / "step_200"
+    _touch_step(fork.parent, 200)
+    ckpt_dir = tmp_path / "run" / "checkpoints"
+    resume = ResumeConfig(dir=fork)
+
+    # First attempt: no checkpoint dir yet, then only partial step dirs (orchestrator ahead of the trainer,
+    # a trainer save killed mid-write): fork
+    assert resolve_resume(resume, ckpt_dir) == (200, fork)
+    _touch_step(ckpt_dir, 220, files=("orchestrator/progress.pt", "trainer/__0_0.distcp"))
+    _touch_step(ckpt_dir, 240, files=("orchestrator/progress.pt",))
+    assert resolve_resume(resume, ckpt_dir) == (200, fork)
+
+    # A restart after the run's own checkpoints completed: resume from its newest complete step, not the fork
+    _touch_step(ckpt_dir, 220)
+    assert resolve_resume(resume, ckpt_dir) == (220, None)
+    _touch_step(ckpt_dir, 240)
+    _touch_step(ckpt_dir, 260, files=("trainer/.metadata",))  # final step before the orchestrator's teardown save
+    assert resolve_resume(resume, ckpt_dir) == (240, None)
+
+
+def test_resolve_resume_refuses_a_fork_into_a_dir_with_older_checkpoints(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    _touch_step(ckpt_dir, 100)
+    with pytest.raises(FileExistsError, match="cannot have produced"):
+        resolve_resume(ResumeConfig(dir=tmp_path / "other" / "step_200"), ckpt_dir)
+
+
+def test_resolve_resume_without_dir_is_unchanged(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    assert resolve_resume(None, ckpt_dir) == (None, None)
+    assert resolve_resume(ResumeConfig(), ckpt_dir) == (None, None)
+    _touch_step(ckpt_dir, 20)
+    _touch_step(ckpt_dir, 40)
+    assert resolve_resume(ResumeConfig(), ckpt_dir) == (40, None)
+    assert resolve_resume(ResumeConfig(step=20), ckpt_dir) == (20, None)

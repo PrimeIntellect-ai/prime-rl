@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import LogConfig, ResumeConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
@@ -373,6 +373,36 @@ def resolve_latest_ckpt_step(ckpt_dir: Path, components: tuple[str, ...]) -> int
         )
     logger.info(f"Found latest complete checkpoint in {ckpt_dir}: {steps[-1]}")
     return steps[-1]
+
+
+def resolve_resume(resume: ResumeConfig | None, ckpt_dir: Path) -> tuple[int | None, Path | None]:
+    """The step to resume from, and the external step directory to load it from when forking (else None).
+
+    ``resume.dir`` seeds the run only while it has no complete checkpoint of its own: a restarted attempt
+    of a forked run (the hosted platform restarts pods in place with the same config) resumes from its own
+    newest complete step instead of re-forking, which would discard everything trained since the fork.
+    The trainer and the orchestrator call this on the same directory before either writes to it, and a
+    step counts only with both completion markers, so they make the same decision."""
+    if resume is None:
+        return None, None
+    if resume.dir is not None:
+        own = resolve_latest_ckpt_step(ckpt_dir, ("trainer", "orchestrator")) if get_all_ckpt_steps(ckpt_dir) else None
+        if own is None:
+            get_logger().info(f"Forking from external checkpoint {resume.dir} (step {resume.dir_step})")
+            return resume.dir_step, resume.dir
+        if own <= resume.dir_step:
+            raise FileExistsError(
+                f"resume.dir forks step {resume.dir_step}, but {ckpt_dir} already has a complete checkpoint at step "
+                f"{own}, which this fork cannot have produced. Use a fresh run directory, or remove resume.dir."
+            )
+        get_logger().info(
+            f"Resuming from this run's own checkpoint at step {own}; resume.dir ({resume.dir}) only seeds a "
+            "run without checkpoints"
+        )
+        return own, None
+    if resume.step is not None:
+        return resume.step, None
+    return resolve_latest_ckpt_step(ckpt_dir, ("trainer", "orchestrator")), None
 
 
 def has_checkpoints(output_dir: Path) -> bool:
