@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
+from prime_rl.trainer.model import compute_ep_imbalance, compute_expert_load_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
@@ -306,3 +306,12 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_ep_imbalance():
+    # Two EP ranks of two experts each. Layer 0 is balanced; in layer 1 rank 0 takes 300 of 302 routes but runs only
+    # 3 GEMM tiles to rank 1's 2, since each of rank 1's single routes costs a full 128-row tile.
+    tokens_per_expert = torch.tensor([[64.0, 64.0, 64.0, 64.0], [200.0, 100.0, 1.0, 1.0]])
+    rank_imbalance, compute_imbalance = compute_ep_imbalance(tokens_per_expert, ep=2)
+    assert rank_imbalance.tolist() == pytest.approx([1.0, 300 / 151])
+    assert compute_imbalance.tolist() == pytest.approx([1.0, 1.2])

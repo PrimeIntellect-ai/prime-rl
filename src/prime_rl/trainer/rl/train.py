@@ -747,6 +747,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
+        if "ep_imbalance/rank/mean" in tensor_metrics:
+            step_message += f" | EP Imbalance {tensor_metrics['ep_imbalance/rank/mean']:.4f}"
         if "routing_confidence/mean" in tensor_metrics:
             step_message += f" | Routing Conf. {tensor_metrics['routing_confidence/mean']:.4f}"
         logger.success(step_message)
