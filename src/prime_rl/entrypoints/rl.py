@@ -175,7 +175,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     if config.resume is not None and config.resume.dir is not None:
         checkpoint_dirs.append(config.resume.dir.parent)
     ckpt = config.orchestrator.ckpt
-    suspend_dir = get_suspend_dir(config.run_dir) if ckpt is not None and ckpt.live_rollouts else None
+    suspend_dir = get_suspend_dir(config.run_dir) if ckpt is not None and ckpt.rollouts else None
     for split, source in env_servers(config):
         write_env_server_config(output_dir, split, source, config.orchestrator.log, checkpoint_dirs, suspend_dir)
 

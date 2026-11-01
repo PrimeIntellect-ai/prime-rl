@@ -28,7 +28,6 @@ from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.serve import EnvClient, EpisodeAssembly, RestoreRequest
 
 from prime_rl.configs.algorithm import FrozenModelConfig
@@ -72,12 +71,6 @@ class Env:
         """Where the replicas of a launcher-managed server publish their addresses; read
         when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
-        # A server that keeps its box snapshots past the run (`after = "keep"`) leaves
-        # their deletion to this run: a checkpoint may still resume from them.
-        self.owns_snapshots = any(
-            agent.checkpoint is not None and agent.checkpoint.after == "keep"
-            for agent in agent_config_fields(config.env).values()
-        )
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
@@ -89,7 +82,7 @@ class Env:
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
         self._tunnel_replicas: dict[str, int] = {}
-        """The replica that adopted each live box's tunnel (``ckpt.live_rollouts``): every
+        """The replica that adopted each live box's tunnel (``ckpt.rollouts``): every
         rollout that reaches its server through it restores there."""
 
     @property
@@ -178,13 +171,9 @@ class Env:
     def detach(self) -> None:
         """Leave the runs in flight to the servers: a run cancelled from now on is not
         aborted server-side, so its box outlives this client for the server to pause at its
-        shutdown (``ckpt.live_rollouts``)."""
+        shutdown (``ckpt.rollouts``)."""
         for client in self._env_clients:
             client.detach()
-
-    async def discard_checkpoints(self, checkpoints: list[str]) -> list[str]:
-        """Delete box snapshots this run owns and no longer needs; returns the deleted."""
-        return await self.env_clients[0].discard(checkpoints)
 
 
 class TrainEnv(Env):

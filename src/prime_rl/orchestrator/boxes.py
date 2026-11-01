@@ -1,4 +1,4 @@
-"""The live boxes of in-flight rollouts across a restart (``ckpt.live_rollouts``).
+"""The live boxes of in-flight rollouts across a restart (``ckpt.rollouts``).
 
 A checkpointed in-flight rollout's restore point names the box it runs in
 (``point["live"]``). On shutdown the env servers pause those boxes instead of deleting them
@@ -7,8 +7,8 @@ running, their harnesses retrying the model until a server answers again. A resu
 pauses the boxes its checkpoint resumes from as soon as it has read the checkpoint, so they
 wait frozen while the run comes up, and deletes the listed ones nothing resumes from: the
 boxes of rollouts started after the checkpoint, and those of groups the resume drops.
-Restoring an in-flight rollout then adopts its box where it is (verifiers); a box that is
-gone falls back to the snapshot restore."""
+Restoring an in-flight rollout then adopts its box where it is (verifiers); a rollout
+whose box is gone starts over."""
 
 import json
 from collections.abc import Iterable
@@ -34,15 +34,13 @@ def live_boxes(groups: Iterable[GroupState]) -> set[str]:
 
 
 def forget_live_boxes(groups: Iterable[GroupState]) -> int:
-    """Drop the live boxes from the groups' restore points, which then restore from their
-    snapshots: a forked run must not adopt the boxes of the run it forks, which may still
-    be running. Returns how many it dropped."""
+    """Drop the groups' restore points, whose rollouts then start over: a forked run must
+    not adopt the boxes of the run it forks, which may still be running. Returns how many
+    it dropped."""
     dropped = 0
     for group in groups:
-        for restore in group.restores:
-            if restore.point.get("live"):
-                restore.point["live"] = None
-                dropped += 1
+        dropped += len(group.restores)
+        group.restores = []
     return dropped
 
 
@@ -83,7 +81,7 @@ async def settle_live_boxes(groups: list[GroupState], directory: Path, *, adopt:
     listed ones nothing resumes from. Without ``adopt`` the restore points lose their boxes
     first (``forget_live_boxes``), and every listed box goes."""
     if not adopt and (dropped := forget_live_boxes(groups)):
-        get_logger().info(f"Restoring {dropped} in-flight rollouts from snapshots, not their live boxes")
+        get_logger().info(f"Starting {dropped} in-flight rollouts over, not adopting their live boxes")
     resumed = live_boxes(groups)
     suspended, files = read_suspended(directory)
     await pause_boxes(resumed)

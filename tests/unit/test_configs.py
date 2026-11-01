@@ -1375,7 +1375,7 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
 
 
 @pytest.mark.parametrize("rollouts", [False, True])
-def test_shared_ckpt_rollouts_has_the_env_agents_keep_their_snapshots(rollouts):
+def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
     config = RLConfig.model_validate(
         {
             "ckpt": {"interval": 5, "rollouts": rollouts},
@@ -1388,8 +1388,3 @@ def test_shared_ckpt_rollouts_has_the_env_agents_keep_their_snapshots(rollouts):
         }
     )
     assert config.orchestrator.ckpt.rollouts is rollouts
-    sources = [config.orchestrator.train.source[0], config.orchestrator.eval.source[0]]
-    expected = ("all", "keep") if rollouts else ("last", "delete")
-    for source in sources:
-        checkpoint = source.env.agent.checkpoint
-        assert (checkpoint.keep, checkpoint.after) == expected

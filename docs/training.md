@@ -353,44 +353,31 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
 With `rollouts = true` in the shared `[ckpt]` block (`orchestrator.ckpt.rollouts`, off by default), a resumed run picks up its in-flight and in-queue rollouts where the checkpoint left them, so the first steps after a resume see the same mix of tasks as an uninterrupted run:
 
 - **Open groups** keep their members: the ones that already finished, and the ones never dispatched.
-- **In-flight rollouts** (still sampling) continue from their newest restore point when their env supports rollout checkpointing (see [rollout checkpointing](#rollout-checkpointing)); otherwise they start over. Without this, a resume would skip them and train first on whatever finishes fastest.
+- **In-flight rollouts** (still sampling) continue in the boxes they were running in (see [live rollouts](#live-rollouts)). Without this, a resume would skip them and train first on whatever finishes fastest.
 - **In-queue rollouts** (finished, not yet shipped: the unshipped batch and the results not yet consumed) carry over.
 - **Eval epochs in progress** resume where they stopped: their open groups and in-flight rollouts, the examples not yet dispatched, and the rollouts already in.
 
 The env mix may change between the checkpoint and the resume. An env new to the run starts sampling as the resumed work drains; the rollouts of an env no longer configured are dropped.
 
-A forked process writes the checkpoint, so the orchestrator goes on sampling and training while it is written. Each in-queue rollout and in-flight restore point gets its own file under `checkpoints/step_{n}/orchestrator/rollouts/`. An in-queue rollout that a newer checkpoint still holds is linked from the older checkpoint, not written again.
+A forked process writes the checkpoint, so the orchestrator goes on sampling and training while it is written. Each in-queue rollout and in-flight rollout gets its own file under `checkpoints/step_{n}/orchestrator/rollouts/`. An in-queue rollout that a newer checkpoint still holds is linked from the older checkpoint, not written again.
 
-The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its in-flight and in-queue rollouts need to `checkpoints/step_{n}/orchestrator/arrays/`: those of the in-queue rollouts, and those of each in-flight rollout up to its restore point. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
-
-#### Rollout checkpointing
-
-Rollout checkpointing (`[env.agent.checkpoint]`) is on by default in verifiers, for a runtime that takes snapshots (prime) and a harness that supports it. The agent records a restore point as each model turn goes upstream and streams it to the orchestrator. The orchestrator checkpoint saves the newest one of every in-flight rollout. With `[ckpt] rollouts = true`, every env agent keeps its box snapshots for the orchestrator (`keep = "all"`, `after = "keep"`). The orchestrator keeps each in-flight rollout's newest snapshot and the ones its latest checkpoint resumes from, and deletes the rest. A harness that keeps nothing in its box (`null`) off prime restores from the trace alone when its agent sets `boxless = true`.
-
-```toml
-[ckpt]
-interval = 50
-rollouts = true
-```
+The env servers keep the training arrays (routing rows, sampling masks, top-k heads) in memory, and a resumed run has new env servers. So the orchestrator checkpoint has each env-server worker write the arrays its in-flight and in-queue rollouts need to `checkpoints/step_{n}/orchestrator/arrays/`: those of the in-queue rollouts, and those of each in-flight rollout's turns so far. The resumed run reads them from there. An in-flight rollout whose worker did not write its arrays starts over. The arrays can be large: about 100 MB per rollout for a long agentic rollout of a large MoE model with router replay.
 
 #### Live rollouts
 
-With `live_rollouts = true` as well, a resumed run continues its in-flight rollouts in the boxes they were running in, processes and all, instead of restoring them into fresh boxes. A snapshot holds only the filesystem: a restore relaunches the harness, tells the model the box was restored, and loses whatever ran in the box (servers, shells, a test run halfway done).
-
-Live rollouts take no snapshot as turns go: the box itself is the restore point, paused when the run stops (or as soon as the resumed run has read its checkpoint, after a crash). An env agent that sets `[env.agent.checkpoint]` explicitly still snapshots, as a fallback for a box that is gone; otherwise such a rollout starts over.
+An in-flight rollout continues in the box it was running in, processes and all: its shell state, servers it started, a test run halfway done, and the running harness itself. Nothing is snapshotted as turns go; the box itself is what the run resumes, paused when the run stops.
 
 - **On shutdown** (a crash elsewhere in the run, a signal, a preemption) the env servers pause the boxes of their in-flight rollouts instead of deleting them, and list them under `checkpoints/suspended/`. A paused box keeps its memory and processes, costs only its disk, and its clocks stop.
 - **If the env servers die without shutting down**, the boxes keep running. Their harnesses retry the model through the rollout's tunnel for up to 15 minutes.
-- **On resume** the orchestrator pauses the boxes its checkpoint resumes in as soon as it has read the checkpoint, and deletes the listed boxes it does not resume (rollouts started after the checkpoint). Each in-flight rollout then adopts its box: the env server takes over the rollout's tunnel and the running harness carries on. A rollout whose box is gone starts over (or restores from its snapshot, with snapshots on).
-- **What a box did after the checkpoint** stays in the harness's history: its next model request carries those turns, which the trace records as prompt, so they do not train. Checkpointing every step keeps that gap to one step.
+- **On resume** the orchestrator pauses the boxes its checkpoint resumes in as soon as it has read the checkpoint, and deletes the listed boxes it does not resume (rollouts started after the checkpoint). Each in-flight rollout then adopts its box: the env server takes over the rollout's tunnel and the running harness carries on.
+- **What a box did after the checkpoint** stays in the harness's history: its next model request carries those turns, which the trace records as prompt, so they do not train. A checkpoint every step keeps that to one step.
 
-A forked run (`--resume.dir`) never adopts the boxes of the run it forks; its rollouts restore from their snapshots. Only bash and null harnesses adopt their boxes for now; the others restore from snapshots.
+A rollout whose box is gone (the box died, or a long outage outlived its idle timeout) starts over, as does one whose harness cannot be adopted yet (only bash and null can). A forked run (`--resume.dir`) never adopts the boxes of the run it forks; its in-flight rollouts start over.
 
 ```toml
 [ckpt]
 interval = 1
 rollouts = true
-live_rollouts = true
 ```
 
 ### Pausing a Live Run

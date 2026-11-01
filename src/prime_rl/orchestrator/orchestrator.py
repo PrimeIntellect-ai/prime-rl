@@ -1050,7 +1050,7 @@ class Orchestrator:
         """Whether a resume adopts its rollouts' live boxes: not a forked run's
         (``resume.dir``), whose boxes the run it forks owns."""
         ckpt, resume = self.config.ckpt, self.config.resume
-        return ckpt is not None and ckpt.live_rollouts and (resume is None or resume.dir is None)
+        return ckpt is not None and ckpt.rollouts and (resume is None or resume.dir is None)
 
     def checkpoint_state(self) -> dict:
         """A ``build_state`` snapshot of the run now, with its in-flight and in-queue rollouts
@@ -1060,12 +1060,8 @@ class Orchestrator:
 
     async def save_state(self, state: dict, step: int) -> None:
         """Write a ``build_state`` of the run as it is now from a forked writer, while the
-        loop goes on. Its box snapshots are held from the start: sweeps go on during the
-        write. The last checkpoint's stay held until this one is written."""
-        groups = state["open_work"]["groups"] if "open_work" in state else []
-        self.dispatcher.hold_snapshots(groups, release=False)
+        loop goes on."""
         await self.ckpt_manager.save_forked(state, step)
-        self.dispatcher.hold_snapshots(groups)
 
     def open_work(self) -> dict:
         """The in-flight and in-queue train and eval rollouts a resumed run picks up where
@@ -1087,7 +1083,6 @@ class Orchestrator:
             "groups": self.dispatcher.open_work(),
             "sink": sink,
             "results": results,
-            "snapshots": dict(self.dispatcher.snapshots),
             "eval": {
                 "queue": list(self.eval_source.queue) if self.eval_source is not None else [],
                 "sink": self.eval_sink.state_dict() if self.eval_sink is not None else None,
@@ -1101,7 +1096,7 @@ class Orchestrator:
         new to the run start sampling as the resumed rollouts drain."""
         self.train_sink.load_state_dict(work["sink"])
         boxes = live_boxes(work["groups"])
-        self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
+        self.dispatcher.resume_open_work(work["groups"])
         # The boxes of dropped groups (envs no longer configured) have nothing to resume.
         if dropped := boxes - live_boxes(self.dispatcher.groups.values()):
             self.settling_boxes = asyncio.create_task(delete_boxes(dropped, "dropped groups"))
@@ -1254,7 +1249,7 @@ class Orchestrator:
             if self.release_future is not None:
                 await self.release_future
             if self.dispatcher is not None:
-                if not clean_exit and self.config.ckpt is not None and self.config.ckpt.live_rollouts:
+                if not clean_exit and self.saves_rollouts:
                     # A run that did not finish resumes: its env servers pause the boxes of
                     # the rollouts in flight as they shut down, so the cancels below must
                     # not abort those rollouts server-side.

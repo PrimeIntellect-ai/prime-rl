@@ -295,7 +295,7 @@ def get_ckpt_dir(output_dir: Path) -> Path:
 
 
 def get_suspend_dir(output_dir: Path) -> Path:
-    """Where the env servers list the boxes they paused on shutdown (``ckpt.live_rollouts``):
+    """Where the env servers list the boxes they paused on shutdown (``ckpt.rollouts``):
     next to the checkpoints, so a resumed run of this output dir finds them."""
     return get_ckpt_dir(output_dir) / "suspended"
 

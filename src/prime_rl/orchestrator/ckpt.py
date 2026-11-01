@@ -315,7 +315,7 @@ def persist_arrays(work: dict, directory: Path) -> None:
     """Have the env servers write the training arrays ``work`` needs to ``directory``:
     they keep them in memory, and a resumed run has new env servers. Those are the blobs
     of its finished but unshipped episodes and samples, and the arrays of each in-flight
-    rollout's nodes up to its restore point. Points ``work`` at what was written; a
+    rollout's nodes. Points ``work`` at what was written; a
     rollout whose arrays were not written starts over."""
     blobs: dict[str, set[str]] = defaultdict(set)
     for episode in _work_episodes(work):
@@ -324,7 +324,7 @@ def persist_arrays(work: dict, directory: Path) -> None:
                 blobs[payload["url"]].update(reference["id"] for reference in payload["branches"].values())
     for sample in _work_samples(work):
         blobs[sample.payload.url].add(sample.payload.id)
-    traces: dict[str, dict[str, tuple[str, int]]] = defaultdict(dict)
+    traces: dict[str, dict[str, int]] = defaultdict(dict)
     for group in work["groups"]:
         for restore in group.restores:
             info = restore.trace.get("info", {})
@@ -332,14 +332,8 @@ def persist_arrays(work: dict, directory: Path) -> None:
                 # Not dispatched since a resume: its arrays are in the last checkpoint.
                 blobs[Path(path).parent.as_uri()].add(Path(path).name)
             elif url := info.get(PAYLOAD_WORKER_KEY):
-                checkpoint = restore.point.get("checkpoint") or {}
-                if restore.point.get("live"):
-                    # A rollout that adopts its live box goes on from every node the
-                    # checkpoint holds, past its newest snapshot if it has one.
-                    num_nodes = len(restore.trace.get("nodes") or [])
-                else:
-                    num_nodes = 0 if checkpoint.get("node") is None else checkpoint["node"] + 1
-                traces[url][restore.trace["id"]] = (checkpoint.get("id"), num_nodes)
+                # The rollout goes on in its live box from every node the checkpoint holds.
+                traces[url][restore.trace["id"]] = len(restore.trace.get("nodes") or [])
 
     urls = sorted(set(blobs) | set(traces))
     with ThreadPoolExecutor(max(len(urls), 1)) as pool:

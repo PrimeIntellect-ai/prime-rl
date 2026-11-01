@@ -438,26 +438,15 @@ class CheckpointConfig(BaseConfig):
     """Step interval at which to save the orchestrator checkpoint."""
 
     rollouts: bool = False
-    """Also checkpoint the in-flight rollouts, which a resumed run continues from their
-    newest restore points, and the in-queue ones (finished, not yet shipped), of train
-    and eval envs alike: an eval epoch in progress resumes where it stopped.
-    Every env agent then keeps its box snapshots for this run (`keep = "all"`,
-    `after = "keep"`), which deletes them once no checkpoint resumes from them. An agent
-    with rollout checkpointing off (`checkpoint = None`) restarts its in-flight rollouts."""
-
-    live_rollouts: bool = False
-    """Also keep the in-flight rollouts' boxes alive across a restart, processes and all: the
-    env servers pause them on shutdown instead of deleting them, and a resumed run adopts each
-    box where it is, the running harness included. What a box did after the checkpoint stays
-    in the harness's history and trains as prompt (a checkpoint every step keeps that short).
-    A box that is gone falls back to the snapshot restore. Needs ``rollouts``; a forked run
-    (``resume.dir``) never adopts the boxes of the run it forks."""
-
-    @model_validator(mode="after")
-    def validate_live_rollouts(self):
-        if self.live_rollouts and not self.rollouts:
-            raise ValueError("ckpt.live_rollouts needs ckpt.rollouts")
-        return self
+    """Also checkpoint the in-flight rollouts and the in-queue ones (finished, not yet
+    shipped), of train and eval envs alike, so a resumed run picks them up where they
+    stopped: an eval epoch in progress resumes where it stopped too. An in-flight rollout
+    continues in the box it was running in, processes and the running harness included:
+    the env servers pause their boxes on shutdown instead of deleting them, and the
+    resumed run adopts each box where it is. What a box did after the checkpoint stays in
+    the harness's history and trains as prompt (a checkpoint every step keeps that short).
+    A rollout whose box is gone, or whose harness cannot be adopted, starts over. A forked
+    run (``resume.dir``) never adopts the boxes of the run it forks."""
 
 
 class ConcurrencyConfig(BaseConfig):
@@ -754,22 +743,6 @@ class OrchestratorConfig(BaseConfig):
                     f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
                 )
 
-        return self
-
-    @model_validator(mode="after")
-    def resolve_rollout_checkpointing(self):
-        """With ``ckpt.rollouts``, this run deletes its env agents' box snapshots itself:
-        a checkpoint may resume from them after the rollout's server is gone."""
-        if self.ckpt is None or not self.ckpt.rollouts:
-            return self
-        for _, source in self.env_sources:
-            for agent in agent_config_fields(source.env).values():
-                if self.ckpt.live_rollouts and "checkpoint" not in agent.model_fields_set:
-                    # The live box is the restore point: no snapshot every turn. A box
-                    # that is gone starts over, unless the env asks for snapshots.
-                    agent.checkpoint = None
-                if agent.checkpoint is not None:
-                    agent.checkpoint = agent.checkpoint.model_copy(update={"keep": "all", "after": "keep"})
         return self
 
     @model_validator(mode="after")

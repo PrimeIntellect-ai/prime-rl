@@ -46,7 +46,7 @@ def run_server(config: EnvServerConfig):
     sandbox_labels = [run_name] if run_name else []
     if config.suspend_dir is not None:
         # Read by every worker verifiers spawns: on shutdown they pause their rollouts'
-        # boxes and list them here, for the resumed run (``ckpt.live_rollouts``).
+        # boxes and list them here, for the resumed run (``ckpt.rollouts``).
         config.suspend_dir.mkdir(parents=True, exist_ok=True)
         os.environ["VF_SUSPEND_DIR"] = str(config.suspend_dir)
     addresses: queue.SimpleQueue | None = None
