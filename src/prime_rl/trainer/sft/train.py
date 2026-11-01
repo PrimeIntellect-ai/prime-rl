@@ -393,7 +393,10 @@ def train(config: SFTConfig):
     is_first_step = True
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
-        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        # exp: TRACE_CUDA_ONLY=1 records GPU kernels only (the CPU events and shapes of a long offloaded run fill host RAM)
+        cuda_only = os.environ.get("TRACE_CUDA_ONLY") == "1"
+        activities = [ProfilerActivity.CUDA] if cuda_only else [ProfilerActivity.CPU, ProfilerActivity.CUDA]
+        prof = profile(activities=activities, record_shapes=not cuda_only).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
