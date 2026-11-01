@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -346,20 +347,26 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
 CKPT_COMPLETE_MARKERS = {"trainer": ".metadata", "orchestrator": "progress.pt"}
 
 
-def is_complete_ckpt(step_dir: Path) -> bool:
-    return all(
-        (step_dir / component / marker).exists()
-        for component, marker in CKPT_COMPLETE_MARKERS.items()
-        if (step_dir / component).is_dir()
-    )
+def is_complete_ckpt(step_dir: Path, components: Iterable[str]) -> bool:
+    """Whether each of `components` finished writing its checkpoint of the step."""
+    return all((step_dir / component / CKPT_COMPLETE_MARKERS[component]).exists() for component in components)
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     """Gets the latest complete checkpoint step from the checkpoint directory, skipping
-    steps a killed run left half-written. Returns None if no checkpoints are found."""
+    steps a killed run left half-written: a step needs every component that checkpoints
+    into this directory (any step has its dir), each finished. The orchestrator writes a
+    step before the trainer does, so a crash between them leaves one without the other.
+    Returns None if no checkpoints are found."""
     logger = get_logger()
     steps = get_all_ckpt_steps(ckpt_dir)
-    complete = [step for step in steps if is_complete_ckpt(ckpt_dir / f"step_{step}")]
+    components = {
+        component
+        for step in steps
+        for component in CKPT_COMPLETE_MARKERS
+        if (ckpt_dir / f"step_{step}" / component).is_dir()
+    }
+    complete = [step for step in steps if is_complete_ckpt(ckpt_dir / f"step_{step}", components)]
     if skipped := [step for step in steps if complete and step > complete[-1]]:
         logger.warning(f"Skipping incomplete checkpoints in {ckpt_dir}: {skipped}")
     if len(complete) == 0:
