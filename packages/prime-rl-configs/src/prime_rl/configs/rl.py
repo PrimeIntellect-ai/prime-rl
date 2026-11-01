@@ -99,6 +99,9 @@ class SharedCheckpointConfig(BaseConfig):
     rollouts: bool = False
     """Also checkpoint the orchestrator's in-flight and in-queue rollouts, train and eval, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
 
+    live_rollouts: bool = False
+    """Also keep the in-flight rollouts' boxes alive across a restart and adopt them on resume (``orchestrator.ckpt.live_rollouts``)."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"

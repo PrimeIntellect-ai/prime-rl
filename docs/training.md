@@ -373,6 +373,24 @@ interval = 50
 rollouts = true
 ```
 
+#### Live rollouts
+
+With `live_rollouts = true` as well, a resumed run continues its in-flight rollouts in the boxes they were running in, processes and all, instead of restoring them into fresh boxes. A snapshot holds only the filesystem: a restore relaunches the harness, tells the model the box was restored, and loses whatever ran in the box (servers, shells, a test run halfway done).
+
+- **On shutdown** (a crash elsewhere in the run, a signal, a preemption) the env servers pause the boxes of their in-flight rollouts instead of deleting them, and list them under `checkpoints/suspended/`. A paused box keeps its memory and processes, costs only its disk, and its clocks stop.
+- **If the env servers die without shutting down**, the boxes keep running. Their harnesses retry the model through the rollout's tunnel for up to 15 minutes.
+- **On resume** the orchestrator pauses the boxes its checkpoint resumes in as soon as it has read the checkpoint, and deletes the listed boxes it does not resume (rollouts started after the checkpoint). Each in-flight rollout then adopts its box: the env server takes over the rollout's tunnel and the running harness carries on. A rollout whose box is gone restores from its snapshot, and without one starts over.
+- **What a box did after the checkpoint** stays in the harness's history: its next model request carries those turns, which the trace records as prompt, so they do not train. Checkpointing every step keeps that gap to one step.
+
+A forked run (`--resume.dir`) never adopts the boxes of the run it forks; its rollouts restore from their snapshots. Only bash and null harnesses adopt their boxes for now; the others restore from snapshots.
+
+```toml
+[ckpt]
+interval = 1
+rollouts = true
+live_rollouts = true
+```
+
 ### Pausing a Live Run
 
 With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:

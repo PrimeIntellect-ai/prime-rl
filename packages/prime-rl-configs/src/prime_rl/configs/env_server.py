@@ -31,6 +31,11 @@ class EnvServerConfig(BaseConfig):
     The others (a forked run's source checkpoint) are only read, when a rollout restores.
     Set by the RL launcher; empty, the workers neither persist nor restore arrays."""
 
+    suspend_dir: Path | None = None
+    """Pause the boxes of in-flight rollouts instead of deleting them when a worker shuts
+    down, and list each in a file here, for a resumed run to adopt or delete. Set by the RL
+    launcher with ``ckpt.live_rollouts``."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 

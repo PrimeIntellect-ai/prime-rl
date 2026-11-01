@@ -35,6 +35,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
+from prime_rl.orchestrator.boxes import live_tunnel
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
@@ -87,6 +88,9 @@ class Env:
         self._env_clients: list[EnvClient] = []
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
+        self._tunnel_replicas: dict[str, int] = {}
+        """The replica that adopted each live box's tunnel (``ckpt.live_rollouts``): every
+        rollout that reaches its server through it restores there."""
 
     @property
     def name(self) -> str:
@@ -147,10 +151,16 @@ class Env:
         change of one of the episode's traces — as it lands; ``assembly`` collects them
         into the in-flight traces and their newest restore points. ``restore``
         continues a trace from one of those restore points. The run goes to the replica
-        with the fewest runs in flight."""
+        with the fewest runs in flight, a restore into a live box to the replica holding its
+        box's tunnel."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
-        replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
+        tunnel = live_tunnel(restore)
+        replica = self._tunnel_replicas.get(tunnel) if tunnel is not None else None
+        if replica is None:
+            replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
+            if tunnel is not None:
+                self._tunnel_replicas[tunnel] = replica
         self._in_flight[replica] += 1
         try:
             return await self.env_clients[replica].run(
@@ -164,6 +174,13 @@ class Env:
             )
         finally:
             self._in_flight[replica] -= 1
+
+    def detach(self) -> None:
+        """Leave the runs in flight to the servers: a run cancelled from now on is not
+        aborted server-side, so its box outlives this client for the server to pause at its
+        shutdown (``ckpt.live_rollouts``)."""
+        for client in self._env_clients:
+            client.detach()
 
     async def discard_checkpoints(self, checkpoints: list[str]) -> list[str]:
         """Delete box snapshots this run owns and no longer needs; returns the deleted."""

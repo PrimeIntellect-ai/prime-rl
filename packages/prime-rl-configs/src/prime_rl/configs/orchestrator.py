@@ -445,6 +445,20 @@ class CheckpointConfig(BaseConfig):
     `after = "keep"`), which deletes them once no checkpoint resumes from them. An agent
     with rollout checkpointing off (`checkpoint = None`) restarts its in-flight rollouts."""
 
+    live_rollouts: bool = False
+    """Also keep the in-flight rollouts' boxes alive across a restart, processes and all: the
+    env servers pause them on shutdown instead of deleting them, and a resumed run adopts each
+    box where it is, the running harness included. What a box did after the checkpoint stays
+    in the harness's history and trains as prompt (a checkpoint every step keeps that short).
+    A box that is gone falls back to the snapshot restore. Needs ``rollouts``; a forked run
+    (``resume.dir``) never adopts the boxes of the run it forks."""
+
+    @model_validator(mode="after")
+    def validate_live_rollouts(self):
+        if self.live_rollouts and not self.rollouts:
+            raise ValueError("ckpt.live_rollouts needs ckpt.rollouts")
+        return self
+
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the

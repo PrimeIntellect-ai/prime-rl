@@ -255,7 +255,12 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
 
 
 def write_env_server_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, checkpoint_dirs: list[Path] | None = None
+    config_dir: Path,
+    split: str,
+    source: EnvConfig,
+    log: LogConfig,
+    checkpoint_dirs: list[Path] | None = None,
+    suspend_dir: Path | None = None,
 ) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
@@ -270,6 +275,7 @@ def write_env_server_config(
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
         "checkpoint_dirs": [path.resolve().as_posix() for path in checkpoint_dirs or []],
+        "suspend_dir": suspend_dir.resolve().as_posix() if suspend_dir is not None else None,
     }
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(server_config, indent=2))
@@ -286,6 +292,12 @@ def get_launcher_log_dir(output_dir: Path) -> Path:
 
 def get_ckpt_dir(output_dir: Path) -> Path:
     return output_dir / "checkpoints"
+
+
+def get_suspend_dir(output_dir: Path) -> Path:
+    """Where the env servers list the boxes they paused on shutdown (``ckpt.live_rollouts``):
+    next to the checkpoints, so a resumed run of this output dir finds them."""
+    return get_ckpt_dir(output_dir) / "suspended"
 
 
 def get_batch_dir(output_dir: Path) -> Path:
