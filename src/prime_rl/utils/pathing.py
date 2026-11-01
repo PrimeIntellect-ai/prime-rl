@@ -340,15 +340,33 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+# What each component writes last to its checkpoint of a step: a step whose component
+# dirs lack it was cut off mid-write (the trainer's DCP shards land before `.metadata`,
+# the orchestrator renames `progress.pt` into place).
+CKPT_COMPLETE_MARKERS = {"trainer": ".metadata", "orchestrator": "progress.pt"}
+
+
+def is_complete_ckpt(step_dir: Path) -> bool:
+    return all(
+        (step_dir / component / marker).exists()
+        for component, marker in CKPT_COMPLETE_MARKERS.items()
+        if (step_dir / component).is_dir()
+    )
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    steps = get_all_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
-        logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
-        return None
-    latest_step = steps[-1]
+    """Gets the latest complete checkpoint step from the checkpoint directory, skipping
+    steps a killed run left half-written. Returns None if no checkpoints are found."""
     logger = get_logger()
+    steps = get_all_ckpt_steps(ckpt_dir)
+    complete = [step for step in steps if is_complete_ckpt(ckpt_dir / f"step_{step}")]
+    if skipped := [step for step in steps if complete and step > complete[-1]]:
+        logger.warning(f"Skipping incomplete checkpoints in {ckpt_dir}: {skipped}")
+    if len(complete) == 0:
+        incomplete = f" (only incomplete ones: {steps})" if steps else ""
+        logger.warning(f"No checkpoints found in {ckpt_dir}{incomplete}. Starting from scratch.")
+        return None
+    latest_step = complete[-1]
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 
