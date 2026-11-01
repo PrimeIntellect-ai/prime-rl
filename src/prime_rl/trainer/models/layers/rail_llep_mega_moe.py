@@ -6,7 +6,8 @@ to the expert calls, with no host syncs:
 
 - forward: top-k ids and weights, then rows chunk by chunk (MXFP8 with ``mxfp8_qat``, bf16 with ``bf16``); partial
   outputs back per chunk;
-- backward: bf16 rows and output gradients chunk by chunk; input and top-k weight gradients back per chunk.
+- backward: output gradients chunk by chunk (with ``mxfp8_qat`` also bf16 rows; with ``bf16`` the forward's rows are saved
+  instead); input and top-k weight gradients back per chunk.
 
 Rail chunk ``i`` carries the peer's rows ``chunk_rows[i]`` (the same pseudo-random dealing on both sides), and the node's
 call ``i`` computes this rank's ``chunk_rows[i]`` and the peer's, so every call waits only for its own chunk. Both peers
@@ -140,9 +141,9 @@ def rail_llep_forward_op(
     rounding_seed: torch.Tensor | None = None,
     rounding_salts: torch.Tensor | None = None,
     expert_offset: int = 0,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """``(y, vids, foreign, plan_id, weights)``: the output, and the node plan's routes and top-k weights over this
-    rank's tokens followed by the rail peer's (for the backward)."""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``(y, vids, foreign, plan_id, weights, xs)``: the output, and the node plan's routes and top-k weights over this
+    rank's tokens followed by the rail peer's, and with ``bf16`` their rows (for the backward; empty otherwise)."""
     rail = _RAILS[rail_key]
     transport, state = rail.rail, rail.state
     num_tokens, T, H, K = x.shape[0], rail.max_tokens, rail.hidden, rail.top_k
@@ -219,7 +220,8 @@ def rail_llep_forward_op(
     transport.wait("y")
     partial = [rail.chunk("y", i, "recv")[: r.numel() * H * 2].view(torch.bfloat16).view(-1, H) for i, r in enumerate(rows)]
     y = y.index_add(0, order, torch.cat(partial))
-    return y[:num_tokens].to(x.dtype), vids, foreign, plan_id, weights
+    xs = xs16 if not qat else x.new_empty((0, H), dtype=torch.bfloat16)
+    return y[:num_tokens].to(x.dtype), vids, foreign, plan_id, weights, xs
 
 
 @rail_llep_forward_op.register_fake
@@ -227,14 +229,15 @@ def _rail_llep_forward_fake(
     x, topk_idx, topk_weights, gate_up_proj, down_proj, rail_key, activation_clamp=None, rounding_seed=None,
     rounding_salts=None, expert_offset=0,
 ):
-    T = _RAILS[rail_key].max_tokens
-    state = _RAILS[rail_key].state
+    rail = _RAILS[rail_key]
+    T, state = rail.max_tokens, rail.state
     return (
         torch.empty_like(x),
         topk_idx.new_empty((2 * T, topk_idx.shape[1]), dtype=torch.int64),
         topk_idx.new_empty((state.group.size(), state.options.max_foreign), dtype=torch.int32),
         torch.empty(1, dtype=torch.int64),
         topk_weights.new_empty((2 * T, topk_weights.shape[1]), dtype=torch.float32),
+        x.new_empty((2 * T if rail.precision == "bf16" else 0, x.shape[1]), dtype=torch.bfloat16),
     )
 
 
@@ -242,6 +245,7 @@ def _rail_llep_forward_fake(
 def rail_llep_backward_op(
     dy: torch.Tensor,
     x: torch.Tensor,
+    xs: torch.Tensor,
     vids: torch.Tensor,
     foreign: torch.Tensor,
     plan_id: torch.Tensor,
@@ -259,28 +263,35 @@ def rail_llep_backward_op(
     num_tokens, T, H, K = x.shape[0], rail.max_tokens, rail.hidden, rail.top_k
     x, dy = _pad(x, T), _pad(dy, T)
     rows, order, calls, offsets = rail.layout(T)
-    x16 = x.to(torch.bfloat16).contiguous()
     dy16 = dy.to(torch.bfloat16).contiguous()
+    # bf16: the forward's node rows are saved (`xs`), so only output gradients cross; mxfp8_qat sends bf16 rows too
+    send_rows = rail.precision != "bf16"
+    parts = ((H * 2, torch.bfloat16),) * (2 if send_rows else 1)
+    if send_rows:
+        x16 = x.to(torch.bfloat16).contiguous()
 
     transport.begin("bwd")
     for i, r in enumerate(rows):
-        xr, dyr = _split(rail.chunk("bwd", i, "send"), r.numel(), (H * 2, torch.bfloat16), (H * 2, torch.bfloat16))
-        torch.index_select(x16, 0, r, out=xr)
-        torch.index_select(dy16, 0, r, out=dyr)
-        transport.send("bwd", i, r.numel() * H * 4)
+        views = _split(rail.chunk("bwd", i, "send"), r.numel(), *parts)
+        torch.index_select(dy16, 0, r, out=views[0])
+        if send_rows:
+            torch.index_select(x16, 0, r, out=views[1])
+        transport.send("bwd", i, r.numel() * H * 2 * len(parts))
 
-    xs = torch.empty((2 * T, H), dtype=torch.bfloat16, device=x.device)
-    dys = torch.empty_like(xs)
-    xs[:T] = x16
+    if send_rows:
+        xs = torch.empty((2 * T, H), dtype=torch.bfloat16, device=x.device)
+        xs[:T] = x16
+    dys = torch.empty((2 * T, H), dtype=torch.bfloat16, device=x.device)
     dys[:T] = dy16
     transport.begin("dx")
 
     def before(i: int) -> None:
         n = rows[i].numel()
         transport.wait("bwd", i, i + 1)
-        xr, dyr = _split(rail.chunk("bwd", i, "recv"), n, (H * 2, torch.bfloat16), (H * 2, torch.bfloat16))
-        xs[T + offsets[i] : T + offsets[i + 1]] = xr
-        dys[T + offsets[i] : T + offsets[i + 1]] = dyr
+        views = _split(rail.chunk("bwd", i, "recv"), n, *parts)
+        dys[T + offsets[i] : T + offsets[i + 1]] = views[0]
+        if send_rows:
+            xs[T + offsets[i] : T + offsets[i + 1]] = views[1]
 
     def after(i: int, dx_chunk: torch.Tensor, dtopk_chunk: torch.Tensor) -> None:
         n = rows[i].numel()
@@ -310,7 +321,7 @@ def rail_llep_backward_op(
 
 @rail_llep_backward_op.register_fake
 def _rail_llep_backward_fake(
-    dy, x, vids, foreign, plan_id, weights, gate_up_proj, down_proj, rail_key, activation_clamp=None,
+    dy, x, xs, vids, foreign, plan_id, weights, gate_up_proj, down_proj, rail_key, activation_clamp=None,
     rounding_seed=None, rounding_salts=None, expert_offset=0,
 ):
     K = vids.shape[1]
@@ -324,16 +335,16 @@ def _rail_llep_backward_fake(
 
 def _setup_context(ctx, inputs, output) -> None:
     x, _, topk_weights, gate_up_proj, down_proj, rail_key, activation_clamp, rounding_seed, rounding_salts, offset = inputs
-    _, vids, foreign, plan_id, weights = output
-    ctx.save_for_backward(x, vids, foreign, plan_id, weights, gate_up_proj, down_proj, rounding_seed, rounding_salts)
+    _, vids, foreign, plan_id, weights, xs = output
+    ctx.save_for_backward(x, xs, vids, foreign, plan_id, weights, gate_up_proj, down_proj, rounding_seed, rounding_salts)
     ctx.rail_key, ctx.activation_clamp, ctx.expert_offset = rail_key, activation_clamp, offset
     ctx.topk_dtype = topk_weights.dtype
 
 
 def _backward(ctx, grad_y, *_):
-    x, vids, foreign, plan_id, weights, gate_up_proj, down_proj, rounding_seed, rounding_salts = ctx.saved_tensors
+    x, xs, vids, foreign, plan_id, weights, gate_up_proj, down_proj, rounding_seed, rounding_salts = ctx.saved_tensors
     dx, dtopk, dw1, dw2 = torch.ops.prime_rl.rail_llep_backward(
-        grad_y, x, vids, foreign, plan_id, weights, gate_up_proj, down_proj, ctx.rail_key, ctx.activation_clamp,
+        grad_y, x, xs, vids, foreign, plan_id, weights, gate_up_proj, down_proj, ctx.rail_key, ctx.activation_clamp,
         rounding_seed, rounding_salts, ctx.expert_offset,
     )
     return dx, None, dtopk.to(ctx.topk_dtype), dw1, dw2, None, None, None, None, None
