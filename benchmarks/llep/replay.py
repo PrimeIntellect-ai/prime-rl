@@ -59,6 +59,9 @@ def main():
     parser.add_argument("--chunk-tokens", type=int, default=None, help="for the llep_chunk method")
     parser.add_argument("--reuse", action="store_true", help="LLEP backward reuses the forward's slots")
     parser.add_argument("--num-reserved-sms", type=int, default=16)
+    parser.add_argument("--nolb-lam", type=float, default=2.5, help="lam = max_recv of the nolb methods")
+    parser.add_argument("--alpha", type=float, default=1.05, help="LLEP methods")
+    parser.add_argument("--max-recv", type=float, default=2.0, help="LLEP methods")
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
@@ -92,8 +95,14 @@ def main():
     for name in methods:
         if name == "mega":
             computes[name] = MegaMoEExpertCompute(E, K, H, I, group, T, num_sms, "mxfp8_qat", stochastic_rounding=True)
-        elif name in ("llep", "llep_chunk"):
-            options = LLEPConfig(chunk_tokens=args.chunk_tokens if name == "llep_chunk" else None)
+        elif name in ("llep", "llep_chunk", "nolb", "nolb_chunk"):
+            # nolb: LLEP's kernels with a plan that never copies at this routing (standard EP)
+            chunked = name.endswith("_chunk")
+            options = LLEPConfig(
+                chunk_tokens=args.chunk_tokens if chunked else None, alpha=args.alpha, max_recv=args.max_recv
+            )
+            if name.startswith("nolb"):
+                options = LLEPConfig(chunk_tokens=options.chunk_tokens, lam=args.nolb_lam, max_recv=args.nolb_lam)
             computes[name] = LLEPMegaMoEExpertCompute(
                 E, K, H, I, group, T, num_sms, options, "mxfp8_qat", stochastic_rounding=True
             )
@@ -126,7 +135,7 @@ def main():
             y = dispatcher.run(x, s, topk, lambda xr, counts: compute(experts, xr, counts), score_before_experts=False)
         else:
             y = computes[name](experts, x, s, topk)
-            if name.startswith("llep") and not args.reuse:
+            if name.startswith(("llep", "nolb")) and not args.reuse:
                 # Other layers' forwards run between this forward and its backward
                 state = _STATES[computes[name].state_key]
                 state.slots.plan_id = state.fp8_slots.plan_id = None

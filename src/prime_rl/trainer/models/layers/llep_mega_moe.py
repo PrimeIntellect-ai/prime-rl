@@ -8,6 +8,8 @@ a compiled backward under activation checkpointing recomputes only the plan.
 
 from __future__ import annotations
 
+import json
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -34,10 +36,46 @@ if TYPE_CHECKING:
 _STATES: dict[int, "LLEPMegaMoE"] = {}
 
 
+# Experiment: with LLEP_PLAN_STATS set, rank 0 of each EP group appends one JSON line per plan to
+# `<LLEP_PLAN_STATS>.<rank>.jsonl`: the weight copies, and each chunk's routes per rank before and after the plan
+_PLAN_STATS = os.environ.get("LLEP_PLAN_STATS")
+
+
+def _record_plan_stats(state, topk_idx: torch.Tensor, vids: torch.Tensor, foreign: torch.Tensor) -> None:
+    group = state.group
+    num_ranks = group.size()
+    experts_per_rank = state.num_experts // num_ranks
+    num_slots = experts_per_rank + state.options.max_foreign
+    valid = topk_idx >= 0
+    native = torch.where(valid, topk_idx // experts_per_rank, num_ranks)
+    dest = torch.where(valid, vids // num_slots, num_ranks)
+    loads = []
+    for rows in state.chunk_rows(topk_idx.shape[0]):
+        n, d = (native, dest) if rows is None else (native[rows], dest[rows])
+        loads.append(
+            torch.stack(
+                [
+                    torch.bincount(n.flatten(), minlength=num_ranks + 1)[:num_ranks],
+                    torch.bincount(d.flatten(), minlength=num_ranks + 1)[:num_ranks],
+                ]
+            )
+        )
+    loads = torch.stack(loads)
+    torch.distributed.all_reduce(loads, group=group)
+    if group.rank() == 0:
+        line = {"copies": int((foreign >= 0).sum()), "loads": loads.tolist()}
+        with open(f"{_PLAN_STATS}.{torch.distributed.get_rank()}.jsonl", "a") as f:
+            f.write(json.dumps(line) + "\n")
+
+
 @torch.library.custom_op("prime_rl::llep_plan", mutates_args=())
 def llep_plan_op(topk_idx: torch.Tensor, state_key: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """The virtual expert of each route, the foreign expert table and a (host) id of the plan."""
-    return _STATES[state_key].plan(topk_idx)
+    state = _STATES[state_key]
+    vids, foreign, plan_id = state.plan(topk_idx)
+    if _PLAN_STATS:
+        _record_plan_stats(state, topk_idx, vids, foreign)
+    return vids, foreign, plan_id
 
 
 @llep_plan_op.register_fake
