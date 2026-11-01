@@ -81,6 +81,8 @@ def main():
     salts = {
         name: torch.tensor(_stream_id(f"layer.experts.{name}"), device="cuda") for name in ("gate_up_proj", "down_proj")
     }
+    # One persistent tensor: the Mega MoE weight cache (MEGA_MOE_WEIGHT_CACHE_LAYERS) keys on it
+    mega_salts = torch.stack([salts["gate_up_proj"], salts["down_proj"]])
     num_sms = reserve_sms_for_comm(args.num_reserved_sms, 2)
     computes = {}
     for name in args.methods.split(","):
@@ -108,7 +110,7 @@ def main():
             fp8_rounding=rounding,
             rounding_salts=salts,
             fp8_expert_offset=rank * per_rank,
-            mega_rounding_salts=torch.stack([salts["gate_up_proj"], salts["down_proj"]]),
+            mega_rounding_salts=mega_salts,
         )
         x = x0.clone().requires_grad_()
         s = scores.clone().requires_grad_()
