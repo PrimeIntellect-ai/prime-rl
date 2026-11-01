@@ -523,6 +523,15 @@ def train(config: SFTConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        # Count the step before checkpointing it, so a resume continues the counters from here.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
+        progress.total_tokens += num_tokens
+        dataset_progress = get_dataset_progress(dataloader)
+        progress.total_samples = dataset_progress["step"]
+
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
         # the loop, so skip it here to avoid a double-save. Weight broadcasts land at
         # online-eval steps — they are how the inference server picks up the new policy.
@@ -547,13 +556,6 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
-        progress.total_tokens += num_tokens
-        dataset_progress = get_dataset_progress(dataloader)
-        progress.total_samples = dataset_progress["step"]
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
