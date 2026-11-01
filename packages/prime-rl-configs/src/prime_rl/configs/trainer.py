@@ -238,7 +238,7 @@ class LLEPConfig(BaseConfig):
     """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
     instead of the whole batch (for long sequences). ``None``: one call per layer."""
 
-    max_recv: float = Field(2.0, gt=0.0)
+    max_recv: float = Field(1.3, gt=0.0)
     """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
     every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
     reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""

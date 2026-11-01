@@ -121,7 +121,7 @@ CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 ```
 
-With `[trainer.model.moe.dispatch.llep]`, bf16 Mega MoE on SM90 runs least-loaded expert parallelism ([LLEP](https://arxiv.org/abs/2601.17111)): when routing overloads a rank's experts, some of their routes are computed on the least-loaded ranks, which receive a copy of those experts' weights over NVLink. Every rank plans on the GPU from all ranks' per-expert counts (no host sync, no recompiles as the routing changes), and the weight copies overlap with the expert computation. Outputs are bitwise identical to plain Mega MoE and expert gradients are as accurate. Because the plan bounds what a rank receives, the symmetric buffers are about 3x smaller than plain Mega MoE's; `chunk_tokens` runs long sequences in several calls over a buffer sized for one chunk. With LLEP, `num_reserved_sms` defaults to 32, since the weight copies run next to the grid. It needs the prime-mega-moe build with LLEP support.
+With `[trainer.model.moe.dispatch.llep]`, bf16 Mega MoE on SM90 runs least-loaded expert parallelism ([LLEP](https://arxiv.org/abs/2601.17111)): when routing overloads a rank's experts, some of their routes are computed on the least-loaded ranks, which receive a copy of those experts' weights over NVLink. Every rank plans on the GPU from all ranks' per-expert counts (no host sync, no recompiles as the routing changes), and the weight copies overlap with the expert computation. Outputs are bitwise identical to plain Mega MoE and expert gradients are as accurate. Because the plan bounds what a rank receives, the symmetric buffers are several times smaller than plain Mega MoE's; `chunk_tokens` runs long sequences in several calls over a buffer sized for one chunk. With LLEP, `num_reserved_sms` defaults to 32, since the weight copies run next to the grid. It needs the prime-mega-moe build with LLEP support.
 
 ```toml
 [trainer.model.moe.dispatch.llep]
@@ -129,7 +129,7 @@ alpha = 1.05       # a rank is full at alpha x the mean routes per rank
 min_chunk = 1024   # fewest routes worth copying an expert's weights for
 lam = 1.1          # below this busiest/mean rank load, nothing moves
 max_foreign = 8    # experts a rank can compute for others (weights + fp32 gradients of memory each)
-max_recv = 2.0     # routes a rank's buffers hold, as a multiple of its own routes
+max_recv = 1.3     # routes a rank's buffers hold, as a multiple of its own routes
 chunk_tokens = 16384  # optional: tokens per rank per kernel call (long sequences)
 ```
 
