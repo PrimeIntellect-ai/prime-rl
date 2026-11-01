@@ -1,6 +1,6 @@
 """An orchestrator checkpoint keeps the training arrays its open work needs: env-server
-workers write the blobs of unshipped episodes and the arrays of in-flight rollouts up to
-their restore points next to it, and a resumed run reads them back from there."""
+workers write the blobs of unshipped episodes and the arrays of in-flight rollouts' nodes
+next to it, and a resumed run reads them back from there."""
 
 import base64
 import uuid
@@ -73,17 +73,16 @@ def _without_arrays(trace: vf.Trace) -> vf.Trace:
     return copy
 
 
-def test_a_worker_persists_an_inflight_trace_up_to_its_restore_point(tmp_path):
+def test_a_worker_persists_the_nodes_an_inflight_trace_checkpointed(tmp_path):
     hook = PayloadHook(checkpoint_dirs=[tmp_path])
     trace = _trace(np.random.default_rng(0))
     hook.watch(trace)
     assert trace.info[PAYLOAD_WORKER_KEY] == hook.server.url
-    trace.checkpoints.append(vf.Checkpoint(id="ck", node=len(trace.nodes) - 1))
     assert trace.nodes[-1].routed_experts is not None
 
-    # A checkpoint the trace no longer holds (a retry rewound past it) is not written.
-    assert persist_payloads(hook.server.url, tmp_path, [], {trace.id: ("gone", 1)}) == ([], [])
-    _, traces = persist_payloads(hook.server.url, tmp_path, [], {trace.id: ("ck", len(trace.nodes))})
+    # Nodes the trace does not hold (yet) are not written.
+    assert persist_payloads(hook.server.url, tmp_path, [], {trace.id: len(trace.nodes) + 1}) == ([], [])
+    _, traces = persist_payloads(hook.server.url, tmp_path, [], {trace.id: len(trace.nodes)})
     assert traces == [trace.id]
 
     restored = _without_arrays(trace)
@@ -102,8 +101,10 @@ def _episode(hook: PayloadHook, rng: np.random.Generator) -> vf.Episode:
 
 
 def _restore(trace: vf.Trace) -> RestoreRequest:
-    checkpoint = {"id": "ck", "node": len(trace.nodes) - 1}
-    return RestoreRequest(trace={"id": trace.id, "info": dict(trace.info)}, point={"checkpoint": checkpoint})
+    # As the client assembled it: one entry per node the checkpoint holds.
+    nodes = [{} for _ in trace.nodes]
+    live = {"sandbox_id": f"box-{trace.id}", "tunnel_id": "tunnel"}
+    return RestoreRequest(trace={"id": trace.id, "info": dict(trace.info), "nodes": nodes}, point={"live": live})
 
 
 def _work(hook: PayloadHook) -> tuple[dict, vf.Trace]:
@@ -114,7 +115,6 @@ def _work(hook: PayloadHook) -> tuple[dict, vf.Trace]:
     inflight, gone = _trace(rng), _trace(rng)
     for trace in (inflight, gone):
         hook.watch(trace)
-        trace.checkpoints.append(vf.Checkpoint(id="ck", node=len(trace.nodes) - 1))
     group = GroupState(
         kind="train",
         env_name="a",
@@ -125,7 +125,7 @@ def _work(hook: PayloadHook) -> tuple[dict, vf.Trace]:
         group_id=uuid.uuid4(),
         restores=[_restore(inflight), _restore(gone)],
     )
-    # Finished on the worker since the snapshot: nothing to persist for it anymore.
+    # Finished on the worker since: nothing to persist for it anymore.
     hook.traces.pop(gone.id)
     work = {
         "groups": [group],
@@ -183,7 +183,6 @@ def test_a_worker_persists_and_restores_only_inside_the_runs_checkpoints(tmp_pat
     hook = PayloadHook(checkpoint_dirs=[checkpoints])
     trace = _trace(np.random.default_rng(2))
     hook.watch(trace)
-    trace.checkpoints.append(vf.Checkpoint(id="ck", node=len(trace.nodes) - 1))
     hook.server.put("blob", b"x")
     # Outside the run's checkpoints, or under a name that is not an id: nothing is written.
     assert persist_payloads(hook.server.url, tmp_path / "elsewhere", ["blob"], {}) == ([], [])

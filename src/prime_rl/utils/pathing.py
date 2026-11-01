@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -255,7 +256,12 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
 
 
 def write_env_server_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, checkpoint_dirs: list[Path] | None = None
+    config_dir: Path,
+    split: str,
+    source: EnvConfig,
+    log: LogConfig,
+    checkpoint_dirs: list[Path] | None = None,
+    suspend_dir: Path | None = None,
 ) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
@@ -270,6 +276,7 @@ def write_env_server_config(
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
         "checkpoint_dirs": [path.resolve().as_posix() for path in checkpoint_dirs or []],
+        "suspend_dir": suspend_dir.resolve().as_posix() if suspend_dir is not None else None,
     }
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(server_config, indent=2))
@@ -286,6 +293,12 @@ def get_launcher_log_dir(output_dir: Path) -> Path:
 
 def get_ckpt_dir(output_dir: Path) -> Path:
     return output_dir / "checkpoints"
+
+
+def get_suspend_dir(output_dir: Path) -> Path:
+    """Where the env servers list the boxes they paused on shutdown (``ckpt.rollouts``):
+    next to the checkpoints, so a resumed run of this output dir finds them."""
+    return get_ckpt_dir(output_dir) / "suspended"
 
 
 def get_batch_dir(output_dir: Path) -> Path:
@@ -328,15 +341,39 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+# What each component writes last to its checkpoint of a step: a step whose component
+# dirs lack it was cut off mid-write (the trainer's DCP shards land before `.metadata`,
+# the orchestrator renames `progress.pt` into place).
+CKPT_COMPLETE_MARKERS = {"trainer": ".metadata", "orchestrator": "progress.pt"}
+
+
+def is_complete_ckpt(step_dir: Path, components: Iterable[str]) -> bool:
+    """Whether each of `components` finished writing its checkpoint of the step."""
+    return all((step_dir / component / CKPT_COMPLETE_MARKERS[component]).exists() for component in components)
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    steps = get_all_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
-        logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
-        return None
-    latest_step = steps[-1]
+    """Gets the latest complete checkpoint step from the checkpoint directory, skipping
+    steps a killed run left half-written: a step needs every component that checkpoints
+    into this directory (any step has its dir), each finished. The orchestrator writes a
+    step before the trainer does, so a crash between them leaves one without the other.
+    Returns None if no checkpoints are found."""
     logger = get_logger()
+    steps = get_all_ckpt_steps(ckpt_dir)
+    components = {
+        component
+        for step in steps
+        for component in CKPT_COMPLETE_MARKERS
+        if (ckpt_dir / f"step_{step}" / component).is_dir()
+    }
+    complete = [step for step in steps if is_complete_ckpt(ckpt_dir / f"step_{step}", components)]
+    if skipped := [step for step in steps if complete and step > complete[-1]]:
+        logger.warning(f"Skipping incomplete checkpoints in {ckpt_dir}: {skipped}")
+    if len(complete) == 0:
+        incomplete = f" (only incomplete ones: {steps})" if steps else ""
+        logger.warning(f"No checkpoints found in {ckpt_dir}{incomplete}. Starting from scratch.")
+        return None
+    latest_step = complete[-1]
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 

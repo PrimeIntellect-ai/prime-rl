@@ -28,13 +28,13 @@ from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.serve import EnvClient, EpisodeAssembly, RestoreRequest
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
+from prime_rl.orchestrator.boxes import live_tunnel
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
@@ -71,12 +71,6 @@ class Env:
         """Where the replicas of a launcher-managed server publish their addresses; read
         when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
-        # A server that keeps its box snapshots past the run (`after = "keep"`) leaves
-        # their deletion to this run: a checkpoint may still resume from them.
-        self.owns_snapshots = any(
-            agent.checkpoint is not None and agent.checkpoint.after == "keep"
-            for agent in agent_config_fields(config.env).values()
-        )
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
@@ -87,6 +81,9 @@ class Env:
         self._env_clients: list[EnvClient] = []
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
+        self._tunnel_replicas: dict[str, int] = {}
+        """The replica that adopted each live box's tunnel (``ckpt.rollouts``): every
+        rollout that reaches its server through it restores there."""
 
     @property
     def name(self) -> str:
@@ -147,10 +144,16 @@ class Env:
         change of one of the episode's traces — as it lands; ``assembly`` collects them
         into the in-flight traces and their newest restore points. ``restore``
         continues a trace from one of those restore points. The run goes to the replica
-        with the fewest runs in flight."""
+        with the fewest runs in flight, a restore into a live box to the replica holding its
+        box's tunnel."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
-        replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
+        tunnel = live_tunnel(restore)
+        replica = self._tunnel_replicas.get(tunnel) if tunnel is not None else None
+        if replica is None:
+            replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
+            if tunnel is not None:
+                self._tunnel_replicas[tunnel] = replica
         self._in_flight[replica] += 1
         try:
             return await self.env_clients[replica].run(
@@ -165,9 +168,12 @@ class Env:
         finally:
             self._in_flight[replica] -= 1
 
-    async def discard_checkpoints(self, checkpoints: list[str]) -> list[str]:
-        """Delete box snapshots this run owns and no longer needs; returns the deleted."""
-        return await self.env_clients[0].discard(checkpoints)
+    def detach(self) -> None:
+        """Leave the runs in flight to the servers: a run cancelled from now on is not
+        aborted server-side, so its box outlives this client for the server to pause at its
+        shutdown (``ckpt.rollouts``)."""
+        for client in self._env_clients:
+            client.detach()
 
 
 class TrainEnv(Env):

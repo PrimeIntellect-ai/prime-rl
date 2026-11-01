@@ -46,7 +46,7 @@ def streamed(trace_ids: list[str], restore: bool = True) -> EpisodeAssembly:
     for trace_id in trace_ids:
         assembly.apply({"trace": trace_id, "open": {"id": trace_id}})
         if restore:
-            assembly.apply({"trace": trace_id, "restore": {"checkpoint": {"id": f"ck-{trace_id}"}}})
+            assembly.apply({"trace": trace_id, "restore": {"live": {"sandbox_id": f"box-{trace_id}"}}})
     return assembly
 
 
@@ -66,7 +66,7 @@ def test_an_inflight_rollout_continues_from_its_newest_restore_point():
     group_id = uuid.uuid4()
     restore = inflight_restore(inflight("a", group_id, streamed(["t1"])))
     assert isinstance(restore, RestoreRequest)
-    assert restore.point == {"checkpoint": {"id": "ck-t1"}}
+    assert restore.point == {"live": {"sandbox_id": "box-t1"}}
     assert "pending" not in restore.trace
     # Nothing to continue from yet, or several traces (a multi-agent episode).
     assert inflight_restore(inflight("a", group_id, streamed(["t1"], restore=False))) is None
@@ -86,21 +86,12 @@ def group(env: str, *, to_schedule: int, emitted: int) -> GroupState:
     )
 
 
-class SnapshotEnv:
-    def __init__(self) -> None:
-        self.deleted: list[str] = []
-
-    async def discard_checkpoints(self, ids: list[str]) -> list[str]:
-        self.deleted += ids
-        return ids
-
-
 class TrainEnvs:
     def __init__(self, names: list[str]) -> None:
-        self.envs = {name: SnapshotEnv() for name in names}
+        self.envs = {name: SimpleNamespace() for name in names}
         self.names = names
 
-    def get(self, name: str) -> SnapshotEnv:
+    def get(self, name: str) -> SimpleNamespace:
         return self.envs[name]
 
     def __iter__(self):
@@ -112,10 +103,6 @@ def dispatcher(names: list[str]) -> Dispatcher:
     d.groups = {}
     d.inflight = {}
     d.train_envs = TrainEnvs(names)
-    d.snapshots = {}
-    d.held_snapshots = set()
-    d.sweep = None
-    d.sweep_again = False
     return d
 
 
@@ -133,14 +120,14 @@ def test_open_work_holds_each_open_groups_inflight_and_unscheduled_members():
     work = {g.env_name: g for g in d.open_work()}
     # Two in flight plus one never dispatched; only one has a restore point.
     assert work["a"].episodes_to_schedule == 3
-    assert [r.point["checkpoint"]["id"] for r in work["a"].restores] == ["ck-t1"]
+    assert [r.point["live"]["sandbox_id"] for r in work["a"].restores] == ["box-t1"]
     assert work["b"].episodes_to_schedule == 1 and len(work["b"].restores) == 1
     assert work["a"].emitted + work["a"].episodes_to_schedule == work["a"].target_episodes
     # The dispatcher's own groups are untouched.
     assert a.episodes_to_schedule == 1 and a.restores == []
 
     resumed = dispatcher(["a", "c"])
-    resumed.resume_open_work(list(work.values()), {})
+    resumed.resume_open_work(list(work.values()))
     assert list(resumed.groups) == [a_id]
 
 
@@ -195,25 +182,6 @@ def test_the_sink_resumes_its_partial_groups_of_kept_envs():
     assert "ga" not in resumed.pending_groups
 
 
-def test_a_sweep_keeps_the_newest_and_held_snapshots_only():
-    async def run():
-        d = dispatcher(["a"])
-        a = group("a", to_schedule=0, emitted=3)
-        a.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "held", "box": True}})]
-        d.inflight = {object(): inflight("a", a.group_id, streamed(["t1"]))}  # newest: ck-t1
-        d.snapshots = {"held": "a", "ck-t1": "a", "stale": "a"}
-        d.hold_snapshots([a])
-        await d.sweep
-        assert d.train_envs.get("a").deleted == ["stale"]
-        assert set(d.snapshots) == {"held", "ck-t1"}
-        # A newer checkpoint no longer resumes from it: the old held snapshot goes.
-        d.hold_snapshots([])
-        await d.sweep
-        assert set(d.snapshots) == {"ck-t1"}
-
-    asyncio.run(run())
-
-
 def wire(episode: vf.Episode) -> vf.WireEpisode:
     """The episode as the env client returns it: a parametrized generic pickle cannot find."""
     from verifiers.v1.serve.delta import dump
@@ -231,7 +199,7 @@ def test_open_work_survives_the_checkpoint_file(tmp_path):
     d.inflight = {object(): inflight("a", a.group_id, streamed(["t1"]))}
     s = sink(["a"])
     asyncio.run(s.add(wire(member("a", "ga"))))
-    work = {"groups": d.open_work(), "sink": s.state_dict(), "results": [wire(member("a", "gb"))], "snapshots": {}}
+    work = {"groups": d.open_work(), "sink": s.state_dict(), "results": [wire(member("a", "gb"))]}
     manager = CheckpointManager(tmp_path, CheckpointConfig())
     manager.save_state(build_state(Progress(step=6), TrainSource([train_env("a")]), {}, work), step=6)
 
@@ -268,29 +236,9 @@ def test_a_group_waiting_in_the_queue_keeps_its_size():
     orchestrator.eval_source = orchestrator.eval_sink = None
     orchestrator.eval_triggered_steps = set()
     orchestrator.train_sink = sink(["a"], group_size=2)
-    orchestrator.dispatcher = SimpleNamespace(
-        open_work=lambda: [], queued_results=lambda: [member("a", "gq")], snapshots={}
-    )
+    orchestrator.dispatcher = SimpleNamespace(open_work=lambda: [], queued_results=lambda: [member("a", "gq")])
     work = orchestrator.open_work()
     assert work["sink"]["group_targets"] == {"gq": 2}
-
-
-def test_a_checkpoint_being_written_holds_its_snapshots_and_the_last_ones():
-    async def run():
-        d = dispatcher(["a"])
-        last, new = group("a", to_schedule=0, emitted=3), group("a", to_schedule=0, emitted=3)
-        last.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "last", "box": True}})]
-        new.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "new", "box": True}})]
-        d.snapshots = {"last": "a", "new": "a"}
-        d.hold_snapshots([last])
-        d.hold_snapshots([new], release=False)
-        await d.sweep
-        assert set(d.snapshots) == {"last", "new"}
-        d.hold_snapshots([new])
-        await d.sweep
-        assert set(d.snapshots) == {"new"}
-
-    asyncio.run(run())
 
 
 def test_a_checkpoint_holds_open_work_only_when_it_saves_rollouts():
@@ -304,7 +252,7 @@ def test_a_checkpoint_holds_open_work_only_when_it_saves_rollouts():
     orchestrator.train_source = TrainSource([train_env("a")])
     orchestrator.config_state = lambda: {}
     orchestrator.train_sink = sink(["a"], group_size=2)
-    orchestrator.dispatcher = SimpleNamespace(open_work=lambda: [], queued_results=lambda: [], snapshots={})
+    orchestrator.dispatcher = SimpleNamespace(open_work=lambda: [], queued_results=lambda: [])
     for rollouts in (False, True):
         orchestrator.config = SimpleNamespace(ckpt=CheckpointConfig(interval=5, rollouts=rollouts))
         assert ("open_work" in orchestrator.checkpoint_state()) is rollouts
@@ -321,7 +269,7 @@ def test_a_forked_checkpoint_links_the_rollouts_it_still_holds(tmp_path):
     manager = CheckpointManager(tmp_path, CheckpointConfig())
 
     def save(step: int) -> None:
-        work = {"groups": [], "sink": s.state_dict(), "results": [queued], "snapshots": {}}
+        work = {"groups": [], "sink": s.state_dict(), "results": [queued]}
         asyncio.run(
             manager.save_forked(build_state(Progress(step=step), TrainSource([train_env("a")]), {}, work), step)
         )
@@ -365,7 +313,7 @@ def test_a_rollout_whose_arrays_were_persisted_since_is_written_again(tmp_path):
 
     queued = wire(member("a", "gb"))
     queued.traces[0].info[PAYLOAD_INFO_KEY] = {"url": "http://worker", "branches": {}}
-    work = {"groups": [], "sink": sink(["a"]).state_dict(), "results": [queued], "snapshots": {}}
+    work = {"groups": [], "sink": sink(["a"]).state_dict(), "results": [queued]}
 
     first = write_rollouts(work, tmp_path / "6", None)["results"][0]
     queued.traces[0].info[PAYLOAD_INFO_KEY]["url"] = PERSISTED_URL
@@ -386,16 +334,6 @@ def test_a_training_runs_eval_episode_is_eval_work():
 
     assert result_kind(wire(member("a", "g"))) == "train"
     assert result_kind(wire(eval_member("e"))) == "eval"
-
-
-def test_an_eval_env_owns_the_snapshots_it_keeps():
-    from prime_rl.configs.orchestrator import EvalSourceConfig
-    from prime_rl.orchestrator.envs import EvalEnv
-
-    config = EvalSourceConfig.model_validate(
-        {"env": {"taskset": {"id": "reverse-text"}, "agent": {"checkpoint": {"after": "keep"}}}}
-    )
-    assert EvalEnv(config, None, []).owns_snapshots
 
 
 def test_eval_epochs_survive_the_checkpoint(tmp_path):

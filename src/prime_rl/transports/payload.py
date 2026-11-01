@@ -469,9 +469,9 @@ class PayloadHook:
 
     def persist(self, request: dict) -> dict:
         """Write the kept blobs `request["blobs"]` names, and for each in-flight trace of
-        `request["traces"]` (`{trace_id: [checkpoint_id, nodes]}`) the arrays of its
-        first `nodes` nodes, under `request["dir"]`. A trace is written only while it
-        still holds that checkpoint: a retry that rewound past it changed those nodes.
+        `request["traces"]` (`{trace_id: nodes}`) the arrays of its first `nodes` nodes,
+        the ones the checkpoint holds, under `request["dir"]`. A live trace only grows, so
+        they are still the checkpointed ones.
         Returns the blobs and traces written; nothing outside `request["dir"]`, which
         must be inside the run's checkpoint directory."""
         directory = Path(request["dir"]).resolve()
@@ -487,13 +487,13 @@ class PayloadHook:
                 _write(path, blob)
                 blobs.append(key)
         traces = []
-        for trace_id, (checkpoint, num_nodes) in request["traces"].items():
+        for trace_id, num_nodes in request["traces"].items():
             path = (directory / trace_id).resolve()
             if path.parent != directory:
                 continue
             with self.traces_lock:
                 trace = self.traces.get(trace_id)
-            if trace is None or not any(c.id == checkpoint for c in trace.checkpoints):
+            if trace is None:
                 continue
             nodes = trace.nodes[:num_nodes]
             if len(nodes) < num_nodes:
@@ -557,7 +557,7 @@ class PayloadHook:
 
 
 def persist_payloads(
-    url: str, directory: Path, blobs: list[str], traces: dict[str, tuple[str, int]]
+    url: str, directory: Path, blobs: list[str], traces: dict[str, int]
 ) -> tuple[list[str], list[str]]:
     """Have the worker at `url` write `blobs` and the arrays of `traces` to `directory`
     (`PayloadHook.persist`); returns the blobs and traces written. Blobs an earlier
@@ -577,9 +577,7 @@ def persist_payloads(
                 shutil.copyfile(source / key, directory / key)
             linked.append(key)
         return linked, []
-    body = json.dumps(
-        {"dir": str(directory), "blobs": blobs, "traces": {trace_id: list(t) for trace_id, t in traces.items()}}
-    ).encode()
+    body = json.dumps({"dir": str(directory), "blobs": blobs, "traces": traces}).encode()
     request = urllib.request.Request(
         f"{url}/persist", data=body, method="POST", headers={"Content-Type": "application/json"}
     )

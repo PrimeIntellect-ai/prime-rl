@@ -47,6 +47,7 @@ from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
+from prime_rl.orchestrator.boxes import JOURNAL, LiveBoxJournal, delete_boxes, live_boxes, settle_live_boxes
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -91,6 +92,7 @@ from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import (
     get_broadcast_dir,
     get_config_dir,
+    get_suspend_dir,
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
@@ -200,6 +202,11 @@ class Orchestrator:
         self.eval_sink = None
         self.eval_source = None
         self.resumed_work = None
+        self.box_journal: LiveBoxJournal | None = None
+        self.settling_boxes: asyncio.Task | None = None
+        """Readies the live boxes of a resume (``boxes.settle_live_boxes``) while the run
+        comes up; no rollout restores before it is done. Then deletes those of dropped
+        groups."""
         self.lag_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -303,6 +310,12 @@ class Orchestrator:
                 self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
             )
             self.progress.step = self.resume_step + 1
+        # Right after the checkpoint is read: a crash may have left its rollouts' boxes
+        # running, their harnesses retrying the model for a while only.
+        groups = self.resumed_work["groups"] if self.resumed_work is not None else []
+        self.settling_boxes = asyncio.create_task(
+            settle_live_boxes(groups, get_suspend_dir(config.output_dir), adopt=self.adopts_live_boxes)
+        )
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
@@ -360,6 +373,9 @@ class Orchestrator:
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
         )
+        if self.saves_rollouts:
+            self.box_journal = LiveBoxJournal(get_suspend_dir(config.output_dir) / JOURNAL)
+            self.dispatcher.on_live_box = self.box_journal.record
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
@@ -387,6 +403,7 @@ class Orchestrator:
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
+        await self.settling_boxes
         if self.resumed_work is not None:
             self.resume_open_work(self.resumed_work)
             self.resumed_work = None
@@ -1032,6 +1049,13 @@ class Orchestrator:
     def saves_rollouts(self) -> bool:
         return self.config.ckpt is not None and self.config.ckpt.rollouts
 
+    @property
+    def adopts_live_boxes(self) -> bool:
+        """Whether a resume adopts its rollouts' live boxes: not a forked run's
+        (``resume.dir``), whose boxes the run it forks owns."""
+        ckpt, resume = self.config.ckpt, self.config.resume
+        return ckpt is not None and ckpt.rollouts and (resume is None or resume.dir is None)
+
     def checkpoint_state(self) -> dict:
         """A ``build_state`` snapshot of the run now, with its in-flight and in-queue rollouts
         if it saves them."""
@@ -1040,12 +1064,17 @@ class Orchestrator:
 
     async def save_state(self, state: dict, step: int) -> None:
         """Write a ``build_state`` of the run as it is now from a forked writer, while the
-        loop goes on. Its box snapshots are held from the start: sweeps go on during the
-        write. The last checkpoint's stay held until this one is written."""
-        groups = state["open_work"]["groups"] if "open_work" in state else []
-        self.dispatcher.hold_snapshots(groups, release=False)
+        loop goes on."""
         await self.ckpt_manager.save_forked(state, step)
-        self.dispatcher.hold_snapshots(groups)
+        if self.box_journal is not None:
+            inflight = {
+                box["sandbox_id"]
+                for meta in self.dispatcher.inflight.values()
+                if meta.assembly is not None
+                for point in meta.assembly.restores.values()
+                if (box := point.get("live"))
+            }
+            self.box_journal.rewrite(inflight | live_boxes(self.dispatcher.groups.values()))
 
     def open_work(self) -> dict:
         """The in-flight and in-queue train and eval rollouts a resumed run picks up where
@@ -1067,7 +1096,6 @@ class Orchestrator:
             "groups": self.dispatcher.open_work(),
             "sink": sink,
             "results": results,
-            "snapshots": dict(self.dispatcher.snapshots),
             "eval": {
                 "queue": list(self.eval_source.queue) if self.eval_source is not None else [],
                 "sink": self.eval_sink.state_dict() if self.eval_sink is not None else None,
@@ -1080,7 +1108,11 @@ class Orchestrator:
         starts. Those of envs this run no longer trains or evaluates on are dropped; envs
         new to the run start sampling as the resumed rollouts drain."""
         self.train_sink.load_state_dict(work["sink"])
-        self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
+        boxes = live_boxes(work["groups"])
+        self.dispatcher.resume_open_work(work["groups"])
+        # The boxes of dropped groups (envs no longer configured) have nothing to resume.
+        if dropped := boxes - live_boxes(self.dispatcher.groups.values()):
+            self.settling_boxes = asyncio.create_task(delete_boxes(dropped, "dropped groups"))
         # A resumed group finalizes at the size it opened with, not today's ``group_size``.
         for group in self.dispatcher.groups.values():
             if group.kind == "train":
@@ -1230,6 +1262,13 @@ class Orchestrator:
             if self.release_future is not None:
                 await self.release_future
             if self.dispatcher is not None:
+                if not clean_exit and self.saves_rollouts:
+                    # A run that did not finish resumes: its env servers pause the boxes of
+                    # the rollouts in flight as they shut down, so the cancels below must
+                    # not abort those rollouts server-side.
+                    for envs in (self.train_envs, self.eval_envs):
+                        for env in envs or ():
+                            env.detach()
                 get_logger().debug("Stopping dispatcher")
                 await self.dispatcher.stop()
             if self.watcher is not None:

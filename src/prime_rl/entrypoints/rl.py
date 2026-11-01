@@ -23,6 +23,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    get_suspend_dir,
     launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
@@ -173,8 +174,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     checkpoint_dirs = [get_ckpt_dir(config.run_dir)]
     if config.resume is not None and config.resume.dir is not None:
         checkpoint_dirs.append(config.resume.dir.parent)
+    ckpt = config.orchestrator.ckpt
+    suspend_dir = get_suspend_dir(config.run_dir) if ckpt is not None and ckpt.rollouts else None
     for split, source in env_servers(config):
-        write_env_server_config(output_dir, split, source, config.orchestrator.log, checkpoint_dirs)
+        write_env_server_config(output_dir, split, source, config.orchestrator.log, checkpoint_dirs, suspend_dir)
 
 
 def rl_local(config: RLConfig):
