@@ -265,7 +265,8 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
-    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that. Defaults to 32 with
+    ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
     """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` on SM90."""
@@ -274,6 +275,12 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     def validate_llep_precision(self):
         if self.llep is not None and self.precision != "bf16":
             raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision = 'bf16'.")
+        return self
+
+    @model_validator(mode="after")
+    def llep_reserved_sms(self):
+        if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
+            self.num_reserved_sms = 32
         return self
 
 
