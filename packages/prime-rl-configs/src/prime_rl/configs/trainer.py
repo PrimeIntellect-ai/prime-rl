@@ -298,13 +298,15 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
-    ``"mxfp8_qat"`` (SM100)."""
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90),
+    ``"mxfp8_qat"`` or ``"mxfp8"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat", "mxfp8"):
+            raise ValueError(
+                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8_qat' or 'mxfp8'."
+            )
         return self
 
     @model_validator(mode="after")

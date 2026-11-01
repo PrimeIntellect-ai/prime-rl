@@ -65,6 +65,7 @@ def main():
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--balanced", action="store_true", help="every expert gets the same load (the ideal)")
     parser.add_argument("--check", action="store_true", help="compare every method's outputs with the first method's")
+    parser.add_argument("--precision", default="mxfp8_qat", choices=["mxfp8_qat", "mxfp8"], help="Mega MoE methods")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -93,10 +94,11 @@ def main():
     # One persistent tensor: the Mega MoE weight cache (MEGA_MOE_WEIGHT_CACHE_LAYERS) keys on it
     mega_salts = torch.stack([salts["gate_up_proj"], salts["down_proj"]])
     num_sms = reserve_sms_for_comm(args.num_reserved_sms, 2) if mega else None
+    qat = args.precision == "mxfp8_qat"
     computes = {}
     for name in methods:
         if name == "mega":
-            computes[name] = MegaMoEExpertCompute(E, K, H, I, group, T, num_sms, "mxfp8_qat", stochastic_rounding=True)
+            computes[name] = MegaMoEExpertCompute(E, K, H, I, group, T, num_sms, args.precision, stochastic_rounding=qat)
         elif name in ("llep", "llep_chunk", "nolb", "nolb_chunk"):
             # nolb: LLEP's kernels with a plan that never copies at this routing (standard EP)
             chunked = name.endswith("_chunk")
@@ -106,7 +108,7 @@ def main():
             if name.startswith("nolb"):
                 options = LLEPConfig(chunk_tokens=options.chunk_tokens, lam=args.nolb_lam, max_recv=args.nolb_lam)
             computes[name] = LLEPMegaMoEExpertCompute(
-                E, K, H, I, group, T, num_sms, options, "mxfp8_qat", stochastic_rounding=True
+                E, K, H, I, group, T, num_sms, options, args.precision, stochastic_rounding=qat
             )
         elif name == "rail":
             # Two nodes: rail swaps over InfiniBand, LLEP on each node's experts (EP group = WORLD of 16)
@@ -114,7 +116,7 @@ def main():
 
             options = LLEPConfig(chunk_tokens=args.chunk_tokens, alpha=args.alpha, max_recv=args.max_recv)
             computes[name] = RailLLEPMegaMoEExpertCompute(
-                E, K, H, I, group, T, num_sms, options, "mxfp8_qat", stochastic_rounding=True, ranks_per_node=8
+                E, K, H, I, group, T, num_sms, options, args.precision, stochastic_rounding=qat, ranks_per_node=8
             )
         elif name == "ep_qat":
             computes[name] = (TorchTokenDispatcher(E, K, 128, group), MXFP8QATExpertCompute(stochastic_rounding=True))
@@ -206,6 +208,7 @@ def main():
                     "chunk_tokens": args.chunk_tokens if name == "llep_chunk" else None,
                     "reuse": args.reuse,
                     "balanced": args.balanced,
+                    "precision": args.precision if name != "ep_qat" else "mxfp8_qat",
                     "ms": fwd + bwd,
                     "fwd_ms": fwd,
                     "bwd_ms": bwd,

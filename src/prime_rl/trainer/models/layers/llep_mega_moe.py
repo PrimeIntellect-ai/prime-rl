@@ -18,13 +18,16 @@ from torch.distributed import ProcessGroup
 from prime_rl.configs.trainer import LLEPConfig
 from prime_rl.trainer.models.layers.expert_compute import to_local
 from prime_rl.trainer.models.layers.mega_moe import (
+    MegaMoeMXFP8ExpertWeights,
     _activation_clamp,
     _dw_dtype,
     cached_qat_forward_weights,
     cached_qat_rounded_weights,
     check_mega_moe_dims,
     mega_moe_available,
+    mx_cast,
     mxfp8_rounding_args,
+    pack_ue8m0_k_major,
     qat_cast_tokens,
 )
 
@@ -106,7 +109,14 @@ def llep_mega_moe_forward_op(
     state = _STATES[state_key]
     if state.precision == "bf16":
         return state.forward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
-    # MXFP8: each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
+    if state.fp8_bwd_slots is not None:
+        # MXFP8 both ways: weights and tokens cast as plain Mega MoE `mxfp8` casts them
+        weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False)
+        x_fp8, x_sf = mx_cast(x.to(torch.bfloat16).contiguous(), along_rows=False)
+        x_sf = pack_ue8m0_k_major(x_sf)
+        y = state.forward_mxfp8(x_fp8, x_sf, vids, foreign, plan_id, topk_weights, weights.l1, weights.l2, activation_clamp)
+        return y.to(x.dtype)
+    # MXFP8 QAT: each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
     weights = cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
     x_fp8, x_sf = qat_cast_tokens(x.to(torch.bfloat16).contiguous())
     y = state.forward_mxfp8(x_fp8, x_sf, vids, foreign, plan_id, topk_weights, weights.l1, weights.l2, activation_clamp)
@@ -150,6 +160,12 @@ def llep_mega_moe_backward_op(
     state = _STATES[state_key]
     if state.precision == "bf16":
         return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
+    if state.fp8_bwd_slots is not None:
+        weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=True)
+        return state.backward_mxfp8(
+            dy, x, vids, foreign, plan_id, topk_weights, weights.l1, weights.l1_t, weights.l2_t, activation_clamp,
+            _dw_dtype(gate_up_proj),
+        )
     # MXFP8 QAT: a bf16 backward on the weights the forward computed with (re-quantized, so bitwise the same)
     gate_up, down = cached_qat_rounded_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
     return state.backward(
@@ -245,8 +261,8 @@ class LLEPMegaMoEExpertCompute:
     ) -> None:
         self.stochastic_rounding = stochastic_rounding
         major = 9 if precision == "bf16" else 10
-        if precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError(f"LLEP Mega MoE supports precision 'bf16' and 'mxfp8_qat', got {precision!r}.")
+        if precision not in ("bf16", "mxfp8_qat", "mxfp8"):
+            raise ValueError(f"LLEP Mega MoE supports precision 'bf16', 'mxfp8_qat' and 'mxfp8', got {precision!r}.")
         if not mega_moe_available(precision) or torch.cuda.get_device_capability()[0] != major:
             raise RuntimeError(
                 f"LLEP Mega MoE `{precision}` needs an SM{major}0 GPU and the prime-mega-moe `deep_gemm` build with LLEP "
@@ -275,6 +291,7 @@ class LLEPMegaMoEExpertCompute:
             num_sms,
             LLEPOptions(**options.model_dump()),
             precision="bf16" if precision == "bf16" else "mxfp8",
+            mxfp8_backward=precision == "mxfp8",
         )
         self.state_key = id(state)
         _STATES[self.state_key] = state
