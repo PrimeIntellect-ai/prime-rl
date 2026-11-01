@@ -332,14 +332,14 @@ def persist_arrays(work: dict, directory: Path) -> None:
                 # Not dispatched since a resume: its arrays are in the last checkpoint.
                 blobs[Path(path).parent.as_uri()].add(Path(path).name)
             elif url := info.get(PAYLOAD_WORKER_KEY):
-                checkpoint = restore.point["checkpoint"]
+                checkpoint = restore.point.get("checkpoint") or {}
                 if restore.point.get("live"):
                     # A rollout that adopts its live box goes on from every node the
-                    # checkpoint holds, past its newest snapshot.
+                    # checkpoint holds, past its newest snapshot if it has one.
                     num_nodes = len(restore.trace.get("nodes") or [])
                 else:
                     num_nodes = 0 if checkpoint.get("node") is None else checkpoint["node"] + 1
-                traces[url][restore.trace["id"]] = (checkpoint["id"], num_nodes)
+                traces[url][restore.trace["id"]] = (checkpoint.get("id"), num_nodes)
 
     urls = sorted(set(blobs) | set(traces))
     with ThreadPoolExecutor(max(len(urls), 1)) as pool:

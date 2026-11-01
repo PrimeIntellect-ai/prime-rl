@@ -377,9 +377,11 @@ rollouts = true
 
 With `live_rollouts = true` as well, a resumed run continues its in-flight rollouts in the boxes they were running in, processes and all, instead of restoring them into fresh boxes. A snapshot holds only the filesystem: a restore relaunches the harness, tells the model the box was restored, and loses whatever ran in the box (servers, shells, a test run halfway done).
 
+Live rollouts take no snapshot as turns go: the box itself is the restore point, paused when the run stops (or as soon as the resumed run has read its checkpoint, after a crash). An env agent that sets `[env.agent.checkpoint]` explicitly still snapshots, as a fallback for a box that is gone; otherwise such a rollout starts over.
+
 - **On shutdown** (a crash elsewhere in the run, a signal, a preemption) the env servers pause the boxes of their in-flight rollouts instead of deleting them, and list them under `checkpoints/suspended/`. A paused box keeps its memory and processes, costs only its disk, and its clocks stop.
 - **If the env servers die without shutting down**, the boxes keep running. Their harnesses retry the model through the rollout's tunnel for up to 15 minutes.
-- **On resume** the orchestrator pauses the boxes its checkpoint resumes in as soon as it has read the checkpoint, and deletes the listed boxes it does not resume (rollouts started after the checkpoint). Each in-flight rollout then adopts its box: the env server takes over the rollout's tunnel and the running harness carries on. A rollout whose box is gone restores from its snapshot, and without one starts over.
+- **On resume** the orchestrator pauses the boxes its checkpoint resumes in as soon as it has read the checkpoint, and deletes the listed boxes it does not resume (rollouts started after the checkpoint). Each in-flight rollout then adopts its box: the env server takes over the rollout's tunnel and the running harness carries on. A rollout whose box is gone starts over (or restores from its snapshot, with snapshots on).
 - **What a box did after the checkpoint** stays in the harness's history: its next model request carries those turns, which the trace records as prompt, so they do not train. Checkpointing every step keeps that gap to one step.
 
 A forked run (`--resume.dir`) never adopts the boxes of the run it forks; its rollouts restore from their snapshots. Only bash and null harnesses adopt their boxes for now; the others restore from snapshots.

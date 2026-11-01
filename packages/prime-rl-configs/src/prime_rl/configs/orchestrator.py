@@ -764,6 +764,10 @@ class OrchestratorConfig(BaseConfig):
             return self
         for _, source in self.env_sources:
             for agent in agent_config_fields(source.env).values():
+                if self.ckpt.live_rollouts and "checkpoint" not in agent.model_fields_set:
+                    # The live box is the restore point: no snapshot every turn. A box
+                    # that is gone starts over, unless the env asks for snapshots.
+                    agent.checkpoint = None
                 if agent.checkpoint is not None:
                     agent.checkpoint = agent.checkpoint.model_copy(update={"keep": "all", "after": "keep"})
         return self

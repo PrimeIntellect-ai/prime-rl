@@ -567,8 +567,10 @@ class Dispatcher:
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
             point = delta.get("restore")
-            if point is not None and point["checkpoint"].get("box") and env.owns_snapshots:
-                self.snapshots[point["checkpoint"]["id"]] = meta.env_name
+            # A live box's restore point may hold no snapshot (``ckpt.live_rollouts``).
+            checkpoint = point.get("checkpoint") if point is not None else None
+            if checkpoint and checkpoint.get("box") and env.owns_snapshots:
+                self.snapshots[checkpoint["id"]] = meta.env_name
                 self.sweep_snapshots()
             first = not meta.live
             live.apply(meta, delta)
@@ -655,10 +657,10 @@ class Dispatcher:
         until a newer checkpoint is written, and free the ones the last one held (not
         with ``release=False``)."""
         held = {
-            restore.point["checkpoint"]["id"]
+            checkpoint["id"]
             for group in groups
             for restore in group.restores
-            if restore.point["checkpoint"].get("box")
+            if (checkpoint := restore.point.get("checkpoint")) and checkpoint.get("box")
         }
         self.held_snapshots = held if release else self.held_snapshots | held
         self.sweep_snapshots()
@@ -679,10 +681,11 @@ class Dispatcher:
         while True:
             self.sweep_again = False
             newest = {
-                point["checkpoint"]["id"]
+                checkpoint["id"]
                 for meta in self.inflight.values()
                 if meta.assembly is not None
                 for point in meta.assembly.restores.values()
+                if (checkpoint := point.get("checkpoint"))
             }
             drop: dict[str, list[str]] = defaultdict(list)
             for snapshot, env_name in self.snapshots.items():

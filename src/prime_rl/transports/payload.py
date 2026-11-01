@@ -472,6 +472,7 @@ class PayloadHook:
         `request["traces"]` (`{trace_id: [checkpoint_id, nodes]}`) the arrays of its
         first `nodes` nodes, under `request["dir"]`. A trace is written only while it
         still holds that checkpoint: a retry that rewound past it changed those nodes.
+        A live box's trace without a snapshot (`checkpoint_id` None) never rewinds.
         Returns the blobs and traces written; nothing outside `request["dir"]`, which
         must be inside the run's checkpoint directory."""
         directory = Path(request["dir"]).resolve()
@@ -493,7 +494,7 @@ class PayloadHook:
                 continue
             with self.traces_lock:
                 trace = self.traces.get(trace_id)
-            if trace is None or not any(c.id == checkpoint for c in trace.checkpoints):
+            if trace is None or (checkpoint is not None and not any(c.id == checkpoint for c in trace.checkpoints)):
                 continue
             nodes = trace.nodes[:num_nodes]
             if len(nodes) < num_nodes:
