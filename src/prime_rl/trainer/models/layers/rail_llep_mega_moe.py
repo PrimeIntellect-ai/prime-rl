@@ -9,7 +9,9 @@ to the expert calls, with no host syncs:
 - backward: bf16 rows and output gradients chunk by chunk; input and top-k weight gradients back per chunk.
 
 Rail chunk ``i`` carries the peer's rows ``chunk_rows[i]`` (the same pseudo-random dealing on both sides), and the node's
-call ``i`` computes this rank's ``chunk_rows[i]`` and the peer's, so every call waits only for its own chunk.
+call ``i`` computes this rank's ``chunk_rows[i]`` and the peer's, so every call waits only for its own chunk. Both peers
+pad their tokens to ``max_tokens_per_rank`` (padding routes nowhere), since packed micro batches differ in length and the
+layout has to match without exchanging token counts.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ class _Rail:
         self.node = group.rank() // ranks_per_node
         self.experts_per_node = num_experts // 2
         self.top_k, self.hidden, self.num_chunks, self.precision = top_k, hidden, num_chunks, precision
+        self.max_tokens = max_tokens_per_rank
         self.compute = node_compute
         self.state = node_compute.state
         chunk = -(-max_tokens_per_rank // num_chunks)
@@ -112,6 +115,10 @@ class _Rail:
         return torch.where((local >= 0) & (local < self.experts_per_node), local, -1)
 
 
+def _pad(t: torch.Tensor, rows: int, value: float = 0) -> torch.Tensor:
+    return torch.nn.functional.pad(t, (0, 0, 0, rows - t.shape[0]), value=value) if t.shape[0] < rows else t
+
+
 def _split(buffer: torch.Tensor, n: int, *parts: tuple[int, torch.dtype]) -> list[torch.Tensor]:
     """Views of ``n`` rows of each ``(row_bytes, dtype)`` part, one after the other in ``buffer``."""
     out, offset = [], 0
@@ -138,7 +145,8 @@ def rail_llep_forward_op(
     rank's tokens followed by the rail peer's (for the backward)."""
     rail = _RAILS[rail_key]
     transport, state = rail.rail, rail.state
-    T, H, K = x.shape[0], rail.hidden, rail.top_k
+    num_tokens, T, H, K = x.shape[0], rail.max_tokens, rail.hidden, rail.top_k
+    x, topk_idx, topk_weights = _pad(x, T), _pad(topk_idx, T, -1), _pad(topk_weights, T)
     rows, order, calls, offsets = rail.layout(T)
 
     # Top-k ids and weights first: the node's plan needs them before any row
@@ -211,7 +219,7 @@ def rail_llep_forward_op(
     transport.wait("y")
     partial = [rail.chunk("y", i, "recv")[: r.numel() * H * 2].view(torch.bfloat16).view(-1, H) for i, r in enumerate(rows)]
     y = y.index_add(0, order, torch.cat(partial))
-    return y.to(x.dtype), vids, foreign, plan_id, weights
+    return y[:num_tokens].to(x.dtype), vids, foreign, plan_id, weights
 
 
 @rail_llep_forward_op.register_fake
@@ -219,7 +227,7 @@ def _rail_llep_forward_fake(
     x, topk_idx, topk_weights, gate_up_proj, down_proj, rail_key, activation_clamp=None, rounding_seed=None,
     rounding_salts=None, expert_offset=0,
 ):
-    T = x.shape[0]
+    T = _RAILS[rail_key].max_tokens
     state = _RAILS[rail_key].state
     return (
         torch.empty_like(x),
@@ -248,7 +256,8 @@ def rail_llep_backward_op(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     rail = _RAILS[rail_key]
     transport, state = rail.rail, rail.state
-    T, H, K = x.shape[0], rail.hidden, rail.top_k
+    num_tokens, T, H, K = x.shape[0], rail.max_tokens, rail.hidden, rail.top_k
+    x, dy = _pad(x, T), _pad(dy, T)
     rows, order, calls, offsets = rail.layout(T)
     x16 = x.to(torch.bfloat16).contiguous()
     dy16 = dy.to(torch.bfloat16).contiguous()
@@ -294,8 +303,8 @@ def rail_llep_backward_op(
         dxr, dtr = _split(rail.chunk("dx", i, "recv"), r.numel(), (H * 2, torch.bfloat16), (K * 4, torch.float32))
         dx_parts.append(dxr)
         dtopk_parts.append(dtr)
-    dx = dx[:T].index_add(0, order, torch.cat(dx_parts))
-    dtopk = dtopk[:T].index_add(0, order, torch.cat(dtopk_parts))
+    dx = dx[:T].index_add(0, order, torch.cat(dx_parts))[:num_tokens]
+    dtopk = dtopk[:T].index_add(0, order, torch.cat(dtopk_parts))[:num_tokens]
     return dx.to(x.dtype), dtopk, dw1, dw2
 
 
