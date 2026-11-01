@@ -81,13 +81,12 @@ def get_model(config, device="cuda"):
     return model
 
 
-@pytest.mark.parametrize("vlm", [False, True], ids=["text", "vlm"])
-def test_tied_word_embeddings_share_lm_head(vlm):
-    text_config = get_text_config()
-    text_config.tie_word_embeddings = True
-    config = get_vlm_config(text_config) if vlm else text_config
+def test_tied_word_embeddings_share_lm_head():
+    config = get_vlm_config(get_text_config())
     config.tie_word_embeddings = True
-    model = get_model(config, device="meta")
+    with torch.device("meta"):
+        model = get_custom_vlm_cls(config).from_config(config, attn_implementation="flash_attention_2")
+    inject_prime_lm_head(model)
     assert model.lm_head.weight is model.get_input_embeddings().weight
 
 

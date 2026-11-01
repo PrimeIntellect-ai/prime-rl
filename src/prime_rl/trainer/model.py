@@ -679,6 +679,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
+        # Tied checkpoints ship no lm_head weight: the head loads through the input embedding it shares.
+        assert model.lm_head.weight is model.get_input_embeddings().weight, (
+            f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
+        )
         state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
