@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--alpha", type=float, default=1.05, help="LLEP methods")
     parser.add_argument("--max-recv", type=float, default=2.0, help="LLEP methods")
     parser.add_argument("--iters", type=int, default=3)
+    parser.add_argument("--balanced", action="store_true", help="every expert gets the same load (the ideal)")
+    parser.add_argument("--check", action="store_true", help="compare every method's outputs with the first method's")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -106,6 +108,14 @@ def main():
             computes[name] = LLEPMegaMoEExpertCompute(
                 E, K, H, I, group, T, num_sms, options, "mxfp8_qat", stochastic_rounding=True
             )
+        elif name == "rail":
+            # Two nodes: rail swaps over InfiniBand, LLEP on each node's experts (EP group = WORLD of 16)
+            from prime_rl.trainer.models.layers.rail_llep_mega_moe import RailLLEPMegaMoEExpertCompute
+
+            options = LLEPConfig(chunk_tokens=args.chunk_tokens, alpha=args.alpha, max_recv=args.max_recv)
+            computes[name] = RailLLEPMegaMoEExpertCompute(
+                E, K, H, I, group, T, num_sms, options, "mxfp8_qat", stochastic_rounding=True, ranks_per_node=8
+            )
         elif name == "ep_qat":
             computes[name] = (TorchTokenDispatcher(E, K, 128, group), MXFP8QATExpertCompute(stochastic_rounding=True))
 
@@ -135,7 +145,7 @@ def main():
             y = dispatcher.run(x, s, topk, lambda xr, counts: compute(experts, xr, counts), score_before_experts=False)
         else:
             y = computes[name](experts, x, s, topk)
-            if name.startswith(("llep", "nolb")) and not args.reuse:
+            if name.startswith(("llep", "nolb", "rail")) and not args.reuse:
                 # Other layers' forwards run between this forward and its backward
                 state = _STATES[computes[name].state_key]
                 state.slots.plan_id = state.fp8_slots.plan_id = None
@@ -145,12 +155,15 @@ def main():
         torch.cuda.synchronize()
         if split is not None:
             split.append((middle - start, time.perf_counter() - middle))
+        return y.detach(), x.grad, s.grad
 
     rows = []
     for case in args.cases.split(","):
         step_idx, first_rank, micro = (int(v) for v in case.split(":"))
         dump = torch.load(Path(args.dumps) / f"step_{step_idx:05d}_group_{first_rank:04d}.pt", weights_only=False)
         counts = dump["ep_counts"][micro].float()  # [layers, experts]
+        if args.balanced:
+            counts = torch.ones_like(counts)
         layers = range(counts.shape[0]) if args.layers == "all" else [int(v) for v in args.layers.split(",")]
         for layer in layers:
             topk = exact_routing(
@@ -162,9 +175,19 @@ def main():
             dist.all_reduce(loads)
             rank_loads = loads.view(world, -1).sum(1)
             recorded = counts[layer].view(world, -1).sum(1)
+            reference = None
             for name in computes:
                 torch.cuda.reset_peak_memory_stats()
-                step(name, scores, topk)
+                outputs = step(name, scores, topk)
+                if args.check:
+                    if reference is None:
+                        reference = outputs
+                    else:
+                        errs = torch.stack([((a.float() - b.float()).norm() / b.float().norm()) for a, b in zip(outputs, reference)])
+                        dist.all_reduce(errs, op=dist.ReduceOp.MAX)
+                        if rank == 0:
+                            print(f"check layer {layer} {name} vs {next(iter(computes))}: relative error y {errs[0]:.2e} "
+                                  f"dx {errs[1]:.2e} dscores {errs[2]:.2e}", flush=True)
                 split = []
                 for _ in range(args.iters):
                     step(name, scores, topk, split)
@@ -182,6 +205,7 @@ def main():
                     "tokens_per_rank": T,
                     "chunk_tokens": args.chunk_tokens if name == "llep_chunk" else None,
                     "reuse": args.reuse,
+                    "balanced": args.balanced,
                     "ms": fwd + bwd,
                     "fwd_ms": fwd,
                     "bwd_ms": bwd,

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 
 import torch
 from torch import nn
@@ -104,6 +105,13 @@ def _resolve_mega_moe_compute(moe: MoE, config: ModelConfig, group: ProcessGroup
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
 
+        ranks_per_node = int(os.environ.get("LOCAL_WORLD_SIZE", torch.cuda.device_count()))
+        if group.size() > ranks_per_node:
+            from prime_rl.trainer.models.layers.rail_llep_mega_moe import RailLLEPMegaMoEExpertCompute
+
+            return RailLLEPMegaMoEExpertCompute(
+                **kwargs, options=dispatch.llep, precision=dispatch.precision, ranks_per_node=ranks_per_node
+            )
         return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=dispatch.precision)
     return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision)
 
