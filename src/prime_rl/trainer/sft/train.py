@@ -483,6 +483,10 @@ def train(config: SFTConfig):
 
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
+                # Experiment: with SFT_NO_SYNC=1, gradients accumulate unsharded (in FSDP's fp32 reduce dtype) over the
+                # micro steps and reduce-scatter once per step
+                if os.environ.get("SFT_NO_SYNC") == "1":
+                    model.set_requires_gradient_sync(micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
 
