@@ -64,7 +64,11 @@ def main():
     args = parser.parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
-    os.environ.setdefault("NCCL_MAX_CTAS", str(args.num_reserved_sms // 2))
+    methods = args.methods.split(",")
+    mega = any(name != "ep_qat" for name in methods)
+    # Mega MoE caps NCCL to fit its reserved SMs; torch EP alone runs at NCCL's default, its best setting
+    if mega:
+        os.environ.setdefault("NCCL_MAX_CTAS", str(args.num_reserved_sms // 2))
     dist.init_process_group("nccl", device_id=torch.device("cuda", local_rank))
     group = dist.group.WORLD
     rank, world = dist.get_rank(), dist.get_world_size()
@@ -83,9 +87,9 @@ def main():
     }
     # One persistent tensor: the Mega MoE weight cache (MEGA_MOE_WEIGHT_CACHE_LAYERS) keys on it
     mega_salts = torch.stack([salts["gate_up_proj"], salts["down_proj"]])
-    num_sms = reserve_sms_for_comm(args.num_reserved_sms, 2)
+    num_sms = reserve_sms_for_comm(args.num_reserved_sms, 2) if mega else None
     computes = {}
-    for name in args.methods.split(","):
+    for name in methods:
         if name == "mega":
             computes[name] = MegaMoEExpertCompute(E, K, H, I, group, T, num_sms, "mxfp8_qat", stochastic_rounding=True)
         elif name in ("llep", "llep_chunk"):
