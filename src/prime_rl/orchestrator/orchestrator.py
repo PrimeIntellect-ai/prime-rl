@@ -47,7 +47,7 @@ from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
-from prime_rl.orchestrator.boxes import delete_boxes, live_boxes, settle_live_boxes
+from prime_rl.orchestrator.boxes import JOURNAL, LiveBoxJournal, delete_boxes, live_boxes, settle_live_boxes
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -202,6 +202,7 @@ class Orchestrator:
         self.eval_sink = None
         self.eval_source = None
         self.resumed_work = None
+        self.box_journal: LiveBoxJournal | None = None
         self.settling_boxes: asyncio.Task | None = None
         """Readies the live boxes of a resume (``boxes.settle_live_boxes``) while the run
         comes up; no rollout restores before it is done. Then deletes those of dropped
@@ -372,6 +373,9 @@ class Orchestrator:
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
         )
+        if self.saves_rollouts:
+            self.box_journal = LiveBoxJournal(get_suspend_dir(config.output_dir) / JOURNAL)
+            self.dispatcher.on_live_box = self.box_journal.record
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
@@ -1062,6 +1066,15 @@ class Orchestrator:
         """Write a ``build_state`` of the run as it is now from a forked writer, while the
         loop goes on."""
         await self.ckpt_manager.save_forked(state, step)
+        if self.box_journal is not None:
+            inflight = {
+                box["sandbox_id"]
+                for meta in self.dispatcher.inflight.values()
+                if meta.assembly is not None
+                for point in meta.assembly.restores.values()
+                if (box := point.get("live"))
+            }
+            self.box_journal.rewrite(inflight | live_boxes(self.dispatcher.groups.values()))
 
     def open_work(self) -> dict:
         """The in-flight and in-queue train and eval rollouts a resumed run picks up where

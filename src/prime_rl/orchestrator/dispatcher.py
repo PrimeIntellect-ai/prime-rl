@@ -193,6 +193,8 @@ class Dispatcher:
         self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
+        self.on_live_box: Callable[[str], None] | None = None
+        """Sees the box of each rollout whose live restore point streams (``ckpt.rollouts``)."""
         self.live_events: list[dict[str, Any]] = []
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
@@ -559,6 +561,8 @@ class Dispatcher:
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            if self.on_live_box is not None and (box := (delta.get("restore") or {}).get("live")):
+                self.on_live_box(box["sandbox_id"])
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})

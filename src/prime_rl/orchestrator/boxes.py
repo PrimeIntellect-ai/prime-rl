@@ -6,7 +6,9 @@ and list them under ``get_suspend_dir``; a crash that skips the shutdown leaves 
 running, their harnesses retrying the model until a server answers again. A resumed run
 pauses the boxes its checkpoint resumes from as soon as it has read the checkpoint, so they
 wait frozen while the run comes up, and deletes the listed ones nothing resumes from: the
-boxes of rollouts started after the checkpoint, and those of groups the resume drops.
+boxes of rollouts started after the checkpoint, and those of groups the resume drops. The
+orchestrator lists every live box too, as its rollout streams it (`LiveBoxJournal`): a
+crash that suspends nothing leaves those boxes running, and only that list names them.
 Restoring an in-flight rollout then adopts its box where it is (verifiers); a rollout
 whose box is gone starts over."""
 
@@ -45,7 +47,8 @@ def forget_live_boxes(groups: Iterable[GroupState]) -> int:
 
 
 def read_suspended(directory: Path) -> tuple[set[str], list[Path]]:
-    """The boxes the env servers listed as they shut down, and the files listing them."""
+    """The boxes the env servers listed as they shut down and the orchestrator as they
+    streamed (`LiveBoxJournal`), and the files listing them."""
     files = sorted(directory.glob("*.jsonl")) if directory.is_dir() else []
     boxes: set[str] = set()
     for path in files:
@@ -57,6 +60,35 @@ def read_suspended(directory: Path) -> tuple[set[str], list[Path]]:
     return boxes, files
 
 
+JOURNAL = "orchestrator.jsonl"
+"""The orchestrator's `LiveBoxJournal`, next to the env servers' lists."""
+
+
+class LiveBoxJournal:
+    """The live boxes of this run's rollouts, listed next to the suspended ones as their
+    restore points stream in, and rewritten at each checkpoint to the ones still in
+    flight: the boxes a resume deletes when its checkpoint does not resume them."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.listed: set[str] = set()
+
+    def record(self, box: str) -> None:
+        if box in self.listed:
+            return
+        self.listed.add(box)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "a") as journal:
+            journal.write(json.dumps({"sandbox_id": box}) + "\n")
+
+    def rewrite(self, boxes: set[str]) -> None:
+        self.listed = set(boxes)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text("".join(json.dumps({"sandbox_id": box}) + "\n" for box in sorted(boxes)))
+        tmp.replace(self.path)
+
+
 async def pause_boxes(boxes: set[str]) -> None:
     if not boxes:
         return
@@ -66,13 +98,15 @@ async def pause_boxes(boxes: set[str]) -> None:
     get_logger().info(f"Paused {len(paused)}/{len(boxes)} live boxes until their rollouts restore")
 
 
-async def delete_boxes(boxes: set[str], reason: str) -> None:
+async def delete_boxes(boxes: set[str], reason: str) -> set[str]:
+    """Delete `boxes`, best-effort; returns the ones deleted."""
     if not boxes:
-        return
+        return set()
     from verifiers.v1.runtimes.backends.prime import delete_boxes
 
     deleted = await delete_boxes(sorted(boxes))
     get_logger().info(f"Deleted {len(deleted)}/{len(boxes)} live boxes of {reason}")
+    return set(deleted)
 
 
 async def settle_live_boxes(groups: list[GroupState], directory: Path, *, adopt: bool) -> None:
@@ -85,7 +119,10 @@ async def settle_live_boxes(groups: list[GroupState], directory: Path, *, adopt:
     resumed = live_boxes(groups)
     suspended, files = read_suspended(directory)
     await pause_boxes(resumed)
-    await delete_boxes(suspended - resumed, "rollouts the checkpoint does not resume")
-    # Listed once: the next shutdown lists the boxes it pauses then.
+    deleted = await delete_boxes(suspended - resumed, "rollouts the checkpoint does not resume")
+    # What is left goes to this run's journal, so a resume that crashes before its first
+    # checkpoint still leaves every box listed for the next one.
+    LiveBoxJournal(directory / JOURNAL).rewrite(resumed | (suspended - deleted))
     for path in files:
-        path.unlink(missing_ok=True)
+        if path.name != JOURNAL:
+            path.unlink(missing_ok=True)
