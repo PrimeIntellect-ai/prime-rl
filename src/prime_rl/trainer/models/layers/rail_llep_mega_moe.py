@@ -4,7 +4,8 @@ ranks' tokens and their rail peers' (an EP group of the node's ranks, NVLink onl
 weight copies never leave it), and the rail peers' partial outputs come back the same way. The swaps run in chunks next
 to the expert calls, with no host syncs:
 
-- forward: top-k ids and weights, then MXFP8 rows chunk by chunk; partial outputs back per chunk;
+- forward: top-k ids and weights, then rows chunk by chunk (MXFP8 with ``mxfp8_qat``, bf16 with ``bf16``); partial
+  outputs back per chunk;
 - backward: bf16 rows and output gradients chunk by chunk; input and top-k weight gradients back per chunk.
 
 Rail chunk ``i`` carries the peer's rows ``chunk_rows[i]`` (the same pseudo-random dealing on both sides), and the node's
@@ -54,20 +55,21 @@ class _Rail:
         max_tokens_per_rank: int,
         num_chunks: int,
         node_compute: LLEPMegaMoEExpertCompute,
+        precision: str,
     ) -> None:
         from deep_gemm.rail import RailTransport
 
         self.node = group.rank() // ranks_per_node
         self.experts_per_node = num_experts // 2
-        self.top_k, self.hidden, self.num_chunks = top_k, hidden, num_chunks
+        self.top_k, self.hidden, self.num_chunks, self.precision = top_k, hidden, num_chunks, precision
         self.compute = node_compute
         self.state = node_compute.state
         chunk = -(-max_tokens_per_rank // num_chunks)
         self.regions = {
             # top-k ids (int64) and weights (fp32) of every token
             "meta": (max_tokens_per_rank * top_k * 12, 1),
-            # E4M3 rows and their UE8M0 scales
-            "x": (num_chunks * chunk * (hidden + hidden // 128), num_chunks),
+            # E4M3 rows and their UE8M0 scales, or bf16 rows
+            "x": (num_chunks * chunk * self.row_bytes, num_chunks),
             "y": (num_chunks * chunk * hidden * 2, num_chunks),
             # bf16 rows and output gradients
             "bwd": (num_chunks * chunk * hidden * 4, num_chunks),
@@ -76,6 +78,10 @@ class _Rail:
         }
         self.rail = RailTransport(group, ranks_per_node, self.regions)
         self._rows: dict[int, list[torch.Tensor]] = {}
+
+    @property
+    def row_bytes(self) -> int:
+        return self.hidden + self.hidden // 128 if self.precision == "mxfp8_qat" else self.hidden * 2
 
     def chunk_rows(self, num_tokens: int) -> list[torch.Tensor]:
         if num_tokens not in self._rows:
@@ -142,14 +148,22 @@ def rail_llep_forward_op(
     weights_send.copy_(topk_weights)
     transport.send("meta", 0)
 
-    x_fp8, x_sf = qat_cast_tokens(x.to(torch.bfloat16).contiguous())
-    x_sf = x_sf.view(torch.uint8)
+    qat = rail.precision == "mxfp8_qat"
+    if qat:
+        x_fp8, x_sf = qat_cast_tokens(x.to(torch.bfloat16).contiguous())
+        x_sf = x_sf.view(torch.uint8)
+    else:
+        x16 = x.to(torch.bfloat16).contiguous()
     transport.begin("x")
     for i, r in enumerate(rows):
-        fp8, sf = _split(rail.chunk("x", i, "send"), r.numel(), (H, torch.uint8), (H // 128, torch.uint8))
-        torch.index_select(x_fp8.view(torch.uint8), 0, r, out=fp8)
-        torch.index_select(x_sf, 0, r, out=sf)
-        transport.send("x", i, r.numel() * (H + H // 128))
+        if qat:
+            fp8, sf = _split(rail.chunk("x", i, "send"), r.numel(), (H, torch.uint8), (H // 128, torch.uint8))
+            torch.index_select(x_fp8.view(torch.uint8), 0, r, out=fp8)
+            torch.index_select(x_sf, 0, r, out=sf)
+        else:
+            (rows16,) = _split(rail.chunk("x", i, "send"), r.numel(), (H * 2, torch.bfloat16))
+            torch.index_select(x16, 0, r, out=rows16)
+        transport.send("x", i, r.numel() * rail.row_bytes)
 
     transport.wait("meta")
     ids_recv, weights_recv = _split(rail.chunk("meta", 0, "recv"), T, (K * 8, torch.int64), (K * 4, torch.float32))
@@ -157,29 +171,43 @@ def rail_llep_forward_op(
     weights = torch.cat([topk_weights, weights_recv[order]]).to(torch.float32)
     vids, foreign, plan_id = state.plan(ids)
 
-    xs_fp8 = torch.empty((2 * T, H), dtype=x_fp8.dtype, device=x.device)
-    xs_sf = torch.empty((2 * T, H // 128), dtype=torch.uint8, device=x.device)
-    xs_fp8[:T] = x_fp8
-    xs_sf[:T] = x_sf
+    if qat:
+        xs_fp8 = torch.empty((2 * T, H), dtype=x_fp8.dtype, device=x.device)
+        xs_sf = torch.empty((2 * T, H // 128), dtype=torch.uint8, device=x.device)
+        xs_fp8[:T] = x_fp8
+        xs_sf[:T] = x_sf
+    else:
+        xs16 = torch.empty((2 * T, H), dtype=torch.bfloat16, device=x.device)
+        xs16[:T] = x16
     transport.begin("y")
 
     def before(i: int) -> None:
         n = rows[i].numel()
         transport.wait("x", i, i + 1)
-        fp8, sf = _split(rail.chunk("x", i, "recv"), n, (H, torch.uint8), (H // 128, torch.uint8))
-        xs_fp8[T + offsets[i] : T + offsets[i + 1]].view(torch.uint8).copy_(fp8)
-        xs_sf[T + offsets[i] : T + offsets[i + 1]].copy_(sf)
+        if qat:
+            fp8, sf = _split(rail.chunk("x", i, "recv"), n, (H, torch.uint8), (H // 128, torch.uint8))
+            xs_fp8[T + offsets[i] : T + offsets[i + 1]].view(torch.uint8).copy_(fp8)
+            xs_sf[T + offsets[i] : T + offsets[i + 1]].copy_(sf)
+        else:
+            (rows16,) = _split(rail.chunk("x", i, "recv"), n, (H * 2, torch.bfloat16))
+            xs16[T + offsets[i] : T + offsets[i + 1]] = rows16
 
     def after(i: int, y_chunk: torch.Tensor) -> None:
         n = rows[i].numel()
         rail.chunk("y", i, "send")[: n * H * 2].view(torch.bfloat16).view(n, H).copy_(y_chunk[n:])
         transport.send("y", i, n * H * 2)
 
-    weights_fp8 = cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
-    y = state.forward_mxfp8(
-        xs_fp8, xs_sf.view(torch.int32), vids, foreign, plan_id, weights, weights_fp8.l1, weights_fp8.l2,
-        activation_clamp, chunks=calls, before_chunk=before, after_chunk=after,
-    )[:T]
+    if qat:
+        weights_fp8 = cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+        y = state.forward_mxfp8(
+            xs_fp8, xs_sf.view(torch.int32), vids, foreign, plan_id, weights, weights_fp8.l1, weights_fp8.l2,
+            activation_clamp, chunks=calls, before_chunk=before, after_chunk=after,
+        )[:T]
+    else:
+        y = state.forward(
+            xs16, vids, foreign, plan_id, weights, gate_up_proj, down_proj, activation_clamp,
+            chunks=calls, before_chunk=before, after_chunk=after,
+        )[:T]
     transport.wait("y")
     partial = [rail.chunk("y", i, "recv")[: r.numel() * H * 2].view(torch.bfloat16).view(-1, H) for i, r in enumerate(rows)]
     y = y.index_add(0, order, torch.cat(partial))
@@ -252,7 +280,10 @@ def rail_llep_backward_op(
         dtr.copy_(dtopk_chunk[n:])
         transport.send("dx", i, n * (H * 2 + K * 4))
 
-    gate_up, down = cached_qat_rounded_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    if rail.precision == "mxfp8_qat":
+        gate_up, down = cached_qat_rounded_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
+    else:
+        gate_up, down = gate_up_proj, down_proj
     dx, dtopk, dw1, dw2 = state.backward(
         dys, xs, vids, foreign, plan_id, weights, gate_up, down, activation_clamp, _dw_dtype(gate_up_proj),
         chunks=calls, before_chunk=before, after_chunk=after,
@@ -320,8 +351,8 @@ class RailLLEPMegaMoEExpertCompute(LLEPMegaMoEExpertCompute):
         stochastic_rounding: bool = False,
         ranks_per_node: int = 8,
     ) -> None:
-        if precision != "mxfp8_qat":
-            raise ValueError(f"LLEP across nodes supports precision 'mxfp8_qat', got {precision!r}.")
+        if precision not in ("bf16", "mxfp8_qat"):
+            raise ValueError(f"LLEP across nodes supports precision 'bf16' and 'mxfp8_qat', got {precision!r}.")
         node_group = _node_group(group, ranks_per_node)
         num_chunks = -(-2 * max_tokens_per_rank // (options.chunk_tokens or 2 * max_tokens_per_rank))
         super().__init__(
@@ -331,7 +362,7 @@ class RailLLEPMegaMoEExpertCompute(LLEPMegaMoEExpertCompute):
         )
         self.num_experts = num_experts
         self.max_tokens_per_rank = max_tokens_per_rank
-        rail = _Rail(group, ranks_per_node, num_experts, top_k, hidden, max_tokens_per_rank, num_chunks, self)
+        rail = _Rail(group, ranks_per_node, num_experts, top_k, hidden, max_tokens_per_rank, num_chunks, self, precision)
         self.rail_key = id(rail)
         _RAILS[self.rail_key] = rail
 
