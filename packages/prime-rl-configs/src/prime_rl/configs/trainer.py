@@ -450,6 +450,11 @@ class BaseOptimizerConfig(BaseConfig):
     max_norm: float | None = Field(1.0, ge=0)
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
 
+    resume_lr_warmup_steps: int = Field(0, ge=0)
+    """When a resume finds a checkpointed learning rate different from ``lr``, ramp linearly from
+    the checkpointed one to ``lr`` over this many steps (the last of them trains at ``lr``). 0
+    switches to ``lr`` on the first resumed step."""
+
 
 class AdamWConfig(BaseOptimizerConfig):
     type: Literal["adamw"] = "adamw"
