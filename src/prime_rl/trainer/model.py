@@ -1,7 +1,9 @@
 import logging
 import os
 import shutil
+import sys
 import time
+import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -751,8 +753,25 @@ def mark_dynamic_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
+def load_lazy_modules() -> None:
+    """Finish loading the lazily imported modules in ``sys.modules``.
+
+    FLA reads ``sys.modules`` inside compiled code, so Dynamo wraps the whole dict and checks every module's type.
+    That check loads a lazy module (wandb's ``azure.storage.blob``), which grows ``sys.modules`` mid-iteration
+    and crashes the trace with "dictionary changed size during iteration".
+    """
+    for module in list(sys.modules.values()):
+        module_type = type(module)
+        if (
+            issubclass(module_type, types.ModuleType)
+            and module_type.__getattribute__ is not types.ModuleType.__getattribute__
+        ):
+            getattr(module, "__name__", None)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
