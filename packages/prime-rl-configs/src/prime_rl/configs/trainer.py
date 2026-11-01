@@ -135,6 +135,8 @@ class MXFP8Config(BaseConfig):
     """Use MXFP8 forward and BF16 backward, reusing forward-rounded weights for input gradients."""
     stochastic_rounding: bool = False
     """Round QAT weights stochastically; activations round to nearest. Requires qat=true."""
+    cache_weights: bool = False
+    """Cast each QAT weight once per optimizer step and reuse the cast in the step's micro steps, activation-checkpoint recomputes and backward. Holds an MXFP8 copy of the weights through the step. Requires stochastic_rounding=true."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 recipe for dense linear modules."""
 
@@ -145,6 +147,8 @@ class MXFP8Config(BaseConfig):
     def validate_stochastic_rounding(self):
         if self.stochastic_rounding and not self.qat:
             raise ValueError("MXFP8 stochastic rounding requires qat=true")
+        if self.cache_weights and not self.stochastic_rounding:
+            raise ValueError("MXFP8 QAT weight caching requires stochastic_rounding=true")
         return self
 
     extra_ignore_patterns: list[str] = []
@@ -203,6 +207,8 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Use MXFP8 expert forward and BF16 backward, reusing forward-rounded weights for input gradients."""
     stochastic_rounding: bool = False
     """Round QAT expert weights with streams shared across ranks and forward/backward. Requires qat=true."""
+    cache_weights: bool = False
+    """Cast each QAT expert weight once per optimizer step and reuse the cast in the step's micro steps, activation-checkpoint recomputes and backward. Holds an MXFP8 copy of the local experts through the step. Requires stochastic_rounding=true."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
 
@@ -210,6 +216,8 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     def validate_stochastic_rounding(self):
         if self.stochastic_rounding and not self.qat:
             raise ValueError("MXFP8 stochastic rounding requires qat=true")
+        if self.cache_weights and not self.stochastic_rounding:
+            raise ValueError("MXFP8 QAT weight caching requires stochastic_rounding=true")
         return self
 
 

@@ -64,4 +64,7 @@ def set_fp8_rounding_step(model: nn.Module, step: int) -> None:
     clear_mega_moe_weight_cache()
     state = model.fp8_rounding
     if state is not None:
+        from prime_rl.trainer.models.layers.mxfp8_qat import clear_weight_casts
+
+        clear_weight_casts()
         state.set_step(step)

@@ -69,7 +69,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
         if compute.qat:
             from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute
 
-            return MXFP8QATExpertCompute(compute.stochastic_rounding)
+            return MXFP8QATExpertCompute(compute.stochastic_rounding, compute.cache_weights)
         import prime_kernels
 
         kernel = prime_kernels.load("mxfp8_moe")

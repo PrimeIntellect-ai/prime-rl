@@ -162,6 +162,41 @@ def test_checkpoint_replay(compiled, mode, sr):
         torch.testing.assert_close(a, b, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_cached_weight_casts(compiled):
+    from prime_rl.configs.trainer import ActivationCheckpointConfig
+    from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+    from prime_rl.trainer.models.fp8_rounding import set_fp8_rounding_step
+    from prime_rl.trainer.models.layers import mxfp8_qat
+
+    model = (
+        torch.nn.Sequential(
+            mxfp8_qat.MXFP8QATLinear(128, 128, bias=False, stochastic_rounding=True),
+            torch.nn.SiLU(),
+            mxfp8_qat.MXFP8QATLinear(128, 128, bias=False, stochastic_rounding=True),
+        )
+        .cuda()
+        .bfloat16()
+    )
+    setup_fp8_rounding(model, 47)
+    x = torch.randn((64, 128), device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    expected = model(x)
+    expected_grads = torch.autograd.grad(expected.sum(), (x, *model.parameters()))
+    model[0].cache_weight = model[2].cache_weight = True
+    wrapped = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode="full"))(model)
+    if compiled:
+        wrapped = torch.compile(wrapped, fullgraph=True)
+    for _ in range(2):
+        actual = wrapped(x)
+        actual_grads = torch.autograd.grad(actual.sum(), (x, *model.parameters()))
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+        for a, b in zip(actual_grads, expected_grads):
+            torch.testing.assert_close(a, b, atol=0, rtol=0)
+    assert len(mxfp8_qat._weight_casts) == 2
+    set_fp8_rounding_step(model, 1)
+    assert not mxfp8_qat._weight_casts
+
+
 @pytest.fixture(scope="module")
 def qat_process_group():
     import os
