@@ -26,3 +26,17 @@ Scale caveat, measured: at 43 layers the saved fit-target activations dominate, 
 ### Commits
 
 2d7da5d58 feat(trainer): let selective AC targets name a module path
+
+## B300 rerun (2026-11-02)
+
+The same proxy rerun on one 8x B300 SXM6 node (SM103), 20 steps, balanced routing, 262144-token rows, cp 8, ep 8, full activation checkpointing, medians of `time/forward_backward` over steps 4 to 20, paired against a `main` arm from the same worktree series on the same node. The B300 campaign runs MXFP8 (`quantization.type=mxfp8`, `recipe=mxfp8_rceil_wgrad_with_hp`, `moe.compute.type=mxfp8`) with a DeepSeek V4 Flash checkpoint, the production-representative low precision path on this hardware, so cross-campaign comparability is the per-level delta, not the absolute step time (the H200 campaign ran FP8 blockwise and MFU here divides FP8 work by the dense BF16 peak 2.25e15 FLOP/s). The arm ran with `PRIME_RL_DSV4_MHC_BWD_PRECISION=tf32` and selective AC whose FP8 target names were rewritten for MXFP8 (`aten::mm@` entries for the four dense GEMM sites, `prime_rl::dsv4_mhc_pre` and `aten::bmm@self_attn.o_a_proj` unchanged). Noise floors from same-protocol repeats: main 0.04 to 0.05 percent, tip 0.12 percent.
+
+| run | layers | fb med s (steps 4-20) | fb med s (all steps) | MFU % | tok/s per GPU | peak GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| b300-main-L4-mxfp8 | 4 | 5.896 | 5.902 | 22.90 | 41782 | 88.26 |
+| b300-main-L6-mxfp8 | 6 | 8.227 | 8.252 | 23.89 | 29937 | 109.17 |
+| b300-l6-L4-mxfp8 | 4 | 5.543 | 5.554 | 24.34 | 44418 | 93.47 |
+| b300-l6-L6-mxfp8 | 6 | 7.666 | 7.690 | 25.63 | 32119 | 117.44 |
+The arm delta is -5.99 percent at 4 layers and -6.81 percent at 6 layers against the B300 main (H200 measured -6.67 and -6.97 percent). The memory signature reproduces: peak rises 5.2 GiB at 4 layers and 8.3 GiB at 6 layers over the full-AC main (H200 stack frame: +4.1 and +7.9 GiB).
+
+Compile bar: zero Dynamo recompiles and zero graph breaks in every B300 run, all compilation confined to step 1, Triton cubin count at or below the main arm (the stack removes kernels), DeepGEMM variants 3 to 4, the same one-time hc_head DeepGEMM variant the arm below carries, TileLang cache files unchanged at 5. Mechanism note for MXFP8, settled by a three-arm differential accounting run (4 layers, 2 steps, arms differing only in the GEMM-site target op name): the `aten::mm@` targets used here DO match at CheckpointPolicy time and save exactly the fit subset, adding 851 MiB per graph at the four GEMM sites (o_b_proj 252, shared expert 504, q_a_proj 63, kv_proj 32 MiB) and taking per-graph saved op outputs from about 0.97 GiB (min-cut alone, saved by both the no-match control and an `aten::_scaled_mm@` variant) to 1.84 to 1.90 GiB. The `aten::_scaled_mm@` variant matches nothing at policy time even though the partitioner records the saved tensors at `aten::_scaled_mm` nodes, so the trace-time op name is the one the targets must use. The min-cut alone saves the o_a_proj bmm and the mHC pre-pass outputs but not the GEMM fit subset.
