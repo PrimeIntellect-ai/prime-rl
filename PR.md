@@ -26,3 +26,17 @@ Known flake, reframed by the stack campaign: the one step-1 hang this workstream
 ### Commits
 
 ae13b4079 feat(deepseek-v4): exchange CP halos instead of all-gathering the row
+
+## B300 rerun (2026-11-02)
+
+The same proxy rerun on one 8x B300 SXM6 node (SM103), 20 steps, balanced routing, 262144-token rows, cp 8, ep 8, full activation checkpointing, medians of `time/forward_backward` over steps 4 to 20, paired against a `main` arm from the same worktree series on the same node. The B300 campaign runs MXFP8 (`quantization.type=mxfp8`, `recipe=mxfp8_rceil_wgrad_with_hp`, `moe.compute.type=mxfp8`) with a DeepSeek V4 Flash checkpoint, the production-representative low precision path on this hardware, so cross-campaign comparability is the per-level delta, not the absolute step time (the H200 campaign ran FP8 blockwise and MFU here divides FP8 work by the dense BF16 peak 2.25e15 FLOP/s). The arm ran with `--model.dsv4-cp-kv-exchange halo`. Noise floors from same-protocol repeats: main 0.04 to 0.05 percent, tip 0.12 percent.
+
+| run | layers | fb med s (steps 4-20) | fb med s (all steps) | MFU % | tok/s per GPU | peak GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| b300-main-L4-mxfp8 | 4 | 5.896 | 5.902 | 22.90 | 41782 | 88.26 |
+| b300-main-L6-mxfp8 | 6 | 8.227 | 8.252 | 23.89 | 29937 | 109.17 |
+| b300-l3-L4-mxfp8 | 4 | 5.622 | 5.632 | 24.04 | 43855 | 87.34 |
+| b300-l3-L6-mxfp8 | 6 | 7.666 | 7.692 | 25.62 | 32116 | 106.83 |
+The arm delta is -4.65 percent at 4 layers and -6.82 percent at 6 layers against the B300 main (H200 measured -4.06 and -5.77 percent), so the halo exchange wins more on B300, consistent with the communication-heavy change favoring the faster interconnect. Peak memory falls 0.9 GiB at 4 layers and 2.3 GiB at 6 layers.
+
+Compile bar: zero Dynamo recompiles and zero graph breaks in every B300 run, all compilation confined to step 1, Triton cubin count at or below the main arm (the stack removes kernels), DeepGEMM variants unchanged at 3, TileLang cache files unchanged at 5. 
