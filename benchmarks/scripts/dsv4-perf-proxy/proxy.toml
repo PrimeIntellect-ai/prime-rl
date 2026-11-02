@@ -1,0 +1,45 @@
+max_steps = 20
+matmul_precision = "highest"
+dist_timeout_seconds = 14400
+
+[model]
+name = "PrimeIntellect/INTELLECT-4-SFT-v8-3000-bf16"
+seq_len = 262144
+cp = 8
+ep = 8
+offload = "none"
+ac_offloading = "None"
+
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.compile]
+fullgraph = true
+
+[model.debug]
+num_layers = 6
+
+[model.quantization]
+type = "fp8"
+extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+
+[model.moe.dispatch]
+type = "torch"
+
+[optim]
+type = "muon"
+lr = 1e-6
+weight_decay = 0.0
+max_norm = 1.0
+
+[loss]
+type = "icepop"
+
+[data.fake]
+batch_size = 8
+generate_samples = true
+doc_len_range = [229376, 262144]
