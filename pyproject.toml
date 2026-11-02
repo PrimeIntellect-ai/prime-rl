@@ -161,8 +161,8 @@ override-dependencies = [
     # TODO: PyPI release of prime-runs and prime-traces with PrimeIntellect-ai/prime#1136 (non-blocking,
     # concurrent uploads) and #1140 (uploads self-encoded episodes) asap. Overridden here because
     # verifiers requires prime-runs from PyPI.
-    "prime-runs[train] @ git+https://github.com/PrimeIntellect-ai/prime@b384a301d3c1b97ab62090bc814f6760fdab4a6d#subdirectory=packages/prime-runs",
-    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@b384a301d3c1b97ab62090bc814f6760fdab4a6d#subdirectory=packages/prime-traces",
+    "prime-runs[train] @ git+https://github.com/PrimeIntellect-ai/prime@f936a4c1554f042a2d6fcb71f837780a8c388e30#subdirectory=packages/prime-runs",
+    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@f936a4c1554f042a2d6fcb71f837780a8c388e30#subdirectory=packages/prime-traces",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new
@@ -271,7 +271,7 @@ renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 # TODO: replace with the prime-runs PyPI release that has PrimeIntellect-ai/prime#1136 and #1140 asap, and raise the
 # prime-runs minimum to it (prime-traces is pinned in override-dependencies until then).
-prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-runs", rev = "b384a301d3c1b97ab62090bc814f6760fdab4a6d" }
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-runs", rev = "f936a4c1554f042a2d6fcb71f837780a8c388e30" }
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
