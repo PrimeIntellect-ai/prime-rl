@@ -96,7 +96,7 @@ def _resolve_mega_moe_compute(
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
 
-        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep)
+        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=dispatch.precision)
     return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision)
 
 
