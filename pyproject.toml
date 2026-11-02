@@ -17,7 +17,7 @@ dependencies = [
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime>=0.18.0",
-    "prime-runs[train]>=0.1.4",
+    "prime-runs[train]>=0.1.6",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
@@ -158,10 +158,9 @@ override-dependencies = [
     "nvidia-cutlass-dsl==4.8.0",
     "torch>=2.13.0",
     "openenv-core",
-    # TODO: PyPI release of prime-runs and prime-traces with PrimeIntellect-ai/prime#1136 (non-blocking,
-    # concurrent uploads) asap. Overridden here because verifiers pins prime-runs to an older commit.
-    "prime-runs[train] @ git+https://github.com/PrimeIntellect-ai/prime@d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c#subdirectory=packages/prime-runs",
-    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c#subdirectory=packages/prime-traces",
+    # Overridden because the verifiers submodule pins prime-runs and prime-traces to an older commit.
+    "prime-runs[train]>=0.1.6",
+    "prime-traces>=0.0.12",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new
@@ -268,9 +267,6 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
-# TODO: replace with the prime-runs PyPI release that has PrimeIntellect-ai/prime#1136 asap, and raise the
-# prime-runs minimum to it (prime-traces is pinned in override-dependencies until then).
-prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-runs", rev = "d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c" }
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
