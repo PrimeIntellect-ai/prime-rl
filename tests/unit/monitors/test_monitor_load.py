@@ -8,6 +8,7 @@ import asyncio
 import gc
 import gzip
 import statistics
+import threading
 import time
 
 import numpy as np
@@ -18,6 +19,7 @@ import wandb
 from prime_runs.sinks import RftMetricsSink, TracesSink
 from prime_runs.worker import UploadWorker
 from prime_traces import TracesClient
+from prime_traces.core.client import GZIP_LEVEL
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
 from verifiers.v1.types import AssistantMessage, Usage, UserMessage
@@ -175,15 +177,18 @@ def registered():
 
 class FakeTracesAPI:
     """The Prime Traces endpoint: gzips each request like the real client and keeps
-    the lines it received."""
+    the lines it received. The client sends several requests at once."""
 
     def __init__(self) -> None:
         self.lines = 0
+        self._lock = threading.Lock()
 
     def upload_batch(self, body, idempotency_key, *, line_format, schema_version=1, context=None, compress=True):
         if compress:
-            gzip.compress(body, mtime=0)
-        self.lines += body.count(b"\n") + (not body.endswith(b"\n"))
+            gzip.compress(body, GZIP_LEVEL, mtime=0)
+        lines = body.count(b"\n") + (not body.endswith(b"\n"))
+        with self._lock:
+            self.lines += lines
         return {"upload_id": idempotency_key.split(":", 1)[1], "status": "committed"}
 
     def close(self) -> None:
@@ -257,21 +262,10 @@ async def _wandb(tmp_path, monkeypatch):
     return monitor, lambda: (None, steps)
 
 
-# TODO: fix and drop this mark. The SDK uploads one episode at a time, and gzips each
-# at level 9 (about 70 ms here). A thousand episodes logged at once fill its queue, and
-# log() then waits for room (up to 5 s) on the orchestrator's arrival path, then drops.
-SDK_BACKPRESSURE = pytest.mark.xfail(reason="prime_runs blocks log() while its upload queue is full", strict=True)
-
-
 @pytest.mark.parametrize(
     "start,count",
     [
-        pytest.param(
-            start,
-            count,
-            id=f"{start.__name__[1:]}-{count}",
-            marks=SDK_BACKPRESSURE if (start, count) == (_prime, 1000) else (),
-        )
+        pytest.param(start, count, id=f"{start.__name__[1:]}-{count}")
         for start in (_file, _prime, _wandb)
         for count in (10, 100, 1000)
     ],
