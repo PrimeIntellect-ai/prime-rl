@@ -1,7 +1,7 @@
 """Validate and publish Hugging Face exports of trainer DCP checkpoints.
 
-The by-step exports are immutable.  ``best`` and ``latest`` are relative symlinks,
-and ``COMPLETE.json`` is the commit marker for a requested pair of exports.
+By-step exports are immutable. Role names are relative symlinks, and
+``COMPLETE.json`` commits the validated local exports and any private Hub uploads.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import torch
+from huggingface_hub import HfApi, get_token
+from huggingface_hub.utils import validate_repo_id
 from safetensors import safe_open
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
@@ -27,7 +29,12 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
-from prime_rl.utils.pathing import get_config_dir, preflight_checkpoint_storage
+from prime_rl.utils.pathing import (
+    get_config_dir,
+    get_generation_path,
+    preflight_checkpoint_storage,
+    read_checkpoint_generation,
+)
 
 _EXPORT_MANIFEST = "EXPORT.json"
 _COMPLETE = "COMPLETE.json"
@@ -37,29 +44,38 @@ _SOURCE_ASSET_SUFFIXES = {".json", ".jinja", ".txt", ".py", ".model", ".tiktoken
 _UTF8_ASSET_SUFFIXES = {".json", ".jinja", ".txt", ".py", ".tiktoken"}
 # These PrimeRL implementations explicitly use the standard HF state-dict layout.
 _DIRECT_HF_MODEL_TYPES = {"llama", "qwen3"}
+_EXPORT_ROLES = ("best", "best_training_reward", "best_continuous_reward", "latest")
 
 
 def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_step: int) -> bool:
-    """Export BEST then LATEST, publishing them only after both validate.
+    """Export the legacy BEST/LATEST pair, allowing a latest-only result."""
+    roles = {} if best_step is None else {"best": best_step}
+    roles["latest"] = latest_step
+    return export_checkpoints(output_dir=output_dir, roles=roles)
 
-    All operations for one export root are serialized. A prior COMPLETE marker
-    survives unrelated early failures, but is removed before pointer mutation or
-    when an already-published export fails revalidation.
+
+def export_checkpoints(*, output_dir: Path, roles: dict[str, int], repo_prefix: str | None = None) -> bool:
+    """Publish all requested roles only after validation and optional private uploads.
+
+    The caller resolves each role to a jointly complete checkpoint. A missing
+    BEST must not be omitted by callers that require that role.
     """
-    output_dir = Path(output_dir)
-    steps = [latest_step] if best_step is None else [best_step, latest_step]
-    if any(isinstance(step, bool) or not isinstance(step, int) or step < 0 for step in steps):
+    if not roles or "latest" not in roles or any(role not in _EXPORT_ROLES for role in roles):
+        raise ValueError(f"Export roles must include latest and use only {_EXPORT_ROLES}")
+    roles = dict(roles)
+    if any(isinstance(step, bool) or not isinstance(step, int) or step < 0 for step in roles.values()):
         raise ValueError("Checkpoint steps must be non-negative integers")
+    output_dir = Path(output_dir)
+    run_id = _hf_run_id(output_dir) if repo_prefix is not None else None
+    if repo_prefix is not None:
+        for step in set(roles.values()):
+            _hub_repo_id(repo_prefix, run_id, step)
 
     export_dir = output_dir / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
     with _export_lock(export_dir):
         return _export_locked(
-            output_dir=output_dir,
-            export_dir=export_dir,
-            steps=list(dict.fromkeys(steps)),
-            best_step=best_step,
-            latest_step=latest_step,
+            output_dir=output_dir, export_dir=export_dir, roles=roles, repo_prefix=repo_prefix, run_id=run_id
         )
 
 
@@ -67,10 +83,11 @@ def _export_locked(
     *,
     output_dir: Path,
     export_dir: Path,
-    steps: list[int],
-    best_step: int | None,
-    latest_step: int,
+    roles: dict[str, int],
+    repo_prefix: str | None,
+    run_id: str | None,
 ) -> bool:
+    steps = list(dict.fromkeys(roles.values()))
     checkpoints_dir = output_dir / "checkpoints"
     required_bytes = 0
     for step in steps:
@@ -78,12 +95,12 @@ def _export_locked(
             continue
         required_bytes += _model_checkpoint_bytes(checkpoints_dir, step)
     preflight_checkpoint_storage(export_dir, required_bytes=required_bytes)
+    hub = _authenticated_hf_api(repo_prefix) if repo_prefix is not None else None
 
     model_config, tokenizer_config, config_path, config_sha256 = _resolve_run_config(output_dir)
     if model_config.lora is not None:
         raise ValueError("LoRA checkpoints cannot be exported as full HF models")
 
-    # Do not publish either pointer until every requested conversion has passed.
     manifests: dict[int, dict[str, Any]] = {}
     for step in steps:
         dcp_dir = _resolve_dcp_dir(checkpoints_dir, step)
@@ -98,13 +115,24 @@ def _export_locked(
             config_path=config_path,
         )
 
-    # From this point onward, a failure must leave no marker for a partial pair.
+    # Uploads and pointer updates can change a published role. No earlier marker
+    # may certify a partially updated set, even if a retry uses existing exports.
     _invalidate_complete(export_dir)
-    if best_step is not None:
-        _atomic_symlink(f"step_{best_step}", export_dir / "best", export_dir)
-    else:
-        _remove_pointer(export_dir / "best", export_dir)
-    _atomic_symlink(f"step_{latest_step}", export_dir / "latest", export_dir)
+    uploads = {}
+    if hub is not None:
+        for step in steps:
+            uploads[step] = _upload_private_export(
+                hub=hub,
+                repo_id=_hub_repo_id(repo_prefix, run_id, step),
+                step_dir=export_dir / f"step_{step}",
+                manifest=manifests[step],
+            )
+
+    for role in _EXPORT_ROLES:
+        if role not in roles:
+            _remove_pointer(export_dir / role, export_dir)
+    for role, step in roles.items():
+        _atomic_symlink(f"step_{step}", export_dir / role, export_dir)
 
     def summary(step: int) -> dict[str, Any]:
         manifest = manifests[step]
@@ -117,15 +145,121 @@ def _export_locked(
             "shards": manifest["shards"],
         }
 
+    role_summaries = {role: summary(step) for role, step in roles.items()}
+    for role, step in roles.items():
+        if step in uploads:
+            role_summaries[role]["hub"] = uploads[step]
     complete = {
-        "format_version": 1,
+        "format_version": 2,
         "status": "complete",
-        "best": summary(best_step) if best_step is not None else None,
-        "latest": summary(latest_step),
+        "best": None,
+        **role_summaries,
+        "roles": role_summaries,
         "exports": [summary(step) for step in steps],
     }
     _write_json_atomic(export_dir / _COMPLETE, complete)
     return True
+
+
+def _hf_run_id(output_dir: Path) -> str:
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    generation_path = get_generation_path(ckpt_dir)
+    if not generation_path.is_file():
+        raise ValueError(f"Private HF uploads require a persisted run identity in {generation_path}")
+    run_id = read_checkpoint_generation(ckpt_dir)["generation"]
+    if run_id == "legacy":
+        raise ValueError("Private HF uploads require a non-legacy checkpoint run identity")
+    validate_repo_id(run_id)
+    return run_id
+
+
+def _validate_repo_prefix(repo_prefix: str) -> None:
+    if not isinstance(repo_prefix, str) or repo_prefix.count("/") != 1:
+        raise ValueError("hf_repo_prefix must be a namespace/repository prefix")
+    validate_repo_id(repo_prefix)
+
+
+def _hub_repo_id(repo_prefix: str, run_id: str, step: int) -> str:
+    _validate_repo_prefix(repo_prefix)
+    validate_repo_id(run_id)
+    repo_id = f"{repo_prefix}-{run_id}-step{step}"
+    validate_repo_id(repo_id)
+    return repo_id
+
+
+def _authenticated_hf_api(repo_prefix: str) -> HfApi:
+    _validate_repo_prefix(repo_prefix)
+    token = get_token()
+    if not token or not token.strip():
+        raise ValueError("Private HF uploads require HF_TOKEN or a saved Hugging Face token")
+    hub = HfApi(token=token)
+    identity = hub.whoami(cache=True)
+    if identity.get("auth", {}).get("accessToken", {}).get("role") == "read":
+        raise ValueError("Private HF uploads require a write-capable Hugging Face token")
+    return hub
+
+
+def validate_hf_token(repo_prefix: str, output_dir: Path | None = None) -> None:
+    """Read-only identity/naming/auth preflight; never create a repo or upload."""
+    if output_dir is not None:
+        _hub_repo_id(repo_prefix, _hf_run_id(output_dir), 0)
+    _authenticated_hf_api(repo_prefix)
+
+
+def _upload_private_export(*, hub: HfApi, repo_id: str, step_dir: Path, manifest: dict[str, Any]) -> dict:
+    hub.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+    remote = hub.model_info(repo_id, files_metadata=True)
+    if remote.private is not True:
+        raise RuntimeError(f"Refusing to upload to a non-private Hugging Face repository: {repo_id}")
+    if any(record.rfilename != ".gitattributes" for record in remote.siblings or []):
+        return _verify_private_export(repo_id, remote, step_dir, manifest, remote.sha)
+    commit = hub.upload_folder(
+        repo_id=repo_id,
+        repo_type="model",
+        folder_path=step_dir,
+        parent_commit=remote.sha,
+        commit_message=f"Validated checkpoint step {manifest['step']}",
+        run_as_future=False,
+    )
+    revision = commit.oid
+    remote = hub.model_info(repo_id, revision=revision, files_metadata=True)
+    return _verify_private_export(repo_id, remote, step_dir, manifest, revision)
+
+
+def _verify_private_export(repo_id: str, remote, step_dir: Path, manifest: dict[str, Any], revision: str) -> dict:
+    if not isinstance(revision, str) or not revision:
+        raise RuntimeError(f"Hugging Face upload returned no commit revision for {repo_id}")
+    if remote.private is not True or remote.sha != revision:
+        raise RuntimeError(f"Hugging Face upload is not a verified private revision: {repo_id}@{revision}")
+    manifest_path = step_dir / _EXPORT_MANIFEST
+    manifest_sha256 = _sha256_file(manifest_path)
+    expected = {record["path"]: record for record in manifest["assets"]}
+    expected[_EXPORT_MANIFEST] = {
+        "size": manifest_path.stat().st_size,
+        "sha256": manifest_sha256,
+    }
+    files = {record.rfilename: record for record in remote.siblings or []}
+    if set(files) - {".gitattributes"} != set(expected) - {".gitattributes"}:
+        raise RuntimeError(f"Hugging Face uploaded file set does not match the validated export: {repo_id}")
+    for name, record in expected.items():
+        remote_file = files.get(name)
+        if remote_file is None or remote_file.size != record["size"]:
+            raise RuntimeError(f"Hugging Face uploaded file size mismatch: {repo_id}/{name}")
+        if remote_file.lfs is not None:
+            matches = remote_file.lfs.sha256 == record["sha256"]
+        else:
+            matches = remote_file.blob_id == _git_blob_sha1(step_dir / name)
+        if not matches:
+            raise RuntimeError(f"Hugging Face uploaded file hash mismatch: {repo_id}/{name}")
+    return {"repo_id": repo_id, "revision": revision, "private": True, "manifest_sha256": manifest_sha256}
+
+
+def _git_blob_sha1(path: Path) -> str:
+    digest = hashlib.sha1(f"blob {path.stat().st_size}\0".encode())
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _export_step(
@@ -892,4 +1026,4 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-__all__ = ["export_best_and_latest"]
+__all__ = ["export_best_and_latest", "export_checkpoints", "validate_hf_token"]

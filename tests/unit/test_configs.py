@@ -1345,3 +1345,24 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
+
+
+def test_shared_checkpoint_reward_roles_propagate():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {
+                "interval": 20,
+                "keep_last": 1,
+                "export": True,
+                "best_metrics": ["training_reward", "continuous_reward"],
+                "hf_repo_prefix": "PrimeIntellect/Nemotron-3.5-Super-cyberstrike-rl",
+            },
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.orchestrator.ckpt.best_metrics == ("training_reward", "continuous_reward")
+    assert config.orchestrator.ckpt.hf_repo_prefix == "PrimeIntellect/Nemotron-3.5-Super-cyberstrike-rl"
+    assert config.trainer.ckpt.keep_last == config.orchestrator.ckpt.keep_last == 1
+    reloaded = RLConfig.model_validate(config.model_dump(mode="json"))
+    assert reloaded.orchestrator.ckpt == config.orchestrator.ckpt

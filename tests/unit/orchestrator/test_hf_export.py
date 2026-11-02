@@ -23,7 +23,9 @@ from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig, LlamaFor
 
 import prime_rl.orchestrator.hf_export as hf_export
 import prime_rl.utils.weights as weight_utils
-from prime_rl.orchestrator.hf_export import export_best_and_latest
+from prime_rl.orchestrator.hf_export import export_best_and_latest, export_checkpoints, validate_hf_token
+
+_TEST_RUN_ID = "0123456789abcdef0123456789abcdef"
 
 
 def _sha256(path: Path) -> str:
@@ -92,7 +94,187 @@ def fake_run(tmp_path: Path) -> tuple[Path, LlamaForCausalLM]:
     (config_dir / "trainer.json").write_text(
         json.dumps({"model": {"name": str(source_dir)}, "tokenizer": {"name": str(source_dir)}})
     )
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir()
+    (ckpt_dir / "generation.json").write_text(json.dumps({"generation": _TEST_RUN_ID, "ceiling": None}))
     return run_dir, model
+
+
+@pytest.fixture
+def fake_hub(monkeypatch: pytest.MonkeyPatch):
+    repositories = {}
+    create_calls = []
+    upload_calls = []
+
+    def create_repo(*, repo_id, **kwargs):
+        create_calls.append((repo_id, kwargs))
+        repositories.setdefault(repo_id, types.SimpleNamespace(private=True, sha="initial", siblings=[]))
+
+    def model_info(repo_id, **kwargs):
+        return repositories[repo_id]
+
+    def upload_folder(*, repo_id, folder_path, **kwargs):
+        assert not (folder_path.parent / "COMPLETE.json").exists()
+        upload_calls.append((repo_id, kwargs))
+        files = []
+        for path in sorted(folder_path.rglob("*")):
+            if path.is_file():
+                files.append(
+                    types.SimpleNamespace(
+                        rfilename=path.relative_to(folder_path).as_posix(),
+                        size=path.stat().st_size,
+                        blob_id=hf_export._git_blob_sha1(path),
+                        lfs=types.SimpleNamespace(sha256=_sha256(path)) if path.suffix == ".safetensors" else None,
+                    )
+                )
+        revision = hashlib.sha1(repo_id.encode()).hexdigest()
+        repositories[repo_id] = types.SimpleNamespace(private=True, sha=revision, siblings=files)
+        return types.SimpleNamespace(oid=revision)
+
+    hub = types.SimpleNamespace(
+        whoami=lambda **kwargs: {"auth": {"accessToken": {"role": "write"}}},
+        create_repo=create_repo,
+        model_info=model_info,
+        upload_folder=upload_folder,
+        repositories=repositories,
+        create_calls=create_calls,
+        upload_calls=upload_calls,
+    )
+    monkeypatch.setattr(hf_export, "get_token", lambda: "test-token")
+    monkeypatch.setattr(hf_export, "HfApi", lambda **kwargs: hub)
+    return hub
+
+
+@pytest.mark.parametrize("role_steps", [(60, 20, 40), (20, 20, 20)])
+def test_three_roles_convert_and_privately_upload_each_unique_step_once(
+    fake_run: tuple[Path, LlamaForCausalLM], fake_hub, monkeypatch: pytest.MonkeyPatch, role_steps
+):
+    run_dir, model = fake_run
+    native_run_dir = run_dir.with_name("cyberstrike--nemotron--1234abcd")
+    run_dir.rename(native_run_dir)
+    run_dir = native_run_dir
+    monkeypatch.setenv("PRL_RUN_ID", "unrelated-runtime-id")
+    roles = dict(zip(("latest", "best_training_reward", "best_continuous_reward"), role_steps))
+    for step in set(role_steps):
+        _write_dcp(run_dir, step, model)
+    convert = hf_export._convert_checkpoint
+    calls = []
+
+    def counted_conversion(**kwargs):
+        calls.append(kwargs["step"])
+        return convert(**kwargs)
+
+    monkeypatch.setattr(hf_export, "_convert_checkpoint", counted_conversion)
+    assert export_checkpoints(output_dir=run_dir, roles=roles, repo_prefix="org/model") is True
+
+    assert calls == list(dict.fromkeys(role_steps))
+    assert len(fake_hub.upload_calls) == len(set(role_steps))
+    assert all(kwargs["private"] is True for _, kwargs in fake_hub.create_calls)
+    assert all(kwargs["run_as_future"] is False for _, kwargs in fake_hub.upload_calls)
+    exports = run_dir / "exports"
+    complete = json.loads((exports / "COMPLETE.json").read_text())
+    assert len(complete["exports"]) == len(set(role_steps))
+    assert set(complete["roles"]) == set(roles)
+    for role, step in roles.items():
+        assert os.readlink(exports / role) == f"step_{step}"
+        receipt = complete["roles"][role]
+        assert receipt["step"] == step
+        assert receipt["hub"]["repo_id"] == f"org/model-{_TEST_RUN_ID}-step{step}"
+        assert receipt["hub"]["private"] is True
+        assert receipt["hub"]["revision"] == fake_hub.repositories[f"org/model-{_TEST_RUN_ID}-step{step}"].sha
+        assert receipt["hub"]["manifest_sha256"] == _sha256(exports / f"step_{step}" / "EXPORT.json")
+
+    monkeypatch.delenv("PRL_RUN_ID")
+    assert export_checkpoints(output_dir=run_dir, roles=roles, repo_prefix="org/model") is True
+    assert len(fake_hub.upload_calls) == len(set(role_steps))
+
+
+@pytest.mark.parametrize("failure", ["upload", "public", "hash"])
+def test_hub_failure_never_commits_complete_or_rewrites_prior_role_pointers(
+    fake_run: tuple[Path, LlamaForCausalLM], fake_hub, monkeypatch: pytest.MonkeyPatch, failure: str
+):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    _write_dcp(run_dir, 40, model)
+    assert export_best_and_latest(output_dir=run_dir, best_step=20, latest_step=20) is True
+    source_hashes = _tree_hashes(run_dir / "checkpoints")
+    upload = fake_hub.upload_folder
+
+    def broken_upload(**kwargs):
+        if failure == "upload":
+            raise RuntimeError("upload failed")
+        commit = upload(**kwargs)
+        remote = fake_hub.repositories[kwargs["repo_id"]]
+        if failure == "public":
+            remote.private = False
+        else:
+            shard = next(record for record in remote.siblings if record.lfs is not None)
+            shard.lfs.sha256 = "0" * 64
+        return commit
+
+    monkeypatch.setattr(fake_hub, "upload_folder", broken_upload)
+    with pytest.raises(RuntimeError, match="upload failed|verified private|hash mismatch"):
+        export_checkpoints(
+            output_dir=run_dir,
+            roles={"latest": 40, "best_training_reward": 20, "best_continuous_reward": 20},
+            repo_prefix="org/model",
+        )
+
+    exports = run_dir / "exports"
+    assert not (exports / "COMPLETE.json").exists()
+    assert os.readlink(exports / "best") == "step_20"
+    assert os.readlink(exports / "latest") == "step_20"
+    assert not (exports / "best_training_reward").exists()
+    assert (exports / "step_40" / "EXPORT.json").is_file()
+    assert _tree_hashes(run_dir / "checkpoints") == source_hashes
+
+
+def test_existing_private_step_repository_is_reused_but_never_overwritten(
+    fake_run: tuple[Path, LlamaForCausalLM], fake_hub
+):
+    run_dir, model = fake_run
+    _write_dcp(run_dir, 20, model)
+    kwargs = {"output_dir": run_dir, "roles": {"latest": 20}, "repo_prefix": "org/model"}
+    assert export_checkpoints(**kwargs) is True
+    assert export_checkpoints(**kwargs) is True
+    assert len(fake_hub.upload_calls) == 1
+
+    remote = fake_hub.repositories[f"org/model-{_TEST_RUN_ID}-step20"]
+    next(record for record in remote.siblings if record.rfilename == "config.json").blob_id = "0" * 40
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        export_checkpoints(**kwargs)
+    assert len(fake_hub.upload_calls) == 1
+    assert not (run_dir / "exports" / "COMPLETE.json").exists()
+
+
+def test_hub_preflight_requires_persisted_nonlegacy_identity(fake_run, fake_hub):
+    run_dir, _ = fake_run
+    validate_hf_token("org/model", output_dir=run_dir)
+    generation_path = run_dir / "checkpoints" / "generation.json"
+    for generation in (None, "legacy"):
+        if generation is None:
+            generation_path.unlink()
+        else:
+            generation_path.write_text(json.dumps({"generation": generation, "ceiling": None}))
+        with pytest.raises(ValueError, match="run identity"):
+            validate_hf_token("org/model", output_dir=run_dir)
+        with pytest.raises(ValueError, match="run identity"):
+            export_checkpoints(output_dir=run_dir, roles={"latest": 20}, repo_prefix="org/model")
+    assert not fake_hub.create_calls
+    assert not fake_hub.upload_calls
+
+
+@pytest.mark.parametrize("token,role", [(None, "write"), ("token", "read"), ("token", "write")])
+def test_hf_token_preflight_is_read_only(fake_hub, monkeypatch: pytest.MonkeyPatch, token, role):
+    monkeypatch.setattr(hf_export, "get_token", lambda: token)
+    monkeypatch.setattr(fake_hub, "whoami", lambda **kwargs: {"auth": {"accessToken": {"role": role}}})
+    if token is None or role == "read":
+        with pytest.raises(ValueError, match="token"):
+            validate_hf_token("org/model")
+    else:
+        validate_hf_token("org/model")
+    assert not fake_hub.create_calls
+    assert not fake_hub.upload_calls
 
 
 def test_exports_sharded_best_then_latest_and_reuses_immutable_steps(

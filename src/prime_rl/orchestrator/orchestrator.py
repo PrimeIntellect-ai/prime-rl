@@ -160,6 +160,7 @@ class Orchestrator:
         self.retention = CheckpointRetention(
             self.ckpt_manager.ckpt_dir,
             eval_envs=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
+            metrics=config.ckpt.best_metrics if config.ckpt is not None else ("continuous_reward",),
         )
         self.controller = None
         self.control_requested = asyncio.Event()
@@ -203,6 +204,10 @@ class Orchestrator:
         construct the pipeline components."""
         config = self.config
         set_default_executor()
+        if config.ckpt is not None and config.ckpt.export and config.ckpt.hf_repo_prefix is not None:
+            from prime_rl.orchestrator.hf_export import validate_hf_token
+
+            await asyncio.to_thread(validate_hf_token, config.ckpt.hf_repo_prefix, config.output_dir)
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         t0 = time.perf_counter()
@@ -512,7 +517,7 @@ class Orchestrator:
                 raise export_error
 
     async def finalize_exports(self, latest_step: int) -> None:
-        """Wait for the trainer's final DCP commit, then export only validated BEST and LATEST."""
+        """Export and upload all requested roles after final eval and joint durability."""
         manifest = get_joint_manifest_path(self.ckpt_manager.ckpt_dir, latest_step)
         deadline = time.monotonic() + self.config.weight_broadcast.timeout
         while not is_joint_ckpt_step(self.ckpt_manager.ckpt_dir, latest_step, generation=self.ckpt_manager.generation):
@@ -521,20 +526,32 @@ class Orchestrator:
             await asyncio.sleep(0.5)
         self.retention.reconcile()
         self.ckpt_manager.maybe_clean()
-        best_step = self.retention.best_step
-        if best_step is not None and best_step not in get_resume_ckpt_steps(self.ckpt_manager.ckpt_dir):
-            raise RuntimeError(f"BEST checkpoint step {best_step} is not a latest-valid joint checkpoint")
-        from prime_rl.orchestrator.hf_export import export_best_and_latest
+        assert self.config.ckpt is not None
+        best_steps = self.retention.best_steps
+        if self.config.ckpt.best_metrics != ("continuous_reward",):
+            missing = [metric for metric in self.config.ckpt.best_metrics if best_steps.get(metric) is None]
+            if missing:
+                raise RuntimeError(f"No eligible held-out BEST checkpoints for {missing}; DCP checkpoints retained")
+        roles = {"latest": latest_step}
+        if self.config.ckpt.best_metrics == ("continuous_reward",):
+            if best_steps.get("continuous_reward") is not None:
+                roles["best"] = best_steps["continuous_reward"]
+        else:
+            roles.update({f"best_{metric}": step for metric, step in best_steps.items() if step is not None})
+        joint_steps = set(get_resume_ckpt_steps(self.ckpt_manager.ckpt_dir))
+        if not set(roles.values()) <= joint_steps:
+            raise RuntimeError(f"Final export roles include an invalid joint checkpoint: {roles}")
+        from prime_rl.orchestrator.hf_export import export_checkpoints
 
         valid = await asyncio.to_thread(
-            export_best_and_latest,
+            export_checkpoints,
             output_dir=self.config.output_dir,
-            best_step=best_step,
-            latest_step=latest_step,
+            roles=roles,
+            repo_prefix=self.config.ckpt.hf_repo_prefix,
         )
         if valid is not True:
-            raise RuntimeError(f"Final HF export did not validate (BEST={best_step}, LATEST={latest_step})")
-        get_logger().success(f"Validated final HF exports (BEST={best_step}, LATEST={latest_step})")
+            raise RuntimeError(f"Final checkpoint export/upload did not validate: {roles}")
+        get_logger().success(f"Validated final checkpoint exports and configured uploads: {roles}")
 
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
@@ -580,6 +597,15 @@ class Orchestrator:
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
+                if self.config.max_steps is not None and self.progress.step > self.config.max_steps:
+                    await self.wait_for_final_broadcast()
+                    if self.policy.version < self.config.max_steps:
+                        raise RuntimeError("Final policy was not applied; final evaluation cannot be certified")
+                    # Applying the policy precedes its hooks; wait until final eval is triggered.
+                    async with self.watcher.update_lock:
+                        pass
+                if not self.dispatcher.is_idle:
+                    continue
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -973,10 +999,18 @@ class Orchestrator:
             return
         assert self.eval_envs is not None
         eval_env = self.eval_envs.get(batch.env_name)
-        score = eval_epoch_score(batch, expected_tasks=len(eval_env.examples), group_size=eval_env.config.group_size)
+        scores = {
+            metric: eval_epoch_score(
+                batch,
+                expected_tasks=len(eval_env.examples),
+                group_size=eval_env.config.group_size,
+                reward_key=metric,
+            )
+            for metric in self.retention.metrics
+        }
         if not batch.episodes and not batch.failures:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
-            self.retention.complete_eval_epoch(batch, score=None)
+            self.retention.complete_eval_epoch(batch, scores={metric: None for metric in self.retention.metrics})
             self.ckpt_manager.maybe_clean()
             return
 
@@ -1021,16 +1055,17 @@ class Orchestrator:
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
             f"Timeout {full.is_timeout.mean():.1%}"
         )
-        previous_best = self.retention.best_step
-        self.retention.complete_eval_epoch(batch, score=score)
+        previous_best = self.retention.best_steps
+        self.retention.complete_eval_epoch(batch, scores=scores)
         self.ckpt_manager.maybe_clean()
-        if score is not None:
-            get_logger().info(
-                f"Valid eval epoch @ step={batch.step} env={batch.env_name}: "
-                f"task-macro continuous_reward={score:.6f}; BEST step={self.retention.best_step}"
-            )
-        if previous_best != self.retention.best_step:
-            get_logger().success(f"BEST checkpoint is now step {self.retention.best_step}")
+        for metric, score in scores.items():
+            if score is not None:
+                get_logger().info(
+                    f"Valid eval epoch @ step={batch.step} env={batch.env_name}: "
+                    f"task-macro {metric}={score:.6f}; BEST step={self.retention.best_steps.get(metric)}"
+                )
+        if previous_best != self.retention.best_steps:
+            get_logger().success(f"BEST checkpoint roles are now {self.retention.best_steps}")
 
     async def maybe_save_ckpt(self, step: int) -> float:
         """Checkpoint the step just shipped if it's an interval boundary. Returns

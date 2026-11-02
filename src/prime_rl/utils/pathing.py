@@ -533,7 +533,7 @@ def resolve_joint_resume_step(ckpt_dir: Path, resume: ResumeConfig) -> int | Non
 
 
 def get_protected_ckpt_steps(ckpt_dir: Path) -> set[int]:
-    """BEST and pending-eval pins. A corrupt journal blocks pruning rather than losing protection."""
+    """All per-metric BEST and pending-eval pins. A corrupt journal blocks pruning."""
     path = get_retention_path(ckpt_dir)
     if not path.exists():
         return set()
@@ -544,6 +544,14 @@ def get_protected_ckpt_steps(ckpt_dir: Path) -> set[int]:
         if not isinstance(best_step, int):
             raise ValueError(f"Invalid best_step in {path}: {best_step!r}")
         protected.add(best_step)
+    best_steps = state.get("best_steps", {})
+    if not isinstance(best_steps, dict):
+        raise ValueError(f"Invalid best_steps in {path}")
+    for metric, step in best_steps.items():
+        if step is not None:
+            if not isinstance(step, int):
+                raise ValueError(f"Invalid best_steps[{metric!r}] in {path}: {step!r}")
+            protected.add(step)
     pending = state.get("pending_eval", {})
     if not isinstance(pending, dict):
         raise ValueError(f"Invalid pending_eval in {path}")

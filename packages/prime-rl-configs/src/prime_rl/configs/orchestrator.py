@@ -437,7 +437,25 @@ class CheckpointConfig(BaseConfig):
     """Keep jointly complete checkpoints at every N steps permanently."""
 
     export: bool = False
-    """Opt into final HF BEST/LATEST export for runs that require it."""
+    """Opt into final validated HF exports for the selected BEST metrics and LATEST."""
+
+    best_metrics: tuple[Literal["training_reward", "continuous_reward"], ...] = Field(
+        ("continuous_reward",), min_length=1
+    )
+    """Task-macro held-out scores whose BEST checkpoints are retained and exported."""
+
+    hf_repo_prefix: str | None = Field(None, pattern=r"^[^/\s]+/[^/\s]+$")
+    """Private HF repository prefix; persisted checkpoint run ID and step form immutable repo names."""
+
+    @model_validator(mode="after")
+    def validate_exports(self):
+        if len(set(self.best_metrics)) != len(self.best_metrics):
+            raise ValueError("ckpt.best_metrics must not contain duplicates")
+        if self.hf_repo_prefix is not None and not self.export:
+            raise ValueError("ckpt.hf_repo_prefix requires ckpt.export=true")
+        if self.export and len(self.best_metrics) > 1 and self.hf_repo_prefix is None:
+            raise ValueError("Dual-metric HF export requires ckpt.hf_repo_prefix")
+        return self
 
 
 class ConcurrencyConfig(BaseConfig):

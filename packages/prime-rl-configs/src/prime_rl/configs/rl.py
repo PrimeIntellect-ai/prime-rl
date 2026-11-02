@@ -98,6 +98,12 @@ class SharedCheckpointConfig(BaseConfig):
     export: bool = False
     """Opt into final HF export. Propagated to the orchestrator only; disabled for legacy/other runs."""
 
+    best_metrics: tuple[Literal["training_reward", "continuous_reward"], ...] = ("continuous_reward",)
+    """Held-out reward metrics whose best checkpoints remain pinned."""
+
+    hf_repo_prefix: str | None = None
+    """Private Hugging Face repository prefix for verified final checkpoint uploads."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"

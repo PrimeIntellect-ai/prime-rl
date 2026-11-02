@@ -158,12 +158,24 @@ def test_storage_preflight_checks_transient_space_and_cleans_probe(tmp_path, mon
     assert list((tmp_path / "checkpoints").glob(".storage-preflight.*")) == []
 
 
-def _episode(task_key, step, reward, *, ok=True, start=None, end=None, named_reward=True):
+def _episode(
+    task_key,
+    step,
+    reward,
+    *,
+    ok=True,
+    start=None,
+    end=None,
+    named_reward=True,
+    reward_key="continuous_reward",
+    metrics=None,
+):
     task = vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None), key=task_key, hash=task_key)
     trace = vf.Trace(
         task=task,
         agent=vf.AgentInfo(config=vf.AgentConfig()),
-        rewards={"continuous_reward": vf.Reward(score=reward)} if named_reward else {},
+        rewards={reward_key: vf.Reward(score=reward)} if named_reward else {},
+        metrics=metrics or {},
         ok=ok,
         is_completed=True,
     )
@@ -549,3 +561,131 @@ def test_split_checkpoint_root_is_rejected_before_writers_and_legacy_configs_do_
     with pytest.raises(ValidationError, match="explicit resume.step"):
         ResumeConfig(legacy=True)
     assert ResumeConfig(legacy=True, step=40).legacy is True
+
+
+def test_eval_named_rewards_follow_harbor_reward_and_metric_routing():
+    episodes = [
+        _episode(
+            task,
+            40,
+            continuous + binary,
+            reward_key="training_reward",
+            metrics={"continuous_reward": continuous, "binary_reward": binary, "training_reward": 99.0},
+        )
+        for task, continuous, binary in [("a", 0.25, 0), ("a", 0.75, 1), ("b", 0.5, 0), ("b", 1.0, 1)]
+    ]
+    batch = _batch(episodes=episodes)
+    assert eval_epoch_score(batch, expected_tasks=2, group_size=2, reward_key="training_reward") == pytest.approx(1.125)
+    assert eval_epoch_score(batch, expected_tasks=2, group_size=2) == pytest.approx(0.625)
+
+    episodes[0].traces[0].rewards["training_reward"] = None
+    assert eval_epoch_score(batch, expected_tasks=2, group_size=2, reward_key="training_reward") is None
+    episodes[0].traces[0].metrics.pop("continuous_reward")
+    assert eval_epoch_score(batch, expected_tasks=2, group_size=2) is None
+    episodes[0].traces[0].metrics["continuous_reward"] = float("nan")
+    assert eval_epoch_score(batch, expected_tasks=2, group_size=2) is None
+
+
+def test_retention_prunes_distinct_and_deduplicated_metric_bests_without_dropping_pending(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    for step in (20, 40, 60, 80, 100):
+        _joint(ckpt_dir, step)
+    retention = CheckpointRetention(ckpt_dir, eval_envs=["heldout"], metrics=("training_reward", "continuous_reward"))
+    retention.configure_eval({"heldout": "plan"})
+    for step, training, continuous in [(20, 1.5, 0.4), (40, 1.2, 0.8), (60, 0.3, 0.2)]:
+        retention.complete_eval_epoch(
+            _batch(step=step), scores={"training_reward": training, "continuous_reward": continuous}
+        )
+    retention.mark_eval_pending(80, ["heldout"])
+
+    assert retention.best_steps == {"training_reward": 20, "continuous_reward": 40}
+    assert retention.best_step == 40
+    assert retention.valid_eval_envs(40) == {"heldout"}
+    assert prune_joint_ckpts(ckpt_dir, generation="g1", keep_last=1, keep_interval=None) == [60]
+    assert get_joint_ckpt_steps(ckpt_dir) == [20, 40, 80, 100]
+
+    retention.complete_eval_epoch(_batch(step=40), scores={"training_reward": 1.6, "continuous_reward": 0.8})
+    assert retention.best_steps == {"training_reward": 40, "continuous_reward": 40}
+    assert prune_joint_ckpts(ckpt_dir, generation="g1", keep_last=1, keep_interval=None) == [20]
+    assert get_joint_ckpt_steps(ckpt_dir) == [40, 80, 100]
+    assert retention.state["pending_eval"] == {"80": ["heldout"]}
+
+
+def test_retention_requires_all_metrics_for_dedupe_and_failed_epochs_release_pending(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    for step in (40, 60):
+        _joint(ckpt_dir, step)
+    retention = CheckpointRetention(ckpt_dir, eval_envs=["heldout"], metrics=("training_reward", "continuous_reward"))
+    retention.configure_eval({"heldout": "plan"})
+    retention.mark_eval_pending(40, ["heldout"])
+    with pytest.raises(ValueError):
+        retention.complete_eval_epoch(_batch(), scores={"continuous_reward": 0.625})
+    assert retention.state["pending_eval"] == {"40": ["heldout"]}
+    assert retention.best_steps == {"training_reward": None, "continuous_reward": None}
+    retention.complete_eval_epoch(_batch(), scores={"training_reward": None, "continuous_reward": 0.625})
+    assert retention.state["pending_eval"] == {}
+    assert retention.valid_eval_envs(40) == set()
+    assert retention.best_steps == {"training_reward": None, "continuous_reward": 40}
+
+    retention.mark_eval_pending(60, ["heldout"])
+    retention.complete_eval_epoch(_batch(step=60), scores={"training_reward": None, "continuous_reward": None})
+    assert retention.state["pending_eval"] == {}
+    assert retention.valid_eval_envs(60) == set()
+    assert retention.best_steps == {"training_reward": None, "continuous_reward": 40}
+
+    _components(ckpt_dir, 80)
+    retention.mark_eval_pending(80, ["heldout"])
+    retention.complete_eval_epoch(_batch(step=80), scores={"training_reward": 1.2, "continuous_reward": 0.8})
+    assert retention.state["pending_eval"] == {"80": ["heldout"]}
+    assert retention.best_steps == {"training_reward": None, "continuous_reward": 40}
+    _joint(ckpt_dir, 80)
+    retention.reconcile()
+    assert retention.state["pending_eval"] == {}
+    assert retention.valid_eval_envs(80) == {"heldout"}
+    assert retention.best_steps == {"training_reward": 80, "continuous_reward": 80}
+
+
+def test_scalar_journal_migrates_only_continuous_and_preserves_generation_and_plan_checks(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    for step in (40, 80):
+        _joint(ckpt_dir, step, generation="gen-a")
+    get_retention_path(ckpt_dir).write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "best_step": 80,
+                "best_score": 0.95,
+                "pending_eval": {},
+                "valid_eval": {
+                    str(step): {"heldout": {"generation": "gen-a", "fingerprint": "plan", "score": score}}
+                    for step, score in [(40, 0.9), (80, 0.95)]
+                },
+            }
+        )
+    )
+    retention = CheckpointRetention(ckpt_dir, eval_envs=["heldout"], metrics=("training_reward", "continuous_reward"))
+    retention.configure_eval({"heldout": "plan"})
+    assert retention.best_steps == {"training_reward": None, "continuous_reward": 80}
+    assert retention.valid_eval_envs(80) == set()
+    migrated = json.loads(get_retention_path(ckpt_dir).read_text())
+    assert migrated["version"] == 3
+    assert migrated["valid_eval"]["40"]["heldout"]["scores"] == {"continuous_reward": 0.9}
+    default = CheckpointRetention(ckpt_dir, eval_envs=["heldout"])
+    default.configure_eval({"heldout": "plan"})
+    assert default.valid_eval_envs(80) == {"heldout"}
+    assert default.best_step == 80
+
+    start_checkpoint_generation(ckpt_dir, generation="gen-b", resume_step=40)
+    resumed = CheckpointRetention(ckpt_dir, eval_envs=["heldout"], metrics=("training_reward", "continuous_reward"))
+    resumed.configure_eval({"heldout": "plan"})
+    assert resumed.best_steps == {"training_reward": None, "continuous_reward": 40}
+    _joint(ckpt_dir, 80, generation="gen-b")
+    resumed.reconcile()
+    assert resumed.valid_eval_envs(80) == set()
+    resumed.complete_eval_epoch(_batch(), scores={"training_reward": 1.1, "continuous_reward": 0.9})
+    assert resumed.state["valid_eval"]["40"]["heldout"]["generation"] == "gen-a"
+    resumed.complete_eval_epoch(_batch(step=80), scores={"training_reward": 1.5, "continuous_reward": 0.8})
+    assert resumed.best_steps == {"training_reward": 80, "continuous_reward": 40}
+    resumed.configure_eval({"heldout": "changed-plan"})
+    assert resumed.best_steps == {"training_reward": None, "continuous_reward": None}
+    assert resumed.valid_eval_envs(80) == set()

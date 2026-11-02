@@ -105,8 +105,14 @@ class CheckpointManager:
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 
-def eval_epoch_score(batch: EvalBatch, *, expected_tasks: int, group_size: int) -> float | None:
-    """Task-macro continuous reward, or None unless the full epoch is BEST-eligible."""
+def eval_epoch_score(
+    batch: EvalBatch,
+    *,
+    expected_tasks: int,
+    group_size: int,
+    reward_key: str = "continuous_reward",
+) -> float | None:
+    """Task-macro named reward, or None unless the full epoch is BEST-eligible."""
     if batch.failures or batch.cancelled or len(batch.episodes) != expected_tasks * group_size:
         return None
     rewards_by_task: dict[str, list[float]] = defaultdict(list)
@@ -122,9 +128,16 @@ def eval_epoch_score(batch: EvalBatch, *, expected_tasks: int, group_size: int) 
             or any(trace.has_error for trace in episode.traces)
         ):
             return None
-        rewards = [
-            reward.value for trace in episode.traces if (reward := trace.rewards.get("continuous_reward")) is not None
-        ]
+        rewards = []
+        for trace in episode.traces:
+            # Harbor stores the selected reward in rewards and other verifier values in metrics.
+            if reward_key in trace.rewards:
+                reward = trace.rewards[reward_key]
+                value = reward.value if reward is not None else None
+            else:
+                value = trace.metrics.get(reward_key)
+            if value is not None:
+                rewards.append(value)
         if len(rewards) != 1 or not math.isfinite(reward := float(rewards[0])):
             return None
         rewards_by_task[episode.task.key].append(reward)
@@ -168,11 +181,18 @@ def eval_plan_fingerprint(eval_env) -> str:
 
 
 class CheckpointRetention:
-    """Atomic generation/plan-versioned eval journal and BEST/pending pins."""
+    """Atomic generation/plan-versioned eval journal and per-metric BEST/pending pins."""
 
-    def __init__(self, ckpt_dir: Path, *, eval_envs: Iterable[str]) -> None:
+    def __init__(
+        self,
+        ckpt_dir: Path,
+        *,
+        eval_envs: Iterable[str],
+        metrics: Iterable[str] = ("continuous_reward",),
+    ) -> None:
         self.ckpt_dir = ckpt_dir
         self.eval_envs = frozenset(eval_envs)
+        self.metrics = tuple(metrics)
         self.generation = read_checkpoint_generation(ckpt_dir)["generation"]
         self.fingerprints: dict[str, str] = {}
         self.path = get_retention_path(ckpt_dir)
@@ -180,7 +200,15 @@ class CheckpointRetention:
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return {"version": 2, "best_step": None, "best_score": None, "pending_eval": {}, "valid_eval": {}}
+            return {
+                "version": 3,
+                "best_steps": {},
+                "best_scores": {},
+                "best_step": None,
+                "best_score": None,
+                "pending_eval": {},
+                "valid_eval": {},
+            }
         state = json.loads(self.path.read_text())
         if not isinstance(state.get("pending_eval"), dict) or not isinstance(state.get("valid_eval"), dict):
             raise ValueError(f"Invalid checkpoint retention journal at {self.path}")
@@ -201,21 +229,34 @@ class CheckpointRetention:
             raise
 
     @property
+    def best_steps(self) -> dict[str, int | None]:
+        steps = self.state.get("best_steps", {"continuous_reward": self.state.get("best_step")})
+        return {metric: steps.get(metric) for metric in self.metrics}
+
+    @property
     def best_step(self) -> int | None:
-        return self.state.get("best_step")
+        return self.best_steps.get("continuous_reward")
 
     def configure_eval(self, fingerprints: dict[str, str]) -> None:
         self.fingerprints = fingerprints
         self.reconcile()
+
+    @staticmethod
+    def _metric_scores(record: dict) -> dict[str, float]:
+        scores = record.get("scores", {"continuous_reward": record.get("score")})
+        return {
+            metric: float(score)
+            for metric, score in scores.items()
+            if isinstance(score, (int, float)) and math.isfinite(score)
+        }
 
     def _matches_context(self, env_name: str, record) -> bool:
         return (
             isinstance(record, dict)
             and isinstance(record.get("generation"), str)
             and bool(record["generation"])
-            and record.get("fingerprint") == self.fingerprints.get(env_name)
-            and isinstance(record.get("score"), (int, float))
-            and math.isfinite(record["score"])
+            and env_name in self.fingerprints
+            and record.get("fingerprint") == self.fingerprints[env_name]
         )
 
     def _matches_checkpoint(self, env_name: str, step: int, record, joint_generations: dict[int, str]) -> bool:
@@ -227,6 +268,7 @@ class CheckpointRetention:
             name
             for name, record in self.state["valid_eval"].get(str(step), {}).items()
             if self._matches_checkpoint(name, step, record, joint_generations)
+            and set(self.metrics).issubset(self._metric_scores(record))
         }
 
     def mark_eval_pending(self, step: int, env_names: Iterable[str]) -> None:
@@ -236,23 +278,40 @@ class CheckpointRetention:
             pending.extend(name for name in env_names if name not in pending)
             self._write()
 
-    def complete_eval_epoch(self, batch: EvalBatch, *, score: float | None) -> None:
+    def complete_eval_epoch(
+        self,
+        batch: EvalBatch,
+        *,
+        scores: dict[str, float | None] | None = None,
+        score: float | None = None,
+    ) -> None:
+        if scores is None:
+            scores = {"continuous_reward": score}
+        elif score is not None:
+            raise ValueError("Pass either scores or score, not both")
+        elif set(scores) != set(self.metrics):
+            raise ValueError(f"scores must contain exactly the configured checkpoint metrics: {self.metrics}")
+        valid_scores = {
+            metric: float(value)
+            for metric, value in scores.items()
+            if metric in self.metrics and value is not None and math.isfinite(value)
+        }
         with checkpoint_lifecycle_lock(self.ckpt_dir):
             self.state = self._load()
             step_key = str(batch.step)
             joint_generations = get_resume_ckpt_generations(self.ckpt_dir)
-            if score is not None:
+            if valid_scores:
                 if batch.env_name not in self.fingerprints:
                     raise RuntimeError(f"Eval plan fingerprint is not configured for {batch.env_name}")
                 self.state["valid_eval"].setdefault(step_key, {})[batch.env_name] = {
                     "fingerprint": self.fingerprints[batch.env_name],
                     # An eval of a resume ancestor belongs to that checkpoint's generation.
                     "generation": joint_generations.get(batch.step, self.generation),
-                    "score": score,
+                    "scores": valid_scores,
                 }
             pending = self.state["pending_eval"].get(step_key, [])
             joint = batch.step in joint_generations
-            if batch.env_name in pending and (score is None or joint):
+            if batch.env_name in pending and (not valid_scores or joint):
                 pending.remove(batch.env_name)
                 if not pending:
                     self.state["pending_eval"].pop(step_key, None)
@@ -270,18 +329,33 @@ class CheckpointRetention:
     def _reconcile_state(self) -> None:
         joint_generations = get_resume_ckpt_generations(self.ckpt_dir)
         joint_steps = set(joint_generations)
-        valid_scores: dict[tuple[str, int], float] = {}
+        valid_scores: dict[str, dict[tuple[str, int], float]] = {metric: {} for metric in self.metrics}
         for step_key, epochs in self.state["valid_eval"].items():
             step = int(step_key)
             for env_name, record in epochs.items():
-                if self._matches_checkpoint(env_name, step, record, joint_generations):
-                    valid_scores[(env_name, step)] = float(record["score"])
-                    if env_name in self.state["pending_eval"].get(step_key, []):
-                        self.state["pending_eval"][step_key].remove(env_name)
+                if isinstance(record, dict) and "scores" not in record and "score" in record:
+                    record["scores"] = {"continuous_reward": record.pop("score")}
+                if not self._matches_checkpoint(env_name, step, record, joint_generations):
+                    continue
+                scores = self._metric_scores(record)
+                for metric in self.metrics:
+                    if metric in scores:
+                        valid_scores[metric][(env_name, step)] = scores[metric]
+                if scores.keys() & valid_scores.keys() and env_name in self.state["pending_eval"].get(step_key, []):
+                    self.state["pending_eval"][step_key].remove(env_name)
             if not self.state["pending_eval"].get(step_key):
                 self.state["pending_eval"].pop(step_key, None)
-        best = select_best_eval(valid_scores, joint_steps=joint_steps, required_envs=self.eval_envs)
-        self.state["best_step"], self.state["best_score"] = best if best is not None else (None, None)
+        best_steps, best_scores = {}, {}
+        for metric in self.metrics:
+            best = select_best_eval(valid_scores[metric], joint_steps=joint_steps, required_envs=self.eval_envs)
+            best_steps[metric], best_scores[metric] = best if best is not None else (None, None)
+        self.state.update(
+            version=3,
+            best_steps=best_steps,
+            best_scores=best_scores,
+            best_step=best_steps.get("continuous_reward"),
+            best_score=best_scores.get("continuous_reward"),
+        )
 
 
 def should_export_final(ckpt: CheckpointConfig | None, final_step: int | None) -> bool:
