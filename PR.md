@@ -27,3 +27,17 @@ The +3.5 GiB peak is a relocated step peak, not a leak. Memory snapshots of both
 
 c1b85e2c9 perf(deepseek-v4): run vLLM's fused q norm + RoPE forward and fuse the backward
 89ca11e4c perf(deepseek-v4): fuse the indexer q RoPE and quantization via vLLM's kernel
+
+## B300 rerun (2026-11-02)
+
+The same proxy rerun on one 8x B300 SXM6 node (SM103), 20 steps, balanced routing, 262144-token rows, cp 8, ep 8, full activation checkpointing, medians of `time/forward_backward` over steps 4 to 20, paired against a `main` arm from the same worktree series on the same node. The B300 campaign runs MXFP8 (`quantization.type=mxfp8`, `recipe=mxfp8_rceil_wgrad_with_hp`, `moe.compute.type=mxfp8`) with a DeepSeek V4 Flash checkpoint, the production-representative low precision path on this hardware, so cross-campaign comparability is the per-level delta, not the absolute step time (the H200 campaign ran FP8 blockwise and MFU here divides FP8 work by the dense BF16 peak 2.25e15 FLOP/s). The arm ran with no extra flags. Noise floors from same-protocol repeats: main 0.04 to 0.05 percent, tip 0.12 percent.
+
+| run | layers | fb med s (steps 4-20) | fb med s (all steps) | MFU % | tok/s per GPU | peak GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| b300-main-L4-mxfp8 | 4 | 5.896 | 5.902 | 22.90 | 41782 | 88.26 |
+| b300-main-L6-mxfp8 | 6 | 8.227 | 8.252 | 23.89 | 29937 | 109.17 |
+| b300-l4-L4-mxfp8 | 4 | 5.735 | 5.745 | 23.52 | 42911 | 92.11 |
+| b300-l4-L6-mxfp8 | 6 | 7.958 | 7.988 | 24.67 | 30935 | 113.79 |
+The arm delta is -2.73 percent at 4 layers and -3.27 percent at 6 layers against the B300 main (H200 measured -2.13 and -2.61 percent). Peak memory rises 3.9 GiB at 4 layers and 4.6 GiB at 6 layers, the same relocated-step-peak trade H200 documented. The vLLM fused-op fallback warning is absent from the B300 logs, so the serving-bitwise kernels engaged.
+
+Compile bar: zero Dynamo recompiles and zero graph breaks in every B300 run, all compilation confined to step 1, Triton cubin count at or below the main arm (the stack removes kernels), DeepGEMM variants unchanged at 3, TileLang cache files unchanged at 5. 
