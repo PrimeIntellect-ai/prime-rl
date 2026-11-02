@@ -164,8 +164,6 @@ overrides = [
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = "==4.8.0" },
     { name = "openenv-core" },
-    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.6" },
-    { name = "prime-traces", specifier = ">=0.0.12" },
     { name = "tilelang", specifier = "==0.1.12" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu130" },
@@ -5502,7 +5500,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.1"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5514,9 +5512,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/78/304ac19c37884f4e0346f8dd810b8e1490027adb8d0c33e9c904e3ee62ac/prime_sandboxes-0.5.1.tar.gz", hash = "sha256:5f2978bec15f2b9b93cdadec0d2b0d2e5722167fef5eb68138cad94ae3fc4b17", size = 158790, upload-time = "2026-10-26T14:55:45.529Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/1a/29540680002fc44a919c60f5788df5c21489c59e513c88690bf4a2b558cf/prime_sandboxes-0.5.4.tar.gz", hash = "sha256:9457fb320a6e93db5586206ecbf59c39ec660ee6ec0a6b29e9abbb7a768477a4", size = 162299, upload-time = "2026-11-02T22:58:47.458Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/48/4cf79a666cd2dd605df52e9d61410b4bdf7e322616ffdf9b40a318ed5de4/prime_sandboxes-0.5.1-py3-none-any.whl", hash = "sha256:d6960aaa0a2c9eed05f114f8061a29c23254b27a5c7de03978d767ec465e28d8", size = 85795, upload-time = "2026-10-26T14:55:43.718Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/de/d65072fca5efc7b5c51dc76873be9b7d3f092aaac473974a1779d217508e/prime_sandboxes-0.5.4-py3-none-any.whl", hash = "sha256:44c64aa97668eb2f4c0d1497698c5a9e2db19153e0f9c5133678eec6eec20148", size = 88039, upload-time = "2026-11-02T22:58:46.087Z" },
 ]
 
 [[package]]
@@ -8001,7 +7999,7 @@ dependencies = [
     { name = "openai" },
     { name = "orjson" },
     { name = "prime-pydantic-config", extra = ["toml"] },
-    { name = "prime-runs", extra = ["train"] },
+    { name = "prime-runs" },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
@@ -8042,8 +8040,8 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-runs", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" },
-    { name = "prime-sandboxes", specifier = ">=0.5.1" },
+    { name = "prime-runs", specifier = ">=0.1.5" },
+    { name = "prime-sandboxes", specifier = ">=0.5.4" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
