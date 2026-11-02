@@ -13,12 +13,12 @@ Docs per row sweep, H200, one 262144-token gathered row, per training layer with
 | 1024 | 9.46 | 21.92 | 2.55 | 2.57 |
 | 2048 | 9.46 | 41.66 | 2.56 | 4.13 |
 
-The end-to-end numbers come from the DSv4 stack A/B campaign on the 6-layer perf proxy (a DeepSeek V4 Flash checkpoint, 262144-token rows, cp 8, ep 8, full activation checkpointing, 20 steps of 8 micro batches, force-balanced routing), run on H200 with FP8 blockwise and on B300 with MXFP8, each paired against its own main arm on the same node. The step-time metric is `time/forward_backward`, the table shows medians over steps 4 to 20, and a negative delta is faster. The campaigns use different MFU peak conventions, so the delta, not the MFU magnitude, is the comparable quantity across hardware. B300 repeat floors were 0.04 to 0.12 percent.
+The end-to-end numbers come from the DSv4 stack A/B campaign on the 6-layer perf proxy (a DeepSeek V4 Flash checkpoint, 262144-token rows, cp 8, ep 8, full activation checkpointing, 20 steps of 8 micro batches, force-balanced routing), run on H200 with FP8 blockwise and on B300 with MXFP8, each paired against its own main arm on the same node. The step-time metric is `time/forward_backward`, the table shows medians over steps 4 to 20, and a negative delta is faster. B300 repeat floors were 0.04 to 0.12 percent.
 
-| run | median time/forward_backward s, H200 | median time/forward_backward s, B300 | delta vs main, H200 | delta vs main, B300 | mfu % (B300) | tok/s per GPU (B300) | peak GiB (B300) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| main | 14.557 | 8.227 | - | - | 23.89 | 29937 | 109.17 |
-| l2 (this change) | 14.433 | 8.120 | -0.85% | -1.30% | 24.20 | 30336 | 108.02 |
+| run | median time/forward_backward s, H200 | median time/forward_backward s, B300 | delta vs main, H200 | delta vs main, B300 | tok/s per GPU (B300) | peak GiB (B300) |
+|---|---:|---:|---:|---:|---:|---:|
+| main | 14.557 | 8.227 | - | - | 29937 | 109.17 |
+| l2 (this change) | 14.433 | 8.120 | -0.85% | -1.30% | 30336 | 108.02 |
 
 The campaign arm also carries the earlier optimization levels of this series, so the arm-minus-main delta is cumulative: -0.88% at 4 layers and -0.85% at 6 layers. The chain marginal against the previous arm is about -0.7% at both depths, and the campaign's same-code repeat floors are 0.15 to 0.25%, so the delta is 4 to 6x the floor. The 43-layer projection puts a step at 91.53 s versus main's 93.38 s, about -1.5%. Peak memory falls 1.48 GiB at 4 layers and 0.94 GiB at 6 (the fused kernels drop the bf16 intermediate). H200 compile bar: identical Dynamo counts and zero graph breaks in both arms, and the cudnn arm compiles about 140 fewer Triton cubins because Inductor no longer generates the pooling kernels. On B300 the same delta is -1.30 percent at 6 layers with the 43-layer projection at 50.1 s versus main's 51.3 s, and the SM100-native kernels hold their H200-class win at the campaign's one-document-per-row mix without threshold retuning, with the same clean compile bar (zero recompiles, zero graph breaks, cubins at or below the main arm, DeepGEMM variants and TileLang cache files unchanged). In the many-docs regime the doc-count dispatch adds one extra graph variant per compressor layer type, in step 1 only.
 
