@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Literal, TypeAlias
+
 import torch
 import torch.nn.functional as F
 from torch._inductor.lowering import make_pointwise, register_lowering
 from torch._inductor.virtualized import ops
-
-from prime_rl.configs.trainer import FP8QuantDivision
 
 FP8_MAX = 448.0
 AMAX_FLOOR = 1e-10
 BLOCK = 128
 TMA_ALIGNMENT_FP32 = 4
 WORD_BYTES = 8
+
+QuantizerDivision: TypeAlias = Literal["approximate", "exact_scale", "exact"]
 
 
 def _same_device_div(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -38,19 +40,19 @@ def _div_rn_lowering(a, b):
     return make_pointwise(lambda numerator, denominator: ops.div_rn(numerator, denominator))(a, b)
 
 
-def _scale(amax: torch.Tensor, division: FP8QuantDivision) -> torch.Tensor:
+def _scale(amax: torch.Tensor, division: QuantizerDivision) -> torch.Tensor:
     if division == "approximate":
         return amax / FP8_MAX
     return div_rn(amax, amax.new_full((), FP8_MAX))
 
 
-def _divide(x: torch.Tensor, scale: torch.Tensor, division: FP8QuantDivision) -> torch.Tensor:
+def _divide(x: torch.Tensor, scale: torch.Tensor, division: QuantizerDivision) -> torch.Tensor:
     if division == "exact":
         return div_rn(x, scale)
     return x / scale
 
 
-def quant_1x128(x: torch.Tensor, division: FP8QuantDivision = "approximate") -> tuple[torch.Tensor, torch.Tensor]:
+def quant_1x128(x: torch.Tensor, division: QuantizerDivision = "approximate") -> tuple[torch.Tensor, torch.Tensor]:
     """Per-token cast in 1x128 groups, as `per_token_cast_to_fp8_triton(x, use_ue8m0=False)` with FP8 values shaped `[tokens, channels / 128, 128]`."""
     tokens, channels = x.shape
     groups = x.float().reshape(tokens, channels // BLOCK, BLOCK)
@@ -61,7 +63,7 @@ def quant_1x128(x: torch.Tensor, division: FP8QuantDivision = "approximate") -> 
     return x_fp8, scale.view(tokens, channels // BLOCK)
 
 
-def quant_128x1_tp(x: torch.Tensor, division: FP8QuantDivision = "approximate") -> tuple[torch.Tensor, torch.Tensor]:
+def quant_128x1_tp(x: torch.Tensor, division: QuantizerDivision = "approximate") -> tuple[torch.Tensor, torch.Tensor]:
     """Cast of `x.T` in 128-token groups after zero-padding tokens to a multiple of 128, as `per_token_cast_to_fp8_tp_triton` with FP8 values shaped `[channels, padded_tokens / 128, 128]`."""
     tokens, channels = x.shape
     padded_tokens = (tokens + BLOCK - 1) // BLOCK * BLOCK
@@ -85,7 +87,7 @@ def _stored(x: torch.Tensor) -> torch.Tensor:
 
 
 def quant_grouped_128x1_kmajor(
-    x: torch.Tensor, offs: torch.Tensor, division: FP8QuantDivision = "approximate"
+    x: torch.Tensor, offs: torch.Tensor, division: QuantizerDivision = "approximate"
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-channel cast in 128-row blocks in `grouped_per_channel_cast_to_fp8_sm90_kmajor_triton`'s layout, with rows past `offs[-1]` as one extra trailing group."""
     rows, channels = x.shape

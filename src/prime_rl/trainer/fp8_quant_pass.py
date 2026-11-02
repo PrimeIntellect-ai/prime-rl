@@ -25,6 +25,7 @@ from prime_rl.configs.trainer import FP8QuantDivision, FP8QuantPassTarget, FP8Wg
 from prime_rl.trainer.models.kernels import fp8_torch_quant
 from prime_rl.trainer.models.kernels.fp8_torch_quant import (
     BLOCK,
+    QuantizerDivision,
     quant_1x128,
     quant_128x1_tp,
     quant_grouped_128x1_kmajor,
@@ -32,7 +33,7 @@ from prime_rl.trainer.models.kernels.fp8_torch_quant import (
 from prime_rl.trainer.models.layers import fp8_grouped_gemm, fp8_linear
 from prime_rl.utils.logger import get_logger
 
-PatternRegistrar = Callable[[PatternMatcherPass, FP8WgradQuant, FP8QuantDivision], None]
+PatternRegistrar = Callable[[PatternMatcherPass, FP8WgradQuant, QuantizerDivision, QuantizerDivision], None]
 
 FP8_MM = torch.ops.prime_rl.fp8_blockwise_mm.default
 FP8_MM_BACKWARD = torch.ops.prime_rl.fp8_blockwise_mm_backward.default
@@ -46,7 +47,10 @@ FP8_GROUP_QUANT_LAUNCH_CONFIGS = {
 
 
 def register_fp8_linear_patterns(
-    patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant, division: FP8QuantDivision
+    patterns: PatternMatcherPass,
+    wgrad_quant: FP8WgradQuant,
+    forward_division: QuantizerDivision,
+    backward_division: QuantizerDivision,
 ) -> None:
     """Register rewrites of `prime_rl::fp8_blockwise_mm` and its backward into torch-op quants and pre-quantized GEMMs."""
 
@@ -55,7 +59,7 @@ def register_fp8_linear_patterns(
         assert block_size == BLOCK, f"the torch-op quantizers use {BLOCK}-element groups, got block_size={block_size}"
 
         def replacement(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-            x_fp8, x_scale = quant_1x128(x.reshape(-1, x.shape[-1]), division)
+            x_fp8, x_scale = quant_1x128(x.reshape(-1, x.shape[-1]), forward_division)
             out = torch.ops.prime_rl.fp8_blockwise_mm_prequant(x_fp8, x_scale, weight, block_size)
             return out.reshape(*x.shape[:-1], weight.shape[0])
 
@@ -80,13 +84,13 @@ def register_fp8_linear_patterns(
             x_2d = x.reshape(-1, x.shape[-1])
             grad_x = grad_weight = None
             if needs_grad_x:
-                grad_output_fp8, grad_output_scale = quant_1x128(grad_output_2d, division)
+                grad_output_fp8, grad_output_scale = quant_1x128(grad_output_2d, backward_division)
                 grad_x = torch.ops.prime_rl.fp8_blockwise_mm_dgrad_prequant(
                     grad_output_fp8, grad_output_scale, weight, block_size
                 ).reshape(x.shape)
             if needs_grad_weight and wgrad_quant == "torch":
-                grad_output_t_fp8, grad_output_t_scale = quant_128x1_tp(grad_output_2d, division)
-                x_t_fp8, x_t_scale = quant_128x1_tp(x_2d, division)
+                grad_output_t_fp8, grad_output_t_scale = quant_128x1_tp(grad_output_2d, backward_division)
+                x_t_fp8, x_t_scale = quant_128x1_tp(x_2d, backward_division)
                 grad_weight = torch.ops.prime_rl.fp8_blockwise_mm_wgrad_prequant(
                     grad_output_t_fp8, grad_output_t_scale, x_t_fp8, x_t_scale, weight
                 )
@@ -98,14 +102,17 @@ def register_fp8_linear_patterns(
 
 
 def register_fp8_grouped_gemm_patterns(
-    patterns: PatternMatcherPass, wgrad_quant: FP8WgradQuant, division: FP8QuantDivision
+    patterns: PatternMatcherPass,
+    wgrad_quant: FP8WgradQuant,
+    forward_division: QuantizerDivision,
+    backward_division: QuantizerDivision,
 ) -> None:
     """Register rewrites of `prime_rl::grouped_fp8_gemm` and its backward into torch-op quants and pre-quantized grouped GEMMs."""
 
     @register_graph_pattern(CallFunction(GROUPED_FP8_GEMM, Arg(), Arg(), Arg()), pass_dict=patterns)
     def rewrite_grouped_fp8_gemm(match: Match, x: torch.fx.Node, weight: torch.fx.Node, offs: torch.fx.Node) -> None:
         def replacement(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-            x_fp8, x_scale = quant_1x128(x, division)
+            x_fp8, x_scale = quant_1x128(x, forward_division)
             return torch.ops.prime_rl.grouped_fp8_gemm_prequant(x_fp8, x_scale, weight, offs)
 
         match.replace_by_example(replacement, [x, weight, offs])
@@ -129,13 +136,15 @@ def register_fp8_grouped_gemm_patterns(
             grad_x = torch.empty_like(x)
             grad_weight = torch.empty_like(weight)
             if needs_grad_x:
-                grad_output_fp8, grad_output_scale = quant_1x128(grad_output, division)
+                grad_output_fp8, grad_output_scale = quant_1x128(grad_output, backward_division)
                 grad_x = torch.ops.prime_rl.grouped_fp8_gemm_dgrad_prequant(
                     grad_output_fp8, grad_output_scale, weight, offs
                 )
             if needs_grad_weight and wgrad_quant == "torch":
-                x_t_fp8, x_t_scale = quant_grouped_128x1_kmajor(x, offs, division)
-                grad_output_t_fp8, grad_output_t_scale = quant_grouped_128x1_kmajor(grad_output, offs, division)
+                x_t_fp8, x_t_scale = quant_grouped_128x1_kmajor(x, offs, backward_division)
+                grad_output_t_fp8, grad_output_t_scale = quant_grouped_128x1_kmajor(
+                    grad_output, offs, backward_division
+                )
                 grad_weight = torch.ops.prime_rl.grouped_fp8_gemm_wgrad_prequant(
                     x_t_fp8, x_t_scale, grad_output_t_fp8, grad_output_t_scale, weight, offs, grad_weight_transposed
                 )
@@ -155,14 +164,22 @@ PATTERN_REGISTRARS: dict[FP8QuantPassTarget, PatternRegistrar] = {
 REWRITTEN_OPS = (FP8_MM, FP8_MM_BACKWARD, GROUPED_FP8_GEMM, GROUPED_FP8_GEMM_BACKWARD)
 
 
+def _quantizer_divisions(division: FP8QuantDivision) -> tuple[QuantizerDivision, QuantizerDivision]:
+    """Division of the forward activation casts, which the forward GEMM rewrites emit in both graphs, and of the gradient and weight-gradient casts."""
+    if division == "forward_exact":
+        return "exact", "approximate"
+    return division, division
+
+
 @functools.cache
 def _patterns(
     wgrad_quants: tuple[tuple[FP8QuantPassTarget, FP8WgradQuant], ...], division: FP8QuantDivision
 ) -> PatternMatcherPass:
     name = "_".join(f"{target}_{wgrad_quant}" for target, wgrad_quant in wgrad_quants)
     patterns = PatternMatcherPass(pass_name=f"fp8_quant_pass_{name}_{division}")
+    forward_division, backward_division = _quantizer_divisions(division)
     for target, wgrad_quant in wgrad_quants:
-        PATTERN_REGISTRARS[target](patterns, wgrad_quant, division)
+        PATTERN_REGISTRARS[target](patterns, wgrad_quant, forward_division, backward_division)
     return patterns
 
 

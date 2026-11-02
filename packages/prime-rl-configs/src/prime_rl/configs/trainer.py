@@ -29,7 +29,7 @@ DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 RMSNormBackend: TypeAlias = Literal["quack", "torch"]
 FP8WgradQuant: TypeAlias = Literal["triton", "torch"]
 FP8QuantPassTarget: TypeAlias = Literal["linear", "grouped_gemm"]
-FP8QuantDivision: TypeAlias = Literal["approximate", "exact_scale", "exact"]
+FP8QuantDivision: TypeAlias = Literal["approximate", "exact_scale", "exact", "forward_exact"]
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -66,7 +66,7 @@ class FP8QuantPassConfig(BaseConfig):
     """Overrides ``wgrad_quant`` for the routed-expert grouped GEMMs, e.g. ``triton`` with ``wgrad_quant = "torch"`` keeps the Triton per-channel cast there, which writes the K-major layout directly, while the dense linears use torch ops. ``None`` uses ``wgrad_quant``."""
 
     division: FP8QuantDivision = "approximate"
-    """Rounding of the torch-op quantizers' two fp32 divisions, the group amax by 448 into the scale and each element by its scale. ``approximate`` keeps Inductor's lowering, which multiplies by the reciprocal of 448 and divides elements approximately. ``exact_scale`` rounds the scale division correctly. ``exact`` rounds both correctly, which makes the casts bitwise equal to the Triton quantizers given the same bfloat16 input, at extra cost. When Inductor fuses a cast into its producer, the cast sees the same bfloat16 input only under the Inductor option ``emulate_precision_casts``, which rounds the producer's output to bfloat16 first."""
+    """Rounding of the torch-op quantizers' two fp32 divisions, the group amax by 448 into the scale and each element by its scale. ``approximate`` keeps Inductor's lowering, which multiplies by the reciprocal of 448 and divides elements approximately. ``exact_scale`` rounds the scale division correctly. ``exact`` rounds both correctly, which makes the casts bitwise equal to the Triton quantizers given the same bfloat16 input, at extra cost. ``forward_exact`` rounds both correctly in the forward activation casts, including their recompute under full activation checkpointing, and divides approximately in the gradient and weight-gradient casts, like ``FP8Config.division = "forward_exact"`` for the Triton casts. When Inductor fuses a cast into its producer, the cast sees the same bfloat16 input only under the Inductor option ``emulate_precision_casts``, which rounds the producer's output to bfloat16 first."""
 
     persistent_group_reductions: bool = False
     """Compile each FP8 group quantization kernel (an Inductor kernel that stores FP8 and whose only reductions are 128-element amaxes) as a persistent reduction, which reads its input once, with a fixed launch config tuned on H200. Other kernels keep Inductor's heuristics. Inductor's default keeps strided reductions of more than 64 elements, such as the 128-token casts, as looped reductions that read their input twice."""
