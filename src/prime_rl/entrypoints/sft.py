@@ -5,13 +5,11 @@ import sys
 from pathlib import Path
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
-from prime_rl.utils.links import PRIME_LINKS, WANDB_LINKS
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -39,6 +37,7 @@ from prime_rl.utils.process import (
 )
 
 SFT_CONFIG = "sft.json"
+TRAINER_CONFIG = "trainer.json"
 SFT_SBATCH = "sft.sbatch"
 
 INFERENCE_CONFIG = "inference.json"
@@ -70,16 +69,6 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
-    """The online-eval process's monitors: same W&B and file config as the trainer's,
-    with the platform monitor switched to the evaluation flavor under the same name."""
-    return EvalMonitorsConfig(
-        wandb=monitors.wandb,
-        file=monitors.file,
-        prime=PrimeEvalMonitorConfig(name=monitors.prime.name) if monitors.prime is not None else None,
-    )
-
-
 def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env servers itself; the
@@ -100,7 +89,7 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         # by directory separation.
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-        monitors=build_online_eval_monitors(config.monitors),
+        monitors=config.monitors,
     )
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
@@ -109,6 +98,8 @@ def sft_config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str
     """The resolved configs a launch leaves in ``config_dir``: the SFT config and, with
     online evals, the inference, online-eval and env-server configs."""
     components: list[tuple[str, Path | str]] = [("SFT", config_dir / SFT_CONFIG)]
+    if config.deployment.type == "multi_node":
+        components.append(("Trainer", config_dir / TRAINER_CONFIG))
     if config.eval is not None:
         if config.inference is not None:
             components.append(("Inference", config_dir / INFERENCE_CONFIG))
@@ -150,9 +141,16 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
 
 
 def write_slurm_script(
-    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str, wandb_shared: bool
+    config: SFTConfig,
+    config_path: Path,
+    run_config_path: Path,
+    log_dir: Path,
+    script_path: Path,
+    prl_run_id: str,
+    wandb_shared: bool,
 ) -> None:
-    """Write the SLURM script to disk."""
+    """Write the SLURM script to disk. The trainer runs ``config_path``; a multi-node
+    job's run owner registers the Prime run from ``run_config_path``."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -211,6 +209,7 @@ def write_slurm_script(
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
+            run_config_path=run_config_path,
             config_dir=config_path.parent,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -251,16 +250,19 @@ def sft_slurm(config: SFTConfig):
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
-    exclude = (
-        {"deployment", "slurm", "dry_run", "clean"}
-        if config.deployment.type == "multi_node"
-        else {"slurm", "dry_run", "clean"}
-    )
-    if online_eval:
-        # The trainer job only needs [eval] for the weight-broadcast cadence; the
-        # inference pool runs on its dedicated nodes in the same allocation.
-        exclude = exclude | {"inference"}
-    write_config(config, config_path, exclude=exclude)
+    if config.deployment.type == "multi_node":
+        # The job's run owner registers the Prime run with the whole config; nothing runs it.
+        write_config(config, config_path, exclude={"dry_run", "clean"})
+        trainer_config_path = config_dir / TRAINER_CONFIG
+        exclude = {"deployment", "slurm", "dry_run", "clean"}
+        if online_eval:
+            # The trainer job only needs [eval] for the weight-broadcast cadence; the
+            # inference pool runs on its dedicated nodes in the same allocation.
+            exclude = exclude | {"inference"}
+        write_config(config, trainer_config_path, exclude=exclude)
+    else:
+        write_config(config, config_path, exclude={"slurm", "dry_run", "clean"})
+        trainer_config_path = config_path
 
     # Trainer and online-eval processes log to a single shared W&B run.
     wandb_shared = online_eval and config.monitors.wandb is not None
@@ -270,7 +272,9 @@ def sft_slurm(config: SFTConfig):
         write_eval_subconfigs(config, config_dir, strip_router=True)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared)
+    write_slurm_script(
+        config, trainer_config_path, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared
+    )
     logger.info(f"Wrote SLURM script to {script_path}")
 
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
@@ -432,8 +436,8 @@ def sft_local(config: SFTConfig):
         )
 
         logger.success("Launcher complete")
-        monitors = {PRIME_LINKS: config.monitors.prime, WANDB_LINKS: config.monitors.wandb}
-        log_run_links(dashboard_url, run_links(config.run_dir, log_dir, monitors, lambda: bool(processes.error_queue)))
+        links = run_links(config.run_dir, log_dir, config.monitors, lambda: bool(processes.error_queue))
+        log_run_links(dashboard_url, links)
 
         # Wait for the trainer (and the online-eval process, which drains its final evals
         # after the trainer's last checkpoint) while surfacing any process failure.
@@ -478,9 +482,14 @@ def sft(config: SFTConfig):
         if config.val is not None:
             pre_download_data(config.val.data, config.env_vars)
 
+    from prime_rl.monitors.prime import launch_run
+
+    # On SLURM the job registers the run: the in-job `sft` (single node) or the
+    # batch script's run owner (multi node), so that a live process owns its status.
     if config.slurm is not None:
         sft_slurm(config)
-    else:
+        return
+    with launch_run(config, None if config.dry_run else config.monitors.prime):
         sft_local(config)
 
 

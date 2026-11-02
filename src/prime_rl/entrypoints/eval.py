@@ -121,7 +121,6 @@ def main():
     sys.argv = [sys.argv[0], *argv]
 
     from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
-    from prime_rl.utils.links import PRIME_EVAL_LINKS, WANDB_LINKS
     from prime_rl.utils.logger import setup_logger
     from prime_rl.utils.pathing import (
         format_config_message,
@@ -195,8 +194,7 @@ def main():
     # Each source's Prime evaluation opens once the eval counts its tasks, so the
     # banner waits for the links next to the running eval.
     eval_done = threading.Event()
-    monitors = {PRIME_EVAL_LINKS: config.monitors.prime, WANDB_LINKS: config.monitors.wandb}
-    links = run_links(config.run_dir, log_dir, monitors, eval_done.is_set)
+    links = run_links(config.run_dir, log_dir, config.monitors, eval_done.is_set)
     banner = threading.Thread(target=log_run_links, args=(dashboard_url, links), daemon=True)
     banner.start()
     try:

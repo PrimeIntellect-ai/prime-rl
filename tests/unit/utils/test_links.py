@@ -4,9 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import prime_rl.monitors.prime as prime_module
-from prime_rl.configs.monitors import PrimeTrainMonitorConfig
-from prime_rl.monitors.prime import PrimeTrainMonitor
+from prime_rl.configs.monitors import PrimeMonitorConfig
+from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.utils.links import ATTEMPT_VAR, publish_link, register_links, wait_for_links
 
 
@@ -46,6 +45,17 @@ def test_prime_monitor_without_credentials_fails_informatively(tmp_path, monkeyp
     monkeypatch.delenv("PRIME_API_KEY", raising=False)
     monkeypatch.delenv("PRIME_RUNS_MODE", raising=False)
     monkeypatch.delenv("RUN_ID", raising=False)
-    monkeypatch.setattr(prime_module, "PrimeConfig", lambda: SimpleNamespace(api_key=None))
+    monkeypatch.setenv("HOME", str(tmp_path))
     with pytest.raises(RuntimeError, match=r"prime login.*--no-monitors\.prime"):
-        asyncio.run(PrimeTrainMonitor(PrimeTrainMonitorConfig()).init(config=None, output_dir=tmp_path))
+        asyncio.run(PrimeMonitor(PrimeMonitorConfig()).init(config=None, output_dir=tmp_path))
+
+
+def test_eval_prime_monitor_without_credentials_fails_at_launch(tmp_path, monkeypatch):
+    monkeypatch.delenv("PRIME_API_KEY", raising=False)
+    monkeypatch.delenv("PRIME_RUNS_MODE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monitor = PrimeMonitor(PrimeMonitorConfig())
+    monitor.output_dir, monitor.mode, monitor.runs = tmp_path, "online", {}
+    eval_config = SimpleNamespace(model="m", source=[])
+    with pytest.raises(RuntimeError, match=r"prime login.*--no-monitors\.prime"):
+        asyncio.run(monitor._init_evaluations(eval_config))
