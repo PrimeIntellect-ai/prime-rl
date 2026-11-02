@@ -9,19 +9,4 @@ The numbers come from the DSv4 stack A/B campaign on the 6-layer perf proxy (a D
 | main | 14.563 | 8.227 | - | - | 29937 | 109.17 |
 | l4 (this change) | 14.180 | 7.958 | -2.63% | -3.27% | 30935 | 113.79 |
 
-The campaign arm also carries the earlier optimization levels of this series, so the arm-minus-main delta is cumulative: -2.18% at 4 layers and -2.63% at 6 layers, 9 to 10x the campaign's 0.25% same-code repeat floor, and the chain marginal against the previous arm is -1.41% and -1.78%. The 43-layer projection puts a step at 89.60 s versus main's 93.38 s, about -4%. The cost is peak memory: +3.03 GiB at 4 layers and +3.50 GiB at 6, the largest single memory add of this series that is not the AC policy. Compile bar: identical Dynamo counts (160 at 4 layers, 176 at 6, all step 1), zero graph breaks, and Triton cubins drop from 1020 to 858 because the fusion replaces separate rope, norm and quant kernels. On B300 the same cumulative delta is -3.27 percent at 6 layers with the 43-layer projection at 49.1 s versus main's 51.3 s, peak memory rises 4.62 GiB at 6 layers (the same relocated-step-peak trade), and the vLLM fused-op fallback warning is absent from the logs, so the serving-bitwise kernels engage on SM103 too. The B300 compile bar matches: zero recompiles, zero graph breaks, cubins at or below the main arm, DeepGEMM variants and TileLang cache files unchanged.
-
-Numerics: the q forward is bitwise equal to vLLM's kernel (one ulp off today's path on about 6e-6 of elements) and the indexer path is bitwise equal to the unfused pair on both of vLLM's dispatches (CuTeDSL and the Triton fallback), 0 of 254,590,976 quantized values differing over three seeds with scales and folded weights exactly equal. The q forward is not bitwise against the old path, so a full-model forward logprob A/B ran: mean |dlogprob| 0.0451, p50 0.0014, p90 0.1326, mean logprob -0.8538 to -0.8542, exactly at the known floor for non-bitwise forward changes.
-
-The +3.5 GiB peak is a relocated step peak, not a leak. Memory snapshots of both arms show identical allocation sites and counts: the step's peak instant moves to a deeper backward point where two more FSDP all-gather buffers and one more attention-side tensor are live, because the fused path runs fewer, faster kernels in the recomputed block. The change is deterministic within and across runs, and the only long-lived extra is 0.25 GiB from the fused kernel's last outputs.
-
-### Verification
-
-- Unit tests: vLLM bitwise equality (torch.equal), composed and compiled paths, fp64 gradient at the bf16 rounding floor, and the head_dim 32 fallback, plus the indexer test pinning both helper branches bit for bit against the unfused pair.
-- Op bench at 31078 tokens per GPU: q forward 2.97 to 1.04 ms, backward 2.58 to 1.48 ms, forward transient 5.8 to 1.9 GiB, indexer rotation plus quantization 1.47 to 0.19 ms, whole `fp8_indexer` call 2.11 to 0.84 ms.
-- Full-model forward logprob A/B at the known floor.
-
-### Commits
-
-c1b85e2c9 perf(deepseek-v4): run vLLM's fused q norm + RoPE forward and fuse the backward
-89ca11e4c perf(deepseek-v4): fuse the indexer q RoPE and quantization via vLLM's kernel
+The arm-minus-main delta is cumulative through the stack: -2.63% on H200 and -3.27% on B300 at 6 layers, with the 43-layer projection at 89.6 versus 93.4 s on H200 and 49.1 versus 51.3 s on B300. The cost is peak memory, the largest single memory add of this series outside the AC policy: +3.5 GiB on H200 and +4.6 GiB on B300 at 6 layers, a relocated step peak rather than a leak (memory snapshots show identical allocation sites and counts, the peak instant just moves to a deeper backward point). Numerics: the q forward is bitwise equal to vLLM's kernel, the indexer path is bitwise equal to the unfused pair, and the full-model logprob A/B is exactly at the known floor for non-bitwise forward changes. The fused-op fallback warning never appears on either hardware, and the compile bar is clean (identical Dynamo counts, zero graph breaks, fewer Triton cubins).
