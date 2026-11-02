@@ -27,3 +27,17 @@ The new kernels' IEEE mode is not shippable as is: at `input_precision="ieee"` t
 
 25ae693ba feat(deepseek-v4): rewrite the mHC backward passes and pad hc_head for DeepGEMM
 d69a19637 feat(deepseek-v4): gate the padded mHC projection behind PRIME_RL_DSV4_MHC_PAD_PROJECTION
+
+## B300 rerun (2026-11-02)
+
+The same proxy rerun on one 8x B300 SXM6 node (SM103), 20 steps, balanced routing, 262144-token rows, cp 8, ep 8, full activation checkpointing, medians of `time/forward_backward` over steps 4 to 20, paired against a `main` arm from the same worktree series on the same node. The B300 campaign runs MXFP8 (`quantization.type=mxfp8`, `recipe=mxfp8_rceil_wgrad_with_hp`, `moe.compute.type=mxfp8`) with a DeepSeek V4 Flash checkpoint, the production-representative low precision path on this hardware, so cross-campaign comparability is the per-level delta, not the absolute step time (the H200 campaign ran FP8 blockwise and MFU here divides FP8 work by the dense BF16 peak 2.25e15 FLOP/s). The arm ran with `PRIME_RL_DSV4_MHC_BWD_PRECISION=tf32` on the trainer processes. Noise floors from same-protocol repeats: main 0.04 to 0.05 percent, tip 0.12 percent.
+
+| run | layers | fb med s (steps 4-20) | fb med s (all steps) | MFU % | tok/s per GPU | peak GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| b300-main-L4-mxfp8 | 4 | 5.896 | 5.902 | 22.90 | 41782 | 88.26 |
+| b300-main-L6-mxfp8 | 6 | 8.227 | 8.252 | 23.89 | 29937 | 109.17 |
+| b300-l5-L4-mxfp8 | 4 | 5.672 | 5.679 | 23.79 | 43430 | 93.10 |
+| b300-l5-L6-mxfp8 | 6 | 7.874 | 7.889 | 24.96 | 31294 | 113.71 |
+The arm delta is -3.80 percent at 4 layers and -4.29 percent at 6 layers against the B300 main (H200 measured -3.68 and -3.79 percent), so the mHC pack edges slightly ahead on the SM100 DeepGEMM hc_head path that H200 could only approximate.
+
+Compile bar: zero Dynamo recompiles and zero graph breaks in every B300 run, all compilation confined to step 1, Triton cubin count at or below the main arm (the stack removes kernels), DeepGEMM variants 3 to 4, the documented one-time hc_head DeepGEMM variant, TileLang cache files unchanged at 5. 
