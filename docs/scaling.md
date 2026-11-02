@@ -310,7 +310,7 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 uv run sft @ sft.toml --data.type fake --max-steps 4
 
 # RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
-uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4
+uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4 --no-monitors.prime
 ```
 
 With `--data.fake.generate-samples`, fake RL data packs random-length samples into each row; add `--data.fake.doc-len N` to make every sample N tokens instead (the last one cut to fill the row), e.g. two 262k-token rollouts in a 524k-token row.
