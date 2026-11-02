@@ -16,7 +16,9 @@
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
 # Immutable source overlay includes the application-route watchdog and drain-safe pool.
-source_ref = "f55fab28722a332af84d1af1d3ca22bfeb31f90d"
+# Backend accepts canonical branch names for unmerged code, not raw SHAs.
+# Verified branch target: f55fab28722a332af84d1af1d3ca22bfeb31f90d; recheck prepare resolution before launch.
+source_ref = "feat/cyberstrike-composite-source"
 gpu_type = "H200_141GB"
 
 max_steps = 200
