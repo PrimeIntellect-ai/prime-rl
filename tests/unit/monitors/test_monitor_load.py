@@ -6,10 +6,11 @@ monitor writes or uploads."""
 
 import asyncio
 import gc
-import gzip
 import statistics
 import time
+import zlib
 
+import httpx
 import numpy as np
 import orjson
 import pytest
@@ -173,21 +174,19 @@ def registered():
     monitors.MONITORS.clear()
 
 
-class FakeTracesAPI:
-    """The Prime Traces endpoint: gzips each request like the real client and keeps
-    the lines it received."""
+class FakeTracesEndpoint:
+    """The Prime Traces endpoint behind the real client, so uploads gzip at the client's
+    level. Keeps the lines it received. It costs no network or service time."""
 
     def __init__(self) -> None:
         self.lines = 0
 
-    def upload_batch(self, body, idempotency_key, *, line_format, schema_version=1, context=None, compress=True):
-        if compress:
-            gzip.compress(body, mtime=0)
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        part = request.content[request.content.index(b"\x1f\x8b") :]
+        body = zlib.decompressobj(wbits=zlib.MAX_WBITS | 16).decompress(part)
         self.lines += body.count(b"\n") + (not body.endswith(b"\n"))
-        return {"upload_id": idempotency_key.split(":", 1)[1], "status": "committed"}
-
-    def close(self) -> None:
-        pass
+        upload_id = request.headers["Idempotency-Key"].split(":", 1)[1]
+        return httpx.Response(200, json={"upload_id": upload_id, "status": "committed"})
 
 
 class FakePlatform:
@@ -216,14 +215,14 @@ async def _file(tmp_path, monkeypatch):
 
 
 async def _prime(tmp_path, monkeypatch):
-    """The real SDK run and uploader threads, with fake endpoints behind them."""
+    """The real SDK run, client and uploader threads, with fake endpoints behind them."""
     monkeypatch.setenv("PRIME_RUNS_MODE", "disabled")
     for var in ("RUN_ID", "PRL_RUN_FINISHER"):
         monkeypatch.delenv(var, raising=False)
-    traces_api, platform = FakeTracesAPI(), FakePlatform()
+    traces_endpoint, platform = FakeTracesEndpoint(), FakePlatform()
     monitor = PrimeMonitor(PrimeMonitorConfig(name="load"))
     await monitor.init(config=None, output_dir=tmp_path)
-    traces = TracesSink(client=TracesClient(api_client=traces_api))
+    traces = TracesSink(client=TracesClient(api_key="load-test", transport=httpx.MockTransport(traces_endpoint)))
     metrics = RftMetricsSink(platform)
     for sink in (traces, metrics):
         sink.start(monitor.run.id, {"run_type": "train"})
@@ -231,8 +230,8 @@ async def _prime(tmp_path, monkeypatch):
     monitor.run._metrics_worker = UploadWorker([metrics])
 
     def delivered() -> tuple[int, list[int]]:
-        assert traces.episodes_written == traces_api.lines
-        return traces_api.lines, sorted(platform.steps)
+        assert traces.episodes_written == traces_endpoint.lines
+        return traces_endpoint.lines, sorted(platform.steps)
 
     return monitor, delivered
 
@@ -257,9 +256,11 @@ async def _wandb(tmp_path, monkeypatch):
     return monitor, lambda: (None, steps)
 
 
-# TODO: fix and drop this mark. The SDK uploads one episode at a time, and gzips each
-# at level 9 (about 70 ms here). A thousand episodes logged at once fill its queue, and
-# log() then waits for room (up to 5 s) on the orchestrator's arrival path, then drops.
+# TODO: fix and drop this mark. The SDK's uploader takes everything queued into one long
+# write while log() fills the queue again, so a thousand episodes logged at once keep it
+# full. log() then waits for room (up to 5 s) on the orchestrator's arrival path, then
+# drops. Everything arrives here, where the endpoint costs no time; a real service is
+# slower, and drops.
 SDK_BACKPRESSURE = pytest.mark.xfail(reason="prime_runs blocks log() while its upload queue is full", strict=True)
 
 
