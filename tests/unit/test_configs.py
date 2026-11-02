@@ -285,12 +285,19 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
         },
         {"moe": {"compute": {"type": "deepgemm_fp8"}}},
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
-        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
+        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16}}},
         {
             "ep": 2,
             "moe": {
                 "compute": {"type": "mxfp8"},
                 "dispatch": {"type": "torch", "transport": "mxfp8"},
+            },
+        },
+        {
+            "ep": 2,
+            "moe": {
+                "compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"},
+                "dispatch": {"type": "deepep"},
             },
         },
     ],
@@ -350,16 +357,6 @@ def test_moe_compute_apply_to_cli(selection, selected):
                 },
             },
             "MXFP8 transport requires",
-        ),
-        (
-            {
-                "ep": 2,
-                "moe": {
-                    "compute": {"type": "mxfp8"},
-                    "dispatch": {"type": "deepep"},
-                },
-            },
-            "does not support DeepEP",
         ),
     ],
 )

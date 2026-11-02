@@ -115,24 +115,23 @@ score functions, normalization and routing weights remain FP32.
 
 For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply
 by FP32 routing weights and sum the contributions in FP32, then cast once to the expert output dtype.
-This also covers MXFP8 expert compute with Torch dispatch. DeepEP and MegaMoE use their own combine
-kernels and do not share this accumulation guarantee.
+This also covers MXFP8 expert compute with Torch dispatch. With DeepEP, each rank sums its experts'
+outputs for a token in FP32 and casts once, then DeepEP's combine adds these per-rank BF16 sums in FP32
+(across nodes, after summing each node's ranks in FP32 and casting to BF16). MegaMoE uses its own combine
+kernels and does not share this accumulation guarantee.
 
 ### Expert Parallelism Backends
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
 - **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
-- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
+- **`deepep`**: DeepEP custom dispatch/combine kernels. `num_sms` (default 32) is the number of SMs its kernels take from compute. DeepEP runs one communication channel per two SMs, so more SMs move tokens faster. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "deepep"
-num_sms = 20
-token_chunk_size = 4096
+num_sms = 32
 ```
-
-With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
 
 ### Runtime Fusions
 
