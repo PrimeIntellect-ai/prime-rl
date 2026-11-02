@@ -1,11 +1,34 @@
 """The episode index - one compact row per episode, so a reader never has to parse
 the stream to browse it.
 
-The file monitor writes a row as each episode lands, when the record is already in
-hand and summarising it is nearly free, and records the chunk and byte offset it wrote
-the episode at so a reader can seek straight to one. A stream another producer wrote
-has no index, so its reader derives the same rows itself.
+The file monitor writes a row as each episode lands, while the episode is still in
+hand, and records the chunk and byte offset it wrote the episode at so a reader can
+seek straight to one. A stream another producer wrote has no index, so its reader
+derives the same rows itself.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import verifiers.v1 as vf
+
+
+def index_record(episode: vf.Episode) -> dict[str, Any]:
+    """The part of the episode's record (`to_record`) that `summarize_episode` reads:
+    everything but the nodes' payloads. Built one trace at a time, so no single call
+    holds the GIL for a whole long episode."""
+    record = episode.model_dump(mode="json", exclude={"traces"}, exclude_none=True)
+    record["traces"] = []
+    for trace in episode.traces:
+        head = trace.model_dump(mode="json", exclude={"nodes"}, exclude_none=True)
+        head["nodes"] = [
+            {"sampled": node.sampled} if node.parent is None else {"parent": node.parent, "sampled": node.sampled}
+            for node in trace.nodes
+        ]
+        record["traces"].append(head)
+    return record
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
