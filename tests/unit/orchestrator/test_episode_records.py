@@ -10,6 +10,7 @@ import verifiers.v1 as vf
 from prime_runs._http import encode_json
 from prime_runs.projection import build_samples, episodes_to_parquet_bytes
 from prime_runs.sinks.base import stamp_run, to_mapping
+from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
 from verifiers.v1.serve.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
 
@@ -98,8 +99,8 @@ def test_received_episode_uploads_plain_json():
 
 def test_received_episode_encodes_as_its_record_did(tmp_path):
     """The file monitor and the Prime SDK encode episodes with `to_json`, one node at a
-    time: the stream line, its index row and the upload line match what encoding the
-    whole record gave."""
+    time: the stream line and its index row match what encoding the whole record gave,
+    and the upload carries the same record."""
     received, _ = _over_the_wire(episode([trace(), trace()]))
     record = received.to_record()
 
@@ -113,7 +114,10 @@ def test_received_episode_encodes_as_its_record_did(tmp_path):
     (row,) = get_index_path(stream).read_bytes().splitlines()
     assert orjson.loads(row) == orjson.loads(orjson.dumps(index_row(1, record, 0, 0), default=str))
 
-    run = {"id": "prime-run", "type": "train"}
-    assert _encode_record(received.to_json(run=run), 1) == _encode_record(
-        stamp_run(to_mapping(received), run["id"], run["type"]), 1
+    # With the run recorded on the episode and its traces, as the dispatcher does, the
+    # SDK uploads `to_json` as is; it carries what the SDK stamped on the record before.
+    received.record_run(vf.TrainRunInfo(id="prime-run", work=vf.TrainWorkInfo(step=1)))
+    assert names_run(received, "prime-run", "train")
+    assert orjson.loads(received.to_json()) == orjson.loads(
+        _encode_record(stamp_run(to_mapping(received), "prime-run", "train"), 1)
     )
