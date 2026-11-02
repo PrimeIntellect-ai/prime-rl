@@ -164,8 +164,8 @@ overrides = [
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = "==4.8.0" },
     { name = "openenv-core" },
-    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=f936a4c1554f042a2d6fcb71f837780a8c388e30" },
-    { name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=f936a4c1554f042a2d6fcb71f837780a8c388e30" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.6" },
+    { name = "prime-traces", specifier = ">=0.0.12" },
     { name = "tilelang", specifier = "==0.1.12" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu130" },
@@ -5409,7 +5409,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=f936a4c1554f042a2d6fcb71f837780a8c388e30" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.6" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5483,12 +5483,16 @@ requires-dist = [
 
 [[package]]
 name = "prime-runs"
-version = "0.1.5"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=f936a4c1554f042a2d6fcb71f837780a8c388e30#f936a4c1554f042a2d6fcb71f837780a8c388e30" }
+version = "0.1.6"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
     { name = "prime-traces" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/76/a6810b874ed23b16f5210feb50c034595bd199a21a6db2619eef968c487b/prime_runs-0.1.6.tar.gz", hash = "sha256:60c2c656c9c076bd8995a3943b060fdaa893a248f9f627d5f2b26040821e829e", size = 68575, upload-time = "2026-11-02T23:44:48.27Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/22/8745496681a8ec9884f049acaf848642adea0fb529a817d55a1d05a4eebf/prime_runs-0.1.6-py3-none-any.whl", hash = "sha256:78934a05fa80c0abf3ccaee4b37bfe89c822a72b10231f9e667ce37586a1cbf6", size = 46844, upload-time = "2026-11-02T23:44:46.867Z" },
 ]
 
 [package.optional-dependencies]
@@ -5517,12 +5521,16 @@ wheels = [
 
 [[package]]
 name = "prime-traces"
-version = "0.0.11"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=f936a4c1554f042a2d6fcb71f837780a8c388e30#f936a4c1554f042a2d6fcb71f837780a8c388e30" }
+version = "0.0.12"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/69/50/de56a11d243fddb0b7c9feb47e512681d5a1a499ef7c42ba33bbb34e3f86/prime_traces-0.0.12.tar.gz", hash = "sha256:bc34ab96fd7bb9bed3ab39f28546fa936bdebf2e900523c8aee2a4be6ae3ea37", size = 61727, upload-time = "2026-11-02T23:44:51.943Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/35/19558b051a460662db16e630492d6aa70ce714afa2421c3d11f4883b6f01/prime_traces-0.0.12-py3-none-any.whl", hash = "sha256:9f6bba4fb0f6fcf09662475bdf86e81f42df94cce27409ca7acba3b7d1e90025", size = 44478, upload-time = "2026-11-02T23:44:50.652Z" },
 ]
 
 [[package]]
