@@ -40,9 +40,9 @@ from prime_rl.configs.trainer import (
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.fp8_quant_pass import (
     Fp8GroupQuantChoices,
-    Fp8QuantFusionChoices,
     Fp8QuantPass,
     InductorChoicesBackend,
+    install_unbacked_size_hints,
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -789,9 +789,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, rms_norm_back
             fp8_quant_pass.division,
             fp8_quant_pass.grouped_gemm_wgrad_quant,
         )
-        backend = InductorChoicesBackend(
-            Fp8GroupQuantChoices if fp8_quant_pass.persistent_group_reductions else Fp8QuantFusionChoices
-        )
+        install_unbacked_size_hints()
+        if fp8_quant_pass.persistent_group_reductions:
+            backend = InductorChoicesBackend(Fp8GroupQuantChoices)
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading

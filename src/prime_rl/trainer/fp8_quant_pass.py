@@ -10,16 +10,17 @@ from typing import Any, Literal
 
 import sympy
 import torch
+from torch._inductor import config as inductor_config
 from torch._inductor.choices import InductorChoices
 from torch._inductor.codegen.simd_kernel_features import SIMDKernelFeatures
 from torch._inductor.codegen.triton import FixedTritonConfig, TritonKernel
 from torch._inductor.compile_fx import compile_fx, compile_fx_inner
 from torch._inductor.custom_graph_pass import CustomGraphPass, get_hash_for_files
-from torch._inductor.dependencies import MemoryDep
+from torch._inductor.dependencies import Dep, MemoryDep
+from torch._inductor.graph import GraphLowering
 from torch._inductor.pattern_matcher import Arg, CallFunction, Match, PatternMatcherPass, register_graph_pattern
-from torch._inductor.scheduler import BaseSchedulerNode, Scheduler
-from torch._inductor.utils import sympy_product
 from torch._inductor.virtualized import V
+from torch.fx.experimental.symbolic_shapes import free_unbacked_symbols
 
 from prime_rl.configs.trainer import FP8QuantDivision, FP8QuantPassTarget, FP8WgradQuant
 from prime_rl.trainer.models.kernels import fp8_torch_quant
@@ -277,42 +278,27 @@ def _fp8_group_quant_layout(
     return None
 
 
-def _is_group_amax(node: BaseSchedulerNode) -> bool:
-    """Whether `node` has reductions and all are 128-element maxes, like the FP8 group amax."""
-    reductions = [reduction for reduction in node.get_nodes() if reduction.is_reduction()]
-    return bool(reductions) and all(
-        reduction.node.get_reduction_type() == "max"
-        and V.graph.sizevars.statically_known_equals(sympy_product(reduction.node.get_reduction_size()), BLOCK)
-        for reduction in reductions
-    )
+def install_unbacked_size_hints() -> None:
+    """Seed `inductor_config.unbacked_symint_fallback` as the size hint of every unhinted unbacked symbol while Inductor scores kernels, so buffers sized by unbacked shapes, like the routed-expert rows, estimate nonzero shared data and their reductions still fuse with their producers."""
+    if getattr(GraphLowering.get_dep_size_hint, "seeds_unbacked_size_hints", False):
+        return
+    original = GraphLowering.get_dep_size_hint
+
+    def seeded_get_dep_size_hint(self: GraphLowering, dep: Dep, count_bytes: bool = True) -> int:
+        try:
+            if dep.has_unbacked_symbols():
+                unbacked_hints = self.sizevars.var_to_hint_override
+                for symbol in free_unbacked_symbols(dep.get_numel()):
+                    unbacked_hints.setdefault(symbol, inductor_config.unbacked_symint_fallback)
+        except Exception:
+            pass
+        return original(self, dep, count_bytes)
+
+    seeded_get_dep_size_hint.seeds_unbacked_size_hints = True
+    GraphLowering.get_dep_size_hint = seeded_get_dep_size_hint
 
 
-def _reads_unbacked_output(producer: BaseSchedulerNode, consumer: BaseSchedulerNode) -> bool:
-    produced = producer.get_buffer_names()
-    return any(dep.name in produced and dep.has_unbacked_symbols() for dep in consumer.read_writes.reads)
-
-
-class Fp8QuantFusionChoices(InductorChoices):
-    """Inductor heuristics that fuse an FP8 group amax with its producer, scale and cast even when its rows are unbacked, like the routed-expert rows sized by the all-to-all, other fusions unchanged."""
-
-    @staticmethod
-    def can_fuse(
-        scheduler: Scheduler, node1: BaseSchedulerNode, node2: BaseSchedulerNode, shared_data_score: int
-    ) -> bool:
-        # Inductor scores shared data from size hints, which are zero for unbacked sizes, and never fuses a reduction without it.
-        if (
-            shared_data_score == 0
-            and (_is_group_amax(node1) or _is_group_amax(node2))
-            and _reads_unbacked_output(node1, node2)
-        ):
-            shared_data_score = 1
-        return InductorChoices.can_fuse(scheduler, node1, node2, shared_data_score)
-
-    def uuid(self) -> str:
-        return get_hash_for_files((__file__, fp8_torch_quant.__file__)).hex()
-
-
-class Fp8GroupQuantChoices(Fp8QuantFusionChoices):
+class Fp8GroupQuantChoices(InductorChoices):
     """Inductor heuristics that also compile FP8 group quant kernels as persistent reductions with a fixed launch config, other kernels unchanged."""
 
     def triton_kernel_kwargs(
@@ -327,6 +313,9 @@ class Fp8GroupQuantChoices(Fp8QuantFusionChoices):
             return kernel_kwargs
         fixed_config = FixedTritonConfig(dict(FP8_GROUP_QUANT_LAUNCH_CONFIGS[layout]))
         return {**kernel_kwargs, "override_persistent_reduction": True, "fixed_config": fixed_config}
+
+    def uuid(self) -> str:
+        return get_hash_for_files((__file__, fp8_torch_quant.__file__)).hex()
 
 
 class InductorChoicesBackend:
