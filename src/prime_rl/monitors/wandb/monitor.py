@@ -117,10 +117,10 @@ class WandbMonitor(Monitor):
         try:
             self.wandb = init_wandb(max_retries)
         except UsageError as e:
-            raise RuntimeError(
-                f"The W&B monitor could not start ({e}). Authenticate with `wandb login` (or set WANDB_API_KEY), "
-                "or turn the monitor off with --no-monitors.wandb"
-            ) from e
+            hint = "Authenticate with `wandb login` (or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
+            if "No API key" in str(e):
+                raise RuntimeError(f"The W&B monitor found no W&B API key. {hint}") from e
+            raise RuntimeError(f"The W&B monitor could not start ({e}). {hint}") from e
 
         wandb.define_metric("*", step_metric="step")
         # key prefixes that arrived via step=None (wall-time rows); their time axis
