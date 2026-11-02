@@ -51,6 +51,9 @@ METRIC_KEYS = 200
 # dispatch and batch assembly visibly.
 MAX_LAG_S = 0.25
 P99_LAG_S = 0.05
+# A log() call may await the monitor's own work, such as the file monitor's write on its
+# writer thread; the loop keeps serving other tasks meanwhile, which the lag limits cover.
+MAX_LOG_S = 1.0
 TICK_S = 0.005
 
 pytestmark = pytest.mark.slow
@@ -169,7 +172,7 @@ def _assert_responsive(name: str, lags: list[float], calls: list[float]) -> None
     )
     assert p99 < P99_LAG_S, f"{name} stalls the event loop: p99 lag {p99 * 1e3:.0f} ms"
     assert max(lags) < MAX_LAG_S, f"{name} stalls the event loop: max lag {max(lags) * 1e3:.0f} ms"
-    assert max(calls) < MAX_LAG_S, f"a {name} log() call took {max(calls) * 1e3:.0f} ms"
+    assert max(calls) < MAX_LOG_S, f"a {name} log() call took {max(calls) * 1e3:.0f} ms"
 
 
 @pytest.fixture
