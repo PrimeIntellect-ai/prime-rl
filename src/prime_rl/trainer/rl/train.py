@@ -110,6 +110,7 @@ def train(config: TrainerConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,
@@ -693,6 +694,14 @@ def train(config: TrainerConfig):
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
+        # Count the step before checkpointing it, so a resume continues the counters from here.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
+        progress.total_tokens += num_tokens
+        progress.total_samples += batch_size
+
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (
             (config.ckpt and config.ckpt.interval)
@@ -723,12 +732,6 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
-        progress.total_tokens += num_tokens
-        progress.total_samples += batch_size
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_flops, forward_backward_time)
         mfu_6dn = perf_counter.get_step_mfu(
@@ -754,6 +757,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
+        if "ep_imbalance/rank/mean" in tensor_metrics:
+            step_message += f" | EP Imbalance {tensor_metrics['ep_imbalance/rank/mean']:.4f}"
         if "routing_confidence/mean" in tensor_metrics:
             step_message += f" | Routing Conf. {tensor_metrics['routing_confidence/mean']:.4f}"
         logger.success(step_message)

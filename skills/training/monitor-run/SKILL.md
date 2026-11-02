@@ -217,7 +217,7 @@ stream records, newest winning.
 wc -l {run_dir}/monitors/file/traces/stream.index.jsonl
 zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq '.traces[].rewards'
 zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq 'select(.ok | not) | {id, env: .env.id, errors}'
-jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orch.index.jsonl
+jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orchestrator.index.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).

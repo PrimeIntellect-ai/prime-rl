@@ -28,7 +28,6 @@ SAC_IGNORED_OPS.update(
 # Adapted from TorchTitan's whole-block selective activation checkpointing policy.
 # These targets and the CUDA-to-CPU copy rule are correctness requirements. They
 # must remain active when custom targets replace the default selective targets.
-MANDATORY_SAVE_NAMESPACES = frozenset({"deepep"})
 MANDATORY_SAVE_OPERATIONS = frozenset(
     {
         "aten::topk",
@@ -42,6 +41,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
 DEFAULT_SELECTIVE_SAVE_NAMESPACES = frozenset(
     {
         "_c10d_functional",
+        "deepep",
         "flash_attn",
         "flash_attn_3",
         "prime_rl_attn",
@@ -93,7 +93,7 @@ def _mandatory_checkpoint_policy(
     *args,
     **kwargs,
 ) -> CheckpointPolicy:
-    if operation.namespace in MANDATORY_SAVE_NAMESPACES or operation.name() in MANDATORY_SAVE_OPERATIONS:
+    if operation.name() in MANDATORY_SAVE_OPERATIONS:
         return CheckpointPolicy.MUST_SAVE
 
     if operation.name() == "aten::_to_copy":
@@ -130,6 +130,9 @@ def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Cal
         checkpoint_wrapper,
         checkpoint_impl=CheckpointImpl.NO_REENTRANT,
         context_fn=partial(create_selective_checkpoint_contexts, policy),
+        # Keep SAC-saved tensors out of surrounding saved-tensor hooks (activation offloading), as before
+        # torch 2.14 made this explicit; leaving it unset warns whenever a hook is in scope.
+        respect_saved_tensors_hooks=False,
     )
 
 
@@ -137,7 +140,6 @@ __all__ = [
     "DEFAULT_SELECTIVE_SAVE_NAMESPACES",
     "DEFAULT_SELECTIVE_SAVE_OPERATIONS",
     "DEFAULT_SELECTIVE_TARGETS",
-    "MANDATORY_SAVE_NAMESPACES",
     "MANDATORY_SAVE_OPERATIONS",
     "get_activation_checkpoint_wrapper",
 ]

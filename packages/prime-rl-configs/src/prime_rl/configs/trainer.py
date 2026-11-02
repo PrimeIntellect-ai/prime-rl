@@ -211,11 +211,8 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
 
     type: Literal["deepep"] = "deepep"
-    num_sms: int = Field(20, ge=1)
+    num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
-
-    token_chunk_size: int | None = Field(None, ge=1)
-    """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
@@ -327,7 +324,7 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "cudnn_flashmla"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, vLLM's bundled FlashMLA (installed with the ``gpu`` extra), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -364,12 +361,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(compute, MXFP8MoEComputeConfig):
-                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
-        elif dispatch.transport == "mxfp8":
+        if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self
@@ -648,17 +640,6 @@ class BaseTrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
@@ -730,7 +711,7 @@ class TrainerConfig(BaseTrainerConfig):
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""

@@ -298,6 +298,7 @@ Pulled from the console log and mirrored to W&B.
 - `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
 - For MoE: `expert_load/{cv,max_mean,cold_frac}/{mean,max}` — expert load per layer over the whole step, from token counts summed across all ranks, as the mean and max over MoE layers. `cv` is std/mean of the per-expert token counts, `max_mean` the busiest expert's count over the mean, and `cold_frac` the fraction of experts receiving under 0.1x the mean. A trainable router that drifts shows up as a rising `cv`/`cold_frac` (MiMo-V2.6 §5.4).
+- For MoE with EP: `ep_imbalance/rank/{mean,max}` — the busiest EP rank's routes over the mean rank's (padding included) in each layer and microstep, which sets the layer's expert time. It takes the max over DP groups at each layer and microstep, then the mean and max over the step's layers and microsteps; `ep_imbalance/rank_dp_mean/{mean,max}` takes the DP mean instead.
 
 **Performance:**
 
@@ -491,7 +492,7 @@ Name the Prime run in TOML:
 name = "my-experiment"
 ```
 
-On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
 The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 

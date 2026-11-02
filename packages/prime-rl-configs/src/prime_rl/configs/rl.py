@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
+from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
@@ -79,8 +79,8 @@ class SharedMonitorsConfig(BaseConfig):
     file: FileMonitorConfig | None = None
     """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
-    prime: PrimeTrainMonitorConfig | None = None
-    """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
+    prime: PrimeMonitorConfig | None = None
+    """Shared Prime platform monitor. Propagated to trainer and orchestrator, which log to one Prime run."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -188,7 +188,7 @@ class RLConfig(BaseConfig):
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     monitors: SharedMonitorsConfig = SharedMonitorsConfig()
-    """Shared monitor configs (``monitors.wandb``, ``monitors.file``). Propagated to trainer and orchestrator; ``[orchestrator.monitors.prime]`` configures the platform monitor."""
+    """Shared monitor configs (``monitors.wandb``, ``monitors.file``, ``monitors.prime``). Propagated to trainer and orchestrator."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""
@@ -322,7 +322,7 @@ class RLConfig(BaseConfig):
         for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
-        for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
+        for prime in (self.monitors.prime, self.trainer.monitors.prime, self.orchestrator.monitors.prime):
             if prime is not None and prime.name is None:
                 prime.name = self.run.name
         return self
@@ -342,6 +342,16 @@ class RLConfig(BaseConfig):
 
         # The orchestrator queries the inference server it is paired with; without one, it
         # must match the trainer whose weights the external server receives.
+        # The components log to one run per monitor, so a monitor is on in all or none.
+        for name in ("wandb", "file", "prime"):
+            require_equal(
+                f"monitors.{name}",
+                {
+                    f"{component}.monitors.{name}": getattr(config.monitors, name) is not None
+                    for component, config in (("trainer", trainer), ("orchestrator", orchestrator))
+                },
+            )
+
         if inference is not None:
             require_equal(
                 "deployment.gpus_per_node",

@@ -168,6 +168,7 @@ class Qwen3_5Config(PretrainedConfig):
         video_token_id: int = 248057,
         vision_start_token_id: int = 248053,
         vision_end_token_id: int = 248054,
+        language_model_only: bool = False,
         tie_word_embeddings: bool = False,
         **kwargs,
     ) -> None:
@@ -181,7 +182,8 @@ class Qwen3_5Config(PretrainedConfig):
         self.video_token_id = video_token_id
         self.vision_start_token_id = vision_start_token_id
         self.vision_end_token_id = vision_end_token_id
-        kwargs.pop("language_model_only", None)
+        # Text-only checkpoint: no vision tower is built (vLLM's `--language-model-only`).
+        self.language_model_only = language_model_only
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
 
