@@ -522,7 +522,7 @@ Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `
 
 Three small implementations are included:
 
-- `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
+- `StandardSampler` is the default: it cycles finite tasksets in source order and advances a task iterator. For a finite taskset it counts how often it sampled each task and yields a least-sampled task, so a resume can reconcile the counts with a changed taskset (see [Resuming a Run](training.md#resuming-a-run)).
 - `DifficultyPoolSampler` samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight; weight `0` disables sampling from that pool. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
 - `AdvRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in token filter, it can reject a configurable advantage range. Groups without an advantage stream are admitted.
 
