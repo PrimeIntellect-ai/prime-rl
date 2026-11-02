@@ -166,6 +166,8 @@ The built-in VLM registry covers:
 
 The trainer finds the vision encoder at `model.visual` and the language model at `model.language_model`.
 
+Text-only checkpoints of these families set `language_model_only: true` in `config.json` and ship no `model.visual` weights. The trainer then builds no vision encoder. vLLM does not read this field, so for `rl` also set `inference.vllm.language_model_only = true`.
+
 ### Enabling VLM Mode
 
 Add `[model.vlm]` to your RL or SFT config:
