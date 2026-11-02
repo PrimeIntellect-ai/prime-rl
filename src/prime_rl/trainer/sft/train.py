@@ -30,7 +30,6 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     reshard_module,
-    setup_processor,
     setup_tokenizer,
     setup_model,
     take_moe_routing_stats,
@@ -60,6 +59,7 @@ from prime_rl.trainer.utils import (
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
@@ -260,7 +260,8 @@ def train(config: SFTConfig):
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
             validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
-            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+            # The VLM shards image inputs itself, after building their positions.
+            defer_vlm_cp_to_model = mm_kwargs is not None
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
             seq_lens_are_pre_shard = True
@@ -371,6 +372,7 @@ def train(config: SFTConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            model_name=config.model.name,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken
         # transport and lets the evals process re-trigger at the resume step
@@ -521,6 +523,15 @@ def train(config: SFTConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        # Count the step before checkpointing it, so a resume continues the counters from here.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
+        progress.total_tokens += num_tokens
+        dataset_progress = get_dataset_progress(dataloader)
+        progress.total_samples = dataset_progress["step"]
+
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
         # the loop, so skip it here to avoid a double-save. Weight broadcasts land at
         # online-eval steps — they are how the inference server picks up the new policy.
@@ -545,13 +556,6 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
-        progress.total_tokens += num_tokens
-        dataset_progress = get_dataset_progress(dataloader)
-        progress.total_samples = dataset_progress["step"]
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time

@@ -33,9 +33,10 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
-from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
+from prime_rl.trainer.model import setup_model, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir

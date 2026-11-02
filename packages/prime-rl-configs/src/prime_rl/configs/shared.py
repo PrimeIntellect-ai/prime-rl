@@ -80,8 +80,27 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
 
 
+class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["modelexpress"] = "modelexpress"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
+    """Trainer storage policy passed to ModelExpress."""
+
+    staging_buffer_bytes: int | None = Field(None, gt=0)
+    """Receiver staging capacity per buffer. None stages a complete update."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of receiver buffers. Two overlap the next read with installation."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | ModelExpressWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
@@ -181,7 +200,7 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     launch_modelexpress: bool = True
-    """Start a job-scoped ModelExpress service for NIXL weight transfer."""
+    """Start a job-scoped ModelExpress server for NIXL and ModelExpress weight broadcasts on multi-node jobs."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
@@ -215,12 +234,6 @@ ServerType = Literal["vllm", "openai"]
 
 
 class VLMConfig(BaseConfig):
-    vision_encoder_attr: str
-    """Dotted attribute path to the vision encoder module (e.g. ``model.visual``)."""
-
-    language_model_attr: str
-    """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
-
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
 
@@ -231,9 +244,6 @@ class BaseModelConfig(BaseConfig):
 
     trust_remote_code: bool = False
     """Trust remote code when initializing the tokenizer."""
-
-    vlm: "VLMConfig | None" = None
-    """VLM configuration. Setting this enables vision-language model support."""
 
 
 class DynamoConfig(BaseConfig):

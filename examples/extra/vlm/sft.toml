@@ -11,8 +11,6 @@ reduce_dtype = "bfloat16"
 name = "auto"
 
 [model.vlm]
-vision_encoder_attr = "model.visual"
-language_model_attr = "model.language_model"
 freeze_vision_encoder = true
 
 [model.lora]

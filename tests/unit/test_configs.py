@@ -285,12 +285,19 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
         },
         {"moe": {"compute": {"type": "deepgemm_fp8"}}},
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
-        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
+        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16}}},
         {
             "ep": 2,
             "moe": {
                 "compute": {"type": "mxfp8"},
                 "dispatch": {"type": "torch", "transport": "mxfp8"},
+            },
+        },
+        {
+            "ep": 2,
+            "moe": {
+                "compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"},
+                "dispatch": {"type": "deepep"},
             },
         },
     ],
@@ -350,16 +357,6 @@ def test_moe_compute_apply_to_cli(selection, selected):
                 },
             },
             "MXFP8 transport requires",
-        ),
-        (
-            {
-                "ep": 2,
-                "moe": {
-                    "compute": {"type": "mxfp8"},
-                    "dispatch": {"type": "deepep"},
-                },
-            },
-            "does not support DeepEP",
         ),
     ],
 )
@@ -831,36 +828,6 @@ def test_disaggregated_inference_inherits_deployment_gpus_per_node():
         RLConfig.model_validate(config)
 
 
-def test_orchestrator_vlm_requires_renderer():
-    with pytest.raises(ValidationError, match="renderer"):
-        OrchestratorConfig.model_validate(
-            {
-                "model": {
-                    "name": "Qwen/Qwen3-VL-4B-Instruct",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                },
-                "renderer": None,
-            }
-        )
-
-    config = OrchestratorConfig.model_validate(
-        {
-            "model": {
-                "name": "Qwen/Qwen3-VL-4B-Instruct",
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
-                },
-            },
-        }
-    )
-
-    assert config.renderer is not None
-
-
 def test_ac_none_disables_ac_offloading():
     config = TrainerModelConfig.model_validate({"ac": None})
     assert config.ac is None
@@ -1074,7 +1041,7 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
 def test_shared_monitor_disable_and_prime_propagate():
     """CLI ``--no-monitors.wandb`` / ``--no-monitors.file`` (which land as the string
     "None") propagate the disable to both sub-configs, whose monitors default to
-    enabled; a shared ``[monitors.prime]`` reaches the orchestrator only."""
+    enabled; a shared ``[monitors.prime]`` reaches both."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
@@ -1085,8 +1052,23 @@ def test_shared_monitor_disable_and_prime_propagate():
     )
     assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
     assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
-    assert config.orchestrator.monitors.prime is not None
-    assert config.orchestrator.monitors.prime.name == "shared-prime"
+    assert config.trainer.monitors.prime.name == config.orchestrator.monitors.prime.name == "shared-prime"
+
+
+@pytest.mark.parametrize(
+    "monitor,trainer,orchestrator",
+    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {}, {"prime": "None"})],
+)
+def test_monitor_on_in_one_component_only_is_rejected(monitor, trainer, orchestrator):
+    """The components log to one run per monitor, so a monitor is on in all or none."""
+    with pytest.raises(ValueError, match=rf"monitors.{monitor} must match across components"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "trainer": {"monitors": trainer},
+                "orchestrator": {"renderer": {"name": "default"}, "monitors": orchestrator},
+            }
+        )
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():

@@ -11,7 +11,7 @@ from renderers.base import MODEL_RENDERER_MAP
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.monitors import TrainMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -217,7 +217,7 @@ class SFTConfig(BaseTrainerConfig):
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
-    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     run: RunConfig = Field(default_factory=RunConfig)
@@ -316,8 +316,8 @@ class SFTConfig(BaseTrainerConfig):
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem":
-            if self.weight_broadcast.type == "nixl":
-                raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
+            if self.weight_broadcast.type in ("nixl", "modelexpress"):
+                raise ValueError("NIXL and ModelExpress weight broadcast are not supported for SFT online evals.")
             if self.model.lora is not None:
                 raise ValueError(
                     "LoRA training is not yet supported with in-memory weight broadcast. "
@@ -477,10 +477,6 @@ class SFTConfig(BaseTrainerConfig):
     def validate_vlm_constraints(self):
         if self.model.vlm is None:
             return self
-        if self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16":
-            raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
-            )
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:

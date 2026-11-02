@@ -16,6 +16,7 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -210,11 +211,8 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
 
     type: Literal["deepep"] = "deepep"
-    num_sms: int = Field(20, ge=1)
+    num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
-
-    token_chunk_size: int | None = Field(None, ge=1)
-    """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
@@ -272,6 +270,9 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    vlm: VLMConfig | None = None
+    """VLM configuration. Setting this enables vision-language model support."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
@@ -360,12 +361,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(compute, MXFP8MoEComputeConfig):
-                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
-        elif dispatch.transport == "mxfp8":
+        if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self
@@ -644,17 +640,6 @@ class BaseTrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
@@ -726,7 +711,7 @@ class TrainerConfig(BaseTrainerConfig):
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
@@ -736,7 +721,7 @@ class TrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
