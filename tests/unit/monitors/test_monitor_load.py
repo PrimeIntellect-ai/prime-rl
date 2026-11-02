@@ -1,5 +1,5 @@
-"""Each monitor under an orchestrator-sized load: up to a thousand agentic episodes
-(100 turns, 100k tokens each) and thousands of metric rows, logged through
+"""Each monitor under an orchestrator-sized load: up to a thousand agentic episodes,
+sized like a production RL run's, and thousands of metric rows, logged through
 ``monitors.log`` as the orchestrator does.
 Everything logged must arrive, and the event loop must stay responsive while the
 monitor writes or uploads."""
@@ -28,14 +28,23 @@ from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_trace_stream
-from prime_rl.monitors.file.traces.chunks import open_chunk
+from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
 from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.utils.pathing import get_file_monitor_dir
 
-TURNS = 100
 TOKENS_PER_MESSAGE = 500
+# Episode sizes (uncompressed JSON) in a production RL run: median 6.4 MB, p90 17 MB,
+# p99 35 MB. A lognormal through the median and p90 also matches its mean (8.5 MB)
+# and p99.
+SIZE_MEDIAN_MB = 6.4
+SIZE_SIGMA = 0.76
+# Prime Traces rejects an episode over 64 MiB.
+MAX_SIZE_MB = 60
+# Episodes share traces at these sizes, which keeps the test's memory small; each
+# episode takes the one nearest its drawn size.
+TRACE_SIZES_MB = np.geomspace(0.5, MAX_SIZE_MB, 24)
 METRIC_ROWS = 2_000
 METRIC_KEYS = 200
 # The orchestrator's own work runs between monitor calls; a stall this long delays
@@ -47,11 +56,11 @@ TICK_S = 0.005
 pytestmark = pytest.mark.slow
 
 
-def _trace(rng: np.random.Generator) -> vf.Trace:
+def _trace(rng: np.random.Generator, turns: int) -> vf.Trace:
     """A multi-turn trace with per-token streams as the env-server wire delivers them."""
     n = TOKENS_PER_MESSAGE
     nodes = []
-    for _ in range(TURNS):
+    for _ in range(turns):
         nodes.append(
             MessageNode(
                 parent=len(nodes) - 1 if nodes else None,
@@ -81,30 +90,36 @@ def _trace(rng: np.random.Generator) -> vf.Trace:
         rewards={"correct": vf.Reward(score=1.0)},
         calls=[
             ModelCall(node=2 * i + 1, usage=Usage(prompt_tokens=n, completion_tokens=n), finish_reason="stop")
-            for i in range(TURNS)
+            for i in range(turns)
         ],
     )
 
 
+def _episode(trace: vf.Trace, i: int) -> vf.Episode:
+    return vf.Episode(
+        env=vf.EnvInfo(id="load", name="load"),
+        task=trace.task,
+        group=vf.GroupInfo(id=f"g{i // 8}"),
+        traces=[trace],
+        ok=True,
+        run=vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1, policy=vf.PolicySpan(start=0, end=0))),
+    )
+
+
 @pytest.fixture(scope="module")
-def trace() -> vf.Trace:
-    return _trace(np.random.default_rng(0))
+def traces() -> list[vf.Trace]:
+    """One trace per size in ``TRACE_SIZES_MB``."""
+    rng = np.random.default_rng(0)
+    turn_mb = len(_episode(_trace(rng, 10), 0).to_json()) / 10 / 1e6
+    return [_trace(rng, max(1, round(size / turn_mb))) for size in TRACE_SIZES_MB]
 
 
-def _episodes(trace: vf.Trace, count: int) -> list[vf.Episode]:
-    """``count`` episodes that share one trace: every monitor serializes each episode
-    on its own, so the load is the same as distinct traces at a fraction of the memory."""
-    return [
-        vf.Episode(
-            env=vf.EnvInfo(id="load", name="load"),
-            task=trace.task,
-            group=vf.GroupInfo(id=f"g{i // 8}"),
-            traces=[trace],
-            ok=True,
-            run=vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1, policy=vf.PolicySpan(start=0, end=0))),
-        )
-        for i in range(count)
-    ]
+def _episodes(traces: list[vf.Trace], count: int) -> list[vf.Episode]:
+    """``count`` episodes with production sizes. Every monitor serializes each episode on
+    its own, so sharing traces keeps the load of distinct ones at a fraction of the memory."""
+    sizes = np.random.default_rng(1).lognormal(np.log(SIZE_MEDIAN_MB), SIZE_SIGMA, count)
+    nearest = np.abs(np.log(sizes)[:, None] - np.log(TRACE_SIZES_MB)).argmin(1)
+    return [_episode(traces[index], i) for i, index in enumerate(nearest)]
 
 
 def _metrics(step: int) -> dict[str, float]:
@@ -212,8 +227,10 @@ async def _file(tmp_path, monkeypatch):
     await monitor.init(tmp_path)
 
     def delivered() -> tuple[int | None, list[int]]:
-        with open_chunk(get_trace_stream(tmp_path), 0) as chunk:
-            episodes = sum(1 for _ in chunk.read().splitlines())
+        stream, episodes = get_trace_stream(tmp_path), 0
+        for number in chunk_numbers(stream):
+            with open_chunk(stream, number) as chunk:
+                episodes += sum(1 for _ in chunk)
         rows = (get_file_monitor_dir(tmp_path) / "metrics.jsonl").read_bytes().splitlines()
         return episodes, [orjson.loads(row)["step"] for row in rows]
 
@@ -270,8 +287,8 @@ async def _wandb(tmp_path, monkeypatch):
         for count in (10, 100, 1000)
     ],
 )
-def test_monitor_under_load(start, count, trace, tmp_path, registered, orchestrator_gc, monkeypatch):
-    episodes = _episodes(trace, count)
+def test_monitor_under_load(start, count, traces, tmp_path, registered, orchestrator_gc, monkeypatch):
+    episodes = _episodes(traces, count)
 
     async def run():
         monitor, delivered = await start(tmp_path, monkeypatch)
