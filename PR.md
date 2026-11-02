@@ -2,12 +2,12 @@ This PR adds `model.dsv4_cudnn_sink_grad`, which takes DeepSeek V4's sparse-atte
 
 #4078 folded the sink into the LSE to keep TileLang's op contract, not because cuDNN lacked sinks, so with the flag the forward keeps FlashMLA's sink-free LSE and cuDNN gets the real sinks. On SM90 the change folds the sink into cuDNN's LSE, since cuDNN's own `d_sink` is slower there and issues nondeterministic fp32 atomics, and on SM100 it uses cuDNN's native `d_sink`, exercised by the B300 campaign.
 
-The numbers come from the DSv4 stack A/B campaign on the 6-layer perf proxy (a DeepSeek V4 Flash checkpoint, 262144-token rows, cp 8, ep 8, full activation checkpointing, 20 steps of 8 micro batches, force-balanced routing), run on H200 with FP8 blockwise and on B300 with MXFP8, each paired against its own main arm on the same node. The step-time metric is `time/forward_backward`, the table shows medians over steps 4 to 20, and a negative delta is faster. The campaigns use different MFU peak conventions, so the delta, not the MFU magnitude, is the comparable quantity across hardware. B300 repeat floors were 0.04 to 0.12 percent.
+The numbers come from the DSv4 stack A/B campaign on the 6-layer perf proxy (a DeepSeek V4 Flash checkpoint, 262144-token rows, cp 8, ep 8, full activation checkpointing, 20 steps of 8 micro batches, force-balanced routing), run on H200 with FP8 blockwise and on B300 with MXFP8, each paired against its own main arm on the same node. The step-time metric is `time/forward_backward`, the table shows medians over steps 4 to 20, and a negative delta is faster. B300 repeat floors were 0.04 to 0.12 percent.
 
-| run | median time/forward_backward s, H200 | median time/forward_backward s, B300 | delta vs main, H200 | delta vs main, B300 | mfu % (B300) | tok/s per GPU (B300) | peak GiB (B300) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| main | 14.631 | 8.227 | - | - | 23.89 | 29937 | 109.17 |
-| l1 (this change) | 14.540 | 8.212 | -0.62% | -0.18% | 23.97 | 30055 | 108.55 |
+| run | median time/forward_backward s, H200 | median time/forward_backward s, B300 | delta vs main, H200 | delta vs main, B300 | tok/s per GPU (B300) | peak GiB (B300) |
+|---|---:|---:|---:|---:|---:|---:|
+| main | 14.631 | 8.227 | - | - | 29937 | 109.17 |
+| l1 (this change) | 14.540 | 8.212 | -0.62% | -0.18% | 30055 | 108.55 |
 
 This arm is this change alone. The marginal is -0.37% at 4 layers and -0.62% at 6 layers versus the paired main on the same node. The same-code repeat noise floor is +0.026 s (+0.25%, run main-L4-r2-A), so the 4-layer marginal sits at the floor (treat as neutral) and the 6-layer marginal is about 2.5x it. The 43-layer projection (per-layer differencing of the paired 4- and 6-layer runs) puts a step at 92.64 s versus main's 93.38 s, about -0.8%. Peak memory is unchanged at 4 layers and 0.12 GiB lower at 6. Compile bar: the flag adds exactly 3 one-time cuDNN DSA backward kernel compiles (4.07 s total) inside the step-1 warm-up, with Dynamo counts identical to main. On B300 the marginal is -0.18 percent at 6 layers against the same-code floor of 0.04 percent, the native `d_sink` path running on its home hardware, with the TileLang sink-preprocess cache files gone entirely (5 to 0) and the remaining compile bar identical to the B300 main (zero recompiles, zero graph breaks, 3 DeepGEMM variants).
 
