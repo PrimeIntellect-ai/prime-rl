@@ -150,12 +150,12 @@ VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
     from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import (
-        FORWARD_BACKENDS,
+        BACKENDS,
         dsv4_sparse_attn,
         sparse_attn_shape_error,
     )
 except ImportError:
-    FORWARD_BACKENDS = {}
+    BACKENDS = ()
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
 
@@ -696,10 +696,10 @@ class DeepseekV4Attention(nn.Module):
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
         self.dsa_backend = getattr(config, "dsa_backend", "cudnn_flashmla")
-        if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
+        if dsv4_sparse_attn is not None and self.dsa_backend not in BACKENDS:
             raise ValueError(
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
-                f"expected one of {sorted(FORWARD_BACKENDS)}"
+                f"expected one of {sorted(BACKENDS)}"
             )
         self.max_slots = max_sparse_attn_slots(config)
         blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
@@ -710,11 +710,6 @@ class DeepseekV4Attention(nn.Module):
                 else ""
             )
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}.{hint}")
-        self.cudnn_sink_grad = getattr(config, "cudnn_sink_grad", False)
-        if self.cudnn_sink_grad and self.dsa_backend != "cudnn_flashmla":
-            raise ValueError(
-                f"`model.dsv4_cudnn_sink_grad` needs the cudnn_flashmla sparse-attention backend, not {self.dsa_backend!r}"
-            )
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
@@ -813,7 +808,6 @@ class DeepseekV4Attention(nn.Module):
             self.scaling,
             backend=self.dsa_backend,
             max_slots=self.max_slots,
-            cudnn_sink_grad=self.cudnn_sink_grad,
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output

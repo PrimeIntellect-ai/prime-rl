@@ -178,11 +178,7 @@ requires_cudnn_flashmla = pytest.mark.skipif(
 )
 
 DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
-DSV4_BACKWARDS = [
-    pytest.param("tilelang", False, id="tilelang"),
-    pytest.param("cudnn_flashmla", False, id="cudnn_flashmla", marks=requires_cudnn_flashmla),
-    pytest.param("cudnn_flashmla", True, id="cudnn_flashmla-cudnn_sink_grad", marks=requires_cudnn_flashmla),
-]
+DSV4_BACKWARDS = DSV4_BACKENDS
 
 if importlib.util.find_spec("flash_mla") is not None:
     # vLLM's bundled FlashMLA (`vllm._flashmla_C`) and the flash-mla wheel both define the GNU-unique
@@ -252,7 +248,8 @@ def test_fully_masked_query_reads_as_zero_keys(backend):
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
     The sink carries the softmax denominator by itself here, which is what keeps `lse` finite
-    instead of dividing by a zero-seeded `sumexp`.
+    instead of dividing by a zero-seeded `sumexp`. The LSE contract is per-backend: TileLang folds
+    the sink in (base-2), `cudnn_flashmla` leaves it out (natural log, +inf with no valid slot).
 
     This does not pin TileLang's out-of-range guard, although a fully masked query is where that
     guard does the most work: a masked slot is seeded to `-inf` before the gather is ever read, so
@@ -268,9 +265,13 @@ def test_fully_masked_query_reads_as_zero_keys(backend):
         out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
 
     assert torch.equal(out[:, 0], torch.zeros_like(out[:, 0])), "a fully masked query must emit exactly zero"
-    expected_lse = sinks.float() * math.log2(math.e)
-    assert torch.allclose(lse[:, 0], expected_lse.expand_as(lse[:, 0])), "lse must fall back to the sink term"
-    assert torch.isfinite(out).all() and torch.isfinite(lse).all()
+    if backend == "tilelang":
+        expected_lse = sinks.float() * math.log2(math.e)
+        assert torch.allclose(lse[:, 0], expected_lse.expand_as(lse[:, 0])), "lse must fall back to the sink term"
+        assert torch.isfinite(out).all() and torch.isfinite(lse).all()
+    else:
+        assert torch.isinf(lse[:, 0]).all(), "the sink-free LSE is +inf with no valid slot"
+        assert torch.isfinite(out).all()
 
 
 @requires_sparse_attn_kernel
@@ -323,10 +324,10 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
     )
 
 
-@pytest.mark.parametrize("backend, cudnn_sink_grad", DSV4_BACKWARDS)
+@pytest.mark.parametrize("backend", DSV4_BACKWARDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_traces_under_torch_compile(backend, cudnn_sink_grad):
+def test_kernel_traces_under_torch_compile(backend):
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
     `apply_compile` in `prime_rl/trainer/model.py` compiles each decoder layer, so every real
@@ -340,9 +341,7 @@ def test_kernel_traces_under_torch_compile(backend, cudnn_sink_grad):
     compiled_leaves = _leaves(q, kv, sinks)
 
     def attend(q: torch.Tensor, kv: torch.Tensor, sinks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return dsv4_sparse_attn(
-            q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS, cudnn_sink_grad=cudnn_sink_grad
-        )
+        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
 
     out, lse = attend(*eager_leaves)
     # One weight tensor for both losses, so the two backwards are the same function of the same
