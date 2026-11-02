@@ -8,8 +8,8 @@
 # Base image + source overlay: image provides the heavy wheels (lockfile matches the
 # branch: vllm 0.32.0); source_ref overlays feat/nemotron-h-long-context-cp (audited sha).
 image_tag = "v0.10.1.dev74"
-# REQUIRED BEFORE LAUNCH: commit and push the diagnostics, then put that commit here.
-source_ref = "9507338ffb642b6304dc2e7e4bdcc97b54e21de4"
+# Immutable source overlay includes the application-route watchdog and drain-safe pool.
+source_ref = "51957e8a858c6fa33f2e776ebbfd82e923e93781"
 gpu_type = "H200_141GB"
 
 max_steps = 200

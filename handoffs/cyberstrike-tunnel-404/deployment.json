@@ -1,0 +1,30 @@
+{
+  "verifiers_commit": "d376c25298b4e5b321608de81265e5c4c356966c",
+  "verifiers_branch": "fix/cyberstrike-tunnel-route-health",
+  "prime_rl_source_commit": "51957e8a858c6fa33f2e776ebbfd82e923e93781",
+  "prime_rl_publish_branch": "fix/cyberstrike-tunnel-deploy",
+  "recipe_branch": "feat/cyberstrike-next-run",
+  "source_base": "358ea2b5d3c6a98cecdbf78387239a3f9b483750",
+  "deployed_run_unchanged": {
+    "id": "pzh1apauhzm18onn8pxg96uh",
+    "status": "PAUSED",
+    "source_commit": "9507338ffb642b6304dc2e7e4bdcc97b54e21de4"
+  },
+  "scope": "Published code and pinned recipe for the next authorized launch. No running-process hot reload and no resume/restart.",
+  "constants": {
+    "health_check_interval_seconds": 20,
+    "consecutive_failed_check_cycles": 2,
+    "existing_probe_timeout_seconds": 5
+  },
+  "tests": {
+    "focused_plus_combined_passed": 37,
+    "broader_unit_passed": 291,
+    "credential_dependent_skipped": 8,
+    "unchanged_baseline_test_deselected": 1,
+    "active_session_counts": [
+      1,
+      32
+    ]
+  },
+  "validation_note": "Hosted TOML parsed; CLI payload built offline. RLConfig schema passed with a temporary empty slurm block solely to satisfy the local launcher multi-node guard; recipe was not changed with that block. No hosted create/validation POST was sent."
+}

@@ -1,0 +1,456 @@
+diff --git a/tests/unit/interception/test_pool.py b/tests/unit/interception/test_pool.py
+index 67964b615..2ccd5206c 100644
+--- a/tests/unit/interception/test_pool.py
++++ b/tests/unit/interception/test_pool.py
+@@ -1,5 +1,8 @@
+ """Interception pool selection must not reuse a slot whose tunnel died."""
+ 
++import asyncio
++import gc
++import weakref
+ from types import SimpleNamespace
+ 
+ import pytest
+@@ -57,3 +60,124 @@ async def test_elastic_acquire_rejects_unhealthy_server_before_mutation(monkeypa
+             pytest.fail("unhealthy slot acquired")
+     assert session.client is None
+     assert server.sessions == {}
++
++
++@pytest.mark.asyncio
++async def test_elastic_quarantined_slot_drains_before_cleanup():
++    pool = ElasticInterceptionPool(ElasticInterceptionPoolConfig(multiplex=1))
++    draining = Slot(healthy=False, load=1)
++    healthy = Slot(healthy=True)
++    pool.servers = [draining, healthy]
++    assert await pool._server() is healthy
++    assert draining.stops == 0
++    assert pool.servers == [draining, healthy]
++    draining.load = 0
++    await pool._prune()
++    assert draining.stops == 1
++    assert pool.servers == [healthy]
++
++
++@pytest.mark.asyncio
++async def test_last_acquire_exit_cleans_quarantined_slot(monkeypatch):
++    pool = ElasticInterceptionPool(ElasticInterceptionPoolConfig(multiplex=2))
++    server = Slot(healthy=True)
++    server.base_url = "https://example.invalid"
++
++    def register(session):
++        server.load += 1
++        return "model", "state"
++
++    def unregister(model, state):
++        server.load -= 1
++
++    monkeypatch.setattr(server, "register", register, raising=False)
++    monkeypatch.setattr(server, "unregister", unregister, raising=False)
++    pool.servers = [server]
++    async with pool.acquire(object()):
++        async with pool.acquire(object()):
++            server.healthy = False
++        assert server.stops == 0
++        assert server.load == 1
++    assert server.stops == 1
++    assert pool.servers == []
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("startup_healthy", [True, False])
++async def test_retired_servers_are_not_retained_by_pool(monkeypatch, startup_healthy):
++    retired = []
++
++    class StartedSlot(Slot):
++        def __init__(self, *args, **kwargs):
++            super().__init__(healthy=startup_healthy)
++            self.base_url = "https://example.invalid"
++            retired.append(weakref.ref(self))
++
++        async def __aenter__(self):
++            return self
++
++        async def __aexit__(self, *exc):
++            await self.stop()
++
++    monkeypatch.setattr(
++        "verifiers.v1.interception.pool.InterceptionServer", StartedSlot
++    )
++    pool = ElasticInterceptionPool()
++    for _ in range(3):
++        if startup_healthy:
++            server = await pool._server()
++            server.healthy = False
++            await pool._prune()
++            assert server.stops == 1
++            del server
++        else:
++            with pytest.raises(InterceptionError, match="startup health checks"):
++                await pool._server()
++        assert pool.servers == []
++    gc.collect()
++    assert all(reference() is None for reference in retired)
++    await pool.stop()
++
++
++@pytest.mark.asyncio
++async def test_pool_shutdown_stops_all_members_after_one_cleanup_fails(monkeypatch):
++    pool = ElasticInterceptionPool()
++    first, broken, last = Slot(True), Slot(True), Slot(True)
++
++    async def failed_stop():
++        broken.stops += 1
++        raise RuntimeError("cleanup failed")
++
++    monkeypatch.setattr(broken, "stop", failed_stop)
++    pool.servers = [first, broken, last]
++    with pytest.raises(RuntimeError, match="cleanup failed"):
++        await pool.stop()
++    assert [server.stops for server in (first, broken, last)] == [1, 1, 1]
++    assert pool.servers == []
++
++
++@pytest.mark.asyncio
++async def test_cancelled_prune_keeps_members_owned_until_shutdown(monkeypatch):
++    pool = ElasticInterceptionPool()
++    first, second = Slot(False), Slot(False)
++    pool.servers = [first, second]
++    stopping = asyncio.Event()
++    finish = asyncio.Event()
++
++    async def blocked_stop():
++        first.stops += 1
++        stopping.set()
++        await finish.wait()
++
++    monkeypatch.setattr(first, "stop", blocked_stop)
++    pruning = asyncio.create_task(pool._prune())
++    await asyncio.wait_for(stopping.wait(), 1)
++    pruning.cancel()
++    with pytest.raises(asyncio.CancelledError):
++        await pruning
++    assert pool.servers == [first, second]
++    assert second.stops == 0
++    finish.set()
++    await pool.stop()
++    assert [first.stops, second.stops] == [2, 1]
++    assert pool.servers == []
+diff --git a/tests/unit/interception/test_server.py b/tests/unit/interception/test_server.py
+index 30fc4c16b..28802590f 100644
+--- a/tests/unit/interception/test_server.py
++++ b/tests/unit/interception/test_server.py
+@@ -1,11 +1,14 @@
++import asyncio
+ import logging
+ from contextlib import asynccontextmanager
+ from types import SimpleNamespace
++from unittest.mock import AsyncMock
+ 
+ import httpx
+ import pytest
+ 
+ from verifiers.v1.errors import InterceptionError, TunnelError
++from verifiers.v1.interception import server as server_module
+ from verifiers.v1.interception.server import InterceptionServer
+ 
+ 
+@@ -16,11 +19,15 @@ class FakeTunnel:
+ 
+     def __init__(self):
+         self.exposures = 0
++        self.closed = False
+ 
+     @asynccontextmanager
+     async def expose(self, port):
+         self.exposures += 1
+-        yield f"http://localhost:{port}"
++        try:
++            yield f"http://localhost:{port}"
++        finally:
++            self.closed = True
+ 
+ 
+ async def test_local_and_public_health_probes_report_server_and_tunnel(caplog):
+@@ -105,6 +112,9 @@ async def test_bad_health_probes_return_false():
+ 
+ async def test_failed_startup_probe_rejects_registration_before_mutation(monkeypatch):
+     server = InterceptionServer()
++    server.tunnel = FakeTunnel()
++    watch = AsyncMock()
++    monkeypatch.setattr(server, "_watch_health", watch)
+ 
+     async def failed_probe(scope, base_url):
+         return False
+@@ -121,6 +131,114 @@ async def test_failed_startup_probe_rejects_registration_before_mutation(monkeyp
+                 pytest.fail("unhealthy slot acquired")
+     assert session.client is None
+     assert server.sessions == {}
++    watch.assert_not_called()
++
++
++@pytest.fixture
++def monitored_server(monkeypatch):
++    server = InterceptionServer()
++    server.tunnel = FakeTunnel()
++    monkeypatch.setattr(server_module, "HEALTH_CHECK_INTERVAL_SECONDS", 0)
++    checks = asyncio.Queue()
++    completed = asyncio.Queue()
++    startup = True
++    public_healthy = True
++
++    async def probe(scope, base_url):
++        nonlocal startup, public_healthy
++        if startup:
++            if scope == "public":
++                startup = False
++            return True
++        if scope == "local":
++            local_healthy, public_healthy = await checks.get()
++            return local_healthy
++        completed.put_nowait(None)
++        return public_healthy
++
++    async def check(local_healthy=True, public_healthy=True):
++        checks.put_nowait((local_healthy, public_healthy))
++        await completed.get()
++
++    monkeypatch.setattr(server, "_probe_health", probe)
++    return server, check
++
++
++async def test_transient_health_failure_resets_consecutive_failures(monitored_server):
++    server, check = monitored_server
++    async with server:
++        await check(public_healthy=False)
++        assert server.healthy
++        await check()
++        await check(public_healthy=False)
++        assert server.healthy
++        await check()
++        assert server.healthy
++
++
++async def test_persistent_public_health_failure_quarantines_without_releasing(
++    monitored_server, monkeypatch
++):
++    server, check = monitored_server
++    monkeypatch.setattr(server, "_client", lambda config: object())
++    session = FakeSession()
++    async with server:
++        async with server.acquire(session):
++            await check(public_healthy=False)
++            assert server.healthy
++            await check(public_healthy=False)
++            assert not server.healthy
++            assert server._health_watch is not None
++            assert server._health_watch.done()
++            assert not session.released
++            assert session.error is None
++            assert server.load == 1
++            assert not server.tunnel.closed
++            replacement = FakeSession("replacement")
++            with pytest.raises(InterceptionError, match="unavailable"):
++                server.register(replacement)
++            assert replacement.client is None
++            async with httpx.AsyncClient() as client:
++                response = await client.get(
++                    f"http://127.0.0.1:{server.port}/__interception/healthz"
++                )
++            assert response.status_code == 503
++            assert response.json()["server_id"] == server.server_id
++        assert session.released
++
++
++async def test_stop_cancels_and_awaits_health_watch(monkeypatch):
++    server = InterceptionServer()
++    server.tunnel = FakeTunnel()
++    monkeypatch.setattr(server, "_probe_health", AsyncMock(return_value=True))
++    started = asyncio.Event()
++    cancelled = asyncio.Event()
++
++    async def watch():
++        started.set()
++        try:
++            await asyncio.Event().wait()
++        finally:
++            cancelled.set()
++
++    monkeypatch.setattr(server, "_watch_health", watch)
++    async with server:
++        await started.wait()
++        assert server._health_watch is not None
++        task = server._health_watch
++    assert cancelled.is_set()
++    assert task.cancelled()
++    assert server.tunnel.closed
++
++
++async def test_local_server_does_not_start_health_watch(monkeypatch):
++    server = InterceptionServer()
++    monkeypatch.setattr(server, "_probe_health", AsyncMock(return_value=True))
++    watch = AsyncMock()
++    monkeypatch.setattr(server, "_watch_health", watch)
++    async with server:
++        assert server.healthy
++    watch.assert_not_called()
+ 
+ 
+ async def test_tunnel_gone_fails_session_and_direct_reacquisition(monkeypatch):
+diff --git a/verifiers/v1/interception/pool.py b/verifiers/v1/interception/pool.py
+index 9537ed61e..1745e7d57 100644
+--- a/verifiers/v1/interception/pool.py
++++ b/verifiers/v1/interception/pool.py
+@@ -16,7 +16,7 @@ import asyncio
+ import contextlib
+ import logging
+ from collections.abc import AsyncIterator
+-from contextlib import asynccontextmanager
++from contextlib import AsyncExitStack, asynccontextmanager
+ 
+ from verifiers.v1.configs.interception import (
+     ElasticInterceptionPoolConfig,
+@@ -82,6 +82,7 @@ class ElasticInterceptionPool(Interception):
+         self.requires_tunnel = requires_tunnel
+         self.state_service_secrets = state_service_secrets
+         self.servers: list[InterceptionServer] = []
++        self.stack.push_async_callback(self._stop_servers)
+         self._lock = asyncio.Lock()
+         self._warm_task: asyncio.Task[InterceptionServer] | None = None
+ 
+@@ -95,12 +96,17 @@ class ElasticInterceptionPool(Interception):
+                 await self._warm_task
+         await super().stop()
+ 
++    async def _stop_servers(self) -> None:
++        async with AsyncExitStack() as stack:
++            for server in self.servers:
++                stack.push_async_callback(server.stop)
++            self.servers.clear()
++
+     async def _prune(self) -> None:
+-        """Remove terminal members and release their server/tunnel resources."""
+-        dead = [server for server in self.servers if not server.healthy]
+-        if not dead:
+-            return
+-        self.servers[:] = [server for server in self.servers if server.healthy]
++        """Retire unavailable members only after their existing rollouts have drained."""
++        dead = [
++            server for server in self.servers if not server.healthy and server.load == 0
++        ]
+         for server in dead:
+             try:
+                 await server.stop()
+@@ -108,11 +114,13 @@ class ElasticInterceptionPool(Interception):
+                 logger.warning(
+                     "interception pool: dead server cleanup failed", exc_info=True
+                 )
++            else:
++                self.servers.remove(server)
+ 
+     async def _server(self) -> InterceptionServer:
+         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
+-        one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
+-        the warm task runs before they reach this path."""
++        one (its own tunnel, owned until retirement or pool shutdown). Acquires hold
++        `_lock`; the warm task runs before they reach this path."""
+         await self._prune()
+         for server in self.servers:
+             if server.healthy and server.load < self.config.multiplex:
+@@ -123,12 +131,12 @@ class ElasticInterceptionPool(Interception):
+             self.requires_tunnel,
+             self.state_service_secrets,
+         )
+-        await self.stack.enter_async_context(server)
++        await server.__aenter__()
++        self.servers.append(server)
+         if not server.healthy or not server.base_url:
+-            with contextlib.suppress(Exception):
+-                await server.stop()
++            server.healthy = False
++            await self._prune()
+             raise InterceptionError("interception server failed startup health checks")
+-        self.servers.append(server)
+         logger.info(
+             "interception pool: %d server(s), multiplex=%d",
+             len(self.servers),
+@@ -150,3 +158,5 @@ class ElasticInterceptionPool(Interception):
+             yield server.base_url, model_secret, state_secret
+         finally:
+             server.unregister(model_secret, state_secret)
++            async with self._lock:
++                await self._prune()
+diff --git a/verifiers/v1/interception/server.py b/verifiers/v1/interception/server.py
+index 2f922c8a8..e324cebf7 100644
+--- a/verifiers/v1/interception/server.py
++++ b/verifiers/v1/interception/server.py
+@@ -76,6 +76,8 @@ logger = logging.getLogger(__name__)
+ # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
+ # context window are the real limits, this is just a host-OOM backstop.
+ MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
++HEALTH_CHECK_INTERVAL_SECONDS = 20
++HEALTH_CHECK_FAILURE_THRESHOLD = 2
+ KEEPALIVE_INTERVAL_SECONDS = 3
+ # A streamed turn commits its SSE stream only after this long: a result within it keeps
+ # its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept alive
+@@ -350,6 +352,7 @@ class InterceptionServer(Interception):
+         self.port = 0
+         self.base_url = ""  # set by `start`
+         self.runner: web.AppRunner | None = None
++        self._health_watch: asyncio.Task[None] | None = None
+ 
+     @property
+     def load(self) -> int:
+@@ -515,6 +518,42 @@ class InterceptionServer(Interception):
+         )
+         return matched
+ 
++    async def _watch_health(self) -> None:
++        """Quarantine a persistently unreachable URL without interrupting its rollouts."""
++        failures = 0
++        while self.healthy:
++            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
++            if not self.healthy:
++                return
++            local_healthy = await self._probe_health(
++                "local", f"http://127.0.0.1:{self.port}"
++            )
++            public_healthy = await self._probe_health("public", self.base_url)
++            # Terminal tunnel loss may have arrived while either probe was pending.
++            if not self.healthy:
++                return
++            failures = 0 if local_healthy and public_healthy else failures + 1
++            if failures >= HEALTH_CHECK_FAILURE_THRESHOLD:
++                self.healthy = False
++                logger.warning(
++                    "interception quarantined: url=%s server_id=%s tunnel_id=%s "
++                    "local_healthy=%s public_healthy=%s failures=%d",
++                    safe_url(self.base_url),
++                    self.server_id,
++                    self.tunnel_id,
++                    local_healthy,
++                    public_healthy,
++                    failures,
++                )
++                return
++
++    async def _stop_health_watch(self) -> None:
++        watch = self._health_watch
++        if watch is not None and watch is not asyncio.current_task():
++            watch.cancel()
++            with contextlib.suppress(asyncio.CancelledError):
++                await watch
++
+     def _handler_for(self, dialect: Dialect):
+         """Bind a route's dialect to the request handler — the route the SDK posts to is what
+         selects the wire format (see `dialects.DIALECTS`)."""
+@@ -590,6 +629,9 @@ class InterceptionServer(Interception):
+             public_healthy = await self._probe_health("public", self.base_url)
+         # Keep a concurrent terminal tunnel-loss verdict; startup must not resurrect it.
+         self.healthy = self.healthy and local_healthy and public_healthy
++        if self.tunnel is not None and self.healthy:
++            self._health_watch = asyncio.create_task(self._watch_health())
++            self.stack.push_async_callback(self._stop_health_watch)
+ 
+     def _fail(
+         self, session: RolloutSession, dialect: Dialect, error: RolloutError

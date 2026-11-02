@@ -1,0 +1,91 @@
+{
+  "run": "pzh1apauhzm18onn8pxg96uh",
+  "page": 2,
+  "count": 100,
+  "created_range": [
+    "2026-11-02T10:20:38.686000",
+    "2026-11-02T10:25:48.040000"
+  ],
+  "matches": [
+    {
+      "id": "x6mwi3ipgs4dr539l7nbyrue",
+      "trace_id": "e727091a151f4b22ae39dfc536635e4a",
+      "created_at": "2026-11-02T10:21:17.772000",
+      "status": "TERMINATED",
+      "network": {
+        "generation": 1,
+        "applied_generation": 1,
+        "applied": true,
+        "tunnel_ids": [
+          "t-0-eed351ea43f3af7a"
+        ],
+        "policy_sha256": "b0eb4aa20b511d85beb78a22bcb729dde23e5906f47e74f8138a654fba8b71eb",
+        "allowlist_count": 1
+      }
+    },
+    {
+      "id": "b4ra8usp9dladvx1vk42nyuw",
+      "trace_id": "d608a6daeb3c451ca8195364c58b1383",
+      "created_at": "2026-11-02T10:21:16.445000",
+      "status": "TERMINATED",
+      "network": {
+        "generation": 1,
+        "applied_generation": 1,
+        "applied": true,
+        "tunnel_ids": [
+          "t-0-eed351ea43f3af7a"
+        ],
+        "policy_sha256": "b0eb4aa20b511d85beb78a22bcb729dde23e5906f47e74f8138a654fba8b71eb",
+        "allowlist_count": 1
+      }
+    },
+    {
+      "id": "ido1xg0pzwottny3p97j4ri6",
+      "trace_id": "dd391d597711466c9361d56847b6e886",
+      "created_at": "2026-11-02T10:21:02.626000",
+      "status": "TERMINATED",
+      "network": {
+        "generation": 1,
+        "applied_generation": 1,
+        "applied": true,
+        "tunnel_ids": [
+          "t-0-eed351ea43f3af7a"
+        ],
+        "policy_sha256": "b0eb4aa20b511d85beb78a22bcb729dde23e5906f47e74f8138a654fba8b71eb",
+        "allowlist_count": 1
+      }
+    },
+    {
+      "id": "r56yzxkke1hx46rqo03zlbbq",
+      "trace_id": "ddf9b3c2ddbc44958e93b3eb64cc34ed",
+      "created_at": "2026-11-02T10:20:58.703000",
+      "status": "TERMINATED",
+      "network": {
+        "generation": 1,
+        "applied_generation": 1,
+        "applied": true,
+        "tunnel_ids": [
+          "t-0-eed351ea43f3af7a"
+        ],
+        "policy_sha256": "b0eb4aa20b511d85beb78a22bcb729dde23e5906f47e74f8138a654fba8b71eb",
+        "allowlist_count": 1
+      }
+    },
+    {
+      "id": "dn9e6mc3p6wnovk9ffyuvugg",
+      "trace_id": "492d2588afe9465ba897737c5d74def0",
+      "created_at": "2026-11-02T10:20:55.974000",
+      "status": "TERMINATED",
+      "network": {
+        "generation": 1,
+        "applied_generation": 1,
+        "applied": true,
+        "tunnel_ids": [
+          "t-0-eed351ea43f3af7a"
+        ],
+        "policy_sha256": "b0eb4aa20b511d85beb78a22bcb729dde23e5906f47e74f8138a654fba8b71eb",
+        "allowlist_count": 1
+      }
+    }
+  ]
+}
