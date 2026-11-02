@@ -57,7 +57,15 @@ def test_pd_decode_requests_skip_retained_row_caps():
     connector = AuxOutputSchedulerConnector(_kv_cache_manager(), kv_connector=object())
 
     def request(kv_transfer_params):
-        return SimpleNamespace(request_id="r", block_hashes=[], num_tokens=10, kv_transfer_params=kv_transfer_params)
+        return SimpleNamespace(
+            request_id="r",
+            block_hashes=[],
+            num_tokens=10,
+            num_output_tokens=0,
+            kv_transfer_params=kv_transfer_params,
+            # Rows from token 0 on: no load is free of the retained-rows check.
+            sampling_params=SimpleNamespace(routed_experts_prompt_start=0),
+        )
 
     # A decode instance has no rows for a remotely prefilled prompt: the NIXL load must not be zeroed.
     decode = request({"do_remote_prefill": True, "remote_engine_id": "p0"})

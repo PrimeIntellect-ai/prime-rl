@@ -493,7 +493,15 @@ def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
 
     Multi-turn reloads stay below the next turn's ``routed_experts_prompt_start`` and keep their
     hits; offloaded prefixes past it (first turns, shared prompts) are recomputed.
+
+    vLLM 0.33 (vllm-project/vllm#62591) also admits an external hit only when this instance still retains the
+    routing rows of every block in it, and it retains rows for at most twice the GPU KV cache's blocks. A CPU
+    offload tier holds far more than that, so every multi-turn reload of an evicted prefix was refused and
+    recomputed. A load within the clamp needs none of its rows, so ``cap_external_hit`` admits it whole; the
+    rest still goes through upstream's check. Blocks loaded this way carry no rows, which the local prefix-hit
+    cut (`monkey_patch_routed_experts_cut_loaded_prefix_hits`) keeps later requests from reading.
     """
+    from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
     from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
     from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import OffloadingConnector
 
@@ -530,9 +538,18 @@ def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
         load_spec.tail_key_boundaries = ()
         return limit, load_async
 
+    original_cap_external_hit = AuxOutputSchedulerConnector.cap_external_hit
+
+    def cap_external_hit(self, request, num_local, num_external):
+        limit = _routed_experts_load_limit(request, num_local, self._block_size)
+        if limit is not None and num_external <= limit:
+            return num_external
+        return original_cap_external_hit(self, request, num_local, num_external)
+
     _max_loadable_tokens._prime_rl_routed_experts_clamp = True
     OffloadingConnector._max_loadable_tokens = _max_loadable_tokens
     MooncakeStoreConnector.get_num_new_matched_tokens = _get_num_new_matched_tokens
+    AuxOutputSchedulerConnector.cap_external_hit = cap_external_hit
 
 
 def _track_externally_loaded_blocks(kv_cache_manager, gid: int, block_size: int) -> set[int]:
