@@ -20,20 +20,4 @@ The end-to-end numbers come from the DSv4 stack A/B campaign on the 6-layer perf
 | main | 14.557 | 8.227 | - | - | 29937 | 109.17 |
 | l2 (this change) | 14.433 | 8.120 | -0.85% | -1.30% | 30336 | 108.02 |
 
-The campaign arm also carries the earlier optimization levels of this series, so the arm-minus-main delta is cumulative: -0.88% at 4 layers and -0.85% at 6 layers. The chain marginal against the previous arm is about -0.7% at both depths, and the campaign's same-code repeat floors are 0.15 to 0.25%, so the delta is 4 to 6x the floor. The 43-layer projection puts a step at 91.53 s versus main's 93.38 s, about -1.5%. Peak memory falls 1.48 GiB at 4 layers and 0.94 GiB at 6 (the fused kernels drop the bf16 intermediate). H200 compile bar: identical Dynamo counts and zero graph breaks in both arms, and the cudnn arm compiles about 140 fewer Triton cubins because Inductor no longer generates the pooling kernels. On B300 the same delta is -1.30 percent at 6 layers with the 43-layer projection at 50.1 s versus main's 51.3 s, and the SM100-native kernels hold their H200-class win at the campaign's one-document-per-row mix without threshold retuning, with the same clean compile bar (zero recompiles, zero graph breaks, cubins at or below the main arm, DeepGEMM variants and TileLang cache files unchanged). In the many-docs regime the doc-count dispatch adds one extra graph variant per compressor layer type, in step 1 only.
-
-Numerics: against an fp64 reference on the same bf16 inputs, the cuDNN entries are one bf16 rounding of vLLM-style fp32 pooling (relative Frobenius 1.66e-3, 99.98% bitwise to `round_bf16` of it) and every gradient at 1.66e-3. Today's Inductor path carries a bf16 intermediate between its two kernels and measures 2.7e-3 to 3.6e-3 on entries (up to 6e-3 on CSA gate gradients), eager torch 3.6e-3 to 9.2e-3. The change is not bitwise against the Inductor path, so a full-model forward logprob A/B ran (32768 tokens per GPU, 8 ranks): median |dlogprob| 0.0013, p90 0.128, mean 0.044, mean logprob -0.8540 vs -0.8538, at the known floor for non-bitwise changes (a torch-vs-torch rerun is bitwise identical), a step toward vLLM's reference numerics rather than away from it.
-
-Scope limit: cuDNN's CSA rate-4 pooling degrades with document count (crossover at about 275 documents per row), so the branch keeps the torch pooling above the dispatch threshold, and the doc-count branch adds the one extra Dynamo graph variant noted above.
-
-### Verification
-
-- `uv run --no-sync pytest tests/unit/train/models/test_deepseek_v4_kernels.py -k compressor` on H200: the fp64-reference test (csa, indexer, hca, eager and compiled, bf16 position bias) plus the packed/unpacked, per-document parity and backward tests.
-- Op bench: `bench_ops.py` with the pool case sweep at 2 to 2048 docs per row.
-- Proxy A/B: `benchmarks/scripts/dsv4-perf-proxy/run_arm.sh`, stack campaign arms l2-L4-B and l2-L6-B against main-L4-B and main-L6-B.
-- Logprob A/B: `prime_rl_logprob_ab.py` dumps and `compare`, forward-only, `--tokens-per-gpu 32768`.
-
-### Commits
-
-2611f3037 feat(deepseek-v4): pool compressor windows with cuDNN's fused CSA/HCA compressor
-4bcc9e310 feat(deepseek-v4): keep the torch compressor pooling for rows with many documents
+The arm-minus-main delta is cumulative through the stack: -0.85% on H200 and -1.30% on B300 at 6 layers, with the chain marginal against the previous arm at about -0.7% and the 43-layer projection at about -1.5% (91.5 versus 93.4 s on H200, 50.1 versus 51.3 s on B300). Peak memory falls about 1 GiB and the compile bar is clean on both hardware generations (identical Dynamo counts, zero graph breaks, fewer Triton cubins since Inductor no longer generates the pooling kernels). Numerics: the cuDNN pooling is one bf16 rounding of vLLM-style fp32 pooling, closer to the fp64 reference than today's bf16-intermediate Inductor path, with the full-model logprob A/B at the known floor for non-bitwise changes. One scope limit stands: cuDNN's rate-4 pooling degrades with document count (crossover at about 275 documents per row), so the torch pooling stays above the dispatch threshold, at the cost of one extra step-1 graph variant per compressor layer type.
