@@ -164,8 +164,8 @@ overrides = [
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = "==4.8.0" },
     { name = "openenv-core" },
-    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c" },
-    { name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c" },
+    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=b384a301d3c1b97ab62090bc814f6760fdab4a6d" },
+    { name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=b384a301d3c1b97ab62090bc814f6760fdab4a6d" },
     { name = "tilelang", specifier = "==0.1.12" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu130" },
@@ -5409,7 +5409,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c" },
+    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=b384a301d3c1b97ab62090bc814f6760fdab4a6d" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5484,7 +5484,7 @@ requires-dist = [
 [[package]]
 name = "prime-runs"
 version = "0.1.5"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c#d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=b384a301d3c1b97ab62090bc814f6760fdab4a6d#b384a301d3c1b97ab62090bc814f6760fdab4a6d" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
@@ -5518,7 +5518,7 @@ wheels = [
 [[package]]
 name = "prime-traces"
 version = "0.0.11"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c#d6ab9cefaa47ef56bb1945d6a99cb690c67d0a7c" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=b384a301d3c1b97ab62090bc814f6760fdab4a6d#b384a301d3c1b97ab62090bc814f6760fdab4a6d" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
@@ -8034,7 +8034,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-runs", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" },
+    { name = "prime-runs", specifier = ">=0.1.5" },
     { name = "prime-sandboxes", specifier = ">=0.5.1" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
