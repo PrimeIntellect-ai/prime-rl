@@ -351,6 +351,13 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
+A resume can add, remove or change train and eval sources. The orchestrator matches sources by name (`name`, else the env id), so renaming a source counts as removing it and adding a new one:
+
+- A new train source starts with a fresh curriculum. The checkpointed curriculum of a removed train source is dropped.
+- When a source's taskset gains or loses tasks, `StandardSampler` keeps the sampling counts of the remaining tasks. New tasks start at the lowest remaining count, so they join the current pass. `DifficultyPoolSampler` drops the rewards of removed tasks, and new tasks start unseen. A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task.
+- A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
+- Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
+
 ### Pausing a Live Run
 
 With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:

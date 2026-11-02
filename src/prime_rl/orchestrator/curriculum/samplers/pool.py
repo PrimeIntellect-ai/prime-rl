@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum.samplers.base import TaskSampler
+from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
@@ -84,8 +85,12 @@ class DifficultyPoolSampler(TaskSampler):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore rewards of tasks still in the taskset; new tasks start unseen."""
         self.rng.setstate(state_dict["rng"])
-        self.task_rewards = dict(state_dict["task_rewards"])
+        task_rewards = state_dict["task_rewards"]
+        self.task_rewards = {key: reward for key, reward in task_rewards.items() if key in self.tasks_by_key}
+        if removed := len(task_rewards) - len(self.task_rewards):
+            get_logger().info(f"Dropped the rewards of {removed} task(s) no longer in the taskset")
 
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.pools, 0)
