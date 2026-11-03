@@ -165,6 +165,13 @@ class FileSystemWeightUpdateWorker(Worker):
         return True
 
     def update_weights_from_path(self, weight_path: str) -> None:
+        gc.disable()
+        try:
+            self._update_weights_from_path(weight_path)
+        finally:
+            gc.enable()
+
+    def _update_weights_from_path(self, weight_path: str) -> None:
         """Move to the broadcast step in ``weight_path`` (a full HF checkpoint and/or a sparse delta).
 
         The TP group's workers run collectives while they verify, so they must take the same steps: TP rank 0
