@@ -353,6 +353,18 @@ class FileSystemWeightUpdateWorker(Worker):
         device = next(model.parameters()).device
         allocator = torch.cuda.memory_stats(device)
         gc_before = [stat["collections"] for stat in gc.get_stats()]
+        import pynvml
+
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(torch.cuda.current_device())
+
+        def clocks():
+            return (
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM),
+                pynvml.nvmlDeviceGetPerformanceState(handle),
+            )
+
+        clocks_before = clocks()
         cpu_before = time.process_time()
         events = [torch.cuda.Event(enable_timing=True)]
         events[0].record()
@@ -367,6 +379,7 @@ class FileSystemWeightUpdateWorker(Worker):
             phases[index % 3] += begin.elapsed_time(end) / 1000
         gc_runs = [stat["collections"] - before for stat, before in zip(gc.get_stats(), gc_before)]
         cpu_time = time.process_time() - cpu_before
+        clocks_after = clocks()
         allocated = {
             key: torch.cuda.memory_stats(device).get(key, 0) - allocator.get(key, 0)
             for key in ("num_device_alloc", "num_device_free", "num_alloc_retries")
@@ -376,7 +389,7 @@ class FileSystemWeightUpdateWorker(Worker):
             f"{len(delta)} chunks, read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s "
             f"(GPU: copy {phases[0]:.3f}s, decode {phases[1]:.3f}s, patch {phases[2]:.3f}s; host loop {host_time:.3f}s; "
             f"cudaMalloc {allocated['num_device_alloc']}, cudaFree {allocated['num_device_free']}, "
-            f"allocator retries {allocated['num_alloc_retries']}; gc runs {gc_runs}; process CPU {cpu_time:.3f}s)"
+            f"allocator retries {allocated['num_alloc_retries']}; gc runs {gc_runs}; process CPU {cpu_time:.3f}s; SM MHz/P-state before {clocks_before} after {clocks_after})"
         )
         return checksums
 
