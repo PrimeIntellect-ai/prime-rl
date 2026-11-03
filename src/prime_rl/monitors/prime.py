@@ -199,9 +199,9 @@ class PrimeMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        # A queue put that can block briefly under backpressure - off the loop. The SDK
-        # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
-        await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
+        # A queue put that never blocks. The SDK stamps `_timestamp` on every row, so
+        # step=None rows keep a time anchor.
+        self.run.log_metrics(metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Every episode ships whole as it arrives (the ``all`` subset), errored and
@@ -211,8 +211,8 @@ class PrimeMonitor(Monitor):
         if subset != "all" or not episodes:
             return
         if self.run is not None:
-            # A queue put that can block briefly under backpressure - off the loop.
-            await asyncio.to_thread(self.run.log_episodes, episodes)
+            # A queue put that never blocks.
+            self.run.log_episodes(episodes)
             return
         by_env: dict[str, list[vf.Episode]] = {}
         for episode in episodes:
@@ -221,7 +221,7 @@ class PrimeMonitor(Monitor):
         for env_name, batch in by_env.items():
             run = await self.run_for(env_name, step)
             if run is not None:
-                await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
+                run.log_episodes(batch)
 
     async def finalize(self, paused: bool = False) -> None:
         # An epoch the run did not finish leaves its evaluation open: close it as cancelled.

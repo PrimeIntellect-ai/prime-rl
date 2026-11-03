@@ -78,13 +78,16 @@ class ChunkedJsonl:
         self.file = open(chunk_path(directory, self.number), "ab")
         self.size = self.file.tell()
 
-    def append(self, line: bytes) -> tuple[int, int]:
-        """Write one line; returns ``(chunk, offset)``, the address a reader seeks to."""
-        if self.size and self.size + len(line) > self.max_bytes:
+    def append(self, *parts: bytes) -> tuple[int, int]:
+        """Write one line, given in parts so a long line is never copied to add its
+        newline; returns ``(chunk, offset)``, the address a reader seeks to."""
+        size = sum(map(len, parts))
+        if self.size and self.size + size > self.max_bytes:
             self._roll()
         offset = self.size
-        self.file.write(line)
-        self.size += len(line)
+        for part in parts:
+            self.file.write(part)
+        self.size += size
         return self.number, offset
 
     def flush(self) -> None:
