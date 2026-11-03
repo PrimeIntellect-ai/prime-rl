@@ -5357,7 +5357,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.5" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.6" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5431,16 +5431,16 @@ requires-dist = [
 
 [[package]]
 name = "prime-runs"
-version = "0.1.5"
+version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
     { name = "prime-traces" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/85/78a77c31ab994605b433f9594b2dedfdd92c6e0e0c015db3a3bdcd229cad/prime_runs-0.1.5.tar.gz", hash = "sha256:feddd70d3deaf83f242747e8b845d00ef30b15a6cdc3dcc78eaa299a51d9a57b", size = 67663, upload-time = "2026-10-29T17:56:49.718Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/76/a6810b874ed23b16f5210feb50c034595bd199a21a6db2619eef968c487b/prime_runs-0.1.6.tar.gz", hash = "sha256:60c2c656c9c076bd8995a3943b060fdaa893a248f9f627d5f2b26040821e829e", size = 68575, upload-time = "2026-11-02T23:44:48.27Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/a3/43c9773f431f0d7a9f3af6b4cf2c69a3ba9af7abf189f29cd2a493419ab5/prime_runs-0.1.5-py3-none-any.whl", hash = "sha256:f2bf5099a942eb254f98ffaf5c53f3fbc91b3b5a4a655914e99a4f06e5ed3ead", size = 46374, upload-time = "2026-10-29T17:56:48.14Z" },
+    { url = "https://files.pythonhosted.org/packages/14/22/8745496681a8ec9884f049acaf848642adea0fb529a817d55a1d05a4eebf/prime_runs-0.1.6-py3-none-any.whl", hash = "sha256:78934a05fa80c0abf3ccaee4b37bfe89c822a72b10231f9e667ce37586a1cbf6", size = 46844, upload-time = "2026-11-02T23:44:46.867Z" },
 ]
 
 [package.optional-dependencies]
@@ -5469,16 +5469,16 @@ wheels = [
 
 [[package]]
 name = "prime-traces"
-version = "0.0.11"
+version = "0.0.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e7/6c/0c1be7958d7e98b7168bcc48ce51c2743caae2daff92cab717c6b83cb331/prime_traces-0.0.11.tar.gz", hash = "sha256:a5933843e5ed2bf18279225f03539d6a85adeb86f9f906df4c8eff819f79b874", size = 60137, upload-time = "2026-10-29T17:56:49.936Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/50/de56a11d243fddb0b7c9feb47e512681d5a1a499ef7c42ba33bbb34e3f86/prime_traces-0.0.12.tar.gz", hash = "sha256:bc34ab96fd7bb9bed3ab39f28546fa936bdebf2e900523c8aee2a4be6ae3ea37", size = 61727, upload-time = "2026-11-02T23:44:51.943Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/a4/82298907c004527930892f096fdb0f539434666091e898492caae65b17a4/prime_traces-0.0.11-py3-none-any.whl", hash = "sha256:eefaf69409bbf639ca4972b7248eee0dcd31b17b204aefcc7fc20204fa6b234f", size = 43734, upload-time = "2026-10-29T17:56:48.691Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/35/19558b051a460662db16e630492d6aa70ce714afa2421c3d11f4883b6f01/prime_traces-0.0.12-py3-none-any.whl", hash = "sha256:9f6bba4fb0f6fcf09662475bdf86e81f42df94cce27409ca7acba3b7d1e90025", size = 44478, upload-time = "2026-11-02T23:44:50.652Z" },
 ]
 
 [[package]]
