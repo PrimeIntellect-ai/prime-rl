@@ -2,7 +2,9 @@ import pytest
 import torch
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
+    build_grouped_layout,
     grouped_per_block_cast_to_fp8_triton,
+    grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
     per_token_cast_to_fp8_tp_triton,
@@ -96,3 +98,38 @@ def test_block_cast_matches_vllm_online_quant(rows, cols, input_scale, transpose
         assert s[group].shape == ref_s.shape
         assert torch.equal(s[group], ref_s)
         assert torch.equal(q[group].view(torch.uint8), ref_q.view(torch.uint8))
+
+
+def _per_channel_cast_reference(x: torch.Tensor, offs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Every 128-row block of every group cast per column (scale amax / 448), the values K-major within a group."""
+    values, scales = [], []
+    start = 0
+    for end in offs.tolist():
+        blocks = x[start:end].float().view(-1, 128, x.shape[1])
+        amax = blocks.abs().amax(dim=1).clamp_min(1e-10)
+        # A tensor divisor: CUDA divides by a Python scalar as a multiply by its reciprocal, an ulp off at times.
+        scale = amax / torch.full_like(amax, 448.0)
+        quantized = (blocks / scale[:, None, :]).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+        values.append(quantized.reshape(-1, x.shape[1]).T.reshape(-1))
+        scales.append(scale)
+        start = end
+    return torch.cat(values), torch.cat(scales).T
+
+
+@pytest.mark.parametrize("cols", [640, 1280, 2560, 200], ids=["h", "dy_gate_up", "x_routed_dy_down", "ragged"])
+def test_grouped_per_channel_cast_matches_the_reference(cols):
+    """The weight gradient's K-major cast of x and grad_output is *bit-identical* to casting each column of each
+    128-row block on its own."""
+    torch.manual_seed(cols)
+    offs = torch.tensor([256, 256, 640, 1024], dtype=torch.int32, device="cuda")  # an empty group
+    rows = int(offs[-1])
+    _, block_to_group, ks, starts, actual_ms, block_starts = build_grouped_layout(offs, rows)
+    x = (torch.randn(rows, cols, device="cuda") * torch.rand(rows, 1, device="cuda") * 3).to(torch.bfloat16)
+
+    q, s = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
+        x, rows, block_to_group, starts, actual_ms, ks, block_starts, False
+    )
+    ref_q, ref_s = _per_channel_cast_reference(x, offs)
+
+    assert torch.equal(s, ref_s)
+    assert torch.equal(q.view(torch.uint8), ref_q.view(torch.uint8))
