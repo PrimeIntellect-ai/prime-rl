@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -90,9 +91,14 @@ def pretrain_resume_process(
     return run_process(cmd, timeout=TIMEOUT)
 
 
-def trainer_log(run_dir: Path) -> list[str]:
-    with open(run_dir / "logs" / "latest" / "trainer.log") as f:
+def trainer_log(run_dir: Path, attempt: str = "latest") -> list[str]:
+    with open(run_dir / "logs" / attempt / "trainer.log") as f:
         return strip_escape_codes(f.read()).splitlines()
+
+
+def step_losses(lines: list[str]) -> dict[int, float]:
+    matches = (re.search(r"SUCCESS Step (\d+) \|.*? Loss (\d+\.\d+)", line) for line in lines)
+    return {int(match[1]): float(match[2]) for match in matches if match}
 
 
 def test_no_error(pretrain_process: ProcessResult):
@@ -113,3 +119,10 @@ def test_no_error_resume(pretrain_resume_process: ProcessResult):
 
 def test_loss_goes_down_resume(pretrain_resume_process: ProcessResult, run_dir: Path):
     check_loss_goes_down(trainer_log(run_dir))
+
+
+def test_resume_continues_from_the_checkpoint(pretrain_resume_process: ProcessResult, run_dir: Path):
+    """The first resumed step's loss is close to the start run's last one, not back at the from-scratch loss."""
+    last = step_losses(trainer_log(run_dir, "attempt_1"))[20]
+    first = step_losses(trainer_log(run_dir))[21]
+    assert abs(first - last) < 0.1 * last, f"Loss jumped from {last} at step 20 to {first} at step 21"

@@ -46,7 +46,11 @@ def test_every_epoch_reads_every_window_once_in_a_new_order(folders: list[Path])
         # The windows of an epoch tile the pool from one of them on.
         tilings = [sorted((start - first) % NUM_TOKENS for start in starts) for first in starts]
         assert list(range(0, num_windows * seq_len, seq_len)) in tilings
-    assert len({tuple(starts) for starts in epoch_starts}) == 3
+    # Shuffled: few consecutive windows are neighbors in the pool.
+    for starts in epoch_starts:
+        assert sum((b - a) % NUM_TOKENS == seq_len for a, b in zip(starts, starts[1:])) < num_windows // 2
+    # The window boundaries move between epochs.
+    assert len({frozenset(starts) for starts in epoch_starts}) == 3
 
     assert take(TokenDataset(TokenShards(folders, seed=0), seq_len), num_windows) == epochs[0]
     assert take(TokenDataset(TokenShards(folders, seed=1), seq_len), num_windows) != epochs[0]
