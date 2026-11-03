@@ -162,6 +162,8 @@ def test_probed_permutations_split_into_row_and_column_tables():
 @pytest.mark.gpu
 @pytest.mark.parametrize("slot", ["w13", "w2"])
 def test_trtllm_mxfp8_moe_layout_tables_match_vllm(slot):
+    # fused_moe first: importing flashinfer_utils on its own hits a circular import in vLLM
+    import vllm.model_executor.layers.fused_moe  # noqa: F401
     from vllm.model_executor.layers.quantization.utils.flashinfer_utils import (
         _shuffle_mxfp8_moe_weights,
         swap_w13_to_w31,
