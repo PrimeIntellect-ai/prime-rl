@@ -1,3 +1,4 @@
+import gc
 import itertools
 import json
 import time
@@ -351,6 +352,8 @@ class FileSystemWeightUpdateWorker(Worker):
         model = self._model()
         device = next(model.parameters()).device
         allocator = torch.cuda.memory_stats(device)
+        gc_before = [stat["collections"] for stat in gc.get_stats()]
+        cpu_before = time.process_time()
         events = [torch.cuda.Event(enable_timing=True)]
         events[0].record()
         for entries, gaps, values in delta:
@@ -362,6 +365,8 @@ class FileSystemWeightUpdateWorker(Worker):
         phases = [0.0, 0.0, 0.0]
         for index, (begin, end) in enumerate(zip(events, events[1:])):
             phases[index % 3] += begin.elapsed_time(end) / 1000
+        gc_runs = [stat["collections"] - before for stat, before in zip(gc.get_stats(), gc_before)]
+        cpu_time = time.process_time() - cpu_before
         allocated = {
             key: torch.cuda.memory_stats(device).get(key, 0) - allocator.get(key, 0)
             for key in ("num_device_alloc", "num_device_free", "num_alloc_retries")
@@ -371,7 +376,7 @@ class FileSystemWeightUpdateWorker(Worker):
             f"{len(delta)} chunks, read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s "
             f"(GPU: copy {phases[0]:.3f}s, decode {phases[1]:.3f}s, patch {phases[2]:.3f}s; host loop {host_time:.3f}s; "
             f"cudaMalloc {allocated['num_device_alloc']}, cudaFree {allocated['num_device_free']}, "
-            f"allocator retries {allocated['num_alloc_retries']})"
+            f"allocator retries {allocated['num_alloc_retries']}; gc runs {gc_runs}; process CPU {cpu_time:.3f}s)"
         )
         return checksums
 
