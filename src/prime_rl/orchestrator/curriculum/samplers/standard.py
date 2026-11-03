@@ -41,6 +41,7 @@ class StandardSampler(TaskSampler):
             duplicates = {key for key, count in Counter(self.keys).items() if count > 1}
             if duplicates:
                 raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
+            self.tasks_by_key = dict(zip(self.keys, self.tasks))
             self.counts = dict.fromkeys(self.keys, 0)
             self.start_pass()
         else:
@@ -62,6 +63,9 @@ class StandardSampler(TaskSampler):
         index = self.remaining.popleft()
         self.counts[self.keys[index]] += 1
         return self.tasks[index]
+
+    def find_task(self, key: str) -> vf.Task | None:
+        return None if self.tasks is None else self.tasks_by_key.get(key)
 
     def state_dict(self) -> dict[str, Any]:
         if self.tasks is None:

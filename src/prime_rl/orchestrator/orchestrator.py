@@ -69,6 +69,7 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
+    episode_group_id,
     eval_work,
     intercept_vf_logging,
     max_rollout_staleness,
@@ -380,6 +381,7 @@ class Orchestrator:
             progress=self.progress,
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
+            close_groups=self.train_source.close_groups,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -718,6 +720,7 @@ class Orchestrator:
         send_start_time = time.perf_counter()
         send_batch_time = await self.sender.send(micro_batch_grid)
         wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.train_source.close_groups(episode_group_id(episode) for episode in batch.cohort.episodes)
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
