@@ -37,8 +37,8 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
-HEADER_FIELDS = ("version", "id", "verifiers", "task", "run")
-"""Sent once, when a trace first appears."""
+HEADER_FIELDS = ("version", "id", "attempt", "verifiers", "task", "run")
+"""Sent once, when a trace (or a retry of its agent run) first appears."""
 
 LIST_FIELDS = (
     "nodes",
@@ -93,7 +93,8 @@ def dump(model: BaseModel, **kwargs: Any) -> dict:
 class TraceCursor:
     """What of one trace has been sent."""
 
-    def __init__(self) -> None:
+    def __init__(self, attempt: int) -> None:
+        self.attempt = attempt
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
@@ -179,7 +180,12 @@ class DeltaStreamer:
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
-            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor()
+            if sent is not None and sent.attempt != trace.attempt:
+                # A retried agent run replaces its trace under the same id: the client
+                # drops the abandoned attempt, then the new one opens from scratch.
+                deltas.append((trace.id, {"trace": trace.id, "discard": True}, None))
+                sent = None
+            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor(trace.attempt)
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links: dict[int, list[dict]] = {}
