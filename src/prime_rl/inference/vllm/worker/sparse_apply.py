@@ -12,8 +12,9 @@ import torch
 import triton
 import triton.language as tl
 
-# Fields of one write: first row, rows, first column, columns, param, offset, row stride, column stride
-WRITE_FIELDS = 8
+# Fields of one write: first row, rows, first column, columns, param, offset, row stride, column stride, and where its
+# row and column offset tables start in the maps buffer (-1: the stride applies)
+WRITE_FIELDS = 10
 
 _TL_BITS = {torch.uint8: tl.uint8, torch.int16: tl.int16, torch.int32: tl.int32, torch.int64: tl.int64}
 
@@ -28,6 +29,7 @@ def _sparse_apply_kernel(
     writes_ptr,
     num_cols_ptr,
     param_ptrs_ptr,
+    maps_ptr,
     num_changes,
     num_entries,
     search_steps,
@@ -59,7 +61,7 @@ def _sparse_apply_kernel(
     col = index % num_cols
     total = tl.zeros([BLOCK], dtype=tl.int64)
     for k in tl.static_range(MAX_WRITES):
-        write = writes_ptr + (name * MAX_WRITES + k) * 8
+        write = writes_ptr + (name * MAX_WRITES + k) * 10
         row0 = tl.load(write + 0, mask=valid, other=0)
         rows = tl.load(write + 1, mask=valid, other=0)
         col0 = tl.load(write + 2, mask=valid, other=0)
@@ -71,8 +73,16 @@ def _sparse_apply_kernel(
         offset = tl.load(write + 5, mask=hit, other=0)
         row_stride = tl.load(write + 6, mask=hit, other=0)
         col_stride = tl.load(write + 7, mask=hit, other=0)
+        row_table = tl.load(write + 8, mask=hit, other=-1)
+        col_table = tl.load(write + 9, mask=hit, other=-1)
+        row_part = tl.where(
+            row_table >= 0, tl.load(maps_ptr + row_table + r, mask=hit & (row_table >= 0), other=0), r * row_stride
+        )
+        col_part = tl.where(
+            col_table >= 0, tl.load(maps_ptr + col_table + c, mask=hit & (col_table >= 0), other=0), c * col_stride
+        )
         base = tl.load(param_ptrs_ptr + param, mask=hit, other=0).to(tl.pointer_type(BITS))
-        target = base + (offset + r * row_stride + c * col_stride)
+        target = base + (offset + row_part + col_part)
         old = tl.load(target, mask=hit, other=0)
         new = old + delta
         tl.store(target, new, mask=hit)
@@ -90,12 +100,14 @@ def sparse_apply(
     writes: torch.Tensor,
     num_cols: torch.Tensor,
     param_ptrs: torch.Tensor,
+    maps: torch.Tensor,
     track: bool,
     block: int = 1024,
 ) -> torch.Tensor | None:
     """Apply ``deltas`` (raw-bit differences in one bits dtype) at the checkpoint ``indices`` of consecutive
     entries ending at ``entry_ends`` (entry tensor ids ``entry_names``, -1 for tensors this worker does not hold).
-    ``writes[name]`` are the tensor's writes, ``WRITE_FIELDS`` each, padded with zero-row writes. Returns each
+    ``writes[name]`` are the tensor's writes, ``WRITE_FIELDS`` each, padded with zero-row writes; ``maps`` holds their
+    row and column offset tables. Returns each
     change's checksum contribution when ``track``."""
     num_changes, num_entries = indices.numel(), entry_ends.numel()
     contributions = torch.empty(num_changes if track else 1, dtype=torch.int64, device=indices.device)
@@ -111,6 +123,7 @@ def sparse_apply(
         writes,
         num_cols,
         param_ptrs,
+        maps,
         num_changes,
         num_entries,
         num_entries.bit_length() + 1,
@@ -122,7 +135,7 @@ def sparse_apply(
     return contributions if track else None
 
 
-def warm_up(writes: torch.Tensor, num_cols: torch.Tensor, param_ptrs: torch.Tensor) -> None:
+def warm_up(writes: torch.Tensor, num_cols: torch.Tensor, param_ptrs: torch.Tensor, maps: torch.Tensor) -> None:
     """Compile the kernel for every bits dtype before it runs inside a weight-update pause: one change of a tensor
     this worker does not hold, so nothing is written."""
     device = writes.device
@@ -136,5 +149,6 @@ def warm_up(writes: torch.Tensor, num_cols: torch.Tensor, param_ptrs: torch.Tens
                 writes,
                 num_cols,
                 param_ptrs,
+                maps,
                 track,
             )

@@ -126,10 +126,52 @@ class CheckpointIndexMap:
         self.running: torch.Tensor | None = None
         # The fused kernel's device tables (``fused_tables``)
         self.fused = None
+        # (name, write index) -> (row offsets, column offsets) for writes into a kernel layout that permutes rows or
+        # columns (e.g. swizzled block scales): element (r, c) of the write is at its offset + rows[r] + cols[c], with
+        # the write's stride for a missing table
+        self.maps: dict[tuple[str, int], tuple[torch.Tensor | None, torch.Tensor | None]] = {}
+        self.map_cache = None
         self.fp8: dict[str, str] = {}
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
         self.names = set(self.records)
+
+    def map_write(
+        self, name: str, k: int, row_offsets: torch.Tensor | None = None, col_offsets: torch.Tensor | None = None
+    ) -> None:
+        """Place write ``k`` of ``name`` through offset tables (``maps``) instead of its strides."""
+        _, rows, _, cols, *_ = self.records[name][k]
+        assert row_offsets is None or row_offsets.shape == (rows,)
+        assert col_offsets is None or col_offsets.shape == (cols,)
+        self.maps[(name, k)] = (row_offsets, col_offsets)
+        self.map_cache = self.checksum_plan = self.running = self.fused = None
+
+    def _map_tables(self) -> tuple[torch.Tensor, dict[tuple[str, int], tuple[int, int]]]:
+        """Every offset table in one int64 device buffer, and each mapped write's table starts (-1: none)."""
+        if self.map_cache is None:
+            device = self.params[0].device
+            parts, starts, size = [torch.zeros(1, dtype=torch.int64)], {}, 1
+            for key, tables in self.maps.items():
+                first = []
+                for table in tables:
+                    if table is None:
+                        first.append(-1)
+                        continue
+                    first.append(size)
+                    parts.append(table.to(torch.int64).cpu())
+                    size += table.numel()
+                starts[key] = tuple(first)
+            self.map_cache = (torch.cat(parts).to(device), starts)
+        return self.map_cache
+
+    def _targets(self, name: str, k: int) -> torch.Tensor:
+        """Flat element offsets of write ``k`` of ``name`` in its param, ``[rows, cols]``."""
+        _, rows, _, cols, _, offset, row_stride, col_stride = self.records[name][k]
+        device = self.params[0].device
+        row_table, col_table = self.maps.get((name, k), (None, None))
+        row_part = row_table.to(device) if row_table is not None else torch.arange(rows, device=device) * row_stride
+        col_part = col_table.to(device) if col_table is not None else torch.arange(cols, device=device) * col_stride
+        return offset + row_part[:, None] + col_part[None, :]
 
     def checksums(self, full: bool = False) -> tuple[list[str], torch.Tensor, torch.Tensor]:
         """``held_checksums``, from the running sums ``apply_delta`` keeps unless ``full`` or nothing has
@@ -149,7 +191,7 @@ class CheckpointIndexMap:
         their checkpoint positions: the names, their sums, and how many elements of each this worker holds
         (fewer than the tensor's for TP slices, more workers than one for replicated KV heads). A full pass over
         the params; it also resets the running sums ``apply_delta`` updates."""
-        names, held, row_ranges, other_writes, _ = self._checksum_plan()
+        names, held, row_ranges, other_writes, _, mapped = self._checksum_plan()
         totals = torch.zeros(len(names), dtype=torch.int64, device=held.device)
         for index, (starts, ends, ids, num_cols, firsts) in row_ranges.items():
             bits = as_bits(self.params[index].data)
@@ -177,6 +219,14 @@ class CheckpointIndexMap:
                 values = flat[offsets[part, None, None] + row * row_stride + col * col_stride].long()
                 weights = firsts[part, None, None] + num_cols[part, None, None] * row + col
                 totals.index_add_(0, ids[part], (values * weights).sum((1, 2)))
+        for name_id, name, k in mapped:
+            row0, rows, col0, cols, index, *_ = self.records[name][k]
+            values = as_bits(self.params[index].data).view(-1)[self._targets(name, k)].long()
+            num_cols = self.num_cols[name]
+            row = torch.arange(rows, device=values.device)[:, None]
+            col = torch.arange(cols, device=values.device)
+            weights = (row0 + row) * num_cols + col0 + col + 1
+            totals[name_id] += (values * weights).sum()
         self.running = totals.clone()
         return names, totals, held
 
@@ -192,11 +242,14 @@ class CheckpointIndexMap:
         device = self.params[0].device
         ranges: dict[int, list[list[int]]] = defaultdict(lambda: [[], [], [], [], []])
         other_writes: dict[tuple, list[list[int]]] = defaultdict(lambda: [[], [], [], []])
+        mapped = []
         for name_id, name in enumerate(names):
             num_cols = self.num_cols[name]
-            for row0, rows, col0, cols, index, offset, row_stride, col_stride in self.records[name]:
+            for k, (row0, rows, col0, cols, index, offset, row_stride, col_stride) in enumerate(self.records[name]):
                 width = self.params[index].shape[-1]
-                if col_stride == 1 and row_stride == width and cols == width and offset % width == 0:
+                if (name, k) in self.maps:
+                    mapped.append((name_id, name, k))
+                elif col_stride == 1 and row_stride == width and cols == width and offset % width == 0:
                     start = offset // width
                     for values, value in zip(
                         ranges[index], (start, start + rows, name_id, num_cols, (row0 - start) * num_cols + col0 + 1)
@@ -217,7 +270,7 @@ class CheckpointIndexMap:
             for shape, lists in other_writes.items()
         }
         plan_ids = {name: name_id for name_id, name in enumerate(names)}
-        return names, held, row_ranges, other_writes, plan_ids
+        return names, held, row_ranges, other_writes, plan_ids, mapped
 
     def fp8_layout(self, model: Module, read_tensor) -> dict[str, str]:
         """The vLLM per-block quantization (``"fp32"`` or ``"ue8m0"`` scales) that reproduces each
@@ -321,9 +374,12 @@ class CheckpointIndexMap:
             quantized, scales = quantize_fp8_blocks(rows, self.fp8[name] == "ue8m0")
             sources = [(name, quantized, begin), (f"{name}_scale_inv", scales, begin // FP8_BLOCK[0])]
         for source_name, source, first in sources:
-            for row0, rows_, col0, cols, index, offset, *strides in self.records[source_name]:
+            for k, (row0, rows_, col0, cols, index, offset, *strides) in enumerate(self.records[source_name]):
                 block = source[row0 - first : row0 - first + rows_, col0 : col0 + cols]
-                if source_name in self.unpatchable:
+                if (source_name, k) in self.maps:
+                    flat = as_bits(self.params[index].data).view(-1)
+                    flat.index_put_((self._targets(source_name, k).view(-1),), as_bits(block).reshape(-1))
+                elif source_name in self.unpatchable:
                     flat = self.params[index].data.view(-1)
                     flat.as_strided((rows_, cols), tuple(strides), offset).copy_(block)
                 else:
@@ -339,10 +395,12 @@ class CheckpointIndexMap:
             device = self.params[0].device
             names = sorted(self.records)
             max_writes = max((len(writes) for writes in self.records.values()), default=1)
-            padding = [0] * WRITE_FIELDS  # zero rows: never hit
+            map_buffer, map_starts = self._map_tables()
+            padding = [0] * (WRITE_FIELDS - 2) + [-1, -1]  # zero rows: never hit
             writes = torch.tensor(
                 [
-                    [list(write) for write in self.records[name]] + [padding] * (max_writes - len(self.records[name]))
+                    [[*write, *map_starts.get((name, k), (-1, -1))] for k, write in enumerate(self.records[name])]
+                    + [padding] * (max_writes - len(self.records[name]))
                     for name in names
                 ],
                 dtype=torch.int64,
@@ -357,11 +415,14 @@ class CheckpointIndexMap:
                     [param.data_ptr() for param in self.params], dtype=torch.int64, device=device
                 ),
                 "data_ptrs": [param.data_ptr() for param in self.params],
+                "maps": map_buffer,
             }
             if warm_up:
                 from prime_rl.inference.vllm.worker.sparse_apply import warm_up as compile_kernel
 
-                compile_kernel(self.fused["writes"], self.fused["num_cols"], self.fused["param_ptrs"])
+                compile_kernel(
+                    self.fused["writes"], self.fused["num_cols"], self.fused["param_ptrs"], self.fused["maps"]
+                )
         if [param.data_ptr() for param in self.params] != self.fused["data_ptrs"]:
             raise RuntimeError("Sparse weight deltas need the params where the index map found them: they moved")
         return self.fused
@@ -383,13 +444,15 @@ class CheckpointIndexMap:
         """``apply_delta`` in plain torch ops (CPU, and the reference for the fused kernel)."""
         device = indices.device
         max_records = max((len(self.records.get(name, ())) for name, _ in entries), default=0)
-        # Per entry and write k: [num_cols, row0, rows, col0, cols, param, offset, row stride, col stride].
+        map_buffer, map_starts = self._map_tables()
+        # Per entry and write k: [num_cols, row0, rows, col0, cols, param, offset, row stride, col stride, row table,
+        # column table].
         tables = [
             torch.tensor(
                 [
-                    [self.num_cols[name], *self.records[name][k]]
+                    [self.num_cols[name], *self.records[name][k], *map_starts.get((name, k), (-1, -1))]
                     if len(self.records.get(name, ())) > k
-                    else [1, 0, 0, 0, 0, 0, 0, 0, 0]
+                    else [1, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1]
                     for name, _ in entries
                 ],
                 dtype=torch.int64,
@@ -417,8 +480,16 @@ class CheckpointIndexMap:
                 row = index // num_cols - table[entry, 1]
                 col = index % num_cols - table[entry, 3]
                 hit = (row >= 0) & (row < table[entry, 2]) & (col >= 0) & (col < table[entry, 4])
-                target = (table[entry, 6] + row * table[entry, 7] + col * table[entry, 8])[hit]
-                owner = table[entry, 5][hit]
+                write, row, col = table[entry[hit]], row[hit], col[hit]
+                last = map_buffer.numel() - 1
+                row_part = torch.where(
+                    write[:, 9] >= 0, map_buffer[(write[:, 9] + row).clamp(0, last)], row * write[:, 7]
+                )
+                col_part = torch.where(
+                    write[:, 10] >= 0, map_buffer[(write[:, 10] + col).clamp(0, last)], col * write[:, 8]
+                )
+                target = write[:, 6] + row_part + col_part
+                owner = write[:, 5]
                 tracked = None if entry_ids is None else (entry_ids[entry][hit], index[hit] + 1)
                 self._scatter_add(owner, target, source[hit], tracked)
 
@@ -441,6 +512,7 @@ class CheckpointIndexMap:
             tables["writes"],
             tables["num_cols"],
             tables["param_ptrs"],
+            tables["maps"],
             track,
         )
         if track and contributions.numel():
