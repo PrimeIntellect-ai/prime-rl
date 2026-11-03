@@ -86,11 +86,14 @@ class _Rail:
             # bf16 rows and output gradients
             "bwd": (num_chunks * chunk * hidden * 4, num_chunks),
             # input gradients (bf16) and top-k weight gradients (fp32), one send area per peer
-            "dx": (num_chunks * chunk * (hidden * 2 + top_k * 4), num_chunks, True),
+            "dx": (num_chunks * chunk * hidden * 2, num_chunks, True),
+            "dtopk": (num_chunks * chunk * top_k * 4, num_chunks, True),
         }
         self.rail = RailTransport(group, ranks_per_node, self.regions)
         self.num_peers = self.rail.num_peers
         self._rows: dict[int, list[torch.Tensor]] = {}
+        self._layouts: dict[tuple[int, bool], tuple] = {}
+        self._inverses: dict[int, torch.Tensor] = {}
 
     @property
     def row_bytes(self) -> int:
@@ -111,6 +114,9 @@ class _Rail:
         Call i is own chunk i then every peer's chunk i. Phased: calls of ``num_nodes`` segments, half of the own
         chunks first, then every peer's chunks, then the other own chunks, so the first rail chunks arrive behind own
         work and the last partial outputs travel back behind own work."""
+        key = (num_tokens, self.phased)
+        if key in self._layouts:
+            return self._layouts[key]
         rows = self.chunk_rows(num_tokens)
         offsets = [0]
         for r in rows:
@@ -132,7 +138,24 @@ class _Rail:
             return torch.arange(start + offsets[c], start + offsets[c + 1], device=rows[c].device)
 
         calls = [torch.cat([segment_rows(p, c) for p, c in call]) for call in segments]
-        return rows, torch.cat(rows), calls, segments, offsets
+        self._layouts[key] = rows, torch.cat(rows), calls, segments, offsets
+        return self._layouts[key]
+
+    def inverse(self, num_tokens: int) -> torch.Tensor:
+        """Position of each own row in chunk order (the order partial results come back in)."""
+        if num_tokens not in self._inverses:
+            self._inverses[num_tokens] = torch.argsort(self.layout(num_tokens)[1])
+        return self._inverses[num_tokens]
+
+    def received(self, name: str, peer: int, num_tokens: int, dtype: torch.dtype, cols: int) -> torch.Tensor:
+        """``peer``'s rows of a region, in chunk order: a view of the receive area when every chunk is full."""
+        rows = self.chunk_rows(num_tokens)
+        row_bytes = cols * dtype.itemsize
+        if all(r.numel() == rows[0].numel() for r in rows) and self.rail.regions[name].stride == rows[0].numel() * row_bytes:
+            return self.rail.recv_buffer(name, peer=peer)[: num_tokens * row_bytes].view(dtype).view(num_tokens, cols)
+        return torch.cat(
+            [self.chunk(name, i, "recv", peer)[: r.numel() * row_bytes].view(dtype).view(-1, cols) for i, r in enumerate(rows)]
+        )
 
     def chunk(self, name: str, i: int, side: str, peer: int = 0) -> torch.Tensor:
         return self.rail.send_buffer(name, i, peer) if side == "send" else self.rail.recv_buffer(name, i, peer)
@@ -257,9 +280,9 @@ def rail_llep_forward_op(
             chunks=calls, before_chunk=before, after_chunk=after,
         )[:T]
     transport.wait("y")
+    inverse = rail.inverse(T)
     for p in range(P):
-        partial = [rail.chunk("y", i, "recv", p)[: r.numel() * H * 2].view(torch.bfloat16).view(-1, H) for i, r in enumerate(rows)]
-        y = y.index_add(0, order, torch.cat(partial))
+        y = y + rail.received("y", p, T, torch.bfloat16, H).index_select(0, inverse)
     xs = xs16 if not qat else x.new_empty((0, H), dtype=torch.bfloat16)
     return y[:num_tokens].to(x.dtype), vids, foreign, plan_id, weights, xs
 
@@ -324,6 +347,7 @@ def rail_llep_backward_op(
     dys = torch.empty(((1 + P) * T, H), dtype=torch.bfloat16, device=x.device)
     dys[:T] = dy16
     transport.begin("dx")
+    transport.begin("dtopk")
 
     def before(i: int) -> None:
         for p, c in segments[i]:
@@ -342,10 +366,10 @@ def rail_llep_backward_op(
         for p, c in segments[i]:
             n = rows[c].numel()
             if p >= 0:
-                dxr, dtr = _split(rail.chunk("dx", c, "send", p), n, (H * 2, torch.bfloat16), (K * 4, torch.float32))
-                dxr.copy_(dx_chunk[start : start + n])
-                dtr.copy_(dtopk_chunk[start : start + n])
-                transport.send("dx", c, n * (H * 2 + K * 4), peer=p)
+                rail.chunk("dx", c, "send", p)[: n * H * 2].view(torch.bfloat16).view(n, H).copy_(dx_chunk[start : start + n])
+                rail.chunk("dtopk", c, "send", p)[: n * K * 4].view(torch.float32).view(n, K).copy_(dtopk_chunk[start : start + n])
+                transport.send("dx", c, n * H * 2, peer=p)
+                transport.send("dtopk", c, n * K * 4, peer=p)
             start += n
 
     if rail.precision == "mxfp8_qat":
@@ -357,15 +381,12 @@ def rail_llep_backward_op(
         chunks=calls, before_chunk=before, after_chunk=after,
     )
     transport.wait("dx")
+    transport.wait("dtopk")
     dx, dtopk = dx[:T], dtopk[:T]
+    inverse = rail.inverse(T)
     for p in range(P):
-        dx_parts, dtopk_parts = [], []
-        for i, r in enumerate(rows):
-            dxr, dtr = _split(rail.chunk("dx", i, "recv", p), r.numel(), (H * 2, torch.bfloat16), (K * 4, torch.float32))
-            dx_parts.append(dxr)
-            dtopk_parts.append(dtr)
-        dx = dx.index_add(0, order, torch.cat(dx_parts))
-        dtopk = dtopk.index_add(0, order, torch.cat(dtopk_parts))
+        dx = dx + rail.received("dx", p, T, torch.bfloat16, H).index_select(0, inverse)
+        dtopk = dtopk + rail.received("dtopk", p, T, torch.float32, K).index_select(0, inverse)
     dx, dtopk = dx[:num_tokens], dtopk[:num_tokens]
     return dx.to(x.dtype), dtopk, dw1, dw2
 
