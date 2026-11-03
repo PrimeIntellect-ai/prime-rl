@@ -10,10 +10,6 @@ model = "internal/deepseek-v4.1-flash-1017-ci"
 group_size = 1
 dashboard = false
 
-# The CI endpoint serves chat completions but is not listed in /v1/models.
-[client]
-skip_model_check = true
-
 [sampling]
 max_completion_tokens = 8192
 
