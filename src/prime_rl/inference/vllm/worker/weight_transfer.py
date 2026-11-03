@@ -298,7 +298,7 @@ class CheckpointIndexMap:
                 if scale is None and mx_scale is not None and mx_scale.dtype == torch.uint8:
                     self._mxfp8_write(
                         name,
-                        (row0, rows, col0, cols, index, offset, *strides),
+                        self.records[name].index((row0, rows, col0, cols, index, offset, *strides)),
                         mx_scale,
                         read_tensor,
                         modes,
@@ -770,6 +770,8 @@ def trtllm_mxfp8_moe_layouts(num_rows: int, num_cols: int, device):
     unpadded): w13 rows swapped to [up; gate] and interleaved for the gated activation, then shuffled; w2 rows shuffled;
     block scales through the same rows and FlashInfer's 128x4 interleave. Found by running vLLM's own transform on
     index probes, as candidates for ``CheckpointIndexMap._mx_layouts``."""
+    # fused_moe first: importing flashinfer_utils on its own hits a circular import in vLLM
+    import vllm.model_executor.layers.fused_moe  # noqa: F401
     from vllm.model_executor.layers.quantization.utils.flashinfer_utils import (
         _shuffle_mxfp8_moe_weights,
         swap_w13_to_w31,
