@@ -363,59 +363,101 @@ class CheckpointIndexMap:
         self.checksum_plan = self.running = self.fused = None
         return self.fp8
 
-    def _mxfp8_write(self, name: str, write: tuple, scale: torch.Tensor, read_tensor, modes: dict, scale_params: dict):
-        """Record where the MXFP8 block scales of ``write`` (of ``name``, into an fp8 param) live:
-        ``{name}_mx_scale``, one e8m0 byte per 32 elements of a row, in the kernel's layout (row-major
-        ``[rows, cols / 32]``, or FlashInfer's F8_128x4 swizzle through offset tables). Checks the param's weights and
-        scales against vLLM's MXFP8 quantization of the checkpoint once per param."""
-        row0, rows, col0, cols, index, offset, row_stride, col_stride = write
+    def _mxfp8_write(self, name: str, k: int, scale: torch.Tensor, read_tensor, modes: dict, scale_params: dict):
+        """Record write ``k`` of ``name`` into an MXFP8 param in the kernel's layout, and where its block scales live:
+        ``{name}_mx_scale``, one e8m0 byte per 32 elements of a row. Candidate layouts (``_mx_layouts``: row-major,
+        FlashInfer's F8_128x4 scale swizzle, the TRT-LLM MoE row shuffles) are tried in turn; the first whose positions
+        hold vLLM's MXFP8 quantization of the checkpoint, weights and scales byte for byte, is kept for the param."""
+        row0, rows, col0, cols, index, offset, row_stride, col_stride = self.records[name][k]
         param = self.params[index]
         num_rows, num_cols = param.shape[-2:]
-        if param.dim() != 2 or col_stride != 1 or row_stride != num_cols or num_cols % MX_BLOCK or col0 % MX_BLOCK:
+        if (
+            param.dim() not in (2, 3)
+            or col_stride != 1
+            or row_stride != num_cols
+            or num_cols % MX_BLOCK
+            or col0 % MX_BLOCK
+        ):
             raise NotImplementedError(f"Sparse weight deltas cannot patch the MXFP8 weights of {name}")
-        param_row, param_col = divmod(offset, num_cols)
-        scale_cols = num_cols // MX_BLOCK
+        matrix, within = divmod(offset, num_rows * num_cols)
+        param_row, param_col = divmod(within, num_cols)
         storage = scale.untyped_storage()
         if storage._cdata not in scale_params:
             scale_params[storage._cdata] = len(self.params)
             self.params.append(scale.data.as_strided((storage.nbytes(),), (1,), 0))
         scale_index, scale_name = scale_params[storage._cdata], f"{name}_mx_scale"
-        scale_write = (row0, rows, col0 // MX_BLOCK, -(-cols // MX_BLOCK), scale_index)
-        swizzled_size = -(-num_rows // 128) * 128 * -(-scale_cols // 4) * 4
-        if scale.shape == (num_rows, scale_cols) and scale.is_contiguous():
-            self.records.setdefault(scale_name, []).append(
-                (*scale_write, scale.storage_offset() + param_row * scale_cols + param_col // MX_BLOCK, scale_cols, 1)
+        num_matrices = param.numel() // (num_rows * num_cols)
+        scale_base = scale.storage_offset() + matrix * (scale.numel() // num_matrices)
+        scale_first, scale_count = param_col // MX_BLOCK, -(-cols // MX_BLOCK)
+        weight_rows_range = slice(param_row, param_row + rows)
+        weight_cols = param_col + torch.arange(cols)
+
+        def targets(layout):
+            weight_rows, scale_rows, scale_cols = layout
+            if weight_rows is None:
+                weight = offset - param_col + torch.arange(rows)[:, None] * num_cols + weight_cols[None, :]
+            else:
+                weight = matrix * num_rows * num_cols + weight_rows[weight_rows_range][:, None] + weight_cols[None, :]
+            scales = (
+                scale_base
+                + scale_rows[weight_rows_range][:, None]
+                + scale_cols[scale_first : scale_first + scale_count][None, :]
             )
-        elif scale.dim() == 1 and scale.numel() == swizzled_size and scale.is_contiguous():
-            self.records.setdefault(scale_name, []).append((*scale_write, scale.storage_offset(), 0, 0))
-            row_offsets, col_offsets = swizzled_mx_scale_offsets(num_rows, num_cols)
-            first_col = param_col // MX_BLOCK
-            self.map_write(
-                scale_name,
-                len(self.records[scale_name]) - 1,
-                row_offsets[param_row : param_row + rows],
-                col_offsets[first_col : first_col + scale_write[3]],
-            )
+            return weight, scales
+
+        if index in modes:
+            layout = modes[index]
         else:
-            raise NotImplementedError(f"Sparse weight deltas do not know the MXFP8 scale layout of {name}")
+            weight = read_tensor(name).to(param.device).view(-1, self.num_cols[name])
+            quantized, expected_scales = quantize_mx_blocks(weight)
+            expected = quantized[row0 : row0 + rows, col0 : col0 + cols]
+            expected_scales = as_bits(
+                expected_scales[row0 : row0 + rows, col0 // MX_BLOCK : col0 // MX_BLOCK + scale_count]
+            )
+            weight_bits = as_bits(param.data).view(-1)
+            scale_bits = as_bits(self.params[scale_index].data).view(-1)
+            for layout in self._mx_layouts(param, scale, num_rows, num_cols):
+                weight_targets, scale_targets = (t.to(param.device) for t in targets(layout))
+                if (
+                    scale_targets.max() < scale_bits.numel()
+                    and torch.equal(weight_bits[weight_targets], expected)
+                    and torch.equal(scale_bits[scale_targets], expected_scales)
+                ):
+                    break
+            else:
+                raise NotImplementedError(
+                    f"Sparse weight deltas cannot patch {name}: the engine's MXFP8 weights are not vLLM's MXFP8 "
+                    "quantization of the checkpoint in a known layout"
+                )
+            modes[index] = layout
+        weight_rows, scale_rows, scale_cols = layout
+        if weight_rows is not None:
+            self.records[name][k] = (row0, rows, col0, cols, index, matrix * num_rows * num_cols + param_col, 0, 1)
+            self.map_write(name, k, row_offsets=weight_rows[weight_rows_range])
+        self.records.setdefault(scale_name, []).append(
+            (row0, rows, col0 // MX_BLOCK, scale_count, scale_index, scale_base, 0, 0)
+        )
+        self.map_write(
+            scale_name,
+            len(self.records[scale_name]) - 1,
+            scale_rows[weight_rows_range],
+            scale_cols[scale_first : scale_first + scale_count],
+        )
         self.num_cols[scale_name] = self.num_cols[name] // MX_BLOCK
         self.numel[scale_name] = self.numel[name] // MX_BLOCK
         self.fp8[name] = "mxfp8"
-        if index in modes:
-            return
-        weight = read_tensor(name).to(param.device).view(-1, self.num_cols[name])
-        quantized, scales = quantize_mx_blocks(weight)
-        scale_k = len(self.records[scale_name]) - 1
-        expected = scales[row0 : row0 + rows, col0 // MX_BLOCK : col0 // MX_BLOCK + scale_write[3]]
-        held_scales = as_bits(self.params[scale_index].data).view(-1)[self._targets(scale_name, scale_k)]
-        if not torch.equal(
-            quantized[row0 : row0 + rows, col0 : col0 + cols], self._view(index, rows, cols, offset, [num_cols, 1])
-        ) or not torch.equal(as_bits(expected), held_scales):
-            raise NotImplementedError(
-                f"Sparse weight deltas cannot patch {name}: the engine's MXFP8 weights are not vLLM's MXFP8 "
-                "quantization of the checkpoint in a known layout"
-            )
-        modes[index] = "mxfp8"
+
+    def _mx_layouts(self, param: torch.Tensor, scale: torch.Tensor, num_rows: int, num_cols: int):
+        """Candidate kernel layouts of one ``[num_rows, num_cols]`` MXFP8 matrix of ``param`` and its scales:
+        ``(weight row offsets or None for row-major, scale row offsets, scale column offsets)`` within a matrix."""
+        scale_cols = num_cols // MX_BLOCK
+        per_matrix = scale.numel() // (param.numel() // (num_rows * num_cols))
+        if per_matrix == num_rows * scale_cols:
+            yield None, torch.arange(num_rows) * scale_cols, torch.arange(scale_cols)
+        if per_matrix == -(-num_rows // 128) * 128 * -(-scale_cols // 4) * 4:
+            yield None, *swizzled_mx_scale_offsets(num_rows, num_cols)
+        if param.dim() == 3 and per_matrix == num_rows * scale_cols:
+            yield from trtllm_mxfp8_moe_layouts(num_rows, num_cols, param.device)
 
     def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
         """The raw bits of one write of a checkpoint block into param ``index``."""
@@ -697,3 +739,76 @@ def update_mla_absorbed_weights(model: Module) -> None:
             module.W_UK_T.copy_(w_uk.permute(1, 2, 0))
 
         logger.debug(f"Updated MLA absorbed weights for module {name}")
+
+
+def _probe_permutation(transform, shape: tuple[int, ...], device) -> torch.Tensor:
+    """Where ``transform`` (a fixed permutation of a uint8 tensor's elements into an output that may add padding) puts
+    each element: the output flat offset of every input flat index. Runs it on the four bytes of each index + 1."""
+    numel = prod(shape)
+    coded = torch.arange(1, numel + 1, dtype=torch.int64, device=device)
+    output = None
+    for byte in range(4):
+        plane = transform(((coded >> (8 * byte)) & 255).to(torch.uint8).view(shape)).reshape(-1).to(torch.int64)
+        output = plane << (8 * byte) if output is None else output | (plane << (8 * byte))
+    moved = output.nonzero().squeeze(1)
+    where = torch.full((numel,), -1, dtype=torch.int64, device=device)
+    where[output[moved] - 1] = moved
+    if moved.numel() != numel or (where < 0).any():
+        raise NotImplementedError("Sparse weight deltas need kernel layouts that permute elements")
+    return where
+
+
+def _separable(where: torch.Tensor, num_rows: int, num_cols: int) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """``where`` of a ``[num_rows, num_cols]`` matrix as ``rows[r] + cols[c]``, or None when it does not split."""
+    where = where.view(num_rows, num_cols)
+    rows, cols = where[:, 0], where[0, :] - where[0, 0]
+    return (rows.cpu(), cols.cpu()) if torch.equal(where, rows[:, None] + cols[None, :]) else None
+
+
+def trtllm_mxfp8_moe_layouts(num_rows: int, num_cols: int, device):
+    """The FlashInfer TRT-LLM MXFP8 MoE layouts of an expert matrix (vLLM's ``prepare_fp8_moe_layer_for_fi``,
+    unpadded): w13 rows swapped to [up; gate] and interleaved for the gated activation, then shuffled; w2 rows shuffled;
+    block scales through the same rows and FlashInfer's 128x4 interleave. Found by running vLLM's own transform on
+    index probes, as candidates for ``CheckpointIndexMap._mx_layouts``."""
+    from vllm.model_executor.layers.quantization.utils.flashinfer_utils import (
+        _shuffle_mxfp8_moe_weights,
+        swap_w13_to_w31,
+    )
+
+    scale_cols = num_cols // MX_BLOCK
+    if num_rows % 2 or (num_rows // 2) % MX_BLOCK or num_rows % 128 or scale_cols % 4:
+        return
+    for slot, swap, gated in (("w13", True, True), ("w13", True, False), ("w13", False, True), ("w2", False, True)):
+        if slot == "w13":
+            shapes = {"w13": (1, num_rows, num_cols), "w2": (1, num_cols, num_rows // 2)}
+        else:
+            shapes = {"w13": (1, 2 * num_cols, num_rows), "w2": (1, num_rows, num_cols)}
+
+        def run(plane: torch.Tensor, is_scale: bool, slot=slot, swap=swap, gated=gated, shapes=shapes) -> torch.Tensor:
+            tensors = {key: torch.zeros(shape, dtype=torch.uint8, device=device) for key, shape in shapes.items()} | {
+                f"{key}_scale": torch.zeros((*shape[:2], shape[2] // MX_BLOCK), dtype=torch.uint8, device=device)
+                for key, shape in shapes.items()
+            }
+            tensors[f"{slot}_scale" if is_scale else slot] = plane.view(1, *plane.shape)
+            if swap:
+                tensors["w13"], tensors["w13_scale"] = (
+                    swap_w13_to_w31(tensors["w13"]),
+                    swap_w13_to_w31(tensors["w13_scale"]),
+                )
+            w13, w2, w13_scale, w2_scale = _shuffle_mxfp8_moe_weights(
+                tensors["w13"], tensors["w2"], tensors["w13_scale"], tensors["w2_scale"], gated
+            )
+            out = {"w13": w13, "w2": w2, "w13_scale": w13_scale, "w2_scale": w2_scale}[
+                f"{slot}_scale" if is_scale else slot
+            ]
+            return out.view(torch.uint8)
+
+        weight = _separable(
+            _probe_permutation(lambda p: run(p, False), (num_rows, num_cols), device), num_rows, num_cols
+        )
+        scales = _separable(
+            _probe_permutation(lambda p: run(p, True), (num_rows, scale_cols), device), num_rows, scale_cols
+        )
+        # Expert rows move, columns stay
+        if weight is not None and scales is not None and torch.equal(weight[1], torch.arange(num_cols)):
+            yield weight[0], scales[0], scales[1]
