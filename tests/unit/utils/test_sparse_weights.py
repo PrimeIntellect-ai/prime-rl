@@ -19,6 +19,7 @@ from prime_rl.utils.sparse_weights import (
     read_anchor_checksums,
     read_delta,
     rows_checksum,
+    swizzled_mx_scale_offsets,
     write_rank_file,
     zigzag,
 )
@@ -109,3 +110,16 @@ def test_read_delta_fails_on_a_failed_trainer_rank(tmp_path):
     (delta_dir / rank_failed_marker(1)).write_text(json.dumps({"error": "RuntimeError('boom')"}))
     with ThreadPoolExecutor(1) as pool, pytest.raises(RuntimeError, match="rank 1 failed.*boom"):
         read_delta(tmp_path, pool)
+
+
+@pytest.mark.parametrize(("num_rows", "num_cols"), [(256, 512), (192, 4096), (40, 96)])
+def test_swizzled_mx_scale_offsets_match_vllm(num_rows, num_cols):
+    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import swizzle_mxfp8_scale
+
+    scales = torch.arange(1, num_rows * (num_cols // 32) + 1, dtype=torch.int64).view(num_rows, -1)
+    swizzled = swizzle_mxfp8_scale(scales, M=num_rows, K=num_cols)
+    row_offsets, col_offsets = swizzled_mx_scale_offsets(num_rows, num_cols)
+    positions = row_offsets[:, None] + col_offsets[None, :]
+    assert torch.equal(swizzled[positions], scales)
+    # Every other element is padding
+    assert swizzled.count_nonzero() == scales.numel()

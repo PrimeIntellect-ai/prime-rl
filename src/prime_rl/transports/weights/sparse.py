@@ -29,12 +29,15 @@ from prime_rl.utils.sparse_weights import (
     ENGINE_LAYOUT,
     FP8_BLOCK,
     MANIFEST,
+    MX_BLOCK,
+    SCALE_SUFFIX,
     AnchorWriter,
     anchor_complete,
     as_bits,
     compile_fp8_quantizer,
     encode_gaps,
     quantize_fp8_blocks,
+    quantize_mx_blocks,
     rank_failed_marker,
     rank_part,
     rank_parts_marker,
@@ -138,8 +141,9 @@ class SparseDeltaEncoder:
             self.hf_tensors[name] = (list(tensor.shape), str(tensor.dtype).removeprefix("torch."))
         self.segments = {fqn: sorted(segs) for fqn, segs in segments.items()}
         self.numel = {fqn: tensor.numel() for fqn, tensor in meta.items()}
-        # fqn -> (ue8m0 scales, columns) of trainer tensors held in fp8, quantized as one [rows, columns] matrix
-        self.fp8: dict[str, tuple[bool, int]] = {}
+        # fqn -> (fp8 mode, columns) of trainer tensors held in fp8, quantized as one [rows, columns] matrix: "fp32" or
+        # "ue8m0" (128x128 blocks, fp32 scales) or "mxfp8" (1x32 blocks, e8m0 scales)
+        self.fp8: dict[str, tuple[str, int]] = {}
         self.fp8_layout: dict[str, str] | None = None
         self.compiled_fp8 = None
         # fqn -> segments of its fp8 block scales, like ``segments``
@@ -180,22 +184,26 @@ class SparseDeltaEncoder:
             boundaries = [start // num_cols for start, _ in segs] + [
                 start // num_cols + shape[0] for (start, _), shape in zip(segs, shapes)
             ]
+            mode = modes.pop() if len(modes) == 1 else None
+            block_rows, block_cols = fp8_block(mode) if mode is not None else (0, 0)
             if (
-                len(modes) > 1
-                or num_cols % FP8_BLOCK[1]
+                mode is None
+                or num_cols % block_cols
                 or any(len(shape) != 2 or shape[1] != num_cols for shape in shapes)
-                or any(row % FP8_BLOCK[0] and row != num_rows for row in boundaries)
+                or any(row % block_rows and row != num_rows for row in boundaries)
             ):
                 raise NotImplementedError(f"Sparse weight broadcast cannot quantize {fqn} to fp8 as one matrix")
-            self.fp8[fqn] = (modes.pop() == "ue8m0", num_cols)
-            scale_cols = num_cols // FP8_BLOCK[1]
+            self.fp8[fqn] = (mode, num_cols)
+            scale_cols = num_cols // block_cols
+            scale_dtype = "uint8" if mode == "mxfp8" else "float32"
             self.scale_segments[fqn] = []
             for (start, name), shape in zip(segs, shapes):
+                scale_name = f"{name}{SCALE_SUFFIX[mode]}"
                 self.hf_tensors[name] = (shape, "float8_e4m3fn")
-                self.hf_tensors[f"{name}_scale_inv"] = ([-(-shape[0] // FP8_BLOCK[0]), scale_cols], "float32")
-                self.scale_segments[fqn].append((start // num_cols // FP8_BLOCK[0] * scale_cols, f"{name}_scale_inv"))
+                self.hf_tensors[scale_name] = ([-(-shape[0] // block_rows), scale_cols], scale_dtype)
+                self.scale_segments[fqn].append((start // num_cols // block_rows * scale_cols, scale_name))
         self.gather = self._find_gathered(model, is_master)
-        if self.fp8:
+        if any(mode != "mxfp8" for mode, _ in self.fp8.values()):
             start = time.perf_counter()
             self.compiled_fp8 = compile_fp8_quantizer()
             get_logger().info(f"Compiled the fp8 quantizer ahead of time in {time.perf_counter() - start:.1f}s")
@@ -224,12 +232,13 @@ class SparseDeltaEncoder:
             if self.wire_dtypes[key] != torch.bfloat16:
                 raise NotImplementedError(f"Sparse weight broadcast quantizes bf16 weights to fp8, not {key}")
             shard = self._local_shard(key, value, is_master)
-            num_cols = self.fp8[fqn][1]
+            mode, num_cols = self.fp8[fqn]
+            block_rows = fp8_block(mode)[0]
             num_rows = value.numel() // num_cols
             first = 0 if shard is None else shard[1] // num_cols
             end = first if shard is None else first + shard[0].numel() // num_cols
             keys.append(key)
-            straddles.append(first % FP8_BLOCK[0] != 0 or (end % FP8_BLOCK[0] != 0 and end != num_rows))
+            straddles.append(first % block_rows != 0 or (end % block_rows != 0 and end != num_rows))
         flags = torch.tensor(straddles, dtype=torch.int32, device=next(model.parameters()).device)
         if dist.is_initialized():
             dist.all_reduce(flags, op=dist.ReduceOp.MAX)
@@ -547,11 +556,12 @@ class SparseDeltaEncoder:
             return [part]
         sums = torch.zeros(len(segment_names), dtype=torch.int64, device=shard.device)
         changed, changed_values, scales = [], [], []
-        ue8m0, num_cols = self.fp8[fqn]
+        mode, num_cols = self.fp8[fqn]
+        block_rows = fp8_block(mode)[0]
         if gathered is not None:
             chunks = [(0, shard.numel())]
         else:
-            rows = max(FP8_BLOCK[0], chunk // num_cols // FP8_BLOCK[0] * FP8_BLOCK[0])
+            rows = max(block_rows, chunk // num_cols // block_rows * block_rows)
             chunks = [(start, start + rows * num_cols) for start in range(0, shard.numel(), rows * num_cols)]
         for start, end in chunks:
             end = min(end, shard.numel())
@@ -562,7 +572,9 @@ class SparseDeltaEncoder:
             else:
                 previous_weights, current_weights = previous_bits.view(torch.bfloat16), current.view(torch.bfloat16)
             (previous_fp8, previous_scales), (current_fp8, current_scales) = (
-                quantize_fp8_blocks(weights.reshape(-1, num_cols), ue8m0, self.compiled_fp8)
+                quantize_mx_blocks(weights.reshape(-1, num_cols))
+                if mode == "mxfp8"
+                else quantize_fp8_blocks(weights.reshape(-1, num_cols), mode == "ue8m0", self.compiled_fp8)
                 for weights in (previous_weights, current_weights)
             )
             scales.append((previous_scales, current_scales))
@@ -586,12 +598,10 @@ class SparseDeltaEncoder:
         if scales:
             # This rank sends the scales of the blocks that start in its rows
             first_row = offset // num_cols
-            first_block, end_block = (
-                -(-row // FP8_BLOCK[0]) for row in (first_row, first_row + len(shard) // num_cols)
-            )
+            first_block, end_block = (-(-row // block_rows) for row in (first_row, first_row + len(shard) // num_cols))
             previous_scales, current_scales = (torch.cat(side) for side in zip(*scales))
             if gathered is None:
-                first_block = first_row // FP8_BLOCK[0]
+                first_block = first_row // block_rows
             else:
                 previous_scales, current_scales = (s[first_block:end_block] for s in (previous_scales, current_scales))
             if current_scales.numel():
@@ -1330,3 +1340,8 @@ class SparseFileSystemWeightSender(WeightSender):
     def _clean(self, step: int) -> None:
         # Engines replay from the last anchor, so keep everything since it
         super()._clean(step if self.anchor_step is None else min(step, self.anchor_step + 1))
+
+
+def fp8_block(mode: str) -> tuple[int, int]:
+    """The rows and columns one block scale of an fp8 ``mode`` covers."""
+    return (1, MX_BLOCK) if mode == "mxfp8" else FP8_BLOCK
