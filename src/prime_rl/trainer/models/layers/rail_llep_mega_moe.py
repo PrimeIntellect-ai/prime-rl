@@ -17,6 +17,8 @@ layout has to match without exchanging token counts.
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
@@ -69,6 +71,8 @@ class _Rail:
         self.experts_per_node = num_experts // self.num_nodes
         self.top_k, self.hidden, self.num_chunks, self.precision = top_k, hidden, num_chunks, precision
         self.max_tokens = max_tokens_per_rank
+        # exp: RAIL_SCHEDULE=phased runs own rows first and last, peers' rows in between
+        self.phased = os.environ.get("RAIL_SCHEDULE") == "phased"
         self.compute = node_compute
         self.state = node_compute.state
         chunk = -(-max_tokens_per_rank // num_chunks)
@@ -99,24 +103,36 @@ class _Rail:
             self._rows[num_tokens] = [order[i :: self.num_chunks].sort().values for i in range(self.num_chunks)]
         return self._rows[num_tokens]
 
-    def layout(self, num_tokens: int) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], list[int]]:
-        """Own rows of each chunk, their concatenation (the order peers' rows arrive in), the node call's rows (own rows,
-        then peer ``p``'s chunk at ``(1 + p) * num_tokens + offset``) and the chunks' offsets."""
+    def layout(self, num_tokens: int) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], list, list[int]]:
+        """Own rows of each chunk, their concatenation (the order peers' rows arrive in), the node calls' rows, each
+        call's segments (``(peer, chunk)``, peer -1 for this rank's own rows; a peer's chunk sits at
+        ``(1 + peer) * num_tokens + offset``) and the chunks' offsets.
+
+        Call i is own chunk i then every peer's chunk i. Phased: calls of ``num_nodes`` segments, half of the own
+        chunks first, then every peer's chunks, then the other own chunks, so the first rail chunks arrive behind own
+        work and the last partial outputs travel back behind own work."""
         rows = self.chunk_rows(num_tokens)
         offsets = [0]
         for r in rows:
             offsets.append(offsets[-1] + r.numel())
-        calls = [
-            torch.cat(
-                [r]
-                + [
-                    torch.arange((1 + p) * num_tokens + offsets[i], (1 + p) * num_tokens + offsets[i + 1], device=r.device)
-                    for p in range(self.num_peers)
-                ]
-            )
-            for i, r in enumerate(rows)
-        ]
-        return rows, torch.cat(rows), calls, offsets
+        if self.phased:
+            n = self.num_nodes
+            own = [[(-1, c) for c in range(i, min(i + n, self.num_chunks))] for i in range(0, self.num_chunks, n)]
+            peer_segments = [(p, c) for c in range(self.num_chunks) for p in range(self.num_peers)]
+            peer = [peer_segments[i : i + n] for i in range(0, len(peer_segments), n)]
+            half = -(-len(own) // 2)
+            segments = own[:half] + peer + own[half:]
+        else:
+            segments = [[(-1, i)] + [(p, i) for p in range(self.num_peers)] for i in range(self.num_chunks)]
+
+        def segment_rows(p: int, c: int) -> torch.Tensor:
+            if p < 0:
+                return rows[c]
+            start = (1 + p) * num_tokens
+            return torch.arange(start + offsets[c], start + offsets[c + 1], device=rows[c].device)
+
+        calls = [torch.cat([segment_rows(p, c) for p, c in call]) for call in segments]
+        return rows, torch.cat(rows), calls, segments, offsets
 
     def chunk(self, name: str, i: int, side: str, peer: int = 0) -> torch.Tensor:
         return self.rail.send_buffer(name, i, peer) if side == "send" else self.rail.recv_buffer(name, i, peer)
@@ -159,7 +175,7 @@ def rail_llep_forward_op(
     transport, state = rail.rail, rail.state
     num_tokens, T, H, K, P = x.shape[0], rail.max_tokens, rail.hidden, rail.top_k, rail.num_peers
     x, topk_idx, topk_weights = _pad(x, T), _pad(topk_idx, T, -1), _pad(topk_weights, T)
-    rows, order, calls, offsets = rail.layout(T)
+    rows, order, calls, segments, offsets = rail.layout(T)
 
     # Top-k ids and weights first: the node's plan needs them before any row
     transport.begin("meta")
@@ -205,24 +221,29 @@ def rail_llep_forward_op(
     transport.begin("y")
 
     def before(i: int) -> None:
-        n = rows[i].numel()
-        transport.wait("x", i, i + 1)
-        for p in range(P):
-            lo, hi = (1 + p) * T + offsets[i], (1 + p) * T + offsets[i + 1]
+        for p, c in segments[i]:
+            if p < 0:
+                continue
+            n = rows[c].numel()
+            transport.wait("x", c, c + 1, peer=p)
+            lo, hi = (1 + p) * T + offsets[c], (1 + p) * T + offsets[c + 1]
             if qat:
-                fp8, sf = _split(rail.chunk("x", i, "recv", p), n, (H, torch.uint8), (H // 128, torch.uint8))
+                fp8, sf = _split(rail.chunk("x", c, "recv", p), n, (H, torch.uint8), (H // 128, torch.uint8))
                 xs_fp8[lo:hi].view(torch.uint8).copy_(fp8)
                 xs_sf[lo:hi].copy_(sf)
             else:
-                (rows16,) = _split(rail.chunk("x", i, "recv", p), n, (H * 2, torch.bfloat16))
+                (rows16,) = _split(rail.chunk("x", c, "recv", p), n, (H * 2, torch.bfloat16))
                 xs16[lo:hi] = rows16
 
     def after(i: int, y_chunk: torch.Tensor) -> None:
-        # Call i's rows: this rank's chunk, then each peer's; each peer gets its rows' partial outputs back
-        n = rows[i].numel()
-        for p in range(P):
-            rail.chunk("y", i, "send", p)[: n * H * 2].view(torch.bfloat16).view(n, H).copy_(y_chunk[(1 + p) * n : (2 + p) * n])
-            transport.send("y", i, n * H * 2, peer=p)
+        # The call's outputs in segment order; each peer gets its rows' partial outputs back
+        start = 0
+        for p, c in segments[i]:
+            n = rows[c].numel()
+            if p >= 0:
+                rail.chunk("y", c, "send", p)[: n * H * 2].view(torch.bfloat16).view(n, H).copy_(y_chunk[start : start + n])
+                transport.send("y", c, n * H * 2, peer=p)
+            start += n
 
     if qat:
         weights_fp8 = cached_qat_forward_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
@@ -281,7 +302,7 @@ def rail_llep_backward_op(
     transport, state = rail.rail, rail.state
     num_tokens, T, H, K, P = x.shape[0], rail.max_tokens, rail.hidden, rail.top_k, rail.num_peers
     x, dy = _pad(x, T), _pad(dy, T)
-    rows, order, calls, offsets = rail.layout(T)
+    rows, order, calls, segments, offsets = rail.layout(T)
     dy16 = dy.to(torch.bfloat16).contiguous()
     # bf16: the forward's node rows are saved (`xs`), so only output gradients cross; mxfp8_qat sends bf16 rows too
     send_rows = rail.precision != "bf16"
@@ -305,22 +326,27 @@ def rail_llep_backward_op(
     transport.begin("dx")
 
     def before(i: int) -> None:
-        n = rows[i].numel()
-        transport.wait("bwd", i, i + 1)
-        for p in range(P):
-            lo, hi = (1 + p) * T + offsets[i], (1 + p) * T + offsets[i + 1]
-            views = _split(rail.chunk("bwd", i, "recv", p), n, *parts)
+        for p, c in segments[i]:
+            if p < 0:
+                continue
+            n = rows[c].numel()
+            transport.wait("bwd", c, c + 1, peer=p)
+            lo, hi = (1 + p) * T + offsets[c], (1 + p) * T + offsets[c + 1]
+            views = _split(rail.chunk("bwd", c, "recv", p), n, *parts)
             dys[lo:hi] = views[0]
             if send_rows:
                 xs[lo:hi] = views[1]
 
     def after(i: int, dx_chunk: torch.Tensor, dtopk_chunk: torch.Tensor) -> None:
-        n = rows[i].numel()
-        for p in range(P):
-            dxr, dtr = _split(rail.chunk("dx", i, "send", p), n, (H * 2, torch.bfloat16), (K * 4, torch.float32))
-            dxr.copy_(dx_chunk[(1 + p) * n : (2 + p) * n])
-            dtr.copy_(dtopk_chunk[(1 + p) * n : (2 + p) * n])
-            transport.send("dx", i, n * (H * 2 + K * 4), peer=p)
+        start = 0
+        for p, c in segments[i]:
+            n = rows[c].numel()
+            if p >= 0:
+                dxr, dtr = _split(rail.chunk("dx", c, "send", p), n, (H * 2, torch.bfloat16), (K * 4, torch.float32))
+                dxr.copy_(dx_chunk[start : start + n])
+                dtr.copy_(dtopk_chunk[start : start + n])
+                transport.send("dx", c, n * (H * 2 + K * 4), peer=p)
+            start += n
 
     if rail.precision == "mxfp8_qat":
         gate_up, down = cached_qat_rounded_weights(gate_up_proj, down_proj, rounding_seed, rounding_salts, expert_offset)
