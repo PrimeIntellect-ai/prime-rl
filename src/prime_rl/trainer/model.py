@@ -635,6 +635,11 @@ def initialize_from_scratch(model: nn.Module) -> None:
     model.to_empty(device="cuda")
     torch.distributed.barrier()
     model.init_buffers_post_meta()
+    # Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
+    # embedding at zero and keep it frozen.
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            module.padding_idx = None
     local_params = {
         name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
     }
