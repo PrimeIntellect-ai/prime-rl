@@ -39,6 +39,7 @@ dependencies = [
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
+pretrain = "prime_rl.entrypoints.pretrain:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
@@ -356,12 +357,12 @@ select = ["F", "I"]
 # jaxtyping writes shapes as string annotations (`Int[Tensor, "batch seq"]`), which ruff reads as
 # forward references and reports as syntax errors / undefined names.
 [tool.ruff.lint.per-file-ignores]
+"src/prime_rl/trainer/data.py" = ["F722", "F821"]
 "src/prime_rl/trainer/distributed/ngram_lookup.py" = ["F722", "F821"]
 "src/prime_rl/trainer/models/layers/ngram.py" = ["F722", "F821"]
 "src/prime_rl/trainer/model.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/data.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/loss.py" = ["F722", "F821"]
-"src/prime_rl/trainer/sft/data.py" = ["F722", "F821"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["prime_rl"]

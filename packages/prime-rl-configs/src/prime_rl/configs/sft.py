@@ -157,6 +157,24 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class TokensDataConfig(BaseDataConfig):
+    """Pre-tokenized datatrove shards, read as one token pool and cut into samples of ``seq_len`` tokens."""
+
+    type: Literal["tokens"] = "tokens"
+
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
+
+    seed: int = 0
+    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
+    and from a new random offset."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
+    whole sample and positions run over it."""
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -167,7 +185,7 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | TokensDataConfig, Field(discriminator="type")]
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -424,7 +442,7 @@ class SFTConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
+        if self.data.type in ("fake", "tokens") and self.val is None:
             return self
 
         model_id = self.tokenizer.name or self.model.name

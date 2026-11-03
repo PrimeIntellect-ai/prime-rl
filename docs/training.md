@@ -17,6 +17,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Important Metrics](#important-metrics-1)
+- [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
@@ -39,6 +40,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 |---|---|---|
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
+| `uv run pretrain` | Pretraining from scratch on tokenized shards. | The SFT trainer with token data and from-scratch weights; see [Pretraining](#pretraining). |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
@@ -310,6 +312,52 @@ Pulled from the console log and mirrored to W&B.
 | `perf/peak_memory` | peak GPU memory from all sources, max over ranks (GiB) |
 | `perf/non_torch_memory` | GPU memory outside PyTorch's caching allocator (symmetric memory such as Mega MoE's buffers, NCCL, CUDA context), max over ranks (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
+
+## Pretraining
+
+`uv run pretrain` trains a model from scratch on pre-tokenized data. It is the SFT trainer with two differences: the data is a pool of tokens (`[data]` with `type = "tokens"`), and the weights start from the model's own init (`model.from_scratch = true`), so `model.name` only supplies the model config. A resumed run loads the weights from the checkpoint. All other settings and defaults are SFT's, except `optim.lr`, which defaults to PyTorch's `1e-3`. The from-scratch init is tested on dense models.
+
+**Tokenize.** The data is the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. Tokenize with the tokenizer you train with, and end every document with its EOS token:
+
+```python
+from datatrove.executor import LocalPipelineExecutor
+from datatrove.pipeline.readers import ParquetReader
+from datatrove.pipeline.tokens import DocumentTokenizer
+
+LocalPipelineExecutor(
+    pipeline=[
+        ParquetReader("hf://datasets/HuggingFaceFW/fineweb-edu/sample/10BT"),
+        DocumentTokenizer(
+            output_folder="data/fineweb-edu",
+            tokenizer_name_or_path="Qwen/Qwen3-0.6B",
+            eos_token="<|endoftext|>",
+        ),
+    ],
+    tasks=16,
+).run()
+```
+
+**Configure.** Only `data.paths` is required:
+
+```toml
+max_steps = 1000
+
+[model]
+name = "Qwen/Qwen3-0.6B"   # only the model config is read
+
+[data]
+paths = ["data/fineweb-edu"]
+seq_len = 2048
+batch_size = 256
+```
+
+The files of all folders in `data.paths` (in folder order, then file name order) are read as one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed` and the epoch. Attention and positions restart at every document (`data.document_masking = false` makes a window one sequence). A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+
+**Launch.**
+
+```bash
+uv run pretrain @ pretrain.toml
+```
 
 ## Checkpointing
 

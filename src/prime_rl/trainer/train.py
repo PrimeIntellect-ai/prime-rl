@@ -37,13 +37,8 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import (
-    get_dataset_progress,
-    get_dataset_state,
-    load_sft_dataset,
-    setup_dataloader,
-    setup_dataset,
-)
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import load_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,

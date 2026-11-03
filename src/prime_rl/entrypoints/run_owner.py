@@ -10,7 +10,7 @@ from prime_rl.monitors.prime import launch_run
 
 
 def main() -> None:
-    """``python -m prime_rl.entrypoints.run_owner {rl,sft} <config> <command...>``: run a
+    """``python -m prime_rl.entrypoints.run_owner {rl,sft,pretrain} <config> <command...>``: run a
     multi-node SLURM job's step as the owner of its Prime run (``launch_run``). The step's
     clean exit finishes the run; its non-zero exit, or SLURM's SIGTERM on cancel or time
     limit, fails it."""

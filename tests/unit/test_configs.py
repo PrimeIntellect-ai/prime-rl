@@ -24,6 +24,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
 )
+from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -35,6 +36,7 @@ CONFIG_CLASSES = [
     RLConfig,
     TrainerConfig,
     SFTConfig,
+    PretrainConfig,
     OrchestratorConfig,
     InferenceConfig,
     EnvServerConfig,
@@ -149,6 +151,26 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.vllm.max_logprobs >= 6
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
+def test_pretrain_config_roundtrip(tmp_path):
+    """A minimal pretrain TOML gets the pretraining defaults, and the trainer reads them back as an SFT config."""
+    from prime_rl.entrypoints.launcher import write_config
+
+    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
+    assert config.data.type == "tokens"
+    assert config.model.from_scratch
+    assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
+
+    write_config(config, tmp_path / "sft.json")
+    reloaded = cli(SFTConfig, args=["@", str(tmp_path / "sft.json")])
+    assert reloaded.data == config.data
+    assert reloaded.model.from_scratch
+    assert reloaded.optim.lr == 1e-3
+
+    muon = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--optim.type", "muon"])
+    assert muon.optim.lr == 1e-3
 
 
 def test_toml_partial_nested_override(tmp_path):
