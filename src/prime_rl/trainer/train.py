@@ -38,8 +38,9 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader, setup_dataset
-from prime_rl.trainer.sft.data import load_sft_dataset
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.pretrain.data import setup_token_dataset
+from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -180,18 +181,21 @@ def train(config: SFTConfig | PretrainConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
-    dataset = setup_dataset(
-        tokenizer,
-        config.data,
-        config.model.cp,
-        renderer_config=config.renderer,
-        processor=processor,
-        multimodal=multimodal,
-    )
+    if isinstance(config, PretrainConfig):
+        dataset = setup_token_dataset(config.data, config.model.cp)
+    else:
+        dataset = setup_sft_dataset(
+            tokenizer,
+            config.data,
+            config.model.cp,
+            renderer_config=config.renderer,
+            processor=processor,
+            multimodal=multimodal,
+        )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     val_raw_dataset = None
-    if config.val is not None:
+    if config.val is not None and isinstance(config, SFTConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
@@ -319,16 +323,19 @@ def train(config: SFTConfig | PretrainConfig):
         return mean_loss, nan_count.item()
 
     def run_validation(step: int) -> None:
-        val_dataset = setup_dataset(
-            tokenizer,
-            config.val.data,
-            config.model.cp,
-            max_epochs=1,
-            raw_dataset=val_raw_dataset,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
+        if isinstance(config, PretrainConfig):
+            val_dataset = setup_token_dataset(config.val.data, config.model.cp)
+        else:
+            val_dataset = setup_sft_dataset(
+                tokenizer,
+                config.val.data,
+                config.model.cp,
+                max_epochs=1,
+                raw_dataset=val_raw_dataset,
+                renderer_config=config.renderer,
+                processor=processor,
+                multimodal=multimodal,
+            )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation

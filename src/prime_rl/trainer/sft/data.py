@@ -514,3 +514,45 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
         )
+
+
+def setup_sft_dataset(
+    tokenizer: PreTrainedTokenizer,
+    config: DataConfig,
+    non_dp_size: int = 1,
+    *,
+    max_epochs: int | None = None,
+    raw_dataset: Dataset | None = None,
+    renderer_config: RendererConfig | None = None,
+    processor: Any | None = None,
+    multimodal: bool = False,
+) -> StatefulIterableDataset:
+    if config.type == "fake":
+        return FakeDataset(
+            vocab_size=tokenizer.vocab_size,
+            seq_len=config.seq_len,
+            length=config.length,
+            input_ids=config.input_ids,
+            seed=config.seed,
+            non_dp_size=non_dp_size,
+        )
+    elif config.type == "sft":
+        if renderer_config is None:
+            raise ValueError("SFT data requires a renderer config.")
+        if raw_dataset is None:
+            raw_dataset = load_sft_dataset(config)
+        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
+        return SFTDataset(
+            raw_dataset,
+            renderers,
+            shuffle=config.shuffle,
+            seed=config.seed,
+            seq_len=config.seq_len,
+            loss_mask_config=config.loss_mask,
+            non_dp_size=non_dp_size,
+            max_epochs=max_epochs,
+            multimodal=multimodal,
+            columns=config.columns,
+        )
+    else:
+        raise ValueError(f"Invalid dataset type: {config.type}")

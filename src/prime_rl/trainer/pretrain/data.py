@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 
 MAX_OPEN_FILES = 256
@@ -161,3 +162,12 @@ class TokenDataset(StatefulIterableDataset):
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
+
+
+def setup_token_dataset(config: DatatroveDataConfig, non_dp_size: int = 1) -> TokenDataset:
+    return TokenDataset(
+        TokenShards(config.paths, seed=config.seed),
+        seq_len=config.seq_len,
+        document_masking=config.document_masking,
+        non_dp_size=non_dp_size,
+    )

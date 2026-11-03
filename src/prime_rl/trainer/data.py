@@ -2,16 +2,13 @@ from collections import defaultdict
 from typing import Any, TypedDict
 
 import torch
-from datasets import Dataset
 from jaxtyping import Bool, Int
-from renderers import RendererConfig
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig
+from prime_rl.configs.supervised import BaseDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
@@ -220,62 +217,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
-def setup_dataset(
-    tokenizer: PreTrainedTokenizer,
-    config: DataConfig,
-    non_dp_size: int = 1,
-    *,
-    max_epochs: int | None = None,
-    raw_dataset: Dataset | None = None,
-    renderer_config: RendererConfig | None = None,
-    processor: Any | None = None,
-    multimodal: bool = False,
-) -> StatefulIterableDataset:
-    if config.type == "fake":
-        from prime_rl.trainer.sft.data import FakeDataset
-
-        return FakeDataset(
-            vocab_size=tokenizer.vocab_size,
-            seq_len=config.seq_len,
-            length=config.length,
-            input_ids=config.input_ids,
-            seed=config.seed,
-            non_dp_size=non_dp_size,
-        )
-    elif config.type == "sft":
-        from prime_rl.trainer.sft.data import RendererResolver, SFTDataset, load_sft_dataset
-
-        if renderer_config is None:
-            raise ValueError("SFT data requires a renderer config.")
-        if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
-        return SFTDataset(
-            raw_dataset,
-            renderers,
-            shuffle=config.shuffle,
-            seed=config.seed,
-            seq_len=config.seq_len,
-            loss_mask_config=config.loss_mask,
-            non_dp_size=non_dp_size,
-            max_epochs=max_epochs,
-            multimodal=multimodal,
-            columns=config.columns,
-        )
-    elif config.type == "datatrove":
-        from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards
-
-        return TokenDataset(
-            TokenShards(config.paths, seed=config.seed),
-            seq_len=config.seq_len,
-            document_masking=config.document_masking,
-            non_dp_size=non_dp_size,
-        )
-    else:
-        raise ValueError(f"Invalid dataset type: {config.type}")
-
-
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
+def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, cp: int) -> StatefulDataLoader:
     row_len = config.seq_len * config.micro_batch_size
     # Rows hold at most `row_len` tokens, so padding to a multiple of it pads every row to exactly `row_len`
     pad_to_multiple_of = row_len if config.pad_to_seq_len else cp
