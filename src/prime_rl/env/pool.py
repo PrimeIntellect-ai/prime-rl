@@ -324,7 +324,7 @@ def serve_env(
         worker_setup()
     try:
         cap = pool.max_workers if isinstance(pool, ElasticPoolConfig) else pool.num_workers
-        if cap is not None and cap <= 1:
+        if cap == 1:
             server = EnvServer(resolve_env_config(config_data), address, max_concurrent)
         else:
             server = EnvServerPool(pool, address, config_data, max_concurrent, worker_setup)

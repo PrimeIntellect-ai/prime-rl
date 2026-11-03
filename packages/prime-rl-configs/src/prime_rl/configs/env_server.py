@@ -20,7 +20,7 @@ class ElasticPoolConfig(BaseConfig):
     """Elastic env-server pool: start at one worker and scale up on demand."""
 
     type: Literal["elastic"] = "elastic"
-    max_workers: int | None = None
+    max_workers: int | None = Field(None, ge=1)
     """Upper bound on workers (None = unbounded)."""
     multiplex: int = Field(128, ge=1)
     """Episodes per worker for the scale-up trigger: add a worker once in-flight episodes
