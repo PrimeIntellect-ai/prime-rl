@@ -57,6 +57,7 @@ class EvalRunner:
         self.config = config
         self.run_dir = run_dir
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        intercept_vf_logging(logger="prime_rl.env", level="WARN")
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None

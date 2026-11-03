@@ -12,9 +12,9 @@ from prime_runs.projection import build_samples, episodes_to_parquet_bytes
 from prime_runs.sinks.base import stamp_run, to_mapping
 from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
-from verifiers.v1.serve.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
 
 from prime_rl.configs.monitors import FileMonitorConfig
+from prime_rl.env.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_path

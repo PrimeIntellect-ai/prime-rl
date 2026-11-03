@@ -152,6 +152,7 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        intercept_vf_logging(logger="prime_rl.env", level="WARN")
         get_logger().info("Starting orchestrator")
 
         self.progress = Progress()

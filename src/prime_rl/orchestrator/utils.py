@@ -116,12 +116,13 @@ def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix
 
 
 def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None:
-    """Configure logging for an env-server process: prime-rl's logger + routing v1's stdlib
-    logs through it. Passed to verifiers' ``serve_env`` so it runs in the broker and in every
-    spawned worker — fresh ``spawn`` processes that otherwise have no handlers and would drop
-    their per-rollout logs."""
+    """Configure logging for an env-server process: prime-rl's logger + routing the stdlib
+    logs of v1 and ``prime_rl.env`` through it. Passed to ``serve_env`` so it runs in the
+    broker and in every spawned worker — fresh ``spawn`` processes that otherwise have no
+    handlers and would drop their per-rollout logs."""
     setup_logger(log_level, json_logging=json_logging)
     intercept_vf_logging(logger="verifiers.v1", level=log_level)
+    intercept_vf_logging(logger="prime_rl.env", level=log_level)
 
 
 def set_default_executor(max_workers: int = 64) -> None:

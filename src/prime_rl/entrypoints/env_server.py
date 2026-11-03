@@ -5,11 +5,10 @@ import uuid
 from functools import partial
 from pathlib import Path
 
-from verifiers.v1 import pool_serve_kwargs
 from verifiers.v1.runtimes import set_base_sandbox_labels
-from verifiers.v1.serve import env_config_data, serve_env, set_episode_hook
 
-from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.configs.env_server import EnvServerConfig, pool_serve_kwargs
+from prime_rl.env import env_config_data, serve_env, set_episode_hook
 from prime_rl.orchestrator.utils import setup_env_server_logging
 from prime_rl.transports.payload import PayloadHook
 from prime_rl.utils.config import cli
