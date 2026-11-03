@@ -40,6 +40,11 @@ class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True)
 # Where an env server that keeps a trace's arrays leaves the references to them:
 # ``trace.info[PAYLOAD_INFO_KEY] = {"url": ..., "branches": {index: {"id", "fields", ...}}}``.
 PAYLOAD_INFO_KEY = "prime_rl_payload"
+# The worker that runs a trace, from its mint on: it persists the trace's arrays for an
+# orchestrator checkpoint (``trace.info[PAYLOAD_WORKER_KEY] = url``).
+PAYLOAD_WORKER_KEY = "prime_rl_payload_worker"
+# On a restored trace, the file holding its kept nodes' arrays (the env server pops it).
+PAYLOAD_ARRAYS_KEY = "prime_rl_payload_arrays"
 
 
 # A sample's training arrays kept by the env-server worker at ``url`` (see

@@ -1384,3 +1384,25 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert config.inference.vllm.max_logprobs >= top_k + 2
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize("rollouts", [False, True])
+def test_shared_ckpt_rollouts_has_the_env_agents_keep_their_snapshots(rollouts):
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"interval": 5, "rollouts": rollouts},
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "default"},
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}, "agent": {"memory_checkpoint": {}}}}]},
+                "eval": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            },
+        }
+    )
+    assert config.orchestrator.ckpt.rollouts is rollouts
+    train, eval_ = config.orchestrator.train.source[0], config.orchestrator.eval.source[0]
+    expected = "keep" if rollouts else "delete"
+    for source in (train, eval_):
+        assert source.env.agent.checkpoint.after == expected
+    assert train.env.agent.memory_checkpoint.after == expected
+    assert eval_.env.agent.memory_checkpoint is None

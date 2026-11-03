@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import traceback
 import uuid
@@ -36,6 +37,7 @@ import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl import monitors
+from prime_rl.env import EpisodeAssembly, RestoreRequest
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -57,6 +59,12 @@ from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
 LIVE_INTERVAL_S = 0.5
+INTERRUPT_TIMEOUT_SECONDS = 60.0
+"""How long an interrupted rollout waits for its next model call, at which its box is
+idle for a filesystem checkpoint (``interrupt_inflight``)."""
+INTERRUPT_SETTLE_SECONDS = 600
+"""How long ``interrupt_inflight`` waits for the restore points of interrupted rollouts:
+their checkpoints become restorable after the interrupt returns."""
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
 
@@ -115,6 +123,31 @@ def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
     actual = (episode.task.key, episode.task.hash)
     if actual != expected:
         raise ValueError(f"Episode task provenance {actual} does not match dispatched task {expected}")
+
+
+def _interrupted(task: asyncio.Task) -> bool:
+    """Whether a finished run ended its episode on an interrupt (``RolloutInterrupted``),
+    for another process to continue; a run that failed or was cancelled counts too, so
+    its rollout starts over rather than being lost."""
+    if task.cancelled() or task.exception() is not None:
+        return True
+    return any(
+        trace.last_error is not None and trace.last_error.type == "RolloutInterrupted" for trace in task.result().traces
+    )
+
+
+def inflight_restore(meta: InflightEpisode) -> RestoreRequest | None:
+    """What continues an in-flight episode after a resume: its one trace as streamed so
+    far with the newest restore point the stream carried. None for an episode with
+    several traces (a multi-agent env), or one that streamed no restore point yet."""
+    if meta.assembly is None or len(meta.assembly.traces) != 1:
+        return None
+    ((trace_id, trace),) = meta.assembly.traces.items()
+    point = meta.assembly.restores.get(trace_id)
+    if point is None:
+        return None
+    trace = {key: value for key, value in trace.items() if key != "pending"}
+    return RestoreRequest(trace=trace, point=point)
 
 
 class Dispatcher:
@@ -177,6 +210,18 @@ class Dispatcher:
         self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
+        self.snapshots: dict[str, tuple[str, dict]] = {}
+        """Box checkpoints this run owns (their env keeps them past the run, ``after =
+        "keep"``), by id: the env whose server deletes them, and the dumped ``Snapshot``."""
+        self.interrupting = False
+        """Set by ``interrupt_inflight``: interrupted runs that reply stay in flight, for
+        the checkpoint to save with their restore points."""
+        self.held: set[asyncio.Task] = set()
+        """The interrupted runs that replied and stay in flight (``interrupting``)."""
+        self.held_snapshots: set[str] = set()
+        """Snapshots the latest checkpoint resumes from: kept until a newer one is written."""
+        self.sweep: asyncio.Task | None = None
+        self.sweep_again = False
         self.live_events: list[dict[str, Any]] = []
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
@@ -315,8 +360,11 @@ class Dispatcher:
         self.live_task = asyncio.create_task(self.publish_live())
         try:
             while not self.stopped.is_set():
-                await self.fill_inflight()
-                if not self.inflight:
+                # Nothing new dispatches while the in-flight rollouts are interrupted.
+                if not self.interrupting:
+                    await self.fill_inflight()
+                waiting = [task for task in self.inflight if task not in self.held]
+                if not waiting:
                     # No work — sleep briefly. Eval triggers from the
                     # orchestrator wake the next iteration via a mode flip
                     try:
@@ -326,7 +374,7 @@ class Dispatcher:
                     continue
 
                 done, _pending = await asyncio.wait(
-                    list(self.inflight.keys()),
+                    waiting,
                     return_when=asyncio.FIRST_COMPLETED,
                     timeout=0.5,  # wake periodically to re-check fill (mode flips)
                 )
@@ -523,6 +571,8 @@ class Dispatcher:
         # A group samples with the settings of the step it was opened at, also across a live update.
         sampling = env.sampling_at(group.step)
         group.episodes_to_schedule -= 1
+        # A resumed group continues its in-flight members before it starts fresh ones.
+        restore = group.restores.pop() if group.restores else None
         await self.acquire()
         self.admissions_in_window += 1
         meta = InflightEpisode(
@@ -534,12 +584,18 @@ class Dispatcher:
             step=group.step,
             client_config=client,
             started_at=time.monotonic(),
+            assembly=EpisodeAssembly(),
         )
 
         session_ids: set[str] = set()
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            point = delta.get("restore")
+            snapshot = point["checkpoint"].get("snapshot") if point is not None else None
+            if snapshot is not None and env.owns_snapshots:
+                self.snapshots[point["checkpoint"]["id"]] = (meta.env_name, snapshot)
+                self.sweep_snapshots()
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
@@ -558,6 +614,8 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    assembly=meta.assembly,
+                    restore=restore,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
@@ -576,6 +634,145 @@ class Dispatcher:
         self.inflight[task] = meta
         self.live_events.append(live.pending_event(meta))
         return True
+
+    def open_work(self) -> list[GroupState]:
+        """The train and eval groups still owing episodes, for the orchestrator
+        checkpoint: each with its never-dispatched members and its in-flight ones, which
+        a resumed run continues from their newest restore points (``restores``) or,
+        without one yet, starts over. Completed members are the sinks' (or ``out_q``'s)
+        to save."""
+        groups: dict[uuid.UUID, GroupState] = {}
+        for group_id, group in self.groups.items():
+            # A fresh group's id is only its key here.
+            groups[group_id] = dataclasses.replace(group, group_id=group_id, restores=list(group.restores))
+        for meta in self.inflight.values():
+            group = groups.get(meta.group_id)
+            if group is None:
+                continue
+            group.episodes_to_schedule += 1
+            if (restore := inflight_restore(meta)) is not None:
+                group.restores.append(restore)
+        return list(groups.values())
+
+    def resume_open_work(self, groups: list[GroupState], snapshots: dict[str, tuple[str, dict]]) -> None:
+        """Reopen a checkpoint's open groups; those of envs this run no longer trains or
+        evaluates on are dropped, their restored members with them. ``snapshots`` are the
+        ones the checkpointed run owned: the next sweep deletes those the resume does not
+        use."""
+        assert self.train_envs is not None
+        dropped = 0
+        for group in groups:
+            envs = self.train_envs if group.kind == "train" else self.eval_envs
+            if envs is None or group.env_name not in envs.names:
+                dropped += 1
+                continue
+            assert group.group_id is not None
+            self.groups[group.group_id] = group
+        self.snapshots = dict(snapshots)
+        self.hold_snapshots(list(self.groups.values()))
+        restores = sum(len(group.restores) for group in self.groups.values())
+        get_logger().info(
+            f"Resumed {len(self.groups)} open groups ({restores} rollouts to restore)"
+            + (f", dropped {dropped} of removed envs" if dropped else "")
+        )
+
+    def hold_snapshots(self, groups: list[GroupState], *, release: bool = True) -> None:
+        """A checkpoint resumes from these groups' restore points: keep their snapshots
+        until a newer checkpoint is written, and free the ones the last one held (not
+        with ``release=False``)."""
+        held = {
+            restore.point["checkpoint"]["id"]
+            for group in groups
+            for restore in group.restores
+            if restore.point["checkpoint"].get("snapshot") is not None
+        }
+        self.held_snapshots = held if release else self.held_snapshots | held
+        self.sweep_snapshots()
+
+    def sweep_snapshots(self) -> None:
+        """Delete the owned snapshots nothing can restore from anymore: neither an
+        in-flight rollout's newest nor one the latest checkpoint resumes from. One sweep
+        runs at a time; a request during it runs one more."""
+        if not self.snapshots:
+            return
+        if self.sweep is not None and not self.sweep.done():
+            self.sweep_again = True
+            return
+        self.sweep = asyncio.create_task(self._sweep_snapshots())
+
+    async def _sweep_snapshots(self) -> None:
+        assert self.train_envs is not None
+        while True:
+            self.sweep_again = False
+            newest = {
+                point["checkpoint"]["id"]
+                for meta in self.inflight.values()
+                if meta.assembly is not None
+                for point in meta.assembly.restores.values()
+            }
+            drop: dict[str, list[dict]] = defaultdict(list)
+            for snapshot_id, (env_name, snapshot) in self.snapshots.items():
+                if snapshot_id not in newest and snapshot_id not in self.held_snapshots:
+                    drop[env_name].append(snapshot)
+            for env_name, snapshots in drop.items():
+                # A removed env's snapshots go through any server that can delete them.
+                if env_name in self.train_envs.names:
+                    env = self.train_envs.get(env_name)
+                elif self.eval_envs is not None and env_name in self.eval_envs.names:
+                    env = self.eval_envs.get(env_name)
+                else:
+                    env = next(iter(self.train_envs))
+                try:
+                    deleted = await env.discard_checkpoints(snapshots)
+                except Exception as e:  # a failed sweep retries with the next one
+                    get_logger().warning(f"Deleting {len(snapshots)} snapshots of {env_name} failed: {e!r}")
+                    continue
+                for snapshot in deleted:
+                    self.snapshots.pop(snapshot, None)
+            if not self.sweep_again:
+                return
+
+    async def interrupt_inflight(self, timeout: float) -> None:
+        """Interrupt the in-flight rollouts for a checkpoint to save: stop dispatching,
+        have every env server interrupt its rollouts, and wait until each has streamed
+        the restore point its interrupt took, or its run replied. They stay in flight
+        (``interrupting``), so ``open_work`` saves them with those restore points. A
+        filesystem checkpoint waits up to ``timeout`` for the rollout's next model call."""
+        self.interrupting = True
+        started = time.time()
+        envs = [*(self.train_envs or ()), *(self.eval_envs or ())]
+        replies = await asyncio.gather(*(env.interrupt(timeout) for env in envs), return_exceptions=True)
+        interrupted, checkpointed = 0, set()
+        for env, reply in zip(envs, replies):
+            if isinstance(reply, BaseException):
+                get_logger().warning(f"Interrupting the rollouts of {env.name} failed: {reply!r}")
+                continue
+            interrupted += reply[0]
+            checkpointed |= reply[1]
+
+        def settled(task: asyncio.Task, meta: InflightEpisode) -> bool:
+            # Only a rollout that took a checkpoint has a restore point to wait for; one
+            # interrupted before its harness ran (still booting) starts over.
+            if task.done() or meta.assembly is None or not checkpointed & set(meta.assembly.traces):
+                return True
+            return any(point["checkpoint"].get("captured", 0) >= started for point in meta.assembly.restores.values())
+
+        # The interrupt returns once every rollout took its checkpoint; the restore
+        # point streams when the checkpoint is restorable.
+        deadline = time.monotonic() + INTERRUPT_SETTLE_SECONDS
+        while not all(settled(task, meta) for task, meta in self.inflight.items()):
+            if time.monotonic() > deadline:
+                break
+            await asyncio.sleep(0.5)
+        restored = sum(1 for meta in self.inflight.values() if inflight_restore(meta) is not None)
+        get_logger().info(
+            f"Interrupted {interrupted} rollouts, {len(checkpointed)} with a checkpoint; "
+            f"{restored} of {len(self.inflight)} in flight have a restore point"
+        )
+
+    def queued_results(self) -> list[DispatchResult]:
+        """The results waiting in ``out_q`` for the orchestrator, without taking them."""
+        return list(self.out_q._queue)
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
         """Delete the training arrays env servers kept for episodes no sink will see."""
@@ -607,11 +804,15 @@ class Dispatcher:
 
     async def handle_completed_request(self, task: asyncio.Task) -> None:
         """Emit the terminal result of one dispatched environment request."""
+        if self.interrupting and _interrupted(task):
+            self.held.add(task)
+            return  # stays in flight for the checkpoint (``interrupt_inflight``)
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
         self.retire(meta)
         self.release(refund_admission=True)
+        self.sweep_snapshots()
         group = self.groups.get(meta.group_id)
 
         if task.cancelled():
@@ -757,6 +958,7 @@ class Dispatcher:
 
         if claimed:
             await self._cancel_claimed([task for task, _ in claimed])
+        self.sweep_snapshots()
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
