@@ -235,8 +235,9 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
-        self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
+        # The launcher-set $PRL_RUN_ID is the run identity; a hosted launch sets only the
+        # platform's $RUN_ID, and standalone runs mint a local one.
+        self.run_id = os.environ.get("PRL_RUN_ID") or os.environ.get("RUN_ID") or uuid.uuid4().hex
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
