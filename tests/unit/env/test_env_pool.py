@@ -1,11 +1,9 @@
-"""The env server ships its env config to workers as plain data: `env_config_data`
-dumps it and `resolve_env_config` rebuilds the env's own config class, role-typed seats
+"""The env server ships its env config to workers as plain data: a JSON-mode
+`model_dump` and `resolve_env_config` rebuilds the env's own config class, role-typed seats
 included."""
 
 import pytest
 from verifiers.v1.utils.loaders import resolve_env_config
-
-from prime_rl.env import env_config_data
 
 
 @pytest.mark.parametrize(
@@ -23,6 +21,6 @@ from prime_rl.env import env_config_data
 )
 def test_env_config_survives_the_wire(data: dict) -> None:
     config = resolve_env_config(data)
-    rebuilt = resolve_env_config(env_config_data(config))
+    rebuilt = resolve_env_config(config.model_dump(mode="json"))
     assert type(rebuilt) is type(config)
     assert rebuilt == config

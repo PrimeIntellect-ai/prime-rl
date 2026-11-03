@@ -7,8 +7,8 @@ from pathlib import Path
 
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
-from prime_rl.configs.env_server import EnvServerConfig, pool_serve_kwargs
-from prime_rl.env import env_config_data, serve_env, set_episode_hook
+from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.env import serve_env, set_episode_hook
 from prime_rl.orchestrator.utils import setup_env_server_logging
 from prime_rl.transports.payload import PayloadHook
 from prime_rl.utils.config import cli
@@ -46,17 +46,17 @@ def run_server(config: EnvServerConfig):
     # ``serve.pool`` (static or elastic) sizes the server. serve_env applies the worker
     # setup in this process and in every spawned worker.
     serve_env(
-        **pool_serve_kwargs(config.serve.pool),
+        pool=config.serve.pool,
         address=config.serve.address or "tcp://127.0.0.1:0",
         address_queue=addresses,
-        log_setup=partial(
+        worker_setup=partial(
             setup_worker,
             config.log.level,
             config.log.json_logging,
             sandbox_labels,
             config.serve.address,
         ),
-        config_data=env_config_data(config.env),
+        config_data=config.env.model_dump(mode="json"),
         max_concurrent=config.serve.max_concurrent,
     )
 

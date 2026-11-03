@@ -7,7 +7,6 @@ import msgpack
 import zmq
 import zmq.asyncio
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
@@ -91,8 +90,8 @@ class EnvServer:
     def __init__(
         self,
         config: EnvConfig,
-        address: str = "tcp://127.0.0.1:5000",
-        max_concurrent: int | None = None,
+        address: str,
+        max_concurrent: int | None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
@@ -108,7 +107,7 @@ class EnvServer:
                 f"{self.data_cls.__name__} excludes {excluded} from serialization — "
                 "a served task must survive the wire whole (drop exclude=True)"
             )
-        # This worker's episode bound (`--max-concurrent`), spanning requests.
+        # This worker's episode bound (`serve.max_concurrent`), spanning requests.
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
@@ -127,20 +126,6 @@ class EnvServer:
         # (address ending in `:0`), this is how we learn the actual port.
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
-    @classmethod
-    def run_server(cls, address_queue=None, **kwargs) -> None:
-        """Run a spawned server and report its concrete address when requested."""
-        server = cls(**kwargs)
-        if address_queue is not None:
-            address_queue.put(server.address)
-        try:
-            asyncio.run(server.run())
-        except KeyboardInterrupt:
-            # SIGTERM arrives as KeyboardInterrupt (see env.pool._arm_teardown) so the event
-            # loop runs its cleanup finallys; swallow it for a clean spawned-worker exit instead
-            # of a spurious multiprocessing traceback, matching serve_env's own handling.
-            pass
-
     def _build_task(self, task_data: dict) -> Task:
         """Rebuild a request's task from its wire data: validate into the taskset's
         declared `TaskData` type and wrap it in the declared `Task` with the config's
@@ -150,22 +135,17 @@ class EnvServer:
         data = self.data_cls.model_validate(task_data)
         return self.task_cls(data, self.env.config.taskset.task)
 
-    def _context(self, client_config: ClientConfig, model: str, sampling: SamplingConfig) -> ModelContext:
-        """The request's sampling context. No client is built or cached here — each
-        rollout constructs its own from `client_config` and closes it, so a request's
-        endpoint (and a training run's changing model) leaves nothing behind."""
-        return ModelContext(client=client_config, model=model, sampling=sampling)
-
     async def _run(self, req: RunRequest, client_id: bytes, request_id: bytes) -> RunResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
+        # No client is built or cached here — each rollout constructs its own from
+        # `req.client` and closes it, so a training run's changing model leaves nothing behind.
+        ctx = ModelContext(client=req.client, model=req.model, sampling=req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
 
         async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart([client_id, request_id, b"delta", pack(delta)], copy=False)
 
-        # The gate spans requests: `--max-concurrent` bounds this worker's episodes
-        # in flight the same way the in-process eval's semaphore does. The streamer
-        # ships each trace as it changes; the reply below carries only the rest.
+        # The gate spans requests: it bounds this worker's episodes in flight. The
+        # streamer ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
             episode = await self.env.run_slot(slot, ctx, self._gate, on_trace=streamer.watch)

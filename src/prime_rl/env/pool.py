@@ -33,8 +33,9 @@ from collections.abc import Callable
 import msgpack
 import zmq
 import zmq.asyncio
-from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.utils.loaders import resolve_env_config
 
+from prime_rl.configs.env_server import ElasticPoolConfig, PoolConfig, StaticPoolConfig
 from prime_rl.env.server import LATE_CANCEL_SECONDS, EnvServer
 from prime_rl.env.types import CancelResponse, HealthResponse
 from prime_rl.utils.logger import get_logger
@@ -71,26 +72,26 @@ def _arm_teardown(death_pipe=None) -> None:
 class EnvServerPool:
     """ROUTER broker that elastically scales worker processes (least-busy dispatch).
 
-    With `elastic=True` (default) it starts with a single worker and spawns another
-    whenever in-flight requests reach 90% of current capacity (`workers * multiplex`), up
-    to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
-    pre-spawns all `max_workers` upfront (fixed-pool behavior)."""
+    An elastic pool starts with a single worker and spawns another whenever in-flight
+    requests reach 90% of current capacity (`workers * multiplex`), up to `max_workers`.
+    Upscale-only for now — workers are never reclaimed. A static pool pre-spawns all
+    `num_workers` upfront."""
 
     def __init__(
         self,
-        server_kwargs: dict,
-        max_workers: int | None,
+        pool: ElasticPoolConfig | StaticPoolConfig,
         address: str,
-        log_setup: Callable[[], None] | None = None,
-        multiplex: int = 128,
-        elastic: bool = True,
+        config_data: dict,
+        max_concurrent: int | None,
+        worker_setup: Callable[[], None] | None,
     ) -> None:
-        self.server_kwargs = server_kwargs
-        self.max_workers = max_workers
-        self.multiplex = multiplex
-        self.elastic = elastic
-        self.log_setup = log_setup
-        self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-", dir="/tmp")
+        self.pool = pool
+        self.elastic = isinstance(pool, ElasticPoolConfig)
+        self.max_workers = pool.max_workers if self.elastic else pool.num_workers
+        self.config_data = config_data
+        self.max_concurrent = max_concurrent
+        self.worker_setup = worker_setup
+        self._ipc_dir = tempfile.mkdtemp(prefix="prl-env-pool-", dir="/tmp")
         self.workers: list[dict] = []
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
@@ -114,11 +115,12 @@ class EnvServerPool:
         proc = self._mpctx.Process(
             target=serve_env,
             kwargs=dict(
-                max_workers=1,
+                pool=StaticPoolConfig(num_workers=1),
                 address=address,
+                config_data=self.config_data,
+                max_concurrent=self.max_concurrent,
                 death_pipe=child_conn,
-                log_setup=self.log_setup,
-                **self.server_kwargs,
+                worker_setup=self.worker_setup,
             ),
             daemon=False,
         )
@@ -147,7 +149,7 @@ class EnvServerPool:
         up once already saturated. `max_workers=None` scales without a cap."""
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
-        if in_flight >= 0.9 * len(self.workers) * self.multiplex:
+        if in_flight >= 0.9 * len(self.workers) * self.pool.multiplex:
             self._spawn_worker()
             get_logger().info(
                 f"EnvServerPool scaled up to {len(self.workers)}/{self._cap_str} workers (in_flight={in_flight})"
@@ -160,9 +162,8 @@ class EnvServerPool:
     async def run(self) -> None:
         self._poller = zmq.asyncio.Poller()
         self._poller.register(self.frontend, zmq.POLLIN)
-        # Elastic: start with one and scale up on demand. Otherwise pre-spawn the lot
-        # (`max_workers` is a concrete count when elastic is off).
-        for _ in range(1 if self.elastic else (self.max_workers or 1)):
+        # Elastic: start with one and scale up on demand. Static: pre-spawn the lot.
+        for _ in range(1 if self.elastic else self.max_workers):
             self._spawn_worker()
         # request_id -> {client_id, worker}
         pending: dict[bytes, dict] = {}
@@ -170,8 +171,7 @@ class EnvServerPool:
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
         get_logger().info(
-            f"EnvServerPool up (address={self.address}, workers={len(self.workers)}/{self._cap_str}, "
-            f"multiplex={self.multiplex}, elastic={self.elastic})"
+            f"EnvServerPool up (address={self.address}, workers={len(self.workers)}/{self._cap_str}, pool={self.pool!r})"
         )
         try:
             in_flight = 0
@@ -295,74 +295,42 @@ class EnvServerPool:
         get_logger().info("EnvServerPool down")
 
 
-def env_config_data(env: EnvConfig) -> dict:
-    """A picklable dict of a (possibly dynamically-narrowed, unpicklable) env config —
-    ship this across a process boundary, then rebuild via `resolve_env_config`
-    (re-narrowing to the env's concrete config class)."""
-    return env.model_dump(mode="json")
-
-
 def serve_env(
     *,
-    max_workers: int | None,
-    address: str | None = None,
+    pool: PoolConfig,
+    address: str,
+    config_data: dict,
+    max_concurrent: int | None,
     address_queue=None,
     death_pipe=None,
-    log_setup: Callable[[], None] | None = None,
-    multiplex: int = 128,
-    elastic: bool = True,
-    **server_kwargs,
+    worker_setup: Callable[[], None] | None = None,
 ) -> None:
-    """Serve one env over ZMQ: a single in-process `EnvServer` when `max_workers <= 1`,
-    else an `EnvServerPool` broker over up to `max_workers` worker processes (`None` =
-    unbounded). The frontend speaks the same protocol either way, so the client is
-    identical. Reports the bound address on `address_queue` (for a spawner that passed an
-    OS-assigned `:0`). `address` None binds the default loopback `tcp://127.0.0.1:5000`.
+    """Serve one env over ZMQ: a single in-process `EnvServer` for a static pool of one
+    worker, else an `EnvServerPool` broker over worker processes. The frontend speaks the
+    same protocol either way, so the client is identical. Reports the bound address on
+    `address_queue` (for a spawner that passed an OS-assigned `:0`).
 
-    `elastic` (default True) starts the pool at one worker and scales up to `max_workers`
-    as load grows; `multiplex` is the per-worker capacity for the scale-up trigger (spawn
-    the next worker at 90% of `workers * multiplex` in-flight). `elastic=False` pre-spawns
-    all `max_workers`.
+    `config_data` is the env config as plain data (`model_dump(mode="json")`), since a
+    dynamically-narrowed config type can't be pickled into spawned workers.
 
-    The env config may be passed as `config` (an object) or `config_data` (the
-    picklable dict from `env_config_data`, for callers that spawn this function and so
-    can't pickle a dynamically-narrowed config type).
+    `worker_setup` (a picklable callable) runs in this process and every spawned worker —
+    without it a spawned server inherits no log handlers and its logs are silently dropped.
 
-    `log_setup` (a picklable callable) configures logging for this process and every
-    spawned worker — without it a spawned server inherits no handlers and its INFO logs
-    (rollout start/done, the pool line) are silently dropped.
-
-    `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
-    self-terminate if that parent dies abruptly — see `_arm_teardown`."""
+    `death_pipe` (when spawned by a pool) makes this server self-terminate if its parent
+    dies abruptly — see `_arm_teardown`."""
     # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
     # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
     _arm_teardown(death_pipe)
-    if log_setup is not None:
-        log_setup()
-    address = address or "tcp://127.0.0.1:5000"
+    if worker_setup is not None:
+        worker_setup()
     try:
-        if max_workers is None or max_workers > 1:
-            if "config" in server_kwargs:  # dict-ify for the workers (config_data is picklable)
-                server_kwargs = {**server_kwargs}
-                server_kwargs["config_data"] = env_config_data(server_kwargs.pop("config"))
-            pool = EnvServerPool(
-                server_kwargs,
-                max_workers,
-                address,
-                log_setup,
-                multiplex,
-                elastic,
-            )
-            if address_queue is not None:
-                address_queue.put(pool.address)
-            asyncio.run(pool.run())
+        if isinstance(pool, StaticPoolConfig) and pool.num_workers == 1:
+            server = EnvServer(resolve_env_config(config_data), address, max_concurrent)
         else:
-            if "config_data" in server_kwargs:  # rebuild the env config for an in-process server
-                from verifiers.v1.utils.loaders import resolve_env_config
-
-                server_kwargs = {**server_kwargs}
-                server_kwargs["config"] = resolve_env_config(server_kwargs.pop("config_data"))
-            EnvServer.run_server(address=address, address_queue=address_queue, **server_kwargs)
+            server = EnvServerPool(pool, address, config_data, max_concurrent, worker_setup)
+        if address_queue is not None:
+            address_queue.put(server.address)
+        asyncio.run(server.run())
     except KeyboardInterrupt:
         pass
     except Exception:

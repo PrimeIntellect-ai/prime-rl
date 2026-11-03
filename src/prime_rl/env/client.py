@@ -63,7 +63,7 @@ def _unpack_all(payloads: list[memoryview]) -> list[object]:
 class EnvClient:
     """Receive streamed episodes, decoding each drained batch of frames at once."""
 
-    def __init__(self, address: str = "tcp://127.0.0.1:5000") -> None:
+    def __init__(self, address: str) -> None:
         self.address = address
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.DEALER)

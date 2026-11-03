@@ -33,32 +33,17 @@ PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator
 
 class ServeConfig(BaseConfig):
     """The `[serve]` block: the worker pool, the ZMQ address, and each worker's
-    episode bound. Read by whoever hosts the env — a server-backed eval, a
-    trainer's env-server process."""
+    episode bound."""
 
     pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
     """Worker-pool sizing. `elastic` (default) starts at one worker and scales up on
     demand; `static` pre-spawns a fixed `num_workers`."""
     address: str | None = None
-    """ZMQ address the ROUTER binds (and clients connect to). None leaves the choice
-    to whoever hosts the env — `serve_env` falls back to its default loopback bind, a
-    launcher may derive one per server."""
+    """ZMQ address the ROUTER binds (and clients connect to). None binds an OS-assigned
+    loopback port and publishes it through the server's address file."""
     max_concurrent: int | None = Field(None, ge=1)
-    """Episodes in flight per worker (None = take the run's own bound, e.g. an eval's
-    `--max-concurrent`). Pin it to hold a worker below what the run asks for; how many
-    agent runs one episode carries is the env's own
-    (`--env.max-concurrent-agents`, one at a time by default)."""
-
-
-def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
-    """Unpack a pool config into `serve_env` kwargs (`max_workers` / `multiplex` / `elastic`)."""
-    if isinstance(pool, ElasticPoolConfig):
-        return {
-            "max_workers": pool.max_workers,
-            "multiplex": pool.multiplex,
-            "elastic": True,
-        }
-    return {"max_workers": pool.num_workers, "elastic": False}
+    """Episodes in flight per worker (None = unbounded). How many agent runs one episode
+    carries is the env's own (`--env.max-concurrent-agents`, one at a time by default)."""
 
 
 class EnvServerConfig(BaseConfig):
