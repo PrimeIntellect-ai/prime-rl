@@ -16,8 +16,7 @@ Scaling is elastic but upscale-only: a new worker is spawned when in-flight requ
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
 broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
-monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
-so worker death is rare).
+monitors (rollout errors are returned as data, not crashes, so worker death is rare).
 """
 
 import asyncio
@@ -305,8 +304,8 @@ def serve_env(
     death_pipe=None,
     worker_setup: Callable[[], None] | None = None,
 ) -> None:
-    """Serve one env over ZMQ: a single in-process `EnvServer` for a static pool of one
-    worker, else an `EnvServerPool` broker over worker processes. The frontend speaks the
+    """Serve one env over ZMQ: a single in-process `EnvServer` when the pool is capped at
+    one worker, else an `EnvServerPool` broker over worker processes. The frontend speaks the
     same protocol either way, so the client is identical. Reports the bound address on
     `address_queue` (for a spawner that passed an OS-assigned `:0`).
 
@@ -324,7 +323,8 @@ def serve_env(
     if worker_setup is not None:
         worker_setup()
     try:
-        if isinstance(pool, StaticPoolConfig) and pool.num_workers == 1:
+        cap = pool.max_workers if isinstance(pool, ElasticPoolConfig) else pool.num_workers
+        if cap is not None and cap <= 1:
             server = EnvServer(resolve_env_config(config_data), address, max_concurrent)
         else:
             server = EnvServerPool(pool, address, config_data, max_concurrent, worker_setup)
