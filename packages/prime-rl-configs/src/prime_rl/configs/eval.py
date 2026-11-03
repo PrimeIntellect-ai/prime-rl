@@ -4,10 +4,11 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import (
     ClientConfig,
+    ControlConfig,
     HeartbeatConfig,
     LogConfig,
     RunConfig,
@@ -33,6 +34,10 @@ class ServedEvalConfig(EvalSourcesConfig):
     episode counts once, so a group of ``group_size`` episodes counts ``group_size``
     times. Use it for sandbox-backed environments to pace provisioning during
     autoscaling. None disables it."""
+
+    control: ControlConfig | None = None
+    """Serve the eval's control API, which reads and sets its concurrency while it runs
+    (``GET``/``PUT /v1/concurrency``). If None, it takes no control requests."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat for the run: pinged by landed episodes — the first
@@ -103,7 +108,7 @@ class EvalConfig(ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
+    monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     @property
@@ -167,14 +172,9 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
-
-    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
-    converts the trainer's ``[monitors.prime]`` into a
-    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
-    type would drop (or forbid) the prime block at the eval.json
-    dump/re-parse boundary."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``): the
+    trainer's, so the process logs to the trainer's W&B and Prime runs."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):

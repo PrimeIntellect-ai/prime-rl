@@ -39,7 +39,7 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
-max_off_policy_steps = 16
+max_staleness = 16
 
 [orchestrator.train]
 group_size = 8

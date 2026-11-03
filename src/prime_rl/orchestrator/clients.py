@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -132,6 +133,7 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
+        self._modelexpress_lock = asyncio.Lock()
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -202,12 +204,77 @@ class AdminPlane:
             transfer_times = await _post_all(
                 self.clients,
                 "/update_weights",
-                json={"weight_dir": weight_dir_posix},
+                json={"weight_dir": weight_dir_posix, "weight_version": step},
                 timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
         finally:
             resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
+
+    async def update_modelexpress_weights(
+        self,
+        *,
+        version_uid: str,
+        step: int = 0,
+        on_paused: Callable[[], None] | None = None,
+    ) -> None:
+        """Install an exact MX version; keep inference paused if installation is uncertain."""
+        async with self._modelexpress_lock:
+            if not version_uid:
+                raise ValueError("modelexpress requires version_uid")
+            pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
+            if on_paused is not None:
+                on_paused()
+
+            async def install(client) -> float:
+                start = time.perf_counter()
+                response = await client.post(
+                    "/update_weights_from_modelexpress",
+                    json={"version_uid": version_uid, "weight_version": step},
+                    timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                )
+                response.raise_for_status()
+                return time.perf_counter() - start
+
+            results = await asyncio.gather(*(install(client) for client in self.clients), return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            resume_times = await _resume_engines(self.clients)
+            self.update_times = {"pause": pause_times, "transfer": results, "resume": resume_times}
+
+    async def initialize_modelexpress(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        staging_buffer_bytes: int | None,
+        staging_buffers_count: int,
+    ) -> None:
+        workers_per_server = inference_world_size // len(self.clients)
+        if workers_per_server < 1 or inference_world_size % len(self.clients):
+            raise ValueError("modelexpress requires an equal number of workers per inference server")
+        session_id = uuid.uuid4().hex
+
+        async def initialize(index, client):
+            response = await client.post(
+                "/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "timeout": timeout,
+                    "rank_offset": index * workers_per_server,
+                    "inference_world_size": inference_world_size,
+                    "session_id": session_id,
+                    "staging_buffer_bytes": staging_buffer_bytes,
+                    "staging_buffers_count": staging_buffers_count,
+                },
+                timeout=max(ADMIN_TIMEOUT_S, timeout),
+            )
+            response.raise_for_status()
+
+        await asyncio.gather(*(initialize(index, client) for index, client in enumerate(self.clients)))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -475,7 +542,7 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path, step: int) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
@@ -499,6 +566,7 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
+            params={"weight_version": step},
             timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
         )
         response.raise_for_status()

@@ -1,6 +1,6 @@
 """Live traces: the in-flight rollouts, one file of deltas per trace.
 
-Env servers stream every rollout as it happens (``verifiers.v1.serve.delta``): the
+Env servers stream every rollout as it happens (``prime_rl.env.delta``): the
 trace's header when it is minted, then each committed turn and each phase change. The
 file monitor appends those deltas to ``traces/live/<trace_id>.jsonl`` — the first line
 also carries the ``dispatch`` identity (kind, env, group, task, step) — and deletes the
@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import orjson
-from verifiers.v1.serve import EpisodeAssembly
 
+from prime_rl.env import EpisodeAssembly
 from prime_rl.monitors.file.traces import get_trace_dir
 
 STAGES = ("pending", "boot", "setup", "running", "finalize", "scoring", "done", "error")

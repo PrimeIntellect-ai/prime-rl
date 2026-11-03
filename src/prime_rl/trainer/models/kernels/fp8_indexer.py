@@ -1,18 +1,39 @@
-"""Triton FP8 indexer kernel for DSA sparse token selection.
+"""FP8 indexer for DSA sparse token selection: DeepGEMM scoring + top-k.
 
 Scoring formula: I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
 
 FP8 quantization vendored from vLLM (Apache 2.0).
 """
 
+import functools
+import importlib.util
+
 import torch
+import torch.distributed as dist
 import triton
 import triton.language as tl
+
+from prime_rl.utils.logger import get_logger
 
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
-KEY_ALIGNMENT = 16
+# 256 fp32 logits = the 1 KiB row-stride alignment DeepSelect requires.
+KEY_ALIGNMENT = 256
+LOGITS_CHUNK_BYTES = 1 << 30
+MIN_CHUNK_ROWS = 512
+DEEP_SELECT_MAX_TOPK = 4096
+# Per-row cost: scored keys + TOPK_COST_PER_KEY * (causal top-k end + clean_logits row), fitted on H200.
+TOPK_COST_PER_KEY = 0.13
+
+
+@functools.cache
+def _deep_select_supported(device: torch.device) -> bool:
+    """DeepSelect is built for sm_90a, sm_100a and sm_103a only."""
+    capability = torch.cuda.get_device_capability(device)
+    supported = importlib.util.find_spec("deep_select") is not None and capability in ((9, 0), (10, 0), (10, 3))
+    get_logger().info(f"DSA indexer top-k uses {'DeepSelect' if supported else 'torch.topk'}")
+    return supported
 
 
 @triton.jit
@@ -89,73 +110,34 @@ def per_token_group_quant_fp8(
     return x_q, x_s
 
 
-@triton.jit
-def _triton_fp8_indexer_kernel(
-    Q_fp8,
-    K_fp8,
-    K_scales,
-    W,
-    Out,
-    KS,
-    KE,
-    S_Q,
-    S_K,
-    stride_qh,
-    stride_qs,
-    stride_ks,
-    stride_ws,
-    H: tl.constexpr,
-    D: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
+    """Indices of the `topk` largest logits in each row, in no particular order.
 
-    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    offs_d = tl.arange(0, D)
+    Logits at and past a row's end `ke` must be -inf. Slots that can only hold an -inf logit are either
+    `sentinel` or an index outside the row's range, so the caller masks by range. Uses DeepSelect where it
+    is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several tied logits
+    fills the last slots.
+    """
+    n_rows, n_cols = logits.shape
+    actual_topk = min(topk, n_cols)
+    if 0 < actual_topk <= DEEP_SELECT_MAX_TOPK and _deep_select_supported(logits.device):
+        import deep_select
 
-    mask_m = offs_m < S_Q
-    mask_n = offs_n < S_K
-
-    ks_vals = tl.load(KS + offs_m, mask=mask_m, other=S_K)
-    ke_vals = tl.load(KE + offs_m, mask=mask_m, other=0)
-
-    offs_m_64 = offs_m.to(tl.int64)
-    offs_n_64 = offs_n.to(tl.int64)
-    out_ptrs = Out + offs_m_64[:, None] * S_K + offs_n_64[None, :]
-    out_mask = mask_m[:, None] & mask_n[None, :]
-
-    ks_min = tl.min(ks_vals)
-    ke_max = tl.max(ke_vals)
-    n_lo = pid_n * BLOCK_N
-
-    if n_lo >= ke_max or n_lo + BLOCK_N <= ks_min:
-        tl.store(out_ptrs, tl.full([BLOCK_M, BLOCK_N], float("-inf"), tl.float32), mask=out_mask)
-        return
-
-    # Clamp indices for FP8 loads (can't use mask+other with fp8 dtype)
-    offs_n_safe = tl.minimum(offs_n, S_K - 1)
-    offs_m_safe = tl.minimum(offs_m, S_Q - 1)
-
-    k_block = tl.load(K_fp8 + offs_n_safe[:, None] * stride_ks + offs_d[None, :])
-    k_sc = tl.load(K_scales + offs_n_safe, mask=mask_n, other=0.0).to(tl.float32)
-
-    acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-
-    for h in range(H):
-        q_h = tl.load(Q_fp8 + h * stride_qh + offs_m_safe[:, None] * stride_qs + offs_d[None, :])
-        w_h = tl.load(W + offs_m * stride_ws + h, mask=mask_m, other=0.0).to(tl.float32)
-
-        scores = tl.dot(q_h, tl.trans(k_block)).to(tl.float32)
-        scores = tl.maximum(scores, 0.0) * k_sc[None, :]
-        acc += scores * w_h[:, None]
-
-    valid = (offs_n[None, :] >= ks_vals[:, None]) & (offs_n[None, :] < ke_vals[:, None])
-    acc = tl.where(valid, acc, float("-inf"))
-
-    tl.store(out_ptrs, acc, mask=out_mask)
+        _, indices = deep_select.topk(
+            logits,
+            actual_topk,
+            end=ke,
+            indices_type=torch.int32,
+            idx_oob_fill_value=sentinel,
+            return_value=False,
+            abort_when_nan_found=False,
+        )
+    else:
+        _, indices = torch.topk(logits, actual_topk, dim=-1)
+    if actual_topk < topk:
+        padding = torch.full((n_rows, topk - actual_topk), sentinel, dtype=indices.dtype, device=logits.device)
+        indices = torch.cat([indices, padding], dim=-1)
+    return indices
 
 
 @torch.library.custom_op("prime_rl::fp8_indexer", mutates_args=())
@@ -168,8 +150,9 @@ def fp8_indexer(
     topk: int,
     weight_scale: float = 1.0,
     amax_floor: float = FP8_EPS,
+    cp_group_name: str | None = None,
 ) -> torch.Tensor:
-    """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
+    """FP8 indexer: UE8M0 quantization + DeepGEMM `fp8_mqa_logits` scoring + topk.
 
     Args:
         q: [S_q, H, D] bf16 query vectors per head
@@ -180,6 +163,7 @@ def fp8_indexer(
         topk: number of top indices to return
         weight_scale: constant scaling factor for weights
         amax_floor: lower bound on each query head's and key's absolute maximum before its UE8M0 scale is taken
+        cp_group_name: contiguous CP group; rank r and rank P-1-r split their causal scoring work, same output
 
     Returns:
         [S_q, topk] int32 selected token indices per query (sentinel = S_k)
@@ -188,61 +172,118 @@ def fp8_indexer(
     # This is not a problem result-wise, as it is a constant multiplier
     S_q, H, D = q.shape
     S_k = k.shape[0]
-    device = q.device
 
     q_flat = q.reshape(S_q * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True, eps=amax_floor)
-    S_k_aligned = triton.cdiv(S_k, KEY_ALIGNMENT) * KEY_ALIGNMENT
+    S_k_aligned = triton.cdiv(max(S_k, 1), KEY_ALIGNMENT) * KEY_ALIGNMENT
     k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
     k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
 
-    q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
+    q_fp8 = q_fp8.view(S_q, H, D)
+    k_scales = k_scales.view(S_k_aligned)
 
     # Fold q_scale into weights
     q_scales = q_scales.view(S_q, H)
     w = w * q_scales
 
-    logits = torch.empty(S_q, S_k_aligned, dtype=torch.float32, device=device)
+    indices = torch.empty((S_q, topk), dtype=torch.int32, device=q.device)
+    chunk_rows = max(MIN_CHUNK_ROWS, LOGITS_CHUNK_BYTES // (4 * S_k_aligned))
+    if cp_group_name is None:
+        _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices)
+        return indices
 
-    BLOCK_M, BLOCK_N = 64, 128
-    grid = (triton.cdiv(S_q, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
-    _triton_fp8_indexer_kernel[grid](
-        q_fp8,
-        k_fp8,
-        k_scales,
-        w,
-        logits,
-        ks,
-        ke,
-        S_q,
-        S_k_aligned,
-        q_fp8.stride(0),
-        q_fp8.stride(1),
-        k_fp8.stride(0),
-        w.stride(0),
-        H=H,
-        D=D,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        num_warps=4,
-        num_stages=2,
-    )
+    group = dist.distributed_c10d._resolve_process_group(cp_group_name)
+    rank, world_size = group.rank(), group.size()
+    partner = world_size - 1 - rank
+    row_costs = _row_costs(ks, ke, S_k_aligned)
+    chunk_costs = torch.stack([chunk.sum() for chunk in row_costs.split(chunk_rows)])
+    all_chunk_costs = chunk_costs.new_empty(world_size, chunk_costs.numel())
+    dist.all_gather_into_tensor(all_chunk_costs, chunk_costs, group=group)
+    all_chunk_costs = all_chunk_costs.tolist()
+    send_chunks, recv_chunks = cp_balance_plan(all_chunk_costs[rank], all_chunk_costs[partner])
+    n_chunks = len(chunk_costs)
+    keep = min(S_q, (n_chunks - send_chunks) * chunk_rows)
+    recv_rows = S_q - min(S_q, (n_chunks - recv_chunks) * chunk_rows)
+    peer = dist.get_global_rank(group, partner)
 
-    actual_topk = min(topk, S_k)
-    _, indices = torch.topk(logits, actual_topk, dim=-1)
-    if actual_topk < topk:
-        padding = torch.full((S_q, topk - actual_topk), S_k, dtype=indices.dtype, device=device)
-        indices = torch.cat([indices, padding], dim=-1)
+    if send_chunks:
+        sent = [q_fp8[keep:].view(torch.uint8), w[keep:].contiguous(), ks[keep:], ke[keep:]]
+        works = dist.batch_isend_irecv([dist.P2POp(dist.isend, t, peer, group) for t in sent])
+    if recv_chunks:
+        received = [
+            torch.empty(recv_rows, H, D, dtype=torch.uint8, device=q.device),
+            w.new_empty(recv_rows, H),
+            ks.new_empty(recv_rows),
+            ke.new_empty(recv_rows),
+        ]
+        works = dist.batch_isend_irecv([dist.P2POp(dist.irecv, t, peer, group) for t in received])
 
-    # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
-    ks_exp = ks.unsqueeze(1).expand_as(indices)
-    ke_exp = ke.unsqueeze(1).expand_as(indices)
-    out_of_range = (indices < ks_exp) | (indices >= ke_exp)
-    indices = indices.masked_fill(out_of_range, S_k)
+    _select_topk(q_fp8[:keep], k_fp8, k_scales, w[:keep], ks[:keep], ke[:keep], S_k, chunk_rows, indices[:keep])
 
-    return indices.to(torch.int32)
+    if send_chunks:
+        for work in works:
+            work.wait()
+        dist.irecv(indices[keep:], peer, group).wait()
+    if recv_chunks:
+        for work in works:
+            work.wait()
+        q_recv, w_recv, ks_recv, ke_recv = received
+        partner_indices = torch.empty((recv_rows, topk), dtype=torch.int32, device=q.device)
+        _select_topk(
+            q_recv.view(torch.float8_e4m3fn),
+            k_fp8,
+            k_scales,
+            w_recv,
+            ks_recv,
+            ke_recv,
+            S_k,
+            chunk_rows,
+            partner_indices,
+        )
+        dist.isend(partner_indices, peer, group).wait()
+
+    return indices
+
+
+def _row_costs(ks: torch.Tensor, ke: torch.Tensor, S_k_aligned: int) -> torch.Tensor:
+    return (ke - ks).clamp_min(0).to(torch.float64) + TOPK_COST_PER_KEY * (ke.to(torch.float64) + S_k_aligned)
+
+
+def cp_balance_plan(own_chunk_costs: list[int], partner_chunk_costs: list[int]) -> tuple[int, int]:
+    """Returns how many trailing query chunks this rank sends to its partner and receives from it."""
+    own, partner = sum(own_chunk_costs), sum(partner_chunk_costs)
+    if own < partner:
+        return 0, _trailing_chunks_to_send(partner_chunk_costs, own)
+    return _trailing_chunks_to_send(own_chunk_costs, partner), 0
+
+
+def _trailing_chunks_to_send(chunk_costs: list[int], partner_cost: int) -> int:
+    total = sum(chunk_costs)
+    best_chunks, best_cost = 0, total
+    sent = 0
+    for n in range(1, len(chunk_costs) + 1):
+        sent += chunk_costs[-n]
+        cost = max(total - sent, partner_cost + sent)
+        if cost < best_cost:
+            best_chunks, best_cost = n, cost
+    return best_chunks
+
+
+def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
+    import deep_gemm
+
+    for start in range(0, q_fp8.shape[0], chunk_rows):
+        end = min(start + chunk_rows, q_fp8.shape[0])
+        logits = deep_gemm.fp8_mqa_logits(
+            q_fp8[start:end], (k_fp8, k_scales), w[start:end], ks[start:end], ke[start:end], clean_logits=True
+        )
+        chunk_indices = select_topk(logits, ke[start:end], indices.shape[1], S_k)
+        del logits
+        # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
+        out_of_range = (chunk_indices < ks[start:end, None]) | (chunk_indices >= ke[start:end, None])
+        indices[start:end] = chunk_indices.masked_fill_(out_of_range, S_k)
 
 
 @fp8_indexer.register_fake
-def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EPS):
+def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EPS, cp_group_name=None):
     return q.new_empty((q.shape[0], topk), dtype=torch.int32)

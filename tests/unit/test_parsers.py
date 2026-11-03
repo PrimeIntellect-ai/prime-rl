@@ -41,6 +41,8 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
+    # Muse Glimmer
+    ("meta-models/Muse-Glimmer-30B", "muse_glimmer", "muse_glimmer"),
     # gpt-oss (reasoning handled natively by vLLM's harmony path)
     ("openai/gpt-oss-20b", "openai", None),
     ("openai/gpt-oss-120b", "openai", None),

@@ -15,6 +15,7 @@ to the actual server.
 """
 
 import fcntl
+import functools
 import importlib.util
 import json
 import os
@@ -25,8 +26,13 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import CACHE_DIR
+
+if TYPE_CHECKING:
+    from prime_rl.configs.monitors import MonitorsConfig
 
 STATE_DIR = CACHE_DIR / "dashboard"
 DAEMON_FILE = STATE_DIR / "daemon.json"
@@ -78,7 +84,7 @@ def find_daemon(timeout: float = 1.0) -> dict | None:
 def ensure_dashboard(output_dir: Path, logger) -> str | None:
     """Register the run's output dir and make sure one dashboard daemon serves it.
 
-    Returns the dashboard URL (log it with ``log_dashboard_url``), or None when no
+    Returns the dashboard URL (log it with ``log_run_links``), or None when no
     daemon could be found or started (missing extra, non-interactive session, or
     startup failure).
     """
@@ -114,11 +120,49 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     return None
 
 
-def log_dashboard_url(logger, url: str | None) -> None:
-    """Banner pointing at the dashboard - meant as the launcher's last startup log."""
-    if url is None:
-        return
-    logger.opt(raw=True, colors=True).info(f"\n  <b>Dashboard</b> · <green><u>{url}</u></green>\n\n")
+LINK_NAMES = {"prime": "Prime", "wandb": "W&B"}
+
+
+def log_run_links(dashboard_url: str | None, links: Callable[[], dict[str, dict[str, str]]] | None = None) -> None:
+    """Banner pointing at the dashboard and each monitor's run pages - meant as the
+    launcher's last startup log. ``links`` blocks until the monitors published their
+    links (the components open their pages after they start). Bound with ``console``
+    so it reaches a console that only shows errors while the run is in flight."""
+    logger = get_logger().bind(console=True).opt(raw=True, colors=True)
+    printed = False
+
+    def show(name: str, url: str, suffix: str) -> None:
+        nonlocal printed
+        lead = "" if printed else "\n"
+        logger.info(f"{lead}  <b>{name:<9}</b> · <green><u>{url}</u></green>{suffix}\n")
+        printed = True
+
+    if dashboard_url is not None:
+        show("Dashboard", dashboard_url, "")
+    for monitor, urls in (links() if links is not None else {}).items():
+        for label, url in urls.items():
+            show(LINK_NAMES[monitor], url, f" ({label})" if len(urls) > 1 else "")
+    if printed:
+        logger.info("\n")
+
+
+def run_links(
+    run_dir: Path, attempt_log_dir: Path, monitors: "MonitorsConfig", stop: Callable[[], bool]
+) -> Callable[[], dict[str, dict[str, str]]] | None:
+    """The ``links`` argument of ``log_run_links``: waits for every monitor in
+    ``monitors`` that is on and can open a page, keyed by its config field. A monitor turned off by its mode variable (``$PRIME_RUNS_MODE``, an offline
+    or disabled ``$WANDB_MODE``) opens none; one without credentials fails its
+    component, which ends the wait through ``stop``."""
+    from prime_rl.utils.links import wait_for_links
+
+    opens_pages = {
+        "prime": monitors.prime is not None and (os.environ.get("PRIME_RUNS_MODE") or "online") == "online",
+        "wandb": monitors.wandb is not None and os.environ.get("WANDB_MODE") not in ("offline", "disabled"),
+    }
+    waited = [key for key, opens in opens_pages.items() if opens]
+    if not waited:
+        return None
+    return functools.partial(wait_for_links, run_dir, attempt_log_dir, waited, stop)
 
 
 def main() -> None:

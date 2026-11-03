@@ -33,9 +33,10 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
-from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
+from prime_rl.trainer.model import setup_model, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
@@ -119,7 +120,7 @@ def setup_single_process_env() -> None:
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     model.config.save_pretrained(output_dir)
-    if model.generation_config:
+    if getattr(model, "generation_config", None):
         # training sets use_cache=False which can conflict with cache_implementation —
         # save with use_cache=True without mutating the model's config
         gen_config = deepcopy(model.generation_config)

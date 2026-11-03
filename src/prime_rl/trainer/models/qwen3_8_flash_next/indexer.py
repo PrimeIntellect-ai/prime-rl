@@ -18,10 +18,11 @@ class SparseAttentionIndexer(nn.Module):
         compression_ratio: int,
         norm_eps: float,
     ) -> None:
-        import prime_kernels
-
         super().__init__()
-        self.select_indexed_blocks = prime_kernels.load("indexed_attention").select_indexed_blocks
+        if torch.cuda.is_available():
+            import prime_kernels
+
+            self.select_indexed_blocks = prime_kernels.load("indexed_attention").select_indexed_blocks
         self.num_query_heads = num_query_heads
         self.head_dim = head_dim
         self.token_budget = token_budget

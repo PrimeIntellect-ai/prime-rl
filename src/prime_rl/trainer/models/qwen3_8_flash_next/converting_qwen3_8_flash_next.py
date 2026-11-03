@@ -1,13 +1,15 @@
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
+from prime_rl.trainer.models.conversion_ops import ChunkedConvOp, ConvOp, Drop, Rename, SplitConcat
+from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 
 
 @dataclass
-class NGramEmbeddingWeights(ConvOp):
+class NGramEmbeddingWeights(ChunkedConvOp):
     checkpoint_prefix: str
     runtime_weight: str
     shard_count: int
@@ -25,15 +27,16 @@ class NGramEmbeddingWeights(ConvOp):
             dim=0,
         )
 
-    def prime_to_hf(self, state_dict: dict[str, Tensor]) -> None:
-        if self.runtime_weight not in state_dict:
-            return
-
-        weight = state_dict.pop(self.runtime_weight)
+    def iter_prime_to_hf(
+        self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor | None]
+    ) -> Iterator[dict[str, Tensor] | None]:
         shard_size = (weight.shape[0] + self.shard_count - 1) // self.shard_count
         for index in range(self.shard_count):
-            start = index * shard_size
-            state_dict[f"{self.checkpoint_prefix}.shard_{index}.weight"] = weight[start : start + shard_size]
+            start = min(index * shard_size, weight.shape[0])
+            stop = min(start + shard_size, weight.shape[0])
+            chunk = resolve_rows(weight, start, stop)
+            yield {f"{self.checkpoint_prefix}.shard_{index}.weight": chunk} if chunk is not None else None
+            del chunk
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -43,19 +46,13 @@ def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return any(
-        name.endswith("mlp.experts.gate_proj") or name.endswith("ple_embedding.ngram_embedding.weight")
-        for name in state_dict
-    )
+    return any(name.endswith("mlp.experts.gate_proj") or ".ngram.tables." in name for name in state_dict)
 
 
 def conversion_chain(config) -> list[ConvOp]:
     text_config = getattr(config, "text_config", config)
     model_prefix = "model.language_model" if hasattr(config, "text_config") else "model"
-    operations: list[ConvOp] = [
-        Drop("model.visual.", is_prefix=True),
-        Drop("mtp.", is_prefix=True),
-    ]
+    operations: list[ConvOp] = [Drop("mtp.", is_prefix=True)]
 
     for layer_index in range(text_config.num_hidden_layers):
         prefix = f"{model_prefix}.layers.{layer_index}.mlp"
@@ -78,13 +75,17 @@ def conversion_chain(config) -> list[ConvOp]:
         )
 
     for layer_index in (layer_id - 1 for layer_id in sorted(text_config.ple_layer_ids)):
-        prefix = f"{model_prefix}.layers.{layer_index}.ple.ple_embedding.ngram_embedding"
+        checkpoint_prefix = f"{model_prefix}.layers.{layer_index}.ple.ple_embedding"
+        runtime_prefix = f"{model_prefix}.ngram.tables.{layer_index}"
         operations.append(
             NGramEmbeddingWeights(
-                checkpoint_prefix=prefix,
-                runtime_weight=f"{prefix}.weight",
+                checkpoint_prefix=f"{checkpoint_prefix}.ngram_embedding",
+                runtime_weight=f"{runtime_prefix}.weight",
                 shard_count=text_config.split_ngram_parts,
             )
+        )
+        operations.extend(
+            Rename(f"{checkpoint_prefix}.{buffer}", f"{runtime_prefix}.{buffer}") for buffer in LAYOUT_BUFFERS
         )
     return operations
 

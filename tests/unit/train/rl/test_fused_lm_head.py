@@ -126,6 +126,41 @@ def test_fused_lm_head_frozen_weight_backward_cpu():
     assert lm.weight.grad is None
 
 
+def test_fused_lm_head_softcap_matches_full_logits_cpu():
+    """With a final-logit softcap, logprobs, entropy, summed cross-entropy and their gradients match full logits."""
+    torch.manual_seed(0)
+    b, s, h, v = 2, 4, 8, 37
+    softcap = 3.0
+    temperature = torch.full((b, s), 1.7, dtype=torch.float32)
+    hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    weight0 = torch.randn(v, h, dtype=torch.float32, requires_grad=True)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    labels[0, 1] = -100
+
+    logits = softcap * torch.tanh(hidden0 @ weight0.t() / softcap)
+    logp0 = torch.log_softmax(logits / temperature.unsqueeze(-1), dim=-1).gather(-1, labels.clamp(min=0)[..., None])
+    ent0 = compute_entropy(logits / temperature.unsqueeze(-1))
+    ce0 = torch.nn.functional.cross_entropy(logits.view(-1, v), labels.view(-1), ignore_index=-100, reduction="sum")
+    (logp0.sum() + ce0).backward()
+
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=3, softcap=softcap)
+    lm.weight = torch.nn.Parameter(weight0.detach().clone())
+    hidden1 = hidden0.detach().clone().requires_grad_(True)
+    out = lm(hidden1, labels.clamp(min=0), temperature=temperature)
+    loss = lm(hidden1, labels)["loss"]
+    (out["logprobs"].sum() + loss).backward()
+
+    torch.testing.assert_close(out["logprobs"], logp0.squeeze(-1), rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["entropy"], ent0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(loss, ce0, rtol=0, atol=1e-4)
+    torch.testing.assert_close(hidden1.grad, hidden0.grad, rtol=0, atol=1e-4)
+    torch.testing.assert_close(lm.weight.grad, weight0.grad, rtol=0, atol=1e-4)
+
+    vanilla = VanillaOutputLinear(in_features=h, out_features=v, softcap=softcap)
+    vanilla.weight = torch.nn.Parameter(weight0.detach().clone())
+    torch.testing.assert_close(vanilla(hidden0.detach())["logits"], logits.detach(), rtol=0, atol=1e-6)
+
+
 def test_fused_lm_head_requires_labels():
     """Test that FusedOutputLinear raises assertion error when labels is None."""
     torch.manual_seed(0)

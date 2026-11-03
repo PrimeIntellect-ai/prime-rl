@@ -148,8 +148,8 @@ def _scalar(episode: vf.Episode) -> float:
     """The per-rollout advantage scalar an algorithm assigned — broadcast over
     the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
     for node in episode.traces[0].nodes:
-        if node.advantages:
-            return node.advantages[0]
+        if node.advantages is not None and len(node.advantages):
+            return float(node.advantages[0])
     raise AssertionError("episode has no trainable token")
 
 
@@ -222,7 +222,7 @@ def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
         group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
         asyncio.run(algo.score_group(group))
         weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
-        assert set(weights) == {0.0, 1.0 / sum(lengths)}
+        assert sorted(set(weights)) == pytest.approx([0.0, 1.0 / sum(lengths)])
         assert sum(weights) == pytest.approx(1.0)
 
 
@@ -240,6 +240,20 @@ def test_linear_equal_lengths_reduce_to_plain_grpo():
     )
     plain = _grpo(_make_group(rewards=[1.0, 0.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]))
     assert penalized == pytest.approx(plain, abs=1e-6)
+
+
+def test_grpo_reconfigure_applies_new_length_penalty():
+    """A live update swaps the penalty for groups scored afterwards."""
+    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(), clients=None)
+    algo.reconfigure(GRPOAlgoConfig(length_penalty=cfg))
+    group = _make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30])
+
+    asyncio.run(algo.score_group(group))
+
+    assert [_scalar(episode) for episode in group] == pytest.approx(
+        _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30]), length_penalty=cfg)
+    )
 
 
 def test_linear_completion_term_penalizes_longer():
@@ -366,6 +380,64 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     )
 
 
+@pytest.mark.parametrize("penalty_type", [LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig])
+@pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
+def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
+    episode = _build_episode(1.0, sampled_lengths=[5])
+    trace = episode.traces[0]
+    trace.calls[0].usage = vf.Usage(prompt_tokens=10, completion_tokens=5)
+    trace.nodes.extend(
+        [
+            vf.MessageNode(parent=1, message=vf.UserMessage(content="summarize")),
+            vf.MessageNode(
+                parent=2,
+                message=vf.AssistantMessage(content="discarded"),
+                sampled=True,
+                token_ids=[1],
+                mask=[True],
+                semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            ),
+            vf.MessageNode(
+                parent=2,
+                message=vf.AssistantMessage(content="summary"),
+                sampled=True,
+                token_ids=[2] * 10,
+                mask=[True] * 10,
+                semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            ),
+            vf.MessageNode(parent=None, message=vf.UserMessage(content="summary")),
+            vf.MessageNode(
+                parent=5,
+                message=vf.AssistantMessage(content="answer"),
+                sampled=True,
+                token_ids=[3] * 15,
+                mask=[True] * 15,
+                semantic_parents=[vf.ParentLink(node=4, type="compaction")],
+            ),
+        ]
+    )
+    trace.calls.extend(
+        [
+            vf.ModelCall(node=3, usage=vf.Usage(prompt_tokens=1000, completion_tokens=1000)),
+            vf.ModelCall(node=4, usage=vf.Usage(prompt_tokens=20, completion_tokens=10)),
+            vf.ModelCall(node=6, usage=vf.Usage(prompt_tokens=30, completion_tokens=15)),
+        ]
+    )
+    assert _length_penalty_tokens(trace, 1.0) == pytest.approx((30, 45))
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert _length_penalty_tokens(restored, 1.0) == pytest.approx((30, 45))
+
+    # The same trained work and context, with no discarded generation.
+    peer = episode.model_copy(deep=True)
+    peer.traces[0].nodes[3].sampled = False
+    peer.traces[0].nodes[3].mask = [False]
+    peer.traces[0].calls[1].usage = vf.Usage(prompt_tokens=0, completion_tokens=0)
+    kwargs = dict(num_output_tokens_weight=0.0, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    kwargs[term] = 0.25
+    penalty = penalty_type(**kwargs)
+    assert _grpo([episode, peer], length_penalty=penalty) == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
@@ -377,7 +449,7 @@ def test_assign_advantages_broadcasts_scalar():
     trace = episode.traces[0]
     # one user prompt token (masked) + 2 sampled tokens (trainable)
     assign_advantages(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == [0.0, 0.7, 0.7]
+    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
 
 
 def test_assign_advantages_zeros_non_trainable():
@@ -386,7 +458,7 @@ def test_assign_advantages_zeros_non_trainable():
     episode = _build_episode(0.0, sampled_lengths=[1], obs_lengths=[1])
     trace = episode.traces[0]
     assign_advantages(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == [0.0, 0.7, 0.0]
+    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])
 
 
 def test_assign_advantages_rejects_misaligned():

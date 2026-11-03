@@ -95,17 +95,6 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
     config_class = DeepseekV4Config
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["DeepseekV4DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention runs its own fused kernel; no transformers backend can serve it.
-    _supports_flash_attn = False
-    _supports_sdpa = False
-    _supports_flex_attn = False
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
-    _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -253,8 +242,14 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
+            # Every input with this rank's row length must be dynamic, or the layer pins the length to a constant.
+            # Inputs that need no grad reach the compiled layer as they are, so marking them works.
+            for tensor in (input_ids, routed_experts_layer):
+                if tensor is not None:
+                    torch._dynamo.maybe_mark_dynamic(tensor, 1)
+            # By keyword: DYNAMIC_TENSOR_ARG_DIMS in trainer/model.py marks its sequence axis dynamic by name.
             mhc_states = decoder_layer(
-                mhc_states,
+                mhc_states=mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
@@ -266,8 +261,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
 class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)

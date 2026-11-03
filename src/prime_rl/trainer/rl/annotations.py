@@ -1,8 +1,8 @@
 import asyncio
-import math
 from collections.abc import Mapping
 from typing import Any
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch import Tensor
@@ -17,7 +17,8 @@ class AnnotationWriter:
     ``(trace_id, branch_index)``. Streams are full-length over the sample's token prefix
     so readers can fold them onto trace nodes without knowing the trainer's loss mask;
     positions outside that mask hold null, since a fold keeps sampled tokens only and a
-    run of nulls costs nothing once the stream is sealed.
+    run of nulls costs nothing once the stream is sealed. Streams are float32 arrays with
+    NaN for null.
 
     ``export`` accumulates locally per micro batch; ``flush`` gathers every rank's
     records to rank 0, the only rank running monitors. CP ranks past the first
@@ -37,28 +38,26 @@ class AnnotationWriter:
         if not trace_ids or not branch_indices:
             return
         sequence_lengths = micro_batch["sequence_lengths"]
-        loss_mask = [bool(v) for v in micro_batch["loss_mask"].detach().cpu().reshape(-1).tolist()]
-        env_names = micro_batch["env_names"]
-        trainer_logprobs = _tensor_to_floats(model_output["logprobs"], self.float_decimals)
-        entropies = _tensor_to_floats(model_output["entropy"], self.float_decimals)
+        loss_mask = micro_batch["loss_mask"].detach().cpu().reshape(-1).numpy()
+        trainer_logprobs = _masked_floats(model_output["logprobs"], loss_mask, self.float_decimals)
+        entropies = _masked_floats(model_output["entropy"], loss_mask, self.float_decimals)
 
         start = 0
-        for trace_id, branch_index, length in zip(trace_ids, branch_indices, sequence_lengths):
+        for index, (trace_id, branch_index, length) in enumerate(zip(trace_ids, branch_indices, sequence_lengths)):
             span_start, end = start, start + length
             start = end
             if not trace_id or branch_index < 0:
                 continue
             # Trailing padding is appended to the last sample and folded into its length.
-            while end > span_start and env_names[end - 1] == "" and not loss_mask[end - 1]:
-                end -= 1
-            if end <= span_start or not any(loss_mask[span_start:end]):
+            if index == len(sequence_lengths) - 1:
+                end -= micro_batch["padding"]
+            if end <= span_start or not loss_mask[span_start:end].any():
                 continue
-            trained = loss_mask[span_start:end]
-            logprob_span = [v if m else None for v, m in zip(trainer_logprobs[span_start:end], trained)]
-            entropy_span = [v if m else None for v, m in zip(entropies[span_start:end], trained)]
+            logprob_span = trainer_logprobs[span_start:end]
+            entropy_span = entropies[span_start:end]
             # After the right shift, a sample's first value crosses the packing boundary.
-            logprob_span[0] = None
-            entropy_span[0] = None
+            logprob_span[0] = np.nan
+            entropy_span[0] = np.nan
             self._pending.append(
                 make_update(
                     trace_id,
@@ -81,10 +80,11 @@ class AnnotationWriter:
         asyncio.run(monitors.log_annotations(records))
 
 
-def _tensor_to_floats(tensor: Tensor, decimals: int | None) -> list[float | None]:
+def _masked_floats(tensor: Tensor, mask: np.ndarray, decimals: int | None) -> np.ndarray:
     """Rounded like the record's own logprobs: the streams only ever colour an overlay,
-    and full-precision digits are the least compressible bytes a run writes."""
-    values = tensor.detach().to(dtype=torch.float32, device="cpu").reshape(-1).tolist()
-    if decimals is None:
-        return [value if math.isfinite(value) else None for value in values]
-    return [round(value, decimals) if math.isfinite(value) else None for value in values]
+    and full-precision digits are the least compressible bytes a run writes. Masked and
+    non-finite positions become NaN, which serializes as null."""
+    values = tensor.detach().to(dtype=torch.float32, device="cpu").reshape(-1).numpy()
+    if decimals is not None:
+        values = values.round(decimals)
+    return np.where(mask & np.isfinite(values), values, np.float32(np.nan))

@@ -109,7 +109,8 @@ class Indexer(nn.Module):
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
         k_idx = torch.cat([k_pe, k_nope], dim=-1)
 
-        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale)
+        cp_group_name = cp_group.group_name if cp_world_size > 1 else None
+        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale, cp_group_name=cp_group_name)
         # indices shape: [S_local, topk] in K's coordinate space (sentinel = s_full)
         # KV passed to sparse MLA has length s_full + 1 (sentinel zeros at index s_full).
         return indices.view(1, s_local, 1, index_topk)

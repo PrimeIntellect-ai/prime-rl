@@ -3,6 +3,8 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Callable
 
+import numpy as np
+
 from prime_rl.configs.algorithm import EchoAlgoConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
@@ -58,23 +60,22 @@ class EchoAlgorithm(GRPOAlgorithm):
         trainable_branches = [branch for branch, _ in iter_trainable_branches(trace)]
         filter_masks = self._filter_masks(trace, trainable_branches) if self.filter_fn is not None else None
         for branch_idx, branch in enumerate(trainable_branches):
-            weights = [0.0] * len(branch.token_ids)
+            weights = np.zeros(len(branch.token_ids), dtype=np.float32)
+            keep_mask = np.asarray(filter_masks[branch_idx], dtype=bool) if filter_masks is not None else None
             offset = 0
             seen_response = False
             for node in branch.nodes:
                 span = len(node.token_ids)
                 role = node.message.role
                 if seen_response and not node.sampled and role in self.role_weights:
-                    weight = self.role_weights[role]
-                    keep_mask = filter_masks[branch_idx] if filter_masks is not None else None
+                    selected = np.ones(span, dtype=bool)
                     # Per-token content granularity when the renderer attributed it; otherwise
                     # the whole node span (is_content empty -> fall back to current behavior).
-                    has_content = len(node.is_content) == span
-                    for i in range(offset, offset + span):
-                        if has_content and not node.is_content[i - offset]:
-                            continue
-                        if keep_mask is None or keep_mask[i]:
-                            weights[i] = weight
+                    if len(node.is_content) == span:
+                        selected &= np.asarray(node.is_content, dtype=bool)
+                    if keep_mask is not None:
+                        selected &= keep_mask[offset : offset + span]
+                    weights[offset : offset + span][selected] = self.role_weights[role]
                 if node.sampled:
                     seen_response = True
                 offset += span
@@ -82,10 +83,11 @@ class EchoAlgorithm(GRPOAlgorithm):
             for node in branch.nodes:
                 end = offset + len(node.token_ids)
                 node_weights = weights[offset:end]
-                if any(node_weights):
+                if node_weights.any():
                     streams = dict(node.loss_weights or {})
-                    current = streams.get("ce", [0.0] * len(node.token_ids))
-                    streams["ce"] = [max(old, new) for old, new in zip(current, node_weights, strict=True)]
+                    current = streams.get("ce")
+                    current = np.zeros(end - offset, dtype=np.float32) if current is None else current
+                    streams["ce"] = np.maximum(np.asarray(current, dtype=np.float32), node_weights)
                     node.loss_weights = streams
                 offset = end
 

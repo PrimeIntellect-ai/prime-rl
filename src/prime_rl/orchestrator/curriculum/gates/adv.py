@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum.gates.base import AdmissionGate
@@ -23,14 +24,16 @@ class AdvRangeGate(AdmissionGate):
         self.config = config
 
     def admit(self, group: list[vf.Episode]) -> bool:
-        advantages = [
-            advantage
+        parts = [
+            np.asarray(node.advantages, dtype=np.float32)
             for episode in group
             for trace in episode.traces
             if episode.ok and not trace.has_error and trace.agent.trainable
             for node in trace.nodes
-            for advantage in node.advantages or []
+            if node.advantages is not None
         ]
-        if not advantages:
+        advantages = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+        if not len(advantages):
             return True
-        return not all(self.config.reject_min <= advantage <= self.config.reject_max for advantage in advantages)
+        in_range = (advantages >= self.config.reject_min) & (advantages <= self.config.reject_max)
+        return not bool(in_range.all())

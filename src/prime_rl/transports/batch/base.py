@@ -4,7 +4,7 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transports.batch.types import MicroBatch
+from prime_rl.transports.batch.types import MicroBatch, encode_array
 from prime_rl.utils.logger import get_logger
 
 
@@ -17,7 +17,8 @@ class BatchSender(ABC):
 
     def __init__(self, output_dir: Path, data_world_size: int):
         self.logger = get_logger()
-        self.encoder = msgspec.msgpack.Encoder()
+        # Per-token streams are numpy arrays; each goes out as its raw bytes.
+        self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
         self.output_dir = output_dir
         self.data_world_size = data_world_size
 

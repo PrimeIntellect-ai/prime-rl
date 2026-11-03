@@ -31,7 +31,7 @@ Walk-throughs for the core environments (baseline eval → optional SFT warmup �
 Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 
 - [`dynamo/`](extra/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
-- [`vlm/`](extra/vlm/README.md) — multimodal (VLM) SFT, dense + MoE LoRA configs
+- [`vlm/`](extra/vlm/README.md) — Qwen3.5 / Qwen3.8 multi-node image RL and dense + MoE LoRA SFT
 
 ## Related config folders
 

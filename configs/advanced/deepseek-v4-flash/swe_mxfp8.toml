@@ -51,7 +51,7 @@ timeout = 3600
 [orchestrator]
 batch_size = 128
 # Episodes run long enough to span many trainer steps.
-max_off_policy_steps = 64
+max_staleness = 64
 
 [orchestrator.model.client]
 # Loading and quantizing the 1.1 TB bf16 checkpoint over NFS takes well over the default 30 min.

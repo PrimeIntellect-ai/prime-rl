@@ -7,12 +7,10 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import (
-    CISPOLossConfig,
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
     LossConfig,
-    PPOLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
@@ -37,6 +35,7 @@ class LossInputs:
     trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
     sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
     topk_valid: Bool[Tensor, "seq head"] | None = None
+    sampler_support_complete: Bool[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -164,6 +163,27 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
     return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
 
 
+@torch.no_grad()
+def _importance_ratio_metrics(log_ratio: Tensor, keep_mask: Tensor) -> dict[str, Tensor]:
+    """Per-token, pre-cap ratios for token-weighted reduction across samples and ranks.
+
+    Ratio values saturate at 1e30 for finite moments; log ratios and exceedance
+    indicators retain the tail information. Accepted means the sampled-action
+    mask passes, including when SC also corrects rejected actions.
+    """
+    metrics = {}
+    for population, values in (("all", log_ratio.detach()), ("accepted", log_ratio.detach()[keep_mask])):
+        # TensorStats promotes to FP64 when accumulating moments.
+        values = values.float()
+        limit = values.new_tensor(1e30).log()
+        metrics[f"importance_ratio/{population}"] = values.clamp(max=limit).exp()
+        metrics[f"log_importance_ratio/{population}"] = values
+        for threshold in (5, 10, 100, 10000):
+            metrics[f"importance_ratio/{population}/above_{threshold}"] = values > values.new_tensor(threshold).log()
+        metrics[f"importance_ratio/{population}/saturated"] = values > limit
+    return metrics
+
+
 def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
     if inputs.trainer_topk_logprobs is None or inputs.sampler_topk_logprobs is None or inputs.topk_valid is None:
         raise ValueError("Score centering requires sampler top logprobs on every RL token")
@@ -213,6 +233,7 @@ class IPOLoss:
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+            **_importance_ratio_metrics(log_importance_ratio, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
         }
 
@@ -260,6 +281,9 @@ class IcePopLoss:
                 tail_log_ratio = -rho.log()
                 # The proportional tail has one ratio; MIS accepts all or none.
                 alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
+                if inputs.sampler_support_complete is not None:
+                    # Replay covers the entire distribution, so there is no modeled tail.
+                    alpha = alpha.masked_fill(inputs.sampler_support_complete[inputs.loss_mask], 0.0)
                 mass = mass - alpha.unsqueeze(-1) * p
                 centering_metrics["score_centering/tail_scale"] = alpha
                 centering_metrics["score_centering/head_mass"] = q.sum(-1)
@@ -277,71 +301,11 @@ class IcePopLoss:
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+            **_importance_ratio_metrics(log_importance_ratio, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
             **centering_metrics,
         }
         return LossOutputs(loss=loss, metrics=metrics)
-
-
-class PPOLoss:
-    """Token-level PPO clipped surrogate with bounded importance weights."""
-
-    def __init__(self, config: PPOLossConfig):
-        self.config = config
-
-    def loss(self, inputs: LossInputs) -> LossOutputs:
-        config = self.config
-        logprobs = inputs.trainer_logprobs[inputs.loss_mask]
-        log_ratio = logprobs - inputs.inference_logprobs[inputs.loss_mask]
-        advantages = config.adv_tau * inputs.advantages[inputs.loss_mask]
-
-        ratio = _capped_importance_ratio(log_ratio, config.max_importance_ratio)
-        clipped_ratio = ratio.clamp(config.ratio_low, config.ratio_high)
-        per_token_loss = -torch.minimum(advantages * ratio, advantages * clipped_ratio)
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights[inputs.loss_mask]
-
-        clipped = ((advantages > 0) & (log_ratio.detach() > log_ratio.new_tensor(config.ratio_high).log())) | (
-            (advantages < 0) & (log_ratio.detach() < log_ratio.new_tensor(config.ratio_low).log())
-        )
-        metrics = {
-            "is_clipped": clipped.sum() / max(clipped.numel(), 1),
-            "ratio_capped": (log_ratio.detach() > log_ratio.new_tensor(config.max_importance_ratio).log()).sum()
-            / max(log_ratio.numel(), 1),
-        }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
-
-
-class CISPOLoss:
-    """CISPO uses a detached clipped importance weight on the current logprob."""
-
-    def __init__(self, config: CISPOLossConfig):
-        self.config = config
-
-    def loss(self, inputs: LossInputs) -> LossOutputs:
-        config = self.config
-        logprobs = inputs.trainer_logprobs[inputs.loss_mask]
-        log_ratio = logprobs - inputs.inference_logprobs[inputs.loss_mask]
-        advantages = config.adv_tau * inputs.advantages[inputs.loss_mask]
-
-        detached_log_ratio = log_ratio.detach()
-        log_ratio_high = log_ratio.new_tensor(config.ratio_high).log()
-        clipped_log_ratio = detached_log_ratio.clamp(max=log_ratio_high)
-        is_clipped = detached_log_ratio > log_ratio_high
-        if config.ratio_low:
-            log_ratio_low = log_ratio.new_tensor(config.ratio_low).log()
-            clipped_log_ratio = clipped_log_ratio.clamp(min=log_ratio_low)
-            is_clipped = is_clipped | (detached_log_ratio < log_ratio_low)
-        importance_weight = clipped_log_ratio.exp()
-
-        per_token_loss = -importance_weight * advantages * logprobs
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights[inputs.loss_mask]
-
-        metrics = {
-            "is_clipped": is_clipped.sum() / max(is_clipped.numel(), 1),
-        }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -425,10 +389,6 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
-        case PPOLossConfig():
-            return PPOLoss(loss_config)
-        case CISPOLossConfig():
-            return CISPOLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
@@ -449,6 +409,7 @@ def compute_loss(
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
+    sampler_support_complete: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -501,6 +462,8 @@ def compute_loss(
     sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
     topk_valid = topk_valid if topk_valid is not None else [None] * n
 
+    sampler_support_complete = sampler_support_complete if sampler_support_complete is not None else [None] * n
+
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
         for k, v in result.metrics.items():
@@ -514,7 +477,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, complete in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -526,6 +489,7 @@ def compute_loss(
         trainer_topk_logprobs,
         sampler_topk_logprobs,
         topk_valid,
+        sampler_support_complete,
         strict=True,
     ):
 
@@ -540,6 +504,7 @@ def compute_loss(
                 trainer_topk_logprobs=t_head,
                 sampler_topk_logprobs=q_head,
                 topk_valid=valid,
+                sampler_support_complete=complete,
             )
 
         if rl_w is None:

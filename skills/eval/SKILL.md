@@ -18,7 +18,7 @@ uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost
 uv run eval @ eval.toml --run.name my-eval                          # multi-source TOML
 uv run eval @ eval.toml --run.name my-eval --resume                 # continue an interrupted run
 uv run eval @ eval.toml --dry-run                                   # resolve and write the config, exit
-uv run eval @ eval.toml --monitors.prime                            # stream each source's epoch to the platform
+uv run eval @ eval.toml --no-monitors.prime                         # keep the run off the platform (on by default)
 ```
 
 - Config: `EvalConfig` (`packages/prime-rl-configs/src/prime_rl/configs/eval.py`); `uv run eval -h` lists the fields.
@@ -59,7 +59,7 @@ uv run eval gsm8k -n 50                                   # the first 50 tasks
 uv run eval gsm8k -n 50 -s                                # a random subset of 50 (same tasks every run)
 uv run eval gsm8k -n 50 -s --select.seed 1                # another random subset
 uv run eval gsm8k --select.include.idx 0:10,42            # tasks by position (ints and Python slices)
-uv run eval terminal-bench-2 --select.include.names '["fix-git"]' # tasks by name; `ids` and `keys` work the same
+uv run eval terminal-bench-2 --select.include.names '["terminal-bench/fix-git"]' # tasks by name; `ids` and `keys` work the same
 uv run eval terminal-bench-2 --select.exclude.keys '["<task.key>"]' # drop known-broken tasks (keys are on every trace)
 ```
 

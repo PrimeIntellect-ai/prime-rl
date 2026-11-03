@@ -1,5 +1,5 @@
 """WeightWatcher: discovers new policy versions via the transport's receiver,
-advances ``Policy``, and notifies observers (dispatcher → staleness cancel).
+advances ``Policy``, and notifies observers (dispatcher, online evals).
 Standalone async task; the orchestrator's barrier bounds the in-flight lead."""
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ class WeightWatcher:
             # ``policy.version`` advances only after inference applies it.
             self.ckpt_step = next_step
 
-            # Drain stale rollouts BEFORE pausing the inference engines.
+            # Let observers cancel rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
             # ``_reqs_not_processed``), which is only propagated to the workers
             # while the engine is stepping. If we drain after resume instead,
