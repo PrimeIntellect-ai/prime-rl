@@ -22,7 +22,6 @@ so worker death is rare).
 
 import asyncio
 import contextlib
-import logging
 import multiprocessing as mp
 import os
 import signal
@@ -38,8 +37,7 @@ from verifiers.v1.configs.env import EnvConfig
 
 from prime_rl.env.server import LATE_CANCEL_SECONDS, EnvServer
 from prime_rl.env.types import CancelResponse, HealthResponse
-
-logger = logging.getLogger(__name__)
+from prime_rl.utils.logger import get_logger
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
@@ -151,11 +149,8 @@ class EnvServerPool:
             return
         if in_flight >= 0.9 * len(self.workers) * self.multiplex:
             self._spawn_worker()
-            logger.info(
-                "EnvServerPool scaled up to %d/%s workers (in_flight=%d)",
-                len(self.workers),
-                self._cap_str,
-                in_flight,
+            get_logger().info(
+                f"EnvServerPool scaled up to {len(self.workers)}/{self._cap_str} workers (in_flight={in_flight})"
             )
 
     @property
@@ -174,13 +169,9 @@ class EnvServerPool:
         # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
-        logger.info(
-            "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
-            self.address,
-            len(self.workers),
-            self._cap_str,
-            self.multiplex,
-            self.elastic,
+        get_logger().info(
+            f"EnvServerPool up (address={self.address}, workers={len(self.workers)}/{self._cap_str}, "
+            f"multiplex={self.multiplex}, elastic={self.elastic})"
         )
         try:
             in_flight = 0
@@ -190,10 +181,7 @@ class EnvServerPool:
                     frames = await self.frontend.recv_multipart()
                     # Drop malformed requests without skipping ready worker replies.
                     if len(frames) != 4:
-                        logger.warning(
-                            "frontend: dropping malformed request (%d frames, expected 4)",
-                            len(frames),
-                        )
+                        get_logger().warning(f"Dropping a malformed request ({len(frames)} frames, expected 4)")
                     else:
                         client_id, request_id, method, payload = frames
                         if method == b"health":
@@ -304,7 +292,7 @@ class EnvServerPool:
             os.rmdir(self._ipc_dir)
         self.frontend.close()
         self.ctx.term()
-        logger.info("EnvServerPool down")
+        get_logger().info("EnvServerPool down")
 
 
 def env_config_data(env: EnvConfig) -> dict:
@@ -378,5 +366,5 @@ def serve_env(
     except KeyboardInterrupt:
         pass
     except Exception:
-        logger.exception("Env server failed")
+        get_logger().opt(exception=True).error("Env server failed")
         raise

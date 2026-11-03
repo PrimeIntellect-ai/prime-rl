@@ -17,6 +17,7 @@ import zmq.asyncio
 from prime_rl.env.client import EnvClient
 from prime_rl.env.delta import pack
 from prime_rl.env.types import HealthRequest, HealthResponse
+from prime_rl.utils.logger import get_logger
 
 # `_request` parks a cancelled run's fire-and-forget cancel in `_cancel_tasks` with a
 # `discard` done-callback. One loop turn later the sends have finished but the callbacks
@@ -75,11 +76,13 @@ async def until(condition, timeout: float = 10.0) -> None:
 
 
 @pytest.mark.asyncio
-async def test_interleaved_runs_see_their_deltas_in_order_before_the_reply(caplog):
+async def test_interleaved_runs_see_their_deltas_in_order_before_the_reply():
     """Runs streaming at once each see their own deltas in order, and a run's reply
     lands only after its last delta was applied. A malformed frame and an undecodable
     delta queued among them are logged and skipped without losing their neighbours."""
     n_runs, n_deltas = 20, 50
+    warnings: list[str] = []
+    sink = get_logger().add(lambda message: warnings.append(message.record["message"]), level="WARNING")
     async with fake_server() as (router, client):
         seen: list[list[int]] = [[] for _ in range(n_runs)]
 
@@ -103,7 +106,8 @@ async def test_interleaved_runs_see_their_deltas_in_order_before_the_reply(caplo
         for identity, request_id, *_ in requests:
             await router.send_multipart([identity, request_id, b"reply", REPLY])
         assert await asyncio.gather(*runs) == [list(range(n_deltas))] * n_runs
-    assert caplog.text.count("dropping a malformed env-server frame") == 2
+    get_logger().remove(sink)
+    assert warnings.count("Dropping a malformed env-server frame") == 2
 
 
 @pytest.mark.asyncio

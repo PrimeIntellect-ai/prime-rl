@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Self
 
@@ -33,11 +32,10 @@ import msgpack
 from pydantic import BaseModel
 
 from prime_rl.env.encoding import msgpack_encoder
+from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
-
-logger = logging.getLogger(__name__)
 
 HEADER_FIELDS = ("version", "id", "verifiers", "task", "run")
 """Sent once, when a trace first appears."""
@@ -161,7 +159,7 @@ class DeltaStreamer:
                 try:
                     await self.send(delta)
                 except Exception:  # the cursor stays put: the next flush diffs it again
-                    logger.warning("failed to send delta for %s", trace_id, exc_info=True)
+                    get_logger().opt(exception=True).warning(f"Failed to send delta for {trace_id}")
                     continue
                 if cursor is None:
                     self.cursors.pop(trace_id, None)

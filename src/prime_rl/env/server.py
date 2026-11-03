@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import threading
 import time
 from typing import Protocol
@@ -25,8 +24,7 @@ from prime_rl.env.types import (
     RunRequest,
     RunResponse,
 )
-
-logger = logging.getLogger(__name__)
+from prime_rl.utils.logger import get_logger
 
 
 class EpisodeHook(Protocol):
@@ -205,7 +203,7 @@ class EnvServer:
                 running = self._running.get(target)
                 if running is not None:
                     running.cancel()
-                    logger.info("cancelled run %s on client request", target)
+                    get_logger().info(f"Cancelled run {target} on client request")
                 # The client dropped the reply, or will: nothing will take the arrays.
                 self._expire_delivered()
                 kept = self._kept.pop(target.encode(), None)
@@ -222,7 +220,7 @@ class EnvServer:
             # exact; the requesting client has already given up on the result
             response = BaseResponse(success=False, error="Cancelled: rollout aborted")
         except Exception as e:  # a failed request is data, not a crash — report and keep serving
-            logger.warning("request failed: %s", e, exc_info=True)
+            get_logger().opt(exception=True).warning(f"Request failed - {e}")
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
         try:
             data = msgpack.packb(
@@ -232,7 +230,7 @@ class EnvServer:
             )
         except Exception as e:
             # Encoding failures must also reply so clients don't wait indefinitely.
-            logger.warning("response encoding failed: %s", e, exc_info=True)
+            get_logger().opt(exception=True).warning(f"Response encoding failed - {e}")
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
             data = msgpack.packb(response.model_dump(), use_bin_type=True)
         delivered = False
@@ -240,7 +238,7 @@ class EnvServer:
             await self.frontend.send_multipart([client_id, request_id, b"reply", data], copy=False)
             delivered = response.success
         except zmq.ZMQError as e:
-            logger.warning("failed to send response: %s", e)
+            get_logger().warning(f"Failed to send response - {e}")
         finally:
             # Also on a cancel (shutdown) while the reply is sending.
             kept = self._kept.pop(request_id, None)
@@ -263,11 +261,7 @@ class EnvServer:
             del self._delivered[request_id]
 
     async def run(self) -> None:
-        logger.info(
-            "EnvServer up: taskset=%s address=%s",
-            self.taskset_id,
-            self.address,
-        )
+        get_logger().info(f"EnvServer up (taskset={self.taskset_id}, address={self.address})")
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
@@ -280,7 +274,7 @@ class EnvServer:
                         continue
                     frames = await self.frontend.recv_multipart()
                     if len(frames) != 4:
-                        logger.warning("invalid message: expected 4 frames, got %d", len(frames))
+                        get_logger().warning(f"Invalid message - expected 4 frames, got {len(frames)}")
                         continue
                     client_id, request_id, method, payload = frames
                     task = asyncio.create_task(self._handle(client_id, request_id, method, payload))
@@ -299,4 +293,4 @@ class EnvServer:
                     task.cancel()
                 self.frontend.close()
                 self.ctx.term()
-                logger.info("EnvServer down: taskset=%s", self.taskset_id)
+                get_logger().info(f"EnvServer down (taskset={self.taskset_id})")
