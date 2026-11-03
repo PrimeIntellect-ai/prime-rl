@@ -54,6 +54,31 @@ def test_running_checksums_follow_deltas():
     assert running.tolist() == index_map.checksums(full=True)[1].tolist()
 
 
+def test_mapped_writes_load_patch_and_checksum_through_their_tables():
+    model = Toy()
+    index_map = CheckpointIndexMap(model, {"weight": ([4, 8], "bfloat16"), "norm": ([8], "bfloat16")})
+    # A kernel layout with rows in the order 2, 0, 3, 1 and the two column halves swapped
+    rows, cols = torch.tensor([2, 0, 3, 1]), torch.cat([torch.arange(4, 8), torch.arange(4)])
+    index_map.map_write("weight", 0, row_offsets=rows * 8, col_offsets=cols)
+    weight = torch.randn(4, 8, dtype=torch.bfloat16)
+    index_map.load_rows("weight", weight, 0)
+    kernel = torch.empty_like(weight)
+    kernel[rows[:, None], cols[None, :]] = weight
+    assert torch.equal(model.weight.data, kernel)
+    assert index_map.checksums()[1].tolist() == [bits_checksum(as_bits(weight))]
+
+    indices = torch.tensor([1, 9, 30])
+    delta = torch.tensor([5, -7, 11], dtype=torch.int16)
+    index_map.apply_delta([("weight", 3)], indices, delta)
+    new = as_bits(weight).clone().view(-1)
+    new[indices] += delta
+    kernel_bits = torch.empty_like(as_bits(weight))
+    kernel_bits[rows[:, None], cols[None, :]] = new.view(4, 8)
+    assert torch.equal(as_bits(model.weight.data), kernel_bits)
+    assert index_map.checksums()[1].tolist() == [bits_checksum(new)]
+    assert index_map.checksums(full=True)[1].tolist() == [bits_checksum(new)]
+
+
 class Sliced(nn.Module):
     """Checkpoint tensors written as row halves (like TP slices), through a column-strided view, and as fp32."""
 
@@ -87,6 +112,8 @@ def test_fused_apply_matches_torch_apply():
     for device in ("cpu", "cuda"):
         model = Sliced(device)
         index_map = CheckpointIndexMap(model, tensors)
+        # "v" through a kernel layout that reverses its rows
+        index_map.map_write("v", 0, row_offsets=(5 - torch.arange(6)) * 10)
         for name, tensor in checkpoint.items():
             index_map.load_rows(name, tensor.view(-1, tensors[name][0][-1]).to(device), 0)
         index_map.checksums()
