@@ -96,6 +96,9 @@ class SharedCheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    remote_dir: str | None = None
+    """Object store URL the trainer checkpoints are uploaded to once on disk, e.g. ``s3://bucket/run/checkpoints``; resume downloads from it."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
