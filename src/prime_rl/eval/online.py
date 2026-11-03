@@ -92,9 +92,9 @@ class OnlineEval:
             # The first trigger fires every env (policy v0) unless ``skip_first_step``.
             await self.maybe_run_eval(step=0)
         elif config.retrigger_on_resume:
-            # Re-fire evals at the resume step (e.g. after a crash that lost in-flight
-            # evals); the startup rendezvous above already loaded its weights. The
-            # final broadcast force-fires every env, exactly like the watch loop below.
+            # Re-fire evals at the resume step; the startup rendezvous above already
+            # loaded its weights. The final broadcast force-fires every env, exactly
+            # like the watch loop below.
             is_final = config.max_steps is not None and config.resume_step >= config.max_steps
             await self.maybe_run_eval(step=config.resume_step, force=is_final)
 

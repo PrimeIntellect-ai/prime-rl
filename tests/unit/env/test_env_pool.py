@@ -24,3 +24,23 @@ def test_env_config_survives_the_wire(data: dict) -> None:
     rebuilt = resolve_env_config(config.model_dump(mode="json"))
     assert type(rebuilt) is type(config)
     assert rebuilt == config
+
+
+def test_broadcast_replies_merge() -> None:
+    import msgpack
+
+    from prime_rl.env.pool import merge_replies
+
+    replies = [
+        msgpack.packb({"success": True, "error": None, "running": 2, "saved": ["a"]}),
+        msgpack.packb({"success": True, "error": None, "running": 1, "saved": ["b"]}),
+    ]
+    assert msgpack.unpackb(merge_replies(replies)) == {
+        "success": True,
+        "error": None,
+        "running": 3,
+        "saved": ["a", "b"],
+    }
+    failed = msgpack.packb({"success": False, "error": "boom"})
+    merged = msgpack.unpackb(merge_replies([replies[0], failed]))
+    assert merged["success"] is False and merged["error"] == "boom"

@@ -25,16 +25,26 @@ import zmq.asyncio
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import WireEpisode
+from verifiers.v1.runtimes.base import Snapshot
 
 from prime_rl.env.delta import EpisodeAssembly, unpack
+from prime_rl.env.encoding import msgpack_encoder
 from prime_rl.env.types import (
     BaseRequest,
     BaseResponse,
     CancelRequest,
+    DiscardRequest,
+    DiscardResponse,
     HealthRequest,
     HealthResponse,
+    InterruptRequest,
+    InterruptResponse,
+    ReleaseRequest,
+    RestoreRequest,
     RunRequest,
     RunResponse,
+    SaveRequest,
+    SaveResponse,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -172,7 +182,10 @@ class EnvClient:
         self._pending[request_id] = future
         if on_delta is not None:
             self._deltas[request_id] = on_delta
-        payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
+        raw = set(request.RAW_FIELDS)
+        data = request.model_dump(mode="json", exclude=raw)
+        data.update(request.model_dump(mode="python", include=raw))
+        payload = msgpack.packb(data, default=msgpack_encoder, use_bin_type=True)
         await self.socket.send_multipart([request_id.encode(), request.method.encode(), payload])
         try:
             data = await asyncio.wait_for(future, timeout)
@@ -244,14 +257,19 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        restore: RestoreRequest | None = None,
+        assembly: EpisodeAssembly | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`env.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
-        assembly = EpisodeAssembly()
+        episode returned is assembled from the same deltas, into `assembly` when the
+        caller passes one: it then holds the partial traces and their newest restore
+        points while the run is in flight. `restore` continues a trace from one of
+        those restore points instead of starting one."""
+        assembly = assembly if assembly is not None else EpisodeAssembly()
 
         def apply(delta: dict) -> None:
             assembly.apply(delta)
@@ -265,6 +283,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                restore=restore,
             ),
             RunResponse,
             on_delta=apply,
@@ -281,6 +300,27 @@ class EnvClient:
             # tell it this caller never got the episode.
             self._cancel_run(request_id)
             raise
+
+    async def interrupt(self, timeout: float = 60.0) -> InterruptResponse:
+        """Interrupt every rollout running on the server, for another process to
+        continue from their checkpoints; their runs reply as usual."""
+        return await self._request(InterruptRequest(timeout=timeout), InterruptResponse)
+
+    async def save(self, timeout: float = 60.0, hold: float = 0.0) -> SaveResponse:
+        """Checkpoint every rollout running on the server while it keeps running, for
+        another process to continue from; their restore points stream with their
+        runs. With `hold`, the rollouts that took one wait until `release`."""
+        return await self._request(SaveRequest(timeout=timeout, hold=hold), SaveResponse)
+
+    async def release(self) -> None:
+        """Let the rollouts that the last `save` holds go on."""
+        await self._request(ReleaseRequest(), BaseResponse)
+
+    async def discard(self, checkpoints: list[Snapshot]) -> list[str]:
+        """Delete box checkpoints this client owns and no longer needs; returns the ids
+        of the ones deleted (the newest snapshot of a running box is refused)."""
+        response = await self._request(DiscardRequest(checkpoints=checkpoints), DiscardResponse)
+        return response.deleted
 
     async def close(self) -> None:
         if self._receiver is not None:

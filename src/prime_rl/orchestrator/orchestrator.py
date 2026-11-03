@@ -50,7 +50,12 @@ from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
-from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
+from prime_rl.orchestrator.dispatcher import (
+    INTERRUPT_TIMEOUT_SECONDS,
+    SAVE_TIMEOUT_SECONDS,
+    Dispatcher,
+    DispatcherMode,
+)
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -62,6 +67,7 @@ from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     DispatchFailure,
+    DispatchResult,
     EvalBatch,
     GroupCancellation,
     Policy,
@@ -74,6 +80,9 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     max_rollout_staleness,
     release_and_trim,
+    result_env_name,
+    result_group_id,
+    result_kind,
     rollout_staleness,
     set_default_executor,
     trim_process_memory,
@@ -116,7 +125,7 @@ class Orchestrator:
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
     controller: Controller | None
-    shipped_state: tuple[int, dict] | None
+    shipped_state: tuple[int, dict | None] | None
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
@@ -145,6 +154,7 @@ class Orchestrator:
     eval_source: EvalSource | None
     receiver: WeightReceiver
     resume_step: int | None
+    resumed_work: dict | None
     lag_task: asyncio.Task | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
@@ -167,6 +177,10 @@ class Orchestrator:
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
+        # The periodic checkpoint being written in the background, and the results that
+        # wait for it (``ingest_parked``).
+        self.pending_save: asyncio.Task | None = None
+        self.parked: list[DispatchResult] = []
         self.policy = Policy(version=0, model_name="")
         self.gc = GarbageCollector(config.gc.interval) if config.gc else None
         self.stopped = asyncio.Event()
@@ -196,6 +210,7 @@ class Orchestrator:
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
+        self.resumed_work = None
         self.lag_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -296,7 +311,7 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
         if self.resume_step is not None:
-            self.ckpt_manager.load(
+            self.resumed_work = self.ckpt_manager.load(
                 self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
             )
             self.progress.step = self.resume_step + 1
@@ -385,6 +400,10 @@ class Orchestrator:
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
+        if self.resumed_work is not None:
+            self.resume_open_work(self.resumed_work)
+            self.resumed_work = None
+
         self.watcher = WeightWatcher(
             self.receiver,
             policy=self.policy,
@@ -472,6 +491,9 @@ class Orchestrator:
             # Teardown stops the components itself; one failing now must not cancel the teardown.
             for task in self.component_tasks:
                 task.remove_done_callback(on_component_done)
+            if self.pending_save is not None and not self.pending_save.done():
+                # The run stops before the next step ships: that checkpoint resumes nothing new.
+                self.pending_save.cancel()
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
@@ -554,47 +576,64 @@ class Orchestrator:
                 item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
+                await self.ingest_parked()
                 continue
+            self.parked.append(item)
+            await self.ingest_parked()
 
-            if isinstance(item, GroupCancellation):
-                assert item.kind == "train"  # eval groups are never dropped
-                train_batch = await self.train_sink.cancel(item)
-                await self.handle_train_result(train_batch)
-                continue
-            if isinstance(item, DispatchFailure):
-                if item.kind == "eval":
-                    assert self.eval_sink is not None
-                    eval_batch = self.eval_sink.fail(item)
-                    if eval_batch is not None:
-                        await self.finalize_eval_batch(eval_batch)
-                else:
-                    train_batch = await self.train_sink.fail(item)
-                    await self.handle_train_result(train_batch)
-                continue
-            episode = item
+    async def ingest_parked(self) -> None:
+        """Route the parked results to their sinks in arrival order. While a checkpoint
+        is written they stay parked, so the sinks stay as the checkpoint found them;
+        the checkpoint saves them as in-queue."""
+        if self.pending_save is not None:
+            if not self.pending_save.done():
+                return
+            save, self.pending_save = self.pending_save, None
+            await save
+        while self.parked and self.pending_save is None:
+            await self.ingest(self.parked.pop(0))
 
-            # Every completed rollout — errored, rejected, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
-            if episode.run is None:
-                raise ValueError("Dispatched episode is missing run identity")
-            if not isinstance(episode.run, vf.TrainRunInfo):
-                raise ValueError("Orchestrated episode is missing training-run provenance")
-            kind = episode.run.work.type
-            step = episode.run.work.step if kind == "eval" else self.progress.step
-            stamp_arrival([episode], kind, step)
-            await monitors.log([episode], step, kind, "all")
-
-            if kind == "eval":
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(episode)
+    async def ingest(self, item: DispatchResult) -> None:
+        """Route one dispatcher result to its sink."""
+        if isinstance(item, GroupCancellation):
+            assert item.kind == "train"  # eval groups are never dropped
+            train_batch = await self.train_sink.cancel(item)
+            await self.handle_train_result(train_batch)
+            return
+        if isinstance(item, DispatchFailure):
+            if item.kind == "eval":
+                assert self.eval_sink is not None
+                eval_batch = self.eval_sink.fail(item)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
-                continue
+            else:
+                train_batch = await self.train_sink.fail(item)
+                await self.handle_train_result(train_batch)
+            return
+        episode = item
 
-            train_batch = await self.train_sink.add(episode)
-            await self.handle_train_result(train_batch)
+        # Every completed rollout — errored, rejected, or never batched — lands in the
+        # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+        # Train rollouts belong to the batch window currently collecting (``progress.step``),
+        # eval rollouts to the step whose eval triggered them.
+        if episode.run is None:
+            raise ValueError("Dispatched episode is missing run identity")
+        if not isinstance(episode.run, vf.TrainRunInfo):
+            raise ValueError("Orchestrated episode is missing training-run provenance")
+        kind = episode.run.work.type
+        step = episode.run.work.step if kind == "eval" else self.progress.step
+        stamp_arrival([episode], kind, step)
+        await monitors.log([episode], step, kind, "all")
+
+        if kind == "eval":
+            assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+            eval_batch = self.eval_sink.add(episode)
+            if eval_batch is not None:
+                await self.finalize_eval_batch(eval_batch)
+            return
+
+        train_batch = await self.train_sink.add(episode)
+        await self.handle_train_result(train_batch)
 
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
         if self.heart is not None:
@@ -725,8 +764,13 @@ class Orchestrator:
         self.update_dispatch_gate()
         if self.controller is not None:
             self.apply_config_update()
-            self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
-            self.apply_control()
+            # A pause saves the dataset position as of this ship. Open rollouts carry
+            # what was dispatched since, so with them the pause saves the state it finds.
+            self.shipped_state = (
+                step,
+                None if self.saves_rollouts else build_state(self.progress, self.train_source, self.config_state()),
+            )
+            await self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
@@ -1014,20 +1058,135 @@ class Orchestrator:
         if step % self.config.ckpt.interval != 0:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
+        if self.saves_rollouts:
+            # The in-flight rollouts checkpoint their boxes and go on, so a resume from
+            # this step continues them from there. That takes up to a model call, so
+            # the checkpoint is written in the background and the results that arrive
+            # meanwhile wait for it, parked; the next step ships after it.
+            self.pending_save = asyncio.create_task(self.save_rollouts(step))
+            return 0.0
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step)
+        await self.save_state(self.checkpoint_state(), step)
         return time.perf_counter() - t
 
-    def apply_control(self) -> None:
+    async def save_rollouts(self, step: int) -> None:
+        """Checkpoint ``step`` with its in-flight rollouts' boxes saved first. They hold
+        at their checkpoints until the state is taken."""
+        t = time.perf_counter()
+        try:
+            await self.dispatcher.save_inflight(SAVE_TIMEOUT_SECONDS)
+            state = self.checkpoint_state()
+        finally:
+            await self.dispatcher.release_saved()
+        await self.save_state(state, step)
+        get_logger().info(f"Saved checkpoint at step {step} in {format_time(time.perf_counter() - t)}")
+
+    @property
+    def saves_rollouts(self) -> bool:
+        return self.config.ckpt is not None and self.config.ckpt.rollouts
+
+    def checkpoint_state(self) -> dict:
+        """A ``build_state`` snapshot of the run now, with its in-flight and in-queue rollouts
+        if it saves them."""
+        open_work = self.open_work() if self.saves_rollouts else None
+        return build_state(self.progress, self.train_source, self.config_state(), open_work)
+
+    async def save_state(self, state: dict, step: int) -> None:
+        """Write a ``build_state`` of the run as it is now from a forked writer, while the
+        loop goes on. Its box snapshots are held from the start: sweeps go on during the
+        write. Each checkpoint holds its snapshots until its step directory is gone (the
+        trainer's ``keep_last`` and ``keep_interval``)."""
+        groups = state["open_work"]["groups"] if "open_work" in state else []
+        self.dispatcher.hold_snapshots(step, groups)
+        await self.ckpt_manager.save_forked(state, step)
+        self.dispatcher.release_snapshots(
+            [held for held in self.dispatcher.held_snapshots if not self.ckpt_manager.get_ckpt_path(held).exists()]
+        )
+
+    def open_work(self) -> dict:
+        """The in-flight and in-queue train and eval rollouts a resumed run picks up where
+        this one left them: the open groups (their in-flight rollouts continue from their
+        newest restore points), the in-queue ones in the sinks' buffers and in ``out_q``,
+        and the eval examples not yet dispatched."""
+        sink = self.train_sink.state_dict()
+        results = [*self.parked, *self.dispatcher.queued_results()]
+        # A group whose last member waits in ``out_q`` is neither the dispatcher's nor the
+        # sink's anymore; its size goes with the sink's.
+        for result in results:
+            if result_kind(result) != "train":
+                continue
+            group_id = result_group_id(result)
+            if group_id not in sink["group_targets"]:
+                target = self.train_sink.group_targets.get(group_id)
+                sink["group_targets"][group_id] = target or self.train_sink.group_size_for(result_env_name(result))
+        return {
+            "groups": self.dispatcher.open_work(),
+            "sink": sink,
+            "results": results,
+            "snapshots": dict(self.dispatcher.snapshots),
+            "eval": {
+                "queue": list(self.eval_source.queue) if self.eval_source is not None else [],
+                "sink": self.eval_sink.state_dict() if self.eval_sink is not None else None,
+                "triggered_steps": sorted(self.eval_triggered_steps),
+            },
+        }
+
+    def resume_open_work(self, work: dict) -> None:
+        """Take a checkpoint's in-flight and in-queue rollouts back before the dispatcher
+        starts. Those of envs this run no longer trains or evaluates on are dropped; envs
+        new to the run start sampling as the resumed rollouts drain."""
+        self.train_sink.load_state_dict(work["sink"])
+        self.dispatcher.resume_open_work(
+            work["groups"], work["snapshots"], self.resume_step, owned=resume_path(self.config) is None
+        )
+        # The open work continues the train groups the checkpoint left open, so the train
+        # source must not re-run them whole as well; they close as they ship.
+        self.train_source.reopened.clear()
+        # A resumed group finalizes at the size it opened with, not today's ``group_size``.
+        for group in self.dispatcher.groups.values():
+            if group.kind == "train":
+                self.train_sink.group_targets[str(group.group_id)] = group.target_episodes
+                self.train_source.open_groups[str(group.group_id)] = (group.env_name, group.task.key)
+        names = {"train": set(self.train_envs.names), "eval": set(self.eval_envs.names if self.eval_envs else [])}
+        for result in work["results"]:
+            if result_env_name(result) in names[result_kind(result)]:
+                self.dispatcher.out_q.put_nowait(result)
+        self.resume_eval(work.get("eval"), names["eval"])
+
+    def resume_eval(self, work: dict | None, names: set[str]) -> None:
+        """Take a checkpoint's eval epochs back: the examples not yet dispatched and the
+        rollouts already in. Their epochs time from the resume."""
+        if work is None or self.eval_source is None or self.eval_sink is None:
+            return
+        self.eval_source.queue.extend(request for request in work["queue"] if request.env_name in names)
+        if work["sink"] is not None:
+            self.eval_sink.load_state_dict(work["sink"])
+        self.eval_triggered_steps.update(work["triggered_steps"])
+        now = time.perf_counter()
+        for env_name, step, _, _ in self.eval_sink.batch_progress():
+            self.eval_triggered_at[(env_name, step)] = now
+        for group in self.dispatcher.groups.values():
+            if group.kind == "eval":
+                self.eval_triggered_at.setdefault((group.env_name, group.step), now)
+        if self.dispatcher.eval_has_work:
+            self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason="the resumed run has eval work")
+
+    async def apply_control(self) -> None:
         """Save the state as of shipping the last step if a pause is due at it. A trainer paused
-        there never requests the next step, so this stays the last shipped step."""
+        there never requests the next step, so this stays the last shipped step. A pause that
+        saves the rollouts interrupts them first, and dispatches nothing after."""
         if self.shipped_state is None:
             return
+        if self.pending_save is not None:
+            # A pause saves after the periodic checkpoint being written.
+            await asyncio.shield(self.pending_save)
         step, state = self.shipped_state
         if self.controller.update(step):
-            self.ckpt_manager.save_state(state, step)
+            if state is None and self.saves_rollouts:
+                # The run stops here: the in-flight rollouts checkpoint their boxes, and the
+                # resumed run continues them from there.
+                await self.dispatcher.interrupt_inflight(INTERRUPT_TIMEOUT_SECONDS)
+            await self.save_state(state if state is not None else self.checkpoint_state(), step)
             self.controller.mark_saved(step)
             get_logger().info(f"Paused at step {step}, saved its state")
 
@@ -1101,7 +1260,7 @@ class Orchestrator:
         while True:
             await self.control_requested.wait()
             self.control_requested.clear()
-            self.apply_control()
+            await self.apply_control()
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs
