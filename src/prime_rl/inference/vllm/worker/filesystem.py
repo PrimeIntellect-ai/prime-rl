@@ -309,6 +309,8 @@ class FileSystemWeightUpdateWorker(Worker):
             return torch.from_numpy(data).view(dtype).view(shape)
 
         index_map.fp8_layout(model, read_tensor)
+        if next(model.parameters()).is_cuda:
+            index_map.fused_tables(warm_up=True)
         self.index_map = index_map
 
     def _write_layout(self, broadcast_dir: Path) -> None:

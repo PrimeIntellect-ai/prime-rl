@@ -124,6 +124,8 @@ class CheckpointIndexMap:
         self.checksum_plan = None
         # ``held_checksums`` kept current by ``apply_delta``; None until the next full recompute
         self.running: torch.Tensor | None = None
+        # The fused kernel's device tables (``fused_tables``)
+        self.fused = None
         self.fp8: dict[str, str] = {}
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
@@ -287,7 +289,7 @@ class CheckpointIndexMap:
                 if self.fp8.setdefault(name, modes[index]) != modes[index]:
                     raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: mixed fp8 layouts")
         self.names |= set(self.records)
-        self.checksum_plan = self.running = None
+        self.checksum_plan = self.running = self.fused = None
         return self.fp8
 
     def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
@@ -327,6 +329,43 @@ class CheckpointIndexMap:
                 else:
                     self._view(index, rows_, cols, offset, strides).copy_(as_bits(block))
 
+    def fused_tables(self, warm_up: bool = False) -> dict:
+        """Device tables of ``sparse_apply``: tensor ids, every tensor's writes, columns and running-checksum id, and
+        the params' addresses. Built once (and again after ``fp8_layout`` adds the block scales); ``warm_up`` also
+        compiles the kernel, so neither happens inside a weight-update pause."""
+        if self.fused is None:
+            from prime_rl.inference.vllm.worker.sparse_apply import WRITE_FIELDS
+
+            device = self.params[0].device
+            names = sorted(self.records)
+            max_writes = max((len(writes) for writes in self.records.values()), default=1)
+            padding = [0] * WRITE_FIELDS  # zero rows: never hit
+            writes = torch.tensor(
+                [
+                    [list(write) for write in self.records[name]] + [padding] * (max_writes - len(self.records[name]))
+                    for name in names
+                ],
+                dtype=torch.int64,
+            ).view(len(names), max_writes, WRITE_FIELDS)
+            plan_ids = self._checksum_plan()[4]
+            self.fused = {
+                "ids": {name: name_id for name_id, name in enumerate(names)},
+                "writes": writes.to(device),
+                "num_cols": torch.tensor([self.num_cols[name] for name in names], dtype=torch.int64, device=device),
+                "plan_ids": torch.tensor([plan_ids.get(name, -1) for name in names], dtype=torch.int64, device=device),
+                "param_ptrs": torch.tensor(
+                    [param.data_ptr() for param in self.params], dtype=torch.int64, device=device
+                ),
+                "data_ptrs": [param.data_ptr() for param in self.params],
+            }
+            if warm_up:
+                from prime_rl.inference.vllm.worker.sparse_apply import warm_up as compile_kernel
+
+                compile_kernel(self.fused["writes"], self.fused["num_cols"], self.fused["param_ptrs"])
+        if [param.data_ptr() for param in self.params] != self.fused["data_ptrs"]:
+            raise RuntimeError("Sparse weight deltas need the params where the index map found them: they moved")
+        return self.fused
+
     @torch.no_grad()
     def apply_delta(self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor) -> None:
         """Add ``delta`` (raw-bit differences, wrapping in the bits dtype) to the params at the checkpoint
@@ -334,6 +373,14 @@ class CheckpointIndexMap:
         changed = [name for name, _ in entries if name in self.unpatchable]
         if changed:
             raise NotImplementedError(f"Sparse weight deltas cannot patch {changed[:8]}: the engine casts them on load")
+        device = indices.device
+        if device.type == "cuda":
+            self._apply_delta_fused(entries, indices, delta)
+        else:
+            self._apply_delta_torch(entries, indices, delta)
+
+    def _apply_delta_torch(self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor) -> None:
+        """``apply_delta`` in plain torch ops (CPU, and the reference for the fused kernel)."""
         device = indices.device
         max_records = max((len(self.records.get(name, ())) for name, _ in entries), default=0)
         # Per entry and write k: [num_cols, row0, rows, col0, cols, param, offset, row stride, col stride].
@@ -374,6 +421,35 @@ class CheckpointIndexMap:
                 owner = table[entry, 5][hit]
                 tracked = None if entry_ids is None else (entry_ids[entry][hit], index[hit] + 1)
                 self._scatter_add(owner, target, source[hit], tracked)
+
+    def _apply_delta_fused(self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor) -> None:
+        from prime_rl.inference.vllm.worker.sparse_apply import sparse_apply
+
+        tables = self.fused_tables()
+        device = indices.device
+        counts = torch.tensor([count for _, count in entries], dtype=torch.int64, device=device)
+        entry_ends = counts.cumsum(0)
+        entry_names = torch.tensor(
+            [tables["ids"].get(name, -1) for name, _ in entries], dtype=torch.int64, device=device
+        )
+        track = self.running is not None
+        contributions = sparse_apply(
+            indices.long(),
+            delta,
+            entry_ends,
+            entry_names,
+            tables["writes"],
+            tables["num_cols"],
+            tables["param_ptrs"],
+            track,
+        )
+        if track and contributions.numel():
+            # Per entry: a difference of the cumulative contributions at its ends (int64 sums wrap like the checksums)
+            cumulative = torch.cat([contributions.new_zeros(1), contributions.cumsum(0)])
+            sums = cumulative[entry_ends] - cumulative[entry_ends - counts]
+            plan_ids = tables["plan_ids"][entry_names.clamp(min=0)]
+            keep = (entry_names >= 0) & (plan_ids >= 0)
+            self.running.index_add_(0, plan_ids[keep], sums[keep])
 
     def _scatter_add(
         self,
