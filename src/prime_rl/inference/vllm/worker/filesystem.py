@@ -23,7 +23,6 @@ from prime_rl.utils.sparse_weights import (
     ENGINE_LAYOUT,
     MANIFEST,
     anchor_complete,
-    as_bits,
     bits_dtype,
     checkpoint_index,
     decode_gaps,
@@ -32,7 +31,7 @@ from prime_rl.utils.sparse_weights import (
     read_checkpoint_range,
     read_delta,
     read_manifest,
-    rows_checksum,
+    revalidate,
     unpin,
     write_file,
 )
@@ -203,6 +202,8 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def _plan_update(self, step_dir: Path) -> dict:
         """What every TP worker does to move to ``step_dir``: a dict of plain values, broadcast from TP rank 0."""
+        # A stale NFS lookup cache could hide a manifest written before ``.finished``, turning a delta into a full load
+        revalidate(step_dir / DELTA_DIR)
         has_delta = (step_dir / DELTA_DIR / MANIFEST).exists()
         base_step = read_manifest(step_dir)["base_step"] if has_delta else None
         plan = {
@@ -452,8 +453,6 @@ class FileSystemWeightUpdateWorker(Worker):
         device = next(model.parameters()).device
         # Checksums of anchors and full checkpoints written by the trainer (none for the boot checkpoint)
         expected = read_anchor_checksums(step_dir)
-        sums: dict[str, torch.Tensor] = {}
-        held: dict[str, int] = {}
 
         def read(name: str, begin: int, end: int) -> torch.Tensor:
             num_cols, dtype = index_map.num_cols[name], index[name][1]
@@ -469,19 +468,11 @@ class FileSystemWeightUpdateWorker(Worker):
                 for (name, (begin, end)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
                     rows = rows.to(device)
                     index_map.load_rows(name, rows, begin)
-                    if name in expected:
-                        num_cols = index_map.num_cols[name]
-                        sums[name] = rows_checksum(as_bits(rows).reshape(-1), begin * num_cols)
-                        held[name] = (end - begin) * num_cols
                     num_bytes += rows.nbytes
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
         logger.info(
             f"Loaded this worker's {num_bytes / 2**30:.2f} GiB of {step_dir.name} in {time.perf_counter() - start:.1f}s"
         )
-        names = sorted(sums)
-        totals = (
-            torch.stack([sums[name] for name in names]) if names else torch.zeros(0, dtype=torch.int64, device=device)
-        )
-        counts = torch.tensor([held[name] for name in names], dtype=torch.int64, device=device)
-        return step_dir.name, names, totals, counts, expected
+        # Checked from the params as loaded, so a wrong mapping or write in ``load_rows`` fails the check
+        return step_dir.name, *index_map.held_checksums(), expected
