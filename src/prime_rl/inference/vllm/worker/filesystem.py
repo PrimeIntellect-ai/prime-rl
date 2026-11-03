@@ -268,12 +268,23 @@ class FileSystemWeightUpdateWorker(Worker):
         return Path(folder)
 
     def _apply_chunk(
-        self, entries: list[tuple[str, int]], gaps: torch.Tensor, values: torch.Tensor, tensors: dict, device
+        self,
+        entries: list[tuple[str, int]],
+        gaps: torch.Tensor,
+        values: torch.Tensor,
+        tensors: dict,
+        device,
+        events: list[torch.cuda.Event],
     ) -> None:
+        """Apply one chunk of a delta, recording CUDA events after its copies, its index decode and its apply."""
         assert self.index_map is not None
+        gaps, values = gaps.to(device, non_blocking=True), values.to(device, non_blocking=True)
+        events.append(torch.cuda.Event(enable_timing=True))
+        events[-1].record()
         counts = torch.tensor([count for _, count in entries], device=device)
-        indices = decode_gaps(gaps.to(device, non_blocking=True), counts)
-        values = values.to(device, non_blocking=True)
+        indices = decode_gaps(gaps, counts)
+        events.append(torch.cuda.Event(enable_timing=True))
+        events[-1].record()
         offset = num_bytes = 0
         for bits, group in itertools.groupby(entries, key=lambda entry: bits_dtype(tensors[entry[0]][1])):
             run = list(group)
@@ -285,6 +296,8 @@ class FileSystemWeightUpdateWorker(Worker):
             self.index_map.apply_delta(run, indices[offset : offset + num_changes], delta)
             offset += num_changes
             num_bytes += num_changes * itemsize
+        events.append(torch.cuda.Event(enable_timing=True))
+        events[-1].record()
 
     def _build_index_map(self, step_dir: Path) -> None:
         """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint tensors to
@@ -337,13 +350,21 @@ class FileSystemWeightUpdateWorker(Worker):
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()
         device = next(model.parameters()).device
+        events = [torch.cuda.Event(enable_timing=True)]
+        events[0].record()
         for entries, gaps, values in delta:
-            self._apply_chunk(entries, gaps, values, tensors, device)
+            self._apply_chunk(entries, gaps, values, tensors, device, events)
+        host_time = time.perf_counter() - start - read_time
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
+        # Per chunk: copies, index decode, apply
+        phases = [0.0, 0.0, 0.0]
+        for index, (begin, end) in enumerate(zip(events, events[1:])):
+            phases[index % 3] += begin.elapsed_time(end) / 1000
         logger.info(
-            f"Applied sparse weight delta {step_dir.name}: {sum(len(gaps) for _, gaps, _ in delta)} changes, "
-            f"read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s"
+            f"Applied sparse weight delta {step_dir.name}: {sum(len(gaps) for _, gaps, _ in delta)} changes in "
+            f"{len(delta)} chunks, read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s "
+            f"(GPU: copy {phases[0]:.3f}s, decode {phases[1]:.3f}s, patch {phases[2]:.3f}s; host loop {host_time:.3f}s)"
         )
         return checksums
 
