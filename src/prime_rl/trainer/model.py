@@ -238,6 +238,7 @@ def get_global_moe_stats(
         return {}, tokens_per_expert
     if ep_group is not None:
         dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=ep_group)
+    _dump_expert_counts(stats[..., :-1])
 
     per_layer_max_vio = []
     per_layer_routing_confidence = []
@@ -269,6 +270,21 @@ def get_global_moe_stats(
         moe_stats["ep_imbalance/rank"] = max_stats[:, 1:]
         moe_stats["ep_imbalance/rank_dp_mean"] = mean_stats[:, 1:]
     return moe_stats, tokens_per_expert
+
+
+_expert_count_dumps = 0
+
+
+def _dump_expert_counts(counts: Tensor) -> None:
+    """Experiment only: with PRIME_RL_EXPERT_COUNTS_DIR set, rank 0 saves each step's `[micro_steps, layers, experts]`
+    counts (summed over its EP group) for offline placement fitting."""
+    global _expert_count_dumps
+    out = os.environ.get("PRIME_RL_EXPERT_COUNTS_DIR")
+    if out is None or dist.get_rank() != 0:
+        return
+    os.makedirs(out, exist_ok=True)
+    torch.save(counts.to(torch.int64).cpu(), os.path.join(out, f"{_expert_count_dumps:05d}.pt"))
+    _expert_count_dumps += 1
 
 
 def compute_ep_imbalance(tokens_per_expert: Tensor, ep: int) -> Tensor:
