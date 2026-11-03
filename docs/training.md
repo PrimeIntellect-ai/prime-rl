@@ -20,7 +20,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
-  - [Pausing a Live Run](#pausing-a-live-run)
+  - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
@@ -351,7 +351,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-### Pausing a Live Run
+### Pausing or Checkpointing a Live Run
 
 With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
 
@@ -367,6 +367,13 @@ curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{
 ```
 
 Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
+
+A `checkpoint` action takes the same two calls and saves step N without stopping the run. Since the trainer keeps going, the orchestrator has to receive its request before the trainer finishes N and requests N + 1; a later request gets a 409 because the orchestrator no longer has the state of N:
+
+```bash
+curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint"}'
+curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint", "step": 12}'
+```
 
 ### Updating the Config Live
 
