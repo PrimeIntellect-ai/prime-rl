@@ -30,11 +30,9 @@ prime-tunnel = false
 flash-mla = false
 flashinfer-python = false
 humming-kernels = false
-prime-evals = false
 deep-gemm = false
 torchao = false
 instanttensor = false
-prime = false
 tokenspeed-mla = false
 nixl-cu13 = false
 deep-ep = false
@@ -2183,12 +2181,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/94/63b0fc47eb32792c7
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/61/5c78b91c3143ed5c14207f463aecfc8f9dbb5092fb2869baf37c273b2705/gitdb-4.0.12-py3-none-any.whl", hash = "sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf", size = 62794, upload-time = "2025-01-02T07:20:43.624Z" },
 ]
-
-[[package]]
-name = "gitignore-parser"
-version = "0.1.13"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e5/51/e391a1a4238f18d0abb47be479b07af265ad4519022cf51b7da47ef82487/gitignore_parser-0.1.13.tar.gz", hash = "sha256:c7e10c8190accb8ae57fb3711889e73a9c0dbc04d4222b91ace8a4bf64d2f746", size = 5603, upload-time = "2025-08-25T06:33:22.704Z" }
 
 [[package]]
 name = "gitpython"
@@ -5097,46 +5089,6 @@ wheels = [
 ]
 
 [[package]]
-name = "prime"
-version = "0.19.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "boto3" },
-    { name = "build" },
-    { name = "cryptography" },
-    { name = "gitignore-parser" },
-    { name = "httpx" },
-    { name = "prime-evals" },
-    { name = "prime-sandboxes" },
-    { name = "prime-traces" },
-    { name = "prime-tunnel" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "toml" },
-    { name = "tomli" },
-    { name = "typer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/a1/3b0f0f7a3dc16b8d22dfa1b140fe457906171476456c6f6c744289c79d6c/prime-0.19.2.tar.gz", hash = "sha256:c57101f8c5570ac1ec68e7d6d27a86916b603e3d1c62c4bf2f9ab86a05ef7848", size = 681367, upload-time = "2026-11-02T23:00:11.144Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/6e/707a874988a01126572861065230f843d1a752d604a8c6e3224966a05f13/prime-0.19.2-py3-none-any.whl", hash = "sha256:8e25a0846bd19236d2bd4eff9c84053b96bc603bd5cb590b2be795b8d4fedd6e", size = 354084, upload-time = "2026-11-02T23:00:08.694Z" },
-]
-
-[[package]]
-name = "prime-evals"
-version = "0.2.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "tenacity" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/89/bfbb4aa271669b16e9bc1303d3edeaaace000e5dd29df9ac7ffebf1fb59e/prime_evals-0.2.4.tar.gz", hash = "sha256:759d99e58f587ce8be314a58bdc811106006a74435e981c95c7783045f41cdd0", size = 16575, upload-time = "2026-09-15T17:15:12.452Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/95/c3c2ac163f3ae4909e3e4f47f3244441006432e9e78e9a14833466bac769/prime_evals-0.2.4-py3-none-any.whl", hash = "sha256:50641df3bbc63acac9a85595c2ec363260d41bcc78775a227800449c20648f69", size = 14267, upload-time = "2026-09-15T17:15:11.083Z" },
-]
-
-[[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.13.0"
 source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }
@@ -5215,7 +5167,6 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "orjson" },
-    { name = "prime" },
     { name = "prime-pydantic-config" },
     { name = "prime-rl-configs" },
     { name = "prime-runs", extra = ["train"] },
@@ -5394,7 +5345,6 @@ requires-dist = [
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.11.0" },
-    { name = "prime", specifier = ">=0.19.2" },
     { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
     { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },

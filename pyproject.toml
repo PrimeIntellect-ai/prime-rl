@@ -16,7 +16,6 @@ dependencies = [
     "transformers==5.19.0",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
-    "prime>=0.19.2",
     "prime-runs[train]>=0.1.6",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
@@ -237,12 +236,10 @@ flash_attn_3 = false
 # fast-track so first-party releases can land same-day. Only packages that
 # appear in `uv tree` need to be listed; the resolver ignores entries for
 # packages it never sees.
-prime = false
 prime-runs = false
 prime-traces = false
 prime-sandboxes = false
 prime-tunnel = false
-prime-evals = false
 verifiers = false
 renderers = false
 prime-pydantic-config = false
