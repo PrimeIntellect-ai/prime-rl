@@ -48,7 +48,7 @@ class PretrainAdamWConfig(AdamWConfig):
 
 class PretrainMuonConfig(MuonConfig):
     lr: float = Field(1e-3, ge=0)
-    """Peak learning rate. Defaults to PyTorch's Muon default."""
+    """Peak learning rate. Defaults to 1e-3, as for AdamW."""
 
 
 PretrainOptimizerConfig: TypeAlias = Annotated[
