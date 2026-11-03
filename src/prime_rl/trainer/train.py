@@ -14,6 +14,7 @@ import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
@@ -60,21 +61,19 @@ from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
-from prime_rl.utils.config import cli
-from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
 
 
 @clean_exit
-def train(config: SFTConfig):
+def train(config: SFTConfig | PretrainConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,
     )
-    logger.info(f"Starting SFT trainer in {world} (output_dir={config.run_dir})")
+    logger.info(f"Starting trainer in {world} (output_dir={config.run_dir})")
 
     # Setup the monitors
     asyncio.run(
@@ -142,7 +141,7 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, config.init_from_scratch)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -686,18 +685,9 @@ def train(config: SFTConfig):
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("SFT trainer paused" if paused else "SFT trainer finished")
+    logger.success("Trainer paused" if paused else "Trainer finished")
     asyncio.run(monitors.finalize(paused=paused))
     if paused and world.is_master:
         # The run's owner reads the committed pause from the control API, then stops the run.
         logger.info("Paused, serving the control API until the run is stopped")
         control_server.wait()
-
-
-def main():
-    set_proc_title("SFTTrainer")
-    train(cli(SFTConfig))
-
-
-if __name__ == "__main__":
-    main()

@@ -335,10 +335,6 @@ class ModelConfig(BaseModelConfig):
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 
-    from_scratch: bool = False
-    """Initialize the weights with the model's own init instead of loading them from ``name``, which then only
-    supplies the model config. A resumed run loads the weights from the checkpoint."""
-
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
@@ -590,7 +586,8 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseTrainerConfig(BaseConfig):
-    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer
+    (``SupervisedTrainerConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]

@@ -628,7 +628,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 @torch.no_grad()
-def init_from_scratch(model: nn.Module) -> None:
+def initialize_from_scratch(model: nn.Module) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
     ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
     get_logger().info("Initializing the weights from scratch")
@@ -922,6 +922,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -992,8 +993,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-    elif config.from_scratch:
-        init_from_scratch(model)
+    elif init_from_scratch:
+        initialize_from_scratch(model)
     else:
         load_dcp_from_hf(model, config)
 

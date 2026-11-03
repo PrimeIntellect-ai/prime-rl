@@ -6,8 +6,8 @@ from pathlib import Path
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
-from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.supervised import SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.utils.config import dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
@@ -35,7 +35,6 @@ from prime_rl.utils.process import (
     torchrun_cmd,
 )
 
-SFT_CONFIG = "sft.json"
 TRAINER_CONFIG = "trainer.json"
 
 INFERENCE_CONFIG = "inference.json"
@@ -44,7 +43,7 @@ ONLINE_EVAL_CONFIG = "eval.json"
 ENVS_DIR = "envs"
 
 
-def eval_env_servers(config: SFTConfig) -> list[OnlineEvalSourceConfig]:
+def eval_env_servers(config: SupervisedTrainerConfig) -> list[OnlineEvalSourceConfig]:
     """Every launcher-managed eval source. A source with ``serve.address`` set is
     externally managed — the launcher neither writes its config nor spawns a server for it."""
     if config.eval is None:
@@ -52,12 +51,12 @@ def eval_env_servers(config: SFTConfig) -> list[OnlineEvalSourceConfig]:
     return [source for source in config.eval.source if source.serve.address is None]
 
 
-def get_ckpt_base(config: SFTConfig) -> Path:
+def get_ckpt_base(config: SupervisedTrainerConfig) -> Path:
     """Where checkpoints live: ``ckpt.output_dir`` when set, else the run dir."""
     return (config.ckpt.output_dir if config.ckpt else None) or config.run_dir
 
 
-def resolve_resume_step(config: SFTConfig) -> int | None:
+def resolve_resume_step(config: SupervisedTrainerConfig) -> int | None:
     if config.resume is None:
         return None
     if config.resume.dir is not None:
@@ -67,7 +66,7 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
+def build_online_eval_config(config: SupervisedTrainerConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env servers itself; the
     online-eval process finds each one through the address it publishes in the shared
@@ -92,10 +91,12 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
 
-def config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str, Path | str]]:
-    """The resolved configs a launch leaves in ``config_dir``: the SFT config and, with
+def config_components(
+    config: SupervisedTrainerConfig, config_dir: Path, entrypoint: str
+) -> list[tuple[str, Path | str]]:
+    """The resolved configs a launch leaves in ``config_dir``: the entrypoint's config and, with
     online evals, the inference, online-eval and env-server configs."""
-    components: list[tuple[str, Path | str]] = [("SFT", config_dir / SFT_CONFIG)]
+    components: list[tuple[str, Path | str]] = [(entrypoint, config_dir / f"{entrypoint}.json")]
     if config.deployment.type == "multi_node":
         components.append(("Trainer", config_dir / TRAINER_CONFIG))
     if config.eval is not None:
@@ -107,14 +108,14 @@ def config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str, Pa
     return components
 
 
-def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
+def write_config(config: SupervisedTrainerConfig, config_path: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
         json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
 
 
-def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: bool = False) -> None:
+def write_eval_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, strip_router: bool = False) -> None:
     """Write the inference, online-eval, and env-server configs for online evals."""
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,7 +140,7 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
 
 
 def write_slurm_script(
-    config: SFTConfig,
+    config: SupervisedTrainerConfig,
     config_path: Path,
     run_config_path: Path,
     log_dir: Path,
@@ -239,7 +240,7 @@ def write_slurm_script(
     script_path.write_text(script)
 
 
-def launch_slurm(config: SFTConfig, entrypoint: str):
+def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
     """Run SFT training and its online-eval deployment in one SLURM allocation."""
     assert config.slurm is not None
 
@@ -250,7 +251,7 @@ def launch_slurm(config: SFTConfig, entrypoint: str):
     logger.info(f"Starting {entrypoint} run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, entrypoint)
-    config_path = config_dir / SFT_CONFIG
+    config_path = config_dir / f"{entrypoint}.json"
     if config.deployment.type == "multi_node":
         # The job's run owner registers the Prime run with the whole config; nothing runs it.
         write_config(config, config_path, exclude={"dry_run", "clean"})
@@ -271,7 +272,9 @@ def launch_slurm(config: SFTConfig, entrypoint: str):
     launcher_dir = get_launcher_dir(config.run_dir)
     if online_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
-    logger.info(f"Configs:\n{format_config_message(config_dir, entrypoint, config_components(config, config_dir))}")
+    logger.info(
+        f"Configs:\n{format_config_message(config_dir, entrypoint, config_components(config, config_dir, entrypoint))}"
+    )
     script_path = launcher_dir / f"{entrypoint}.sbatch"
     write_slurm_script(
         config,
@@ -312,7 +315,7 @@ def launch_slurm(config: SFTConfig, entrypoint: str):
     log_run_links(dashboard_url)
 
 
-def launch_local(config: SFTConfig, entrypoint: str):
+def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
     """Run SFT training locally with process monitoring and cleanup."""
     assert config.deployment.type == "single_node"
 
@@ -321,11 +324,13 @@ def launch_local(config: SFTConfig, entrypoint: str):
     logger.info(f"Starting {entrypoint} run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, entrypoint)
-    config_path = config_dir / SFT_CONFIG
+    config_path = config_dir / f"{entrypoint}.json"
     write_config(config, config_path)
     if config.eval is not None:
         write_eval_subconfigs(config, config_dir)
-    logger.info(f"Configs:\n{format_config_message(config_dir, entrypoint, config_components(config, config_dir))}")
+    logger.info(
+        f"Configs:\n{format_config_message(config_dir, entrypoint, config_components(config, config_dir, entrypoint))}"
+    )
 
     if config.dry_run:
         logger.success("Dry run complete. To start the run locally, remove --dry-run from your command.")
@@ -433,7 +438,7 @@ def launch_local(config: SFTConfig, entrypoint: str):
         processes.start(
             "trainer",
             torchrun_cmd(
-                "prime_rl.trainer.train",
+                f"prime_rl.trainer.{entrypoint}.train",
                 config_path,
                 config.deployment.num_train_gpus,
                 log_dir,
@@ -453,7 +458,7 @@ def launch_local(config: SFTConfig, entrypoint: str):
         logger.success("Training finished!")
 
 
-def clean_stale_eval_artifacts(config: SFTConfig) -> None:
+def clean_stale_eval_artifacts(config: SupervisedTrainerConfig) -> None:
     """Remove eval artifacts a previous run left behind: weight broadcasts and rollout
     trace dirs — everything on a fresh start, steps past the resume step on resume.
     Without this the online-eval process would replay stale broadcasts (and then skip the
@@ -467,7 +472,7 @@ def clean_stale_eval_artifacts(config: SFTConfig) -> None:
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
 
 
-def launch(config: SFTConfig, entrypoint: str):
+def launch(config: SupervisedTrainerConfig, entrypoint: str):
     # Launcher-only check: the trainer re-parses a sub-config with [inference] and
     # [deployment] stripped, so the model validator cannot enforce this.
     if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl" and config.inference is None:
@@ -485,7 +490,7 @@ def launch(config: SFTConfig, entrypoint: str):
         from prime_rl.trainer.model import pre_download_model
         from prime_rl.trainer.sft.data import pre_download_data
 
-        pre_download_model(config.model.name, skip_weights=config.model.debug.random_init or config.model.from_scratch)
+        pre_download_model(config.model.name, skip_weights=config.model.debug.random_init or config.init_from_scratch)
         pre_download_data(config.data, config.env_vars)
         if config.val is not None:
             pre_download_data(config.val.data, config.env_vars)

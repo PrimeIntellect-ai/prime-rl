@@ -262,7 +262,7 @@ def setup_dataset(
             multimodal=multimodal,
             columns=config.columns,
         )
-    elif config.type == "tokens":
+    elif config.type == "datatrove":
         from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards
 
         return TokenDataset(

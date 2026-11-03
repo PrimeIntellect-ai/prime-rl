@@ -246,7 +246,7 @@ else
             --tee=3 \
             --redirects=3 \
             --local-ranks-filter={{ ranks_filter }} \
-            -m prime_rl.trainer.train \
+            -m prime_rl.trainer.{{ entrypoint }}.train \
             @ $TRAIN_CONFIG_PATH \
 {%- if use_nccl_broadcast %}
             --weight-broadcast.host 0.0.0.0 \

@@ -1,13 +1,37 @@
-from typing import Annotated, TypeAlias
+from pathlib import Path
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field
 
-from prime_rl.configs.sft import SFTConfig, TokensDataConfig
-from prime_rl.configs.trainer import AdamWConfig, ModelConfig, MuonConfig, SignSGDConfig
+from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.trainer import AdamWConfig, MuonConfig, SignSGDConfig
 
 
-class PretrainModelConfig(ModelConfig):
-    from_scratch: bool = True
+class DatatroveDataConfig(BaseDataConfig):
+    """Tokenized shards written by datatrove's ``DocumentTokenizer``, read as one token pool and cut into samples of
+    ``seq_len`` tokens."""
+
+    type: Literal["datatrove"] = "datatrove"
+
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
+
+    seed: int = 0
+    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
+    and from a new random offset."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
+    whole sample and positions run over it."""
+
+
+class PretrainValConfig(BaseValConfig):
+    data: DatatroveDataConfig
+    """Held-out shard folders."""
+
+    num_samples: int | None = Field(None, ge=1)
+    """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -25,12 +49,14 @@ PretrainOptimizerConfig: TypeAlias = Annotated[
 ]
 
 
-class PretrainConfig(SFTConfig):
-    """SFT on pre-tokenized data, with the weights initialized from scratch. The defaults are SFT's, except the
-    learning rate, which is PyTorch's default instead of a fine-tuning value."""
+class PretrainConfig(SupervisedTrainerConfig):
+    """Pretraining: next-token loss on tokenized shards, with the weights initialized from scratch unless resuming."""
 
-    model: PretrainModelConfig = PretrainModelConfig()
+    init_from_scratch = True
 
-    data: TokensDataConfig
+    data: DatatroveDataConfig
+
+    val: PretrainValConfig | None = None
+    """Validation on held-out shards. If None, no validation runs."""
 
     optim: PretrainOptimizerConfig = PretrainAdamWConfig()

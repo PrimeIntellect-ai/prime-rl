@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from prime_rl.configs.sft import TokensDataConfig
+from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards
 from prime_rl.trainer.world import reset_world
@@ -76,7 +76,7 @@ def first_tokens(batch: dict, seq_len: int) -> list[int]:
 def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders: list[Path], monkeypatch):
     """Two data ranks read 3 micro-batches each and checkpoint; one rank resumes from rank 0's checkpoint. Together
     they read the windows an uninterrupted single-rank run reads."""
-    config = TokensDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
+    config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
 
     def dataloader(rank: int, world_size: int):
         reset_world()

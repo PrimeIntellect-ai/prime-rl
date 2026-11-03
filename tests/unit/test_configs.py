@@ -154,20 +154,18 @@ def test_rl_launcher_config_roundtrip(tmp_path):
 
 
 def test_pretrain_config_roundtrip(tmp_path):
-    """A minimal pretrain TOML gets the pretraining defaults, and the trainer reads them back as an SFT config."""
+    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config, which
+    `uv run sft` rejects."""
     from prime_rl.entrypoints.launcher import write_config
 
     write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
-    assert config.data.type == "tokens"
-    assert config.model.from_scratch
+    assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
 
-    write_config(config, tmp_path / "sft.json")
-    reloaded = cli(SFTConfig, args=["@", str(tmp_path / "sft.json")])
-    assert reloaded.data == config.data
-    assert reloaded.model.from_scratch
-    assert reloaded.optim.lr == 1e-3
+    write_config(config, tmp_path / "pretrain.json")
+    assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
+    assert not can_parse(SFTConfig, ["@", str(tmp_path / "pretrain.json")])
 
     muon = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--optim.type", "muon"])
     assert muon.optim.lr == 1e-3
