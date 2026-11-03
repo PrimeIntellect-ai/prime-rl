@@ -1070,10 +1070,15 @@ class Orchestrator:
         return time.perf_counter() - t
 
     async def save_rollouts(self, step: int) -> None:
-        """Checkpoint ``step`` with its in-flight rollouts' boxes saved first."""
+        """Checkpoint ``step`` with its in-flight rollouts' boxes saved first. They hold
+        at their checkpoints until the state is taken."""
         t = time.perf_counter()
-        await self.dispatcher.save_inflight(SAVE_TIMEOUT_SECONDS)
-        await self.save_state(self.checkpoint_state(), step)
+        try:
+            await self.dispatcher.save_inflight(SAVE_TIMEOUT_SECONDS)
+            state = self.checkpoint_state()
+        finally:
+            await self.dispatcher.release_saved()
+        await self.save_state(state, step)
         get_logger().info(f"Saved checkpoint at step {step} in {format_time(time.perf_counter() - t)}")
 
     @property

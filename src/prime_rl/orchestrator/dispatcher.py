@@ -68,8 +68,11 @@ the rollouts that took a checkpoint: their checkpoints become restorable after t
 request returns."""
 SAVE_TIMEOUT_SECONDS = 300.0
 """How long a saved rollout waits for a model call, at which its box is idle for a
-filesystem checkpoint (``save_inflight``). The loop waits with it, so this is longer
-than a model call and most tool calls, not every one."""
+filesystem checkpoint (``save_inflight``). The rollouts that already took theirs hold
+meanwhile, so this is longer than a model call and most tool calls, not every one."""
+SAVE_HOLD_SECONDS = SAVE_TIMEOUT_SECONDS + INTERRUPT_SETTLE_SECONDS + 60
+"""How long a saved rollout holds at its model call at most, should the orchestrator
+never release it: longer than ``save_inflight`` waits."""
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
 
@@ -769,11 +772,11 @@ class Dispatcher:
         )
 
     async def save_inflight(self, timeout: float) -> None:
-        """Checkpoint the in-flight rollouts for a checkpoint to save while they keep
-        running: have every env server save its rollouts, and wait until each that took
-        a checkpoint has streamed its restore point. ``open_work`` then saves them with
-        those restore points. A rollout waits up to ``timeout`` for its next model call.
-        Nothing new dispatches meanwhile."""
+        """Checkpoint the in-flight rollouts for a checkpoint to save: have every env
+        server save its rollouts, and wait until each that took a checkpoint has
+        streamed its restore point. A rollout waits up to ``timeout`` for its next model
+        call, and then holds there until ``release_saved``, so ``open_work`` saves it
+        with no progress past its restore point. Nothing new dispatches meanwhile."""
         self.saving = True
         try:
             running, saved = await self._checkpoint_inflight("save", timeout)
@@ -792,7 +795,10 @@ class Dispatcher:
         started = time.time()
         envs = [*(self.train_envs or ()), *(self.eval_envs or ())]
         replies = await asyncio.gather(
-            *((env.interrupt if request == "interrupt" else env.save)(timeout) for env in envs),
+            *(
+                env.interrupt(timeout) if request == "interrupt" else env.save(timeout, SAVE_HOLD_SECONDS)
+                for env in envs
+            ),
             return_exceptions=True,
         )
         reached, checkpointed = 0, set()
@@ -818,6 +824,14 @@ class Dispatcher:
                 break
             await asyncio.sleep(0.5)
         return reached, checkpointed
+
+    async def release_saved(self) -> None:
+        """Let the rollouts that ``save_inflight`` holds go on."""
+        envs = [*(self.train_envs or ()), *(self.eval_envs or ())]
+        replies = await asyncio.gather(*(env.release() for env in envs), return_exceptions=True)
+        for env, reply in zip(envs, replies):
+            if isinstance(reply, BaseException):
+                get_logger().warning(f"Releasing the saved rollouts of {env.name} failed: {reply!r}")
 
     async def emit(self, result: DispatchResult) -> None:
         """Queue ``result`` for the orchestrator; a full ``out_q`` waits."""

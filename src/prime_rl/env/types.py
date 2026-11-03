@@ -56,6 +56,10 @@ class SaveRequest(BaseRequest):
 
     method: ClassVar[str] = "save"
     timeout: float = 60.0
+    hold: float = 0.0
+    """Hold each rollout that took a checkpoint at its model call until a `release`
+    request, for this many seconds at most, so the owner records it as it is at its
+    checkpoint. 0 holds none."""
 
 
 class SaveResponse(BaseResponse):
@@ -64,6 +68,12 @@ class SaveResponse(BaseResponse):
     saved: list[str] = Field(default_factory=list)
     """The trace ids of the rollouts that took a checkpoint. The others have none to
     continue from."""
+
+
+class ReleaseRequest(BaseRequest):
+    """Let the rollouts that the last `save` holds go on."""
+
+    method: ClassVar[str] = "release"
 
 
 class CancelRequest(BaseRequest):

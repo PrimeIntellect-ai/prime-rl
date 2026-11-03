@@ -11,7 +11,7 @@ from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.rollout import interrupt_all, save_all
+from verifiers.v1.rollout import interrupt_all, release_all, save_all
 from verifiers.v1.runtimes import backend_cls, make_backend
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -29,6 +29,7 @@ from prime_rl.env.types import (
     HealthResponse,
     InterruptRequest,
     InterruptResponse,
+    ReleaseRequest,
     RestoreRequest,
     RunRequest,
     RunResponse,
@@ -237,8 +238,12 @@ class EnvServer:
                 response = InterruptResponse(interrupted=interrupted, checkpointed=checkpointed)
             elif route == "save":
                 request = SaveRequest.model_validate(raw)
-                running, saved = await save_all(request.timeout)
+                running, saved = await save_all(request.timeout, request.hold)
                 response = SaveResponse(running=running, saved=saved)
+            elif route == "release":
+                ReleaseRequest.model_validate(raw)
+                release_all()
+                response = BaseResponse()
             elif route == "cancel":
                 target = CancelRequest.model_validate(raw).request_id
                 running = self._running.get(target)

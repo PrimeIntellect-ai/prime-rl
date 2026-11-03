@@ -41,7 +41,7 @@ from prime_rl.utils.logger import get_logger
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
-BROADCAST = (b"interrupt", b"save")
+BROADCAST = (b"interrupt", b"save", b"release")
 """Requests every worker answers for its own rollouts; the client gets the merged
 reply (`merge_replies`)."""
 

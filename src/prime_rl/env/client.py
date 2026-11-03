@@ -39,6 +39,7 @@ from prime_rl.env.types import (
     HealthResponse,
     InterruptRequest,
     InterruptResponse,
+    ReleaseRequest,
     RestoreRequest,
     RunRequest,
     RunResponse,
@@ -305,11 +306,15 @@ class EnvClient:
         continue from their checkpoints; their runs reply as usual."""
         return await self._request(InterruptRequest(timeout=timeout), InterruptResponse)
 
-    async def save(self, timeout: float = 60.0) -> SaveResponse:
+    async def save(self, timeout: float = 60.0, hold: float = 0.0) -> SaveResponse:
         """Checkpoint every rollout running on the server while it keeps running, for
         another process to continue from; their restore points stream with their
-        runs."""
-        return await self._request(SaveRequest(timeout=timeout), SaveResponse)
+        runs. With `hold`, the rollouts that took one wait until `release`."""
+        return await self._request(SaveRequest(timeout=timeout, hold=hold), SaveResponse)
+
+    async def release(self) -> None:
+        """Let the rollouts that the last `save` holds go on."""
+        await self._request(ReleaseRequest(), BaseResponse)
 
     async def discard(self, checkpoints: list[Snapshot]) -> list[str]:
         """Delete box checkpoints this client owns and no longer needs; returns the ids

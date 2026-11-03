@@ -178,12 +178,17 @@ class Env:
         responses = await asyncio.gather(*(client.interrupt(timeout) for client in self.env_clients))
         return sum(r.interrupted for r in responses), {t for r in responses for t in r.checkpointed}
 
-    async def save(self, timeout: float) -> tuple[int, set[str]]:
+    async def save(self, timeout: float, hold: float) -> tuple[int, set[str]]:
         """Checkpoint the rollouts running on every replica while they keep running, for
-        a resumed run to continue from; returns how many were running, and the trace ids
-        of those that took a checkpoint."""
-        responses = await asyncio.gather(*(client.save(timeout) for client in self.env_clients))
+        a resumed run to continue from; each that took a checkpoint holds at its model
+        call until ``release``, for ``hold`` seconds at most. Returns how many were
+        running, and the trace ids of those that took a checkpoint."""
+        responses = await asyncio.gather(*(client.save(timeout, hold) for client in self.env_clients))
         return sum(r.running for r in responses), {t for r in responses for t in r.saved}
+
+    async def release(self) -> None:
+        """Let the rollouts that the last ``save`` holds go on."""
+        await asyncio.gather(*(client.release() for client in self.env_clients))
 
 
 class TrainEnv(Env):

@@ -97,8 +97,11 @@ class SnapshotEnv:
     async def interrupt(self, timeout: float) -> tuple[int, set[str]]:
         return self.on_interrupt()
 
-    async def save(self, timeout: float) -> tuple[int, set[str]]:
+    async def save(self, timeout: float, hold: float) -> tuple[int, set[str]]:
         return self.on_save()
+
+    async def release(self) -> None:
+        self.released = True
 
     async def discard_checkpoints(self, snapshots: list[dict]) -> list[str]:
         ids = [snapshot["id"] for snapshot in snapshots]
@@ -598,6 +601,47 @@ def test_only_interrupted_runs_stay_in_flight_during_an_interrupt():
         assert not _interrupted(done("ProviderError"))
         assert _interrupted(done("RolloutInterrupted"))
         assert _interrupted(failed) and _interrupted(cancelled)
+
+    asyncio.run(run())
+
+
+def test_a_periodic_checkpoint_takes_the_state_before_it_releases_the_rollouts():
+    """The saved rollouts hold at their checkpoints until the state is taken, so it
+    has no progress past their restore points; they are released even if it fails."""
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+
+    async def run():
+        o = Orchestrator.__new__(Orchestrator)
+        events = []
+
+        async def save_inflight(timeout: float) -> None:
+            events.append("saved")
+
+        async def release_saved() -> None:
+            events.append("released")
+
+        def checkpoint_state() -> dict:
+            events.append("state")
+            return {}
+
+        async def save_state(state: dict, step: int) -> None:
+            events.append("written")
+
+        o.dispatcher = SimpleNamespace(save_inflight=save_inflight, release_saved=release_saved)
+        o.checkpoint_state, o.save_state = checkpoint_state, save_state
+        await o.save_rollouts(2)
+        assert events == ["saved", "state", "released", "written"]
+
+        def broken() -> dict:
+            raise RuntimeError("boom")
+
+        events.clear()
+        o.checkpoint_state = broken
+        try:
+            await o.save_rollouts(2)
+        except RuntimeError:
+            pass
+        assert events == ["saved", "released"]
 
     asyncio.run(run())
 
