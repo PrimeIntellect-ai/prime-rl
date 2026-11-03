@@ -13,7 +13,7 @@ class StaticPoolConfig(BaseConfig):
 
     type: Literal["static"] = "static"
     num_workers: int = Field(4, ge=1)
-    """Worker processes to pre-spawn (1 = a single in-process server, no pool)."""
+    """Worker processes to pre-spawn."""
 
 
 class ElasticPoolConfig(BaseConfig):

@@ -4,8 +4,8 @@ A lone `EnvServer` runs every rollout as an `asyncio.Task` on one event loop, so
 CPU-bound work (renderer tokenization, scoring) competes for that loop; the pool
 spreads that work across processes.
 
-A broker binds the client-facing ROUTER (the *same* wire protocol as a lone
-`EnvServer`, so `EnvClient` is unchanged), starts one worker process and scales up to
+A broker binds the client-facing ROUTER (the *same* wire protocol as an `EnvServer`,
+so `EnvClient` speaks to either), starts one worker process and scales up to
 `max_workers` on demand — each an ordinary `EnvServer` bound to its own ipc address —
 load-balancing requests to the least-busy worker over a `DEALER` per worker. The
 worker's `client_id` (its reply identity) is the broker's DEALER identity; the broker
@@ -44,7 +44,7 @@ _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="js
 
 
 def _arm_teardown(death_pipe=None) -> None:
-    """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
+    """Arm a process (the serve_env broker, or a pool worker) for clean
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
     asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
 
@@ -112,9 +112,8 @@ class EnvServerPool:
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
-            target=serve_env,
+            target=serve_worker,
             kwargs=dict(
-                pool=StaticPoolConfig(num_workers=1),
                 address=address,
                 config_data=self.config_data,
                 max_concurrent=self.max_concurrent,
@@ -294,6 +293,28 @@ class EnvServerPool:
         get_logger().info("EnvServerPool down")
 
 
+def serve_worker(
+    *,
+    address: str,
+    config_data: dict,
+    max_concurrent: int | None,
+    death_pipe,
+    worker_setup: Callable[[], None] | None,
+) -> None:
+    """A pool worker process: one `EnvServer` on its ipc address. It self-terminates if
+    the broker dies — see `_arm_teardown`."""
+    _arm_teardown(death_pipe)
+    if worker_setup is not None:
+        worker_setup()
+    try:
+        asyncio.run(EnvServer(resolve_env_config(config_data), address, max_concurrent).run())
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        get_logger().opt(exception=True).error("Env server worker failed")
+        raise
+
+
 def serve_env(
     *,
     pool: PoolConfig,
@@ -301,33 +322,23 @@ def serve_env(
     config_data: dict,
     max_concurrent: int | None,
     address_queue=None,
-    death_pipe=None,
     worker_setup: Callable[[], None] | None = None,
 ) -> None:
-    """Serve one env over ZMQ: a single in-process `EnvServer` when the pool is capped at
-    one worker, else an `EnvServerPool` broker over worker processes. The frontend speaks the
-    same protocol either way, so the client is identical. Reports the bound address on
-    `address_queue` (for a spawner that passed an OS-assigned `:0`).
+    """Serve one env over ZMQ: an `EnvServerPool` broker over worker processes. Reports
+    the bound address on `address_queue` (for a spawner that passed an OS-assigned `:0`).
 
     `config_data` is the env config as plain data (`model_dump(mode="json")`), since a
     dynamically-narrowed config type can't be pickled into spawned workers.
 
     `worker_setup` (a picklable callable) runs in this process and every spawned worker —
-    without it a spawned server inherits no log handlers and its logs are silently dropped.
-
-    `death_pipe` (when spawned by a pool) makes this server self-terminate if its parent
-    dies abruptly — see `_arm_teardown`."""
-    # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
-    # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
-    _arm_teardown(death_pipe)
+    without it a spawned server inherits no log handlers and its logs are silently dropped."""
+    # Graceful SIGTERM (run asyncio teardown). The re-raised KeyboardInterrupt is swallowed
+    # below for a clean exit (no spurious traceback).
+    _arm_teardown()
     if worker_setup is not None:
         worker_setup()
     try:
-        cap = pool.max_workers if isinstance(pool, ElasticPoolConfig) else pool.num_workers
-        if cap == 1:
-            server = EnvServer(resolve_env_config(config_data), address, max_concurrent)
-        else:
-            server = EnvServerPool(pool, address, config_data, max_concurrent, worker_setup)
+        server = EnvServerPool(pool, address, config_data, max_concurrent, worker_setup)
         if address_queue is not None:
             address_queue.put(server.address)
         asyncio.run(server.run())
