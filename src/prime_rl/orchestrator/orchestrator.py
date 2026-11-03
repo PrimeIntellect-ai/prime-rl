@@ -50,7 +50,12 @@ from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
-from prime_rl.orchestrator.dispatcher import INTERRUPT_TIMEOUT_SECONDS, Dispatcher, DispatcherMode
+from prime_rl.orchestrator.dispatcher import (
+    INTERRUPT_TIMEOUT_SECONDS,
+    SAVE_TIMEOUT_SECONDS,
+    Dispatcher,
+    DispatcherMode,
+)
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -1029,6 +1034,10 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
+        if self.saves_rollouts:
+            # The in-flight rollouts checkpoint their boxes and go on, so a resume from
+            # this step continues them from there.
+            await self.dispatcher.save_inflight(SAVE_TIMEOUT_SECONDS)
         await self.save_state(self.checkpoint_state(), step)
         return time.perf_counter() - t
 

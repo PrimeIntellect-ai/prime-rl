@@ -63,8 +63,13 @@ INTERRUPT_TIMEOUT_SECONDS = 60.0
 """How long an interrupted rollout waits for its next model call, at which its box is
 idle for a filesystem checkpoint (``interrupt_inflight``)."""
 INTERRUPT_SETTLE_SECONDS = 600
-"""How long ``interrupt_inflight`` waits for the restore points of interrupted rollouts:
-their checkpoints become restorable after the interrupt returns."""
+"""How long ``interrupt_inflight`` and ``save_inflight`` wait for the restore points of
+the rollouts that took a checkpoint: their checkpoints become restorable after the
+request returns."""
+SAVE_TIMEOUT_SECONDS = 300.0
+"""How long a saved rollout waits for a model call, at which its box is idle for a
+filesystem checkpoint (``save_inflight``). The loop waits with it, so this is longer
+than a model call and most tool calls, not every one."""
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
 
@@ -739,36 +744,58 @@ class Dispatcher:
         (``interrupting``), so ``open_work`` saves them with those restore points. A
         filesystem checkpoint waits up to ``timeout`` for the rollout's next model call."""
         self.interrupting = True
+        interrupted, checkpointed = await self._checkpoint_inflight("interrupt", timeout)
+        restored = sum(1 for meta in self.inflight.values() if inflight_restore(meta) is not None)
+        get_logger().info(
+            f"Interrupted {interrupted} rollouts, {len(checkpointed)} with a checkpoint; "
+            f"{restored} of {len(self.inflight)} in flight have a restore point"
+        )
+
+    async def save_inflight(self, timeout: float) -> None:
+        """Checkpoint the in-flight rollouts for a checkpoint to save while they keep
+        running: have every env server save its rollouts, and wait until each that took
+        a checkpoint has streamed its restore point. ``open_work`` then saves them with
+        those restore points. A rollout waits up to ``timeout`` for its next model call."""
+        running, saved = await self._checkpoint_inflight("save", timeout)
+        restored = sum(1 for meta in self.inflight.values() if inflight_restore(meta) is not None)
+        get_logger().info(
+            f"Saved {len(saved)} of {running} running rollouts; "
+            f"{restored} of {len(self.inflight)} in flight have a restore point"
+        )
+
+    async def _checkpoint_inflight(self, request: Literal["interrupt", "save"], timeout: float) -> tuple[int, set[str]]:
+        """Send ``request`` to every env server and wait for the restore points of the
+        rollouts that took a checkpoint. Returns how many rollouts it reached, and the
+        trace ids of those that took one."""
         started = time.time()
         envs = [*(self.train_envs or ()), *(self.eval_envs or ())]
-        replies = await asyncio.gather(*(env.interrupt(timeout) for env in envs), return_exceptions=True)
-        interrupted, checkpointed = 0, set()
+        replies = await asyncio.gather(
+            *((env.interrupt if request == "interrupt" else env.save)(timeout) for env in envs),
+            return_exceptions=True,
+        )
+        reached, checkpointed = 0, set()
         for env, reply in zip(envs, replies):
             if isinstance(reply, BaseException):
-                get_logger().warning(f"Interrupting the rollouts of {env.name} failed: {reply!r}")
+                get_logger().warning(f"Checkpointing the rollouts of {env.name} ({request}) failed: {reply!r}")
                 continue
-            interrupted += reply[0]
+            reached += reply[0]
             checkpointed |= reply[1]
 
         def settled(task: asyncio.Task, meta: InflightEpisode) -> bool:
             # Only a rollout that took a checkpoint has a restore point to wait for; one
-            # interrupted before its harness ran (still booting) starts over.
+            # still booting starts over.
             if task.done() or meta.assembly is None or not checkpointed & set(meta.assembly.traces):
                 return True
             return any(point["checkpoint"].get("captured", 0) >= started for point in meta.assembly.restores.values())
 
-        # The interrupt returns once every rollout took its checkpoint; the restore
+        # The request returns once every rollout took its checkpoint; the restore
         # point streams when the checkpoint is restorable.
         deadline = time.monotonic() + INTERRUPT_SETTLE_SECONDS
         while not all(settled(task, meta) for task, meta in self.inflight.items()):
             if time.monotonic() > deadline:
                 break
             await asyncio.sleep(0.5)
-        restored = sum(1 for meta in self.inflight.values() if inflight_restore(meta) is not None)
-        get_logger().info(
-            f"Interrupted {interrupted} rollouts, {len(checkpointed)} with a checkpoint; "
-            f"{restored} of {len(self.inflight)} in flight have a restore point"
-        )
+        return reached, checkpointed
 
     def queued_results(self) -> list[DispatchResult]:
         """The results waiting in ``out_q`` for the orchestrator, without taking them."""

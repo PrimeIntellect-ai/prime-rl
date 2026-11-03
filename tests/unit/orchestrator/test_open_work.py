@@ -91,9 +91,13 @@ class SnapshotEnv:
     def __init__(self) -> None:
         self.deleted: list[str] = []
         self.on_interrupt = lambda: (0, set())
+        self.on_save = lambda: (0, set())
 
-    async def interrupt(self, timeout: float) -> int:
+    async def interrupt(self, timeout: float) -> tuple[int, set[str]]:
         return self.on_interrupt()
+
+    async def save(self, timeout: float) -> tuple[int, set[str]]:
+        return self.on_save()
 
     async def discard_checkpoints(self, snapshots: list[dict]) -> list[str]:
         ids = [snapshot["id"] for snapshot in snapshots]
@@ -500,6 +504,36 @@ def test_an_interrupt_saves_the_restore_points_it_took():
         await d.interrupt_inflight(timeout=1)
         await d.handle_completed_request(task)
         assert d.inflight == {task: meta} and d.held == {task}
+        (saved,) = d.open_work()
+        assert [r.point["checkpoint"]["id"] for r in saved.restores] == ["ck"]
+
+    asyncio.run(run())
+
+
+def test_a_save_keeps_the_rollouts_running_with_their_restore_points():
+    """An interval checkpoint saves the in-flight rollouts: it waits for the restore
+    point each one streams, and the rollouts stay in flight and keep dispatching."""
+
+    async def run():
+        d = dispatcher(["a"])
+        a = group("a", to_schedule=0, emitted=3)
+        d.groups = {a.group_id: a}
+        meta = inflight("a", a.group_id, streamed(["t1"], restore=False))
+        task = asyncio.get_running_loop().create_future()
+        d.inflight = {task: meta}
+
+        def save() -> tuple[int, set[str]]:
+            # The checkpoint becomes restorable after the save returns.
+            async def stream() -> None:
+                await asyncio.sleep(0.1)
+                meta.assembly.apply({"trace": "t1", "restore": {"checkpoint": {"id": "ck", "captured": time.time()}}})
+
+            asyncio.get_running_loop().create_task(stream())
+            return 1, {"t1"}
+
+        d.train_envs.get("a").on_save = save
+        await d.save_inflight(timeout=1)
+        assert not task.done() and not d.interrupting and not d.held
         (saved,) = d.open_work()
         assert [r.point["checkpoint"]["id"] for r in saved.restores] == ["ck"]
 

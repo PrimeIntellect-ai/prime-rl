@@ -375,12 +375,17 @@ The env servers keep the training arrays (routing rows, sampling masks, top-k he
 
 #### Rollout checkpointing
 
-A rollout checkpoints its box only when it is stopped: verifiers takes the checkpoint when an attempt fails with a model error that its turn retries did not recover, or when its owner interrupts it. A pause (see [Pausing a Live Run](#pausing-a-live-run)) with `rollouts = true` interrupts every in-flight rollout before it saves, so each one checkpoints its box and the checkpoint holds its restore point. A rollout without a restore point starts over: one that was in flight at a periodic checkpoint, or at a crash.
+Verifiers checkpoints a rollout's box when an attempt fails with a model error that its turn retries did not recover, or when the rollout's owner asks for it. With `rollouts = true`, the orchestrator asks before each checkpoint it saves:
+
+- A **periodic checkpoint** has each in-flight rollout take a filesystem checkpoint at its next model call, while the box is idle, and the rollout goes on. The orchestrator waits up to 5 minutes for that model call.
+- A **pause** (see [Pausing a Live Run](#pausing-a-live-run)) interrupts every in-flight rollout before it saves, so each one checkpoints its box and stops.
+
+The checkpoint holds each rollout's newest restore point. A rollout without a restore point starts over: one that was still booting, one that reached no model call in time, or one in flight at a crash.
 
 Two kinds of checkpoints exist, each set per env agent:
 
 - **Filesystem** (`[env.agent.checkpoint]`, on by default in verifiers) snapshots the box's files. The resumed rollout starts a new harness process in a new box with those files, which is told that the box was restored. Processes, sub-agents and in-memory state are gone.
-- **Memory** (`[env.agent.memory_checkpoint]`, off by default) also holds the box's processes and memory. The resumed rollout resumes the box, and its harness program carries on as it was. On prime, the checkpoint pauses the sandbox, which resumes once and on the same node; when it no longer resumes, the rollout restores its files instead.
+- **Memory** (`[env.agent.memory_checkpoint]`, off by default) also holds the box's processes and memory. The resumed rollout resumes the box, and its harness program carries on as it was. On prime, the checkpoint pauses the sandbox, which resumes once and on the same node; when it no longer resumes, the rollout restores its files instead. A periodic checkpoint takes a filesystem checkpoint here too, since a memory checkpoint stops the box.
 
 With `rollouts = true`, every env agent leaves its box checkpoints to the orchestrator (`after = "keep"`). The orchestrator keeps each in-flight rollout's checkpoint and the ones its latest checkpoint resumes from, and deletes the rest. A harness that keeps nothing in its box (`null`) off prime restores from the trace alone when its agent sets `boxless = true`.
 
