@@ -166,7 +166,8 @@ class TokenDataset(StatefulIterableDataset):
             start = self.shards.window_start(window * self.seq_len, self.seq_len)
             tokens, doc_starts = self.shards.read(start, self.seq_len + 1)
             doc_starts = [s for s in doc_starts if s < self.seq_len] if self.document_masking else []
-            seq_lens = np.diff([0, *doc_starts, self.seq_len]).tolist()
+            # An empty document repeats a start; its zero-length segment would repeat an attention offset.
+            seq_lens = [length for length in np.diff([0, *doc_starts, self.seq_len]).tolist() if length > 0]
             ids = tokens.tolist()
             yield {
                 "input_ids": ids[:-1],

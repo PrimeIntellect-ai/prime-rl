@@ -8,8 +8,8 @@ from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards
 from prime_rl.trainer.world import reset_world
 
-# Documents of the pool, in two folders. A token's id is its position in the pool.
-DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 60)], [range(60, 103)]]
+# Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
+DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
 NUM_TOKENS = 103
 DOCUMENT_STARTS = {0, 10, 30, 60}
 
