@@ -68,6 +68,35 @@ def test_document_masking(folders: list[Path], document_masking: bool):
         assert sample["loss_mask"] == [True] * seq_len
 
 
+def set_world(monkeypatch, rank: int, world_size: int) -> None:
+    reset_world()
+    for name, value in (
+        ("RANK", rank),
+        ("LOCAL_RANK", rank),
+        ("WORLD_SIZE", world_size),
+        ("LOCAL_WORLD_SIZE", world_size),
+    ):
+        monkeypatch.setenv(name, str(value))
+
+
+@pytest.mark.parametrize(("num_samples", "expected"), [(5, 5), (None, 12), (100, 12)])
+def test_validation_stops_every_rank_at_the_same_window(
+    folders: list[Path], monkeypatch, num_samples: int | None, expected: int
+):
+    """One epoch capped at num_samples windows: two data ranks together read the first windows of the sequence one
+    rank reads, each window once."""
+    seq_len = 8
+    set_world(monkeypatch, rank=0, world_size=1)
+    sequence = take(TokenDataset(TokenShards(folders), seq_len), expected)
+    samples_by_rank = []
+    for rank in range(2):
+        set_world(monkeypatch, rank=rank, world_size=2)
+        samples_by_rank.append(list(TokenDataset(TokenShards(folders), seq_len, max_epochs=1, num_samples=num_samples)))
+    reset_world()
+    assert [samples_by_rank[w % 2][w // 2] for w in range(expected)] == sequence
+    assert sum(map(len, samples_by_rank)) == expected
+
+
 def first_tokens(batch: dict, seq_len: int) -> list[int]:
     """The first token of every window in a micro-batch row, which is the window's position in the pool."""
     return batch["input_ids"][0, ::seq_len].tolist()
@@ -79,10 +108,7 @@ def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders
     config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
 
     def dataloader(rank: int, world_size: int):
-        reset_world()
-        for name, value in (("RANK", rank), ("LOCAL_RANK", rank), ("WORLD_SIZE", world_size)):
-            monkeypatch.setenv(name, str(value))
-        monkeypatch.setenv("LOCAL_WORLD_SIZE", str(world_size))
+        set_world(monkeypatch, rank, world_size)
         return setup_dataloader(TokenDataset(TokenShards(config.paths), config.seq_len), config, cp=1)
 
     uninterrupted = iter(dataloader(rank=0, world_size=1))

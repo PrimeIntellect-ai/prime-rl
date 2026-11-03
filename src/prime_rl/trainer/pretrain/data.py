@@ -123,15 +123,28 @@ class TokenDataset(StatefulIterableDataset):
     """``seq_len`` windows of a token pool, window ``w`` read from ``shards.window_start(w * seq_len)``. With
     ``document_masking``, a window has one segment per document (``seq_lens``) and positions restart at every
     document; without, it is one segment. Every data rank walks the whole window sequence but reads only its own
-    windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read."""
+    windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read. With
+    ``max_epochs`` or ``num_samples`` (windows over all ranks), every rank stops at the same window."""
 
-    def __init__(self, shards: TokenShards, seq_len: int, document_masking: bool = True, non_dp_size: int = 1):
+    def __init__(
+        self,
+        shards: TokenShards,
+        seq_len: int,
+        document_masking: bool = True,
+        non_dp_size: int = 1,
+        max_epochs: int | None = None,
+        num_samples: int | None = None,
+    ):
         super().__init__(non_dp_size)
         if shards.num_tokens < seq_len:
             raise ValueError(f"The token pool has {shards.num_tokens} tokens, fewer than seq_len ({seq_len})")
         self.shards = shards
         self.seq_len = seq_len
         self.document_masking = document_masking
+        limits = [] if num_samples is None else [num_samples]
+        if max_epochs is not None:
+            limits.append(max_epochs * (shards.num_tokens // seq_len))
+        self.max_step = min(limits, default=None)
 
     def state_dict(self) -> dict:
         # A checkpoint follows a whole optimizer step, after which every data rank has read the same number of
@@ -142,7 +155,7 @@ class TokenDataset(StatefulIterableDataset):
 
     def __iter__(self):
         self._setup_world_info()
-        while True:
+        while self.max_step is None or self.step < self.max_step:
             window = self.step
             self.step += 1
             self.epoch = self.step * self.seq_len / self.shards.num_tokens
@@ -164,10 +177,17 @@ class TokenDataset(StatefulIterableDataset):
             }
 
 
-def setup_token_dataset(config: DatatroveDataConfig, non_dp_size: int = 1) -> TokenDataset:
+def setup_token_dataset(
+    config: DatatroveDataConfig,
+    non_dp_size: int = 1,
+    max_epochs: int | None = None,
+    num_samples: int | None = None,
+) -> TokenDataset:
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
         document_masking=config.document_masking,
         non_dp_size=non_dp_size,
+        max_epochs=max_epochs,
+        num_samples=num_samples,
     )

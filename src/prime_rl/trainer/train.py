@@ -324,7 +324,9 @@ def train(config: SFTConfig | PretrainConfig):
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
-            val_dataset = setup_token_dataset(config.val.data, config.model.cp)
+            val_dataset = setup_token_dataset(
+                config.val.data, config.model.cp, max_epochs=1, num_samples=config.val.num_samples
+            )
         else:
             val_dataset = setup_sft_dataset(
                 tokenizer,
