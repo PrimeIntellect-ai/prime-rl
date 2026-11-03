@@ -4,9 +4,11 @@ from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
+from prime_rl.utils.logger import get_logger
 
 MAX_OPEN_FILES = 256
 
@@ -175,6 +177,28 @@ class TokenDataset(StatefulIterableDataset):
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
+
+
+def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> None:
+    """Warn when the first document of a folder neither ends with a special token nor starts with BOS: prime-rl
+    reads documents as they are, so shards tokenized without a separator run their documents together."""
+    first_files = {}
+    for index, file in enumerate(shards.files):
+        first_files.setdefault(file.parent, index)
+    special_ids = set(tokenizer.all_special_ids)
+    for folder, index in first_files.items():
+        tokens, doc_ends = shards.open(index)
+        document = tokens[: int(doc_ends[0])]
+        if int(document[-1]) in special_ids or int(document[0]) == tokenizer.bos_token_id:
+            continue
+        get_logger().warning(
+            f"The documents in {folder} have no separator: the first one ends with token {int(document[-1])} "
+            f"({tokenizer.decode([int(document[-1])])!r}), not a special token, and does not start with BOS.\n"
+            "The documents run together, so the model will not learn where a document ends and will not learn to "
+            "stop.\n"
+            "Tokenize again with datatrove's DocumentTokenizer and set eos_token to the tokenizer's end-of-text "
+            "token (e.g. <|endoftext|> for Qwen)."
+        )
 
 
 def setup_token_dataset(
