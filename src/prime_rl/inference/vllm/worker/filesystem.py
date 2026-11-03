@@ -356,30 +356,17 @@ class FileSystemWeightUpdateWorker(Worker):
         of times each (TP slices: once; KV heads replicated over TP workers: once per replica); one held by workers
         that overlap unevenly (fp8 tensors read in 128-row blocks) is checked only where a worker holds it whole."""
         start = time.perf_counter()
-        assert self.index_map is not None
-        canonical = sorted(self.index_map.numel)
-        position = {name: index for index, name in enumerate(canonical)}
+        canonical, ids, counts, whole, multiplicity = self._coverage(names, held)
         device = totals.device
-        ids = torch.tensor([position[name] for name in names], dtype=torch.long, device=device)
         sums = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), totals)
-        counts = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), held)
-        numel = torch.tensor([self.index_map.numel[name] for name in canonical], device=device)
         has_expected = torch.tensor([name in expected for name in canonical], device=device)
         target = torch.tensor([expected.get(name, 0) for name in canonical], dtype=torch.int64, device=device)
-        whole = counts == numel
         mismatched = whole & has_expected & (sums != target)
         tp_group = get_tp_group()
         if tp_group.world_size > 1:
             group = tp_group.device_group
-            total_sums, total_counts, most = sums.clone(), counts.clone(), counts.clone()
-            # Holders' fewest elements; non-holders report the most anyone could hold
-            fewest = torch.where(counts > 0, counts, numel)
-            torch.distributed.all_reduce(total_sums, group=group)
-            torch.distributed.all_reduce(total_counts, group=group)
-            torch.distributed.all_reduce(most, op=torch.distributed.ReduceOp.MAX, group=group)
-            torch.distributed.all_reduce(fewest, op=torch.distributed.ReduceOp.MIN, group=group)
-            even = (total_counts > 0) & (total_counts % numel == 0) & (most == fewest)
-            mismatched |= even & has_expected & (total_sums != total_counts // numel * target)
+            torch.distributed.all_reduce(sums, group=group)
+            mismatched |= (multiplicity > 0) & has_expected & (sums != multiplicity * target)
             any_mismatch = mismatched.any().to(torch.int32)
             torch.distributed.all_reduce(any_mismatch, op=torch.distributed.ReduceOp.MAX, group=group)
         else:
@@ -388,6 +375,39 @@ class FileSystemWeightUpdateWorker(Worker):
             names_off = [canonical[index] for index in mismatched.nonzero().flatten().tolist()[:8]]
             raise RuntimeError(f"Weights at {label} diverged from the trainer: {names_off or 'on a TP peer'}")
         logger.info(f"Verified the weights at {label} in {time.perf_counter() - start:.2f}s")
+
+    def _coverage(self, names: list[str], held: torch.Tensor) -> tuple:
+        """What ``_check`` needs of who holds what: every checkpoint tensor of the run (sorted), the positions of
+        ``names`` in it, this worker's element counts and whole tensors, and how many times the TP group's holders
+        cover each tensor evenly (0: unevenly, or not held). Static for an index map, so kept for the ``names`` and
+        ``held`` of its checksum plan; every TP worker follows the same plan, so they compute it (and run its
+        collectives) at the same updates."""
+        cached = getattr(self, "coverage_cache", None)
+        if cached is not None and cached[0] is names and cached[1] is held:
+            return cached[2]
+        assert self.index_map is not None
+        canonical = sorted(self.index_map.numel)
+        position = {name: index for index, name in enumerate(canonical)}
+        device = held.device
+        ids = torch.tensor([position[name] for name in names], dtype=torch.long, device=device)
+        counts = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), held)
+        numel = torch.tensor([self.index_map.numel[name] for name in canonical], device=device)
+        whole = counts == numel
+        multiplicity = torch.zeros_like(counts)
+        tp_group = get_tp_group()
+        if tp_group.world_size > 1:
+            group = tp_group.device_group
+            total_counts, most = counts.clone(), counts.clone()
+            # Holders' fewest elements; non-holders report the most anyone could hold
+            fewest = torch.where(counts > 0, counts, numel)
+            torch.distributed.all_reduce(total_counts, group=group)
+            torch.distributed.all_reduce(most, op=torch.distributed.ReduceOp.MAX, group=group)
+            torch.distributed.all_reduce(fewest, op=torch.distributed.ReduceOp.MIN, group=group)
+            even = (total_counts > 0) & (total_counts % numel == 0) & (most == fewest)
+            multiplicity = torch.where(even, total_counts // numel, 0)
+        coverage = (canonical, ids, counts, whole, multiplicity)
+        self.coverage_cache = (names, held, coverage)
+        return coverage
 
     def _load_checkpoint(self, step_dir: Path) -> tuple | None:
         """Reload every weight from the HF checkpoint (or anchor) in ``step_dir``. In a sparse run, each worker reads
