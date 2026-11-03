@@ -19,7 +19,25 @@ WRITE_FIELDS = 10
 _TL_BITS = {torch.uint8: tl.uint8, torch.int16: tl.int16, torch.int32: tl.int32, torch.int64: tl.int64}
 
 
-@triton.jit
+# Triton otherwise compiles a variant per value class of these (== 1, divisible by 16, pointer alignment), which a new
+# delta can hit inside a weight-update pause: one variant per bits dtype serves every delta.
+_RUNTIME_ARGS = (
+    "indices_ptr",
+    "deltas_ptr",
+    "contributions_ptr",
+    "entry_ends_ptr",
+    "entry_names_ptr",
+    "writes_ptr",
+    "num_cols_ptr",
+    "param_ptrs_ptr",
+    "maps_ptr",
+    "num_changes",
+    "num_entries",
+    "search_steps",
+)
+
+
+@triton.jit(do_not_specialize=_RUNTIME_ARGS)
 def _sparse_apply_kernel(
     indices_ptr,
     deltas_ptr,
