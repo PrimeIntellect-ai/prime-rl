@@ -101,7 +101,7 @@ class FileSystemWeightUpdateWorker(Worker):
         read_time = time.perf_counter() - start
         chunks, size = [[]], 0
         for frame in frames:
-            if size >= 1 << 26:
+            if size >= 1 << 24:
                 chunks.append([])
                 size = 0
             chunks[-1].append(frame)
