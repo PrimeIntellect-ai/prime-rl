@@ -408,10 +408,12 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
+The checkpoint saves no partial train groups. A resume re-runs, whole, every train group that was drawn but not shipped at the checkpoint, before it draws new tasks. A group that finished without training (for example, rejected by the curriculum) does not re-run.
+
 A resume can add, remove or change train and eval sources. The orchestrator matches sources by name (`name`, else the env id), so renaming a source counts as removing it and adding a new one:
 
 - A new train source starts with a fresh curriculum. The checkpointed curriculum of a removed train source is dropped.
-- When a source's taskset gains or loses tasks, `StandardSampler` keeps the sampling counts of the remaining tasks. New tasks start at the lowest remaining count, so they join the current pass. `DifficultyPoolSampler` drops the rewards of removed tasks, and new tasks start unseen. A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task.
+- When a source's taskset gains or loses tasks, `StandardSampler` keeps the sampling counts of the remaining tasks. New tasks start at the lowest remaining count, so they join the current pass. `DifficultyPoolSampler` drops the rewards of removed tasks, and new tasks start unseen. A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task. A resume drops the unshipped groups of a removed source or task. A streaming taskset cannot find a task by key, so it drops its unshipped groups too.
 - A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
 - Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
 

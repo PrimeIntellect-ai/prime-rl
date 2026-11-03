@@ -339,3 +339,53 @@ def test_train_source_matches_envs_by_name() -> None:
     assert next(restored.curricula["b"].sampler).key == tasks["b"][1].key
     assert next(restored.curricula["c"].sampler).key == added[0].key
     assert restored.rng.getstate() == source.rng.getstate()
+
+
+def test_train_source_reopens_open_groups_in_order_without_recounting() -> None:
+    tasks = [make_task(i) for i in range(4)]
+    source = TrainSource([make_env("a", tasks)])
+    requests = [source.next_task(step=1) for _ in range(3)]
+    source.close_groups([requests[1].group_id])
+    state = source.state_dict()
+    assert state["open_groups"] == [("a", requests[0].task.key), ("a", requests[2].task.key)]
+
+    restored = TrainSource([make_env("a", tasks)])
+    restored.load_state_dict(state)
+    counts, rng = dict(restored.curricula["a"].sampler.counts), restored.rng.getstate()
+    first = restored.next_task(step=2)
+    assert first.task.key == requests[0].task.key
+    assert first.group_id not in {request.group_id for request in requests}
+    # A checkpoint between re-runs keeps the waiting groups after the re-run ones.
+    assert restored.state_dict()["open_groups"] == state["open_groups"]
+    assert restored.next_task(step=2).task.key == requests[2].task.key
+    assert restored.curricula["a"].sampler.counts == counts and restored.rng.getstate() == rng
+    assert len(restored.open_groups) == 2 and next(iter(restored.open_groups)) == first.group_id
+    assert restored.next_task(step=2).task.key == tasks[3].key
+
+
+def test_train_source_drops_open_groups_it_cannot_reopen() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    state = {
+        "rng": TrainSource([make_env("a", tasks)]).rng.getstate(),
+        "envs": {},
+        "open_groups": [("a", tasks[0].key), ("removed", tasks[0].key), ("a", "gone"), ("stream", tasks[1].key)],
+    }
+    stream = SimpleNamespace(
+        name="stream", tasks=iter(tasks), num_tasks=None, config=SimpleNamespace(ratio=1.0, curriculum=None)
+    )
+    restored = TrainSource([make_env("a", tasks), stream])
+    restored.load_state_dict(state)
+    assert [(env_name, task.key) for env_name, task in restored.reopened] == [("a", tasks[0].key)]
+
+
+def test_train_source_loads_a_checkpoint_without_open_groups() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    source = TrainSource([make_env("a", tasks)])
+    source.next_task(step=1)
+    state = source.state_dict()
+    del state["open_groups"]
+
+    restored = TrainSource([make_env("a", tasks)])
+    restored.load_state_dict(state)
+    assert not restored.reopened
+    assert restored.next_task(step=2).task.key == tasks[1].key

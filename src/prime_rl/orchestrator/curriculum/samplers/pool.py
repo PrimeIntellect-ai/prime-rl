@@ -64,6 +64,9 @@ class DifficultyPoolSampler(TaskSampler):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
+    def find_task(self, key: str) -> vf.Task | None:
+        return self.tasks_by_key.get(key)
+
     def observe(self, group: list[vf.Episode]) -> None:
         rewards = [
             trace.reward

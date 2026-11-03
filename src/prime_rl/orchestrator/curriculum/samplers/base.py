@@ -17,6 +17,10 @@ class TaskSampler(Iterator[vf.Task], ABC):
         """Choose the next task."""
         raise NotImplementedError
 
+    def find_task(self, key: str) -> vf.Task | None:
+        """Return the task with this key, or ``None`` if the sampler cannot find it by key."""
+        return None
+
     def observe(self, group: list[vf.Episode]) -> None:
         """Update sampling state from a finalized group."""
 
