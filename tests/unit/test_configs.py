@@ -162,6 +162,7 @@ def test_pretrain_config_roundtrip(tmp_path):
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
     assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
+    assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
 
     write_config(config, tmp_path / "pretrain.json")
     assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
@@ -169,6 +170,8 @@ def test_pretrain_config_roundtrip(tmp_path):
 
     muon = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--optim.type", "muon"])
     assert muon.optim.lr == 1e-3
+    warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
+    assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
 
 
 def test_toml_partial_nested_override(tmp_path):

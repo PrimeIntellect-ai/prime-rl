@@ -4,7 +4,14 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import Field
 
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
-from prime_rl.configs.trainer import AdamWConfig, MuonConfig, SignSGDConfig
+from prime_rl.configs.trainer import (
+    AdamWConfig,
+    ConstantSchedulerConfig,
+    CosineSchedulerConfig,
+    LinearSchedulerConfig,
+    MuonConfig,
+    SignSGDConfig,
+)
 
 
 class DatatroveDataConfig(BaseDataConfig):
@@ -49,6 +56,17 @@ PretrainOptimizerConfig: TypeAlias = Annotated[
 ]
 
 
+class PretrainLinearSchedulerConfig(LinearSchedulerConfig):
+    decay_steps: int = Field(0, ge=0)
+    """Steps to decay the learning rate during the final portion of training. Defaults to 0: a decay needs
+    ``max_steps``."""
+
+
+PretrainSchedulerConfig: TypeAlias = Annotated[
+    ConstantSchedulerConfig | PretrainLinearSchedulerConfig | CosineSchedulerConfig, Field(discriminator="type")
+]
+
+
 class PretrainConfig(SupervisedTrainerConfig):
     """Pretraining: next-token loss on tokenized shards, with the weights initialized from scratch unless resuming."""
 
@@ -60,3 +78,7 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Validation on held-out shards. If None, no validation runs."""
 
     optim: PretrainOptimizerConfig = PretrainAdamWConfig()
+
+    scheduler: PretrainSchedulerConfig = PretrainLinearSchedulerConfig()
+    """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
+    first updates at the full learning rate are unstable."""
