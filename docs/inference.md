@@ -337,36 +337,17 @@ Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-top_k = 128   # optional, defaults to 128 under truncation (bounds each sampling mask)
+# top_k = 128  # optional
 ```
 
-That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
+That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Top-p alone needs no top-k: each request's kept set is captured whole, at any width. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature and bounded top-k. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. They do not inherit the training top-k cap. Mixed batches skip mask capture for eval rows; only training rows determine the capture width. All-eval batches skip mask capture entirely.
+Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. Mixed batches skip mask capture for eval rows, and all-eval batches skip it entirely.
+
+Capture reads the logits vLLM's sampler has already masked (its top-k/top-p kernel finds the nucleus threshold without sorting the vocabulary, and the sampled token is drawn from exactly that set). Per sampling step, one GPU pass counts each replayed request's kept tokens and the log-normalizer over them, and a second pass compacts their ids and logprobs into one flat buffer at prefix-summed offsets. Only the step's real total is copied to the host. The buffer holds `inference.sampling_support_capacity` entries (default 16M, 128 MB); requests whose supports do not fit in a step fail with an explicit error rather than being truncated. The server logs the maximum per-step total every minute.
 
 Online eval uses the chat-completions client with logprobs disabled. The chat endpoint already strips returned router data. An omitted eval top-k is explicitly disabled (`-1`) rather than inherited from the model generation config. Token-renderer training clients retain their required sampled logprobs. Router instrumentation itself remains engine-wide; this does not remove its model-side overhead. Request-scoped mask capture currently rejects speculative decoding rather than silently capturing eval supports through the rejection sampler.
 
-When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request and use `0 < top_k <= 512`.
+When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request.
 
-### Top-p before the top-k cap
-
-Sampling-mask capture defaults to `inference.top_p_before_top_k = true`: select the nucleus using the full
-probability distribution, then keep at most `top_k` candidates and renormalize.
-For example, with `top_p = 0.99` and `top_k = 128`, a nucleus smaller than 128 is
-unchanged; a larger nucleus is capped at 128 and may retain less than 99% of the
-original mass. Ties at the cap are broken by token ID (higher IDs retained).
-
-This applies engine-wide, including evaluation requests, when sampling-mask
-capture is enabled on the V2 model runner. Without capture, the flag has no effect.
-The recorded mask and processed logprobs
-reflect the final support, so trainer replay and score centering use that same
-distribution. Set `inference.top_p_before_top_k = false` to use vLLM's
-top-k-then-top-p order instead. Bounded batches compute the normalizer over the
-full vocabulary but sort only the top-k candidates. Single-row batches,
-unbounded requests, and ties across the extraction boundary use a full sort.
-
-Non-streaming compact replay requests capture support IDs and their normalized
-logprobs together, avoiding a separate full-vocabulary top-logprob extraction.
-The server returns the same compact-logprob and sampling-mask formats. Evaluation
-requests do not enable this capture. Aligned support evidence is encoded directly;
-reordered or mixed evidence still uses support matching and validation.
+Score-centered replay requests (compact logprobs + `prl_replay`) take each support id's processed logprob from the sampler itself: it is packed into the mask id on the GPU, so vLLM computes no logprobs for these requests and the server returns the usual compact-logprob and sampling-mask formats. Score-centered requests without replay get the same GPU capture: the sampled token followed by the top ids (vLLM's logprob layout) or, with `extra_args.prl_sampler_draws = K`, K i.i.d. draws from the processed distribution, returned as compact logprobs only (`"samples": true` marks draws). These need `enable_return_sampling_mask` too.
