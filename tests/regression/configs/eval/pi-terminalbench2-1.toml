@@ -7,7 +7,7 @@
 #
 #   uv run eval @ tests/regression/configs/eval/pi-terminalbench2-1.toml
 
-model = "internal/deepseek-v4.1-flash-1017-ht"
+model = "internal/deepseek-v4.1-flash-1017-ci"
 group_size = 1
 dashboard = false
 
