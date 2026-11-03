@@ -14,7 +14,8 @@ MAX_OPEN_FILES = 256
 
 
 def mix(values: np.ndarray) -> np.ndarray:
-    """SplitMix64's finalizer, a bijective hash of uint64 values."""
+    """SplitMix64's output function, increment included (Steele, Lea and Flood, "Fast splittable pseudorandom number
+    generators", 2014; constants from Vigna's reference implementation): a bijective hash of uint64 values."""
     values = values + np.uint64(0x9E3779B97F4A7C15)
     values = (values ^ (values >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
     values = (values ^ (values >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
@@ -24,7 +25,11 @@ def mix(values: np.ndarray) -> np.ndarray:
 def permute(indices: np.ndarray, n: int, key: int) -> np.ndarray:
     """A pseudo-random permutation of ``range(n)``, chosen by ``key``, at ``indices``: a 4-round Feistel network on
     the smallest even number of bits that holds ``n``, applied again to values of ``n`` or more until they fall below
-    (cycle walking). Each index costs O(1) and no table is built, however large ``n`` is."""
+    (cycle walking; Black and Rogaway, "Ciphers with arbitrary finite domains", 2002).
+
+    A stored permutation (``rng.permutation(n)``) costs 8 bytes per window in every dataloader worker: fine at 10B
+    tokens, tens of GB at 10T. This one builds no table, and a window's position is a pure function of
+    (seed, epoch, index), which is what makes resuming exact."""
     half = max(1, ((n - 1).bit_length() + 1) // 2)
     mask = np.uint64((1 << half) - 1)
     round_keys = mix(np.uint64(key) + np.arange(4, dtype=np.uint64))

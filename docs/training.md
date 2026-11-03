@@ -40,7 +40,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 |---|---|---|
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
-| `uv run pretrain` | Pretraining from scratch on tokenized shards. | The SFT trainer with token data and from-scratch weights; see [Pretraining](#pretraining). |
+| `uv run pretrain` | Pretraining from scratch on tokenized shards. | Launches torchrun internally; see [Pretraining](#pretraining). |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
@@ -315,11 +315,12 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on pre-tokenized data. It is the SFT trainer with two differences: the data is a pool of tokens (`[data]` with `type = "tokens"`), and the weights start from the model's own init (`model.from_scratch = true`), so `model.name` only supplies the model config. A resumed run loads the weights from the checkpoint. All other settings and defaults are SFT's, except `optim.lr`, which defaults to PyTorch's `1e-3`. The from-scratch init is tested on dense models.
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
-**Tokenize.** The data is the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. Tokenize with the tokenizer you train with, and end every document with its EOS token:
+**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
 
 ```python
+# Run with datatrove installed. Tokenize held-out documents into another folder for validation.
 from datatrove.executor import LocalPipelineExecutor
 from datatrove.pipeline.readers import ParquetReader
 from datatrove.pipeline.tokens import DocumentTokenizer
@@ -343,15 +344,23 @@ LocalPipelineExecutor(
 max_steps = 1000
 
 [model]
-name = "Qwen/Qwen3-0.6B"   # only the model config is read
+name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
 paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256
+
+[val]                      # optional
+interval = 100
+num_samples = 512          # windows per validation; leave out to read the held-out shards once
+
+[val.data]
+paths = ["data/fineweb-edu-val"]
+seq_len = 2048
 ```
 
-The files of all folders in `data.paths` (in folder order, then file name order) are read as one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed` and the epoch. Attention and positions restart at every document (`data.document_masking = false` makes a window one sequence). A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
 **Launch.**
 
