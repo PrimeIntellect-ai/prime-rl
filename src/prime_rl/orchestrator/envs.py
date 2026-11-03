@@ -28,11 +28,11 @@ from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
+from prime_rl.env import EnvClient
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
