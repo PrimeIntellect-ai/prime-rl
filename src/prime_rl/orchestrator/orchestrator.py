@@ -67,6 +67,7 @@ from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     DispatchFailure,
+    DispatchResult,
     EvalBatch,
     GroupCancellation,
     Policy,
@@ -176,6 +177,10 @@ class Orchestrator:
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
+        # The periodic checkpoint being written in the background, and the results that
+        # wait for it (``ingest_parked``).
+        self.pending_save: asyncio.Task | None = None
+        self.parked: list[DispatchResult] = []
         self.policy = Policy(version=0, model_name="")
         self.gc = GarbageCollector(config.gc.interval) if config.gc else None
         self.stopped = asyncio.Event()
@@ -486,6 +491,9 @@ class Orchestrator:
             # Teardown stops the components itself; one failing now must not cancel the teardown.
             for task in self.component_tasks:
                 task.remove_done_callback(on_component_done)
+            if self.pending_save is not None and not self.pending_save.done():
+                # The run stops before the next step ships: that checkpoint resumes nothing new.
+                self.pending_save.cancel()
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
@@ -568,47 +576,64 @@ class Orchestrator:
                 item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
+                await self.ingest_parked()
                 continue
+            self.parked.append(item)
+            await self.ingest_parked()
 
-            if isinstance(item, GroupCancellation):
-                assert item.kind == "train"  # eval groups are never dropped
-                train_batch = await self.train_sink.cancel(item)
-                await self.handle_train_result(train_batch)
-                continue
-            if isinstance(item, DispatchFailure):
-                if item.kind == "eval":
-                    assert self.eval_sink is not None
-                    eval_batch = self.eval_sink.fail(item)
-                    if eval_batch is not None:
-                        await self.finalize_eval_batch(eval_batch)
-                else:
-                    train_batch = await self.train_sink.fail(item)
-                    await self.handle_train_result(train_batch)
-                continue
-            episode = item
+    async def ingest_parked(self) -> None:
+        """Route the parked results to their sinks in arrival order. While a checkpoint
+        is written they stay parked, so the sinks stay as the checkpoint found them;
+        the checkpoint saves them as in-queue."""
+        if self.pending_save is not None:
+            if not self.pending_save.done():
+                return
+            save, self.pending_save = self.pending_save, None
+            await save
+        while self.parked and self.pending_save is None:
+            await self.ingest(self.parked.pop(0))
 
-            # Every completed rollout — errored, rejected, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
-            if episode.run is None:
-                raise ValueError("Dispatched episode is missing run identity")
-            if not isinstance(episode.run, vf.TrainRunInfo):
-                raise ValueError("Orchestrated episode is missing training-run provenance")
-            kind = episode.run.work.type
-            step = episode.run.work.step if kind == "eval" else self.progress.step
-            stamp_arrival([episode], kind, step)
-            await monitors.log([episode], step, kind, "all")
-
-            if kind == "eval":
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(episode)
+    async def ingest(self, item: DispatchResult) -> None:
+        """Route one dispatcher result to its sink."""
+        if isinstance(item, GroupCancellation):
+            assert item.kind == "train"  # eval groups are never dropped
+            train_batch = await self.train_sink.cancel(item)
+            await self.handle_train_result(train_batch)
+            return
+        if isinstance(item, DispatchFailure):
+            if item.kind == "eval":
+                assert self.eval_sink is not None
+                eval_batch = self.eval_sink.fail(item)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
-                continue
+            else:
+                train_batch = await self.train_sink.fail(item)
+                await self.handle_train_result(train_batch)
+            return
+        episode = item
 
-            train_batch = await self.train_sink.add(episode)
-            await self.handle_train_result(train_batch)
+        # Every completed rollout — errored, rejected, or never batched — lands in the
+        # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+        # Train rollouts belong to the batch window currently collecting (``progress.step``),
+        # eval rollouts to the step whose eval triggered them.
+        if episode.run is None:
+            raise ValueError("Dispatched episode is missing run identity")
+        if not isinstance(episode.run, vf.TrainRunInfo):
+            raise ValueError("Orchestrated episode is missing training-run provenance")
+        kind = episode.run.work.type
+        step = episode.run.work.step if kind == "eval" else self.progress.step
+        stamp_arrival([episode], kind, step)
+        await monitors.log([episode], step, kind, "all")
+
+        if kind == "eval":
+            assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+            eval_batch = self.eval_sink.add(episode)
+            if eval_batch is not None:
+                await self.finalize_eval_batch(eval_batch)
+            return
+
+        train_batch = await self.train_sink.add(episode)
+        await self.handle_train_result(train_batch)
 
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
         if self.heart is not None:
@@ -1033,13 +1058,23 @@ class Orchestrator:
         if step % self.config.ckpt.interval != 0:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
-        t = time.perf_counter()
         if self.saves_rollouts:
             # The in-flight rollouts checkpoint their boxes and go on, so a resume from
-            # this step continues them from there.
-            await self.dispatcher.save_inflight(SAVE_TIMEOUT_SECONDS)
+            # this step continues them from there. That takes up to a model call, so
+            # the checkpoint is written in the background and the results that arrive
+            # meanwhile wait for it, parked; the next step ships after it.
+            self.pending_save = asyncio.create_task(self.save_rollouts(step))
+            return 0.0
+        t = time.perf_counter()
         await self.save_state(self.checkpoint_state(), step)
         return time.perf_counter() - t
+
+    async def save_rollouts(self, step: int) -> None:
+        """Checkpoint ``step`` with its in-flight rollouts' boxes saved first."""
+        t = time.perf_counter()
+        await self.dispatcher.save_inflight(SAVE_TIMEOUT_SECONDS)
+        await self.save_state(self.checkpoint_state(), step)
+        get_logger().info(f"Saved checkpoint at step {step} in {format_time(time.perf_counter() - t)}")
 
     @property
     def saves_rollouts(self) -> bool:
@@ -1069,7 +1104,7 @@ class Orchestrator:
         newest restore points), the in-queue ones in the sinks' buffers and in ``out_q``,
         and the eval examples not yet dispatched."""
         sink = self.train_sink.state_dict()
-        results = self.dispatcher.queued_results()
+        results = [*self.parked, *self.dispatcher.queued_results()]
         # A group whose last member waits in ``out_q`` is neither the dispatcher's nor the
         # sink's anymore; its size goes with the sink's.
         for result in results:
@@ -1137,6 +1172,9 @@ class Orchestrator:
         saves the rollouts interrupts them first, and dispatches nothing after."""
         if self.shipped_state is None:
             return
+        if self.pending_save is not None:
+            # A pause saves after the periodic checkpoint being written.
+            await asyncio.shield(self.pending_save)
         step, state = self.shipped_state
         if self.controller.update(step):
             if state is None and self.saves_rollouts:

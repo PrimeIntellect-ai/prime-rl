@@ -34,6 +34,7 @@ import urllib.error
 import urllib.request
 import uuid
 import weakref
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -490,19 +491,28 @@ class PayloadHook:
                 _write(path, blob)
                 blobs.append(key)
         traces = []
+        skipped: Counter[str] = Counter()
         for trace_id, (checkpoint, num_nodes) in request["traces"].items():
             path = (directory / trace_id).resolve()
             if path.parent != directory:
                 continue
             with self.traces_lock:
                 trace = self.traces.get(trace_id) or self.interrupted.get(trace_id)
-            if trace is None or not any(c.id == checkpoint for c in trace.checkpoints):
+            if trace is None:
+                skipped["gone"] += 1
+                continue
+            if not any(c.id == checkpoint for c in trace.checkpoints):
+                skipped["without the checkpoint"] += 1
                 continue
             nodes = trace.nodes[:num_nodes]
             if len(nodes) < num_nodes:
+                skipped["with fewer nodes"] += 1
                 continue
             _write(path, _encode_node_arrays(nodes))
             traces.append(trace_id)
+        if skipped:
+            reasons = ", ".join(f"{count} {reason}" for reason, count in skipped.items())
+            get_logger().warning(f"Not persisting the arrays of {skipped.total()} in-flight traces: {reasons}")
         return {"blobs": blobs, "traces": traces}
 
     def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:

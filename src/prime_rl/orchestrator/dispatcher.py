@@ -223,6 +223,12 @@ class Dispatcher:
         the checkpoint to save with their restore points."""
         self.held: set[asyncio.Task] = set()
         """The interrupted runs that replied and stay in flight (``interrupting``)."""
+        self.saving = False
+        """Set by ``save_inflight``: nothing new dispatches, so the save reaches every
+        rollout in flight."""
+        self.emitting: list[DispatchResult] = []
+        """Results on their way into a full ``out_q``: no longer in flight, not yet
+        queued (``queued_results``)."""
         self.held_snapshots: dict[int, set[str]] = {}
         """Per checkpoint step, the snapshots it resumes from: kept while the checkpoint
         exists (``hold_snapshots``, ``release_snapshots``)."""
@@ -366,8 +372,8 @@ class Dispatcher:
         self.live_task = asyncio.create_task(self.publish_live())
         try:
             while not self.stopped.is_set():
-                # Nothing new dispatches while the in-flight rollouts are interrupted.
-                if not self.interrupting:
+                # Nothing new dispatches while the in-flight rollouts are interrupted or saved.
+                if not self.interrupting and not self.saving:
                     await self.fill_inflight()
                 waiting = [task for task in self.inflight if task not in self.held]
                 if not waiting:
@@ -766,8 +772,13 @@ class Dispatcher:
         """Checkpoint the in-flight rollouts for a checkpoint to save while they keep
         running: have every env server save its rollouts, and wait until each that took
         a checkpoint has streamed its restore point. ``open_work`` then saves them with
-        those restore points. A rollout waits up to ``timeout`` for its next model call."""
-        running, saved = await self._checkpoint_inflight("save", timeout)
+        those restore points. A rollout waits up to ``timeout`` for its next model call.
+        Nothing new dispatches meanwhile."""
+        self.saving = True
+        try:
+            running, saved = await self._checkpoint_inflight("save", timeout)
+        finally:
+            self.saving = False
         restored = sum(1 for meta in self.inflight.values() if inflight_restore(meta) is not None)
         get_logger().info(
             f"Saved {len(saved)} of {running} running rollouts; "
@@ -808,9 +819,18 @@ class Dispatcher:
             await asyncio.sleep(0.5)
         return reached, checkpointed
 
+    async def emit(self, result: DispatchResult) -> None:
+        """Queue ``result`` for the orchestrator; a full ``out_q`` waits."""
+        self.emitting.append(result)
+        try:
+            await self.out_q.put(result)
+        finally:
+            self.emitting.remove(result)
+
     def queued_results(self) -> list[DispatchResult]:
-        """The results waiting in ``out_q`` for the orchestrator, without taking them."""
-        return list(self.out_q._queue)
+        """The results waiting for the orchestrator, without taking them: those in
+        ``out_q`` and those on their way in."""
+        return [*self.out_q._queue, *self.emitting]
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
         """Delete the training arrays env servers kept for episodes no sink will see."""
@@ -864,7 +884,7 @@ class Dispatcher:
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
-            await self.out_q.put(
+            await self.emit(
                 DispatchFailure(
                     kind=meta.kind,
                     env_name=meta.env_name,
@@ -946,7 +966,7 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
-        await self.out_q.put(episode)
+        await self.emit(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
         """Cancel this group's remaining in-flight tasks and emit one
@@ -983,7 +1003,7 @@ class Dispatcher:
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
-            await self.out_q.put(
+            await self.emit(
                 GroupCancellation(
                     kind=kind,
                     env_name=env_name,
@@ -1085,7 +1105,7 @@ class Dispatcher:
             )
             cancelled += count
             self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
-            await self.out_q.put(
+            await self.emit(
                 GroupCancellation(
                     kind="eval",
                     env_name=request.env_name,

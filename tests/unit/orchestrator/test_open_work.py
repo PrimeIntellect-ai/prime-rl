@@ -129,7 +129,9 @@ def dispatcher(names: list[str]) -> Dispatcher:
     d.sweep_again = False
     d.eval_envs = None
     d.interrupting = False
+    d.saving = False
     d.held = set()
+    d.emitting = []
     return d
 
 
@@ -279,6 +281,8 @@ def test_a_group_waiting_in_the_queue_keeps_its_size():
     from prime_rl.orchestrator.orchestrator import Orchestrator
 
     orchestrator = Orchestrator.__new__(Orchestrator)
+
+    orchestrator.parked = []
     orchestrator.eval_source = orchestrator.eval_sink = None
     orchestrator.eval_triggered_steps = set()
     orchestrator.train_sink = sink(["a"], group_size=2)
@@ -298,6 +302,7 @@ def test_each_kept_checkpoint_holds_its_snapshots(tmp_path):
 
     async def run():
         o = Orchestrator.__new__(Orchestrator)
+        o.parked = []
         o.ckpt_manager = CheckpointManager(tmp_path, CheckpointConfig())
         o.dispatcher = d = dispatcher(["a"])
         old, new = group("a", to_schedule=0, emitted=3), group("a", to_schedule=0, emitted=3)
@@ -338,6 +343,8 @@ def test_a_checkpoint_holds_open_work_only_when_it_saves_rollouts():
     from prime_rl.orchestrator.orchestrator import Orchestrator
 
     orchestrator = Orchestrator.__new__(Orchestrator)
+
+    orchestrator.parked = []
     orchestrator.eval_source = orchestrator.eval_sink = None
     orchestrator.eval_triggered_steps = set()
     orchestrator.progress = Progress(step=6)
@@ -452,6 +459,7 @@ def test_eval_epochs_survive_the_checkpoint(tmp_path):
 
     def orchestrator() -> Orchestrator:
         o = Orchestrator.__new__(Orchestrator)
+        o.parked = []
         eval_env = SimpleNamespace(
             name="e", examples=[make_task(0), make_task(1)], config=SimpleNamespace(group_size=2)
         )
@@ -590,5 +598,56 @@ def test_only_interrupted_runs_stay_in_flight_during_an_interrupt():
         assert not _interrupted(done("ProviderError"))
         assert _interrupted(done("RolloutInterrupted"))
         assert _interrupted(failed) and _interrupted(cancelled)
+
+    asyncio.run(run())
+
+
+def test_a_result_on_its_way_into_a_full_queue_is_queued():
+    """The dispatcher has taken a finished run out of flight but waits on a full
+    ``out_q``: the checkpoint still saves its result."""
+
+    async def run():
+        d = dispatcher(["a"])
+        d.out_q = asyncio.Queue(maxsize=1)
+        d.out_q.put_nowait("first")
+        put = asyncio.create_task(d.emit("second"))
+        await asyncio.sleep(0)
+        assert d.queued_results() == ["first", "second"]
+        assert d.out_q.get_nowait() == "first"
+        await put
+        assert d.queued_results() == ["second"] and d.emitting == []
+
+    asyncio.run(run())
+
+
+def test_results_wait_parked_while_a_checkpoint_is_written():
+    """While a periodic checkpoint is written in the background, results park: the
+    sinks stay as the checkpoint found them, and the checkpoint saves the parked
+    results as in-queue. They reach their sinks once it is written."""
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+
+    async def run():
+        o = Orchestrator.__new__(Orchestrator)
+        o.parked, ingested = [], []
+
+        async def ingest(item) -> None:
+            ingested.append(item)
+
+        o.ingest = ingest
+        written = asyncio.Event()
+        o.pending_save = asyncio.create_task(written.wait())
+        parked, queued = member("a", "gp"), member("a", "gq")
+        o.parked.append(parked)
+        await o.ingest_parked()
+        assert ingested == [] and o.parked == [parked]
+        o.train_sink = sink(["a"])
+        o.dispatcher = SimpleNamespace(open_work=lambda: [], queued_results=lambda: [queued], snapshots={})
+        o.eval_source = o.eval_sink = None
+        o.eval_triggered_steps = set()
+        assert o.open_work()["results"] == [parked, queued]
+        written.set()
+        await asyncio.sleep(0)
+        await o.ingest_parked()
+        assert ingested == [parked] and o.parked == [] and o.pending_save is None
 
     asyncio.run(run())
