@@ -482,6 +482,14 @@ class SignSGDConfig(BaseOptimizerConfig):
 OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
 
 
+class WeightRoundingConfig(BaseConfig):
+    mode: Literal["nearest", "stochastic", "dithered"] = "dithered"
+    """How the fp32 master weights round to the bf16 weights the trainer runs its forward with and broadcasts. ``stochastic`` and ``dithered`` round unbiasedly, so updates below half a bf16 ulp still reach the served weights in expectation: ``stochastic`` draws new noise every step, so weights also flip while their masters stay put; ``dithered`` keeps each weight's noise, so a weight changes only when its master crosses its own random threshold. ``nearest`` keeps the default numerics and only adds the ``weight_rounding/*`` metrics."""
+
+    seed: int = 0
+    """Seed of the stochastic rounding noise."""
+
+
 class CheckpointConfig(BaseConfig):
     output_dir: Path | None = None
     """Override directory for checkpoints. If set, checkpoints are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
@@ -716,8 +724,23 @@ class TrainerConfig(BaseTrainerConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
+    weight_rounding: WeightRoundingConfig | None = None
+    """Keep the fp32 master weights apart from the parameters, which hold their bf16 rounding, and log how the rounded weights follow the masters (``weight_rounding/changed_frac``, ``weight_rounding/lag``: RMS master-to-rounded gap in units of the RMS step update). Costs one more fp32 copy of the trained weights. None rounds to nearest inside FSDP and the broadcast."""
+
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
+
+    @model_validator(mode="after")
+    def validate_weight_rounding(self):
+        if self.weight_rounding is None:
+            return self
+        if self.model.optimization_dtype != "float32":
+            raise ValueError("weight_rounding needs fp32 master weights (model.optimization_dtype = 'float32')")
+        if self.model.offload == "full":
+            raise ValueError("weight_rounding does not support model.offload = 'full', whose GPU weights are bf16")
+        if self.model.lora is not None:
+            raise ValueError("weight_rounding does not support LoRA")
+        return self
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):

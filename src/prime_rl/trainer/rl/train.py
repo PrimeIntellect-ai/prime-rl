@@ -17,6 +17,7 @@ import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.weight_rounding import WeightRounding
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import (
@@ -241,6 +242,14 @@ def train(config: TrainerConfig):
         )
     else:
         logger.info("Starting from scratch")
+
+    weight_rounding = None
+    if config.weight_rounding is not None:
+        logger.info(f"Keeping fp32 master weights apart from their bf16 rounding ({config.weight_rounding})")
+        # The parameters hold the rounding of the last step trained (step - 1) from here on
+        weight_rounding = WeightRounding(
+            model, config.weight_rounding.mode, config.weight_rounding.seed, step=progress.step - 1
+        )
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -660,8 +669,11 @@ def train(config: TrainerConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # Update the model parameters
+        if weight_rounding is not None:
+            weight_rounding.restore_masters()
         optimizer.step()
         optimizer.zero_grad()
+        rounding_metrics = weight_rounding.round(progress.step) if weight_rounding is not None else {}
 
         # Update learning rate scheduler
         scheduler.step()
@@ -704,7 +716,8 @@ def train(config: TrainerConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            with weight_rounding.masters_in_params() if weight_rounding is not None else nullcontext():
+                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
@@ -772,6 +785,7 @@ def train(config: TrainerConfig):
         optim_metrics = {
             "optim/lr": current_lr,
             "step": progress.step,
+            **rounding_metrics,
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
@@ -823,7 +837,8 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        with weight_rounding.masters_in_params() if weight_rounding is not None else nullcontext():
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         if paused:
             controller.mark_saved(progress.step)
         else:
