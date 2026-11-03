@@ -1,3 +1,4 @@
+import inspect
 import json as json_module
 import logging
 import sys
@@ -68,8 +69,9 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        # Step out of this handler, then past stdlib logging's frames, to the call site.
+        frame, depth = inspect.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
 
