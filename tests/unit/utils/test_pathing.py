@@ -7,7 +7,6 @@ from prime_rl.utils.pathing import (
     get_batch_dir,
     get_broadcast_dir,
     get_step_path,
-    resolve_latest_trainer_ckpt_step,
     validate_run_dir,
 )
 
@@ -119,15 +118,6 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
-
-
-def test_latest_trainer_checkpoint_skips_steps_without_a_complete_trainer_save(tmp_path):
-    assert resolve_latest_trainer_ckpt_step(tmp_path) is None
-    (tmp_path / "step_4/trainer").mkdir(parents=True)
-    (tmp_path / "step_4/trainer/.metadata").touch()
-    (tmp_path / "step_8/orchestrator").mkdir(parents=True)
-    (tmp_path / "step_12/trainer").mkdir(parents=True)
-    assert resolve_latest_trainer_ckpt_step(tmp_path) == 4
 
 
 def test_latest_finished_broadcast_skips_an_offer_that_never_finished(tmp_path):

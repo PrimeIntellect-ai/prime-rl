@@ -434,6 +434,8 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
+`ckpt.remote_dir` on the trainer (`--trainer.ckpt.remote-dir s3://bucket/run/checkpoints` for `rl`, `--ckpt.remote-dir` for `sft`) also uploads each trainer checkpoint to an S3-compatible object store in the background once it is on disk, with `.metadata` last so a partial upload never reads as complete. Credentials and the endpoint come from the `AWS_*` environment (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL` for R2), and `keep_last`/`keep_interval` apply to the remote too. On resume the trainer downloads the step when it is not complete on disk. As with any multi-node checkpoint, the checkpoint directory must be shared by every node. Only the trainer checkpoint is uploaded, so `rl` still resumes from the run directory, which needs the orchestrator checkpoint: `rl --resume` fails fast when the trainer's remote has a later step than the run directory.
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:

@@ -343,15 +343,6 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     return latest_step
 
 
-def resolve_latest_trainer_ckpt_step(ckpt_dir: Path) -> int | None:
-    """The newest step whose trainer checkpoint is complete (DCP writes ``.metadata`` last). A
-    newer step directory may hold only the orchestrator's checkpoint, or an interrupted save."""
-    steps = [
-        step for step in get_all_ckpt_steps(ckpt_dir) if (get_step_path(ckpt_dir, step) / "trainer/.metadata").exists()
-    ]
-    return max(steps, default=None)
-
-
 def has_checkpoints(output_dir: Path) -> bool:
     """Check if the output directory contains any checkpoints."""
     ckpt_dir = get_ckpt_dir(output_dir)

@@ -1,13 +1,19 @@
+import asyncio
 import bisect
 import gc
 import json
+import os
 import shutil
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import obstore
 import torch
+from obstore.exceptions import BaseError
+from obstore.store import ObjectStore, from_url
 from torch import nn
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
@@ -39,12 +45,30 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
+# DCP writes it last, so a checkpoint is complete exactly when it exists
+METADATA_FILE = ".metadata"
+# R2 needs equal-size multipart parts. 64 MB parts with this many in flight reach the link rate
+TRANSFER_PART_BYTES = 64 << 20
+UPLOAD_PARTS_PER_FILE = 32
+DOWNLOAD_PARTS_IN_FLIGHT = 256
+
 
 @dataclass
 class Progress:
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
+
+
+def get_remote_steps(remote: ObjectStore) -> tuple[set[int], set[int]]:
+    """Every step in the remote, and the committed ones: those whose ``.metadata`` was uploaded."""
+    keys = {meta["path"] for meta in obstore.list(remote).collect()}
+    steps = {int(key.split("/")[0].removeprefix("step_")) for key in keys}
+    return steps, {step for step in steps if f"{_get_remote_key(step)}/{METADATA_FILE}" in keys}
+
+
+def _get_remote_key(step: int) -> str:
+    return f"step_{step}/trainer"
 
 
 def _try_rmtree(path: Path, logger) -> None:
@@ -177,8 +201,12 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
+        self.remote = from_url(config.remote_dir) if config.remote_dir is not None else None
+        self.uploader = ThreadPoolExecutor(max_workers=1)
+        self._pending_save: tuple[int, Future] | None = None
 
-        all_steps = get_all_ckpt_steps(self.ckpt_dir)
+        self.remote_steps = self._resolve_remote_steps()
+        all_steps = sorted(set(get_all_ckpt_steps(self.ckpt_dir)) | self.remote_steps)
         if resume is not None and resume.step is not None:
             self.ckpt_steps = [s for s in all_steps if s <= resume.step]
         else:
@@ -187,6 +215,14 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
+
+    def resolve_latest_step(self, trainer_only: bool = False) -> int | None:
+        """The latest step on disk or complete on the remote, None to start from scratch. ``trainer_only``
+        skips steps on disk whose trainer checkpoint is incomplete (only the orchestrator's, or an interrupted save)."""
+        steps = self.ckpt_steps
+        if trainer_only:
+            steps = [s for s in steps if s in self.remote_steps or (self.get_ckpt_path(s) / METADATA_FILE).exists()]
+        return steps[-1] if steps else None
 
     def save_to_path(
         self,
@@ -286,9 +322,12 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
         path: Path | None = None,
     ) -> None:
-        """Load the trainer checkpoint for a given step (in-place). ``path`` overrides
-        where the checkpoint is read from (an external run's ``step_<N>/trainer``)."""
+        """Load the trainer checkpoint for a given step (in-place), first downloading it from the remote
+        when it is not complete on disk. ``path`` overrides where the checkpoint is read from (an external
+        run's ``step_<N>/trainer``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
+        if path is None and self.remote is not None and not (ckpt_path / METADATA_FILE).exists():
+            self._download(step, ckpt_path)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
@@ -302,7 +341,9 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
-        """Save the full checkpoint state for a specified step."""
+        """Save the full checkpoint state for a specified step. With a remote, the step is only added to
+        ``ckpt_steps`` once ``wait`` has seen its background upload finish."""
+        self.wait()
         ckpt_path = self.get_ckpt_path(step)
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
@@ -311,6 +352,18 @@ class CheckpointManager:
         torch.distributed.barrier(group=get_dcp_group())
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        if self.remote is None:
+            bisect.insort(self.ckpt_steps, step)
+        else:
+            self._pending_save = (step, self.uploader.submit(self._upload, ckpt_path, step))
+
+    def wait(self) -> None:
+        """Block until the pending background upload is done, raising its error if it failed."""
+        if self._pending_save is None:
+            return
+        step, future = self._pending_save
+        self._pending_save = None
+        future.result()
         bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
@@ -343,9 +396,116 @@ class CheckpointManager:
                 if ckpt_path.exists():
                     self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                     _try_rmtree(ckpt_path, self.logger)
+                if self.remote is not None:
+                    self._remove_remote(ckpt_step)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
+
+    def _download(self, step: int, path: Path) -> None:
+        """Fetch a step from the remote into ``path``, shared by every rank as for any checkpoint, so each rank
+        fetches its slice of the files. The master writes ``.metadata`` last and renames it into place, so a
+        partial download never reads as complete."""
+        key = _get_remote_key(step)
+        metadata_key = f"{key}/{METADATA_FILE}"
+        objects = sorted(
+            (o for o in obstore.list(self.remote, prefix=key).collect() if o["path"] != metadata_key),
+            key=lambda o: o["path"],
+        )
+        asyncio.run(self._get(key, path, objects[self.world.rank :: self.world.world_size]))
+        torch.distributed.barrier(group=get_dcp_group())
+        if self.world.is_master:
+            partial = path / f"{METADATA_FILE}.partial"
+            partial.write_bytes(obstore.get(self.remote, metadata_key).bytes())
+            partial.replace(path / METADATA_FILE)
+        torch.distributed.barrier(group=get_dcp_group())
+
+    async def _get(self, key: str, path: Path, objects: list[dict]) -> None:
+        """Download objects under ``key`` into ``path`` as concurrent byte ranges."""
+        in_flight = asyncio.Semaphore(DOWNLOAD_PARTS_IN_FLIGHT)
+
+        async def get_part(object_key: str, start: int, end: int, fd: int) -> None:
+            async with in_flight:
+                part = await obstore.get_range_async(self.remote, object_key, start=start, end=end)
+            os.pwrite(fd, memoryview(part), start)
+
+        async def get_object(meta: dict) -> None:
+            file = path / meta["path"].removeprefix(f"{key}/")
+            file.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(file, os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
+            try:
+                size = meta["size"]
+                await asyncio.gather(
+                    *[
+                        get_part(meta["path"], start, min(start + TRANSFER_PART_BYTES, size), fd)
+                        for start in range(0, size, TRANSFER_PART_BYTES)
+                    ]
+                )
+            finally:
+                os.close(fd)
+
+        await asyncio.gather(*[get_object(meta) for meta in objects])
+
+    def _resolve_remote_steps(self) -> set[int]:
+        """Committed steps in the remote. The master removes uncommitted ones, uploads a crash cut short,
+        since nothing else would ever read or remove them."""
+        if self.remote is None:
+            return set()
+        steps, committed = get_remote_steps(self.remote)
+        if self.world.is_master:
+            for step in steps - committed:
+                self._remove_remote(step)
+        return committed
+
+    async def _put(self, path: Path, step: int, files: list[Path]) -> None:
+        """Upload files of the checkpoint at ``path`` concurrently, each in parallel parts."""
+        key = _get_remote_key(step)
+        await asyncio.gather(
+            *[
+                obstore.put_async(
+                    self.remote,
+                    f"{key}/{file.relative_to(path).as_posix()}",
+                    file,
+                    chunk_size=TRANSFER_PART_BYTES,
+                    max_concurrency=UPLOAD_PARTS_PER_FILE,
+                )
+                for file in files
+            ]
+        )
+
+    def _remove_remote(self, step: int) -> None:
+        """``.metadata`` goes first, so a partly removed step never reads as complete. Logs and skips on
+        failure, as ``_try_rmtree`` does: what is left is removed again after a restart."""
+        try:
+            keys = [meta["path"] for meta in obstore.list(self.remote, prefix=f"step_{step}").collect()]
+            metadata_key = f"{_get_remote_key(step)}/{METADATA_FILE}"
+            if metadata_key in keys:
+                obstore.delete(self.remote, metadata_key)
+            obstore.delete(self.remote, [key for key in keys if key != metadata_key])
+        except BaseError as e:
+            self.logger.warning(f"Failed to remove step {step} from {self.config.remote_dir}: {e}, skipping cleanup")
+
+    def _upload(self, path: Path, step: int) -> None:
+        """Each rank uploads the files it wrote (DCP names its shards ``__<rank>_<n>.distcp``). The master
+        uploads ``mapping.json`` and ``.metadata`` last, once every rank succeeded."""
+        rank = self.world.rank
+        uploaded = False
+        try:
+            asyncio.run(
+                self._put(path, step, [*path.glob(f"__{rank}_*.distcp"), *path.glob(f"dataloader/rank_{rank}.pt")])
+            )
+            uploaded = True
+        finally:
+            # Every rank reaches the collective, so a failed upload never leaves the others waiting
+            failed_ranks = torch.tensor([int(not uploaded)])
+            torch.distributed.all_reduce(failed_ranks, group=get_dcp_group())
+        # Every rank raises, so none records the step as saved and cleans up the steps before it
+        if failed_ranks.item() > 0:
+            raise RuntimeError(f"Uploading step {step} failed on {failed_ranks.item()} rank(s)")
+        if not self.world.is_master:
+            return
+        asyncio.run(self._put(path, step, [*path.glob("mapping.json")]))
+        asyncio.run(self._put(path, step, [path / METADATA_FILE]))
 
 
 def setup_ckpt_manager(

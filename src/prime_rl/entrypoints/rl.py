@@ -13,6 +13,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
+from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
@@ -586,6 +587,7 @@ def rl(config: RLConfig):
             if resume_step is None:
                 ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
                 resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+                validate_remote_resume(config.trainer.ckpt, resume_step)
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
@@ -608,6 +610,25 @@ def rl(config: RLConfig):
         return
     with launch_run(config, None if config.dry_run else config.orchestrator.monitors.prime):
         rl_local(config)
+
+
+def validate_remote_resume(ckpt: CheckpointConfig | None, resume_step: int | None) -> None:
+    """The orchestrator checkpoint is only on disk, so a trainer resuming from a later step in its remote would
+    wait for an orchestrator that started from the disk's step."""
+    if ckpt is None or ckpt.remote_dir is None:
+        return
+    from obstore.store import from_url
+
+    from prime_rl.trainer.ckpt import get_remote_steps
+
+    _, committed = get_remote_steps(from_url(ckpt.remote_dir))
+    remote_step = max(committed, default=None)
+    if remote_step is not None and (resume_step is None or remote_step > resume_step):
+        raise ValueError(
+            f"The trainer's 'ckpt.remote_dir' ({ckpt.remote_dir}) has step {remote_step}, but the latest checkpoint"
+            f" in the run directory is {resume_step}. RL resumes from the run directory, since the orchestrator"
+            " checkpoint is not uploaded: restore it there, or pass '--resume.step' with a step on disk."
+        )
 
 
 def main():
