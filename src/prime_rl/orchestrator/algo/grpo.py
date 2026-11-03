@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
-    """Weighted output and new input tokens for branches with no shared prefixes."""
+    """Weighted output and new input tokens, counted once on trainable branches."""
     subagents: set[int] = set()
     successors: dict[int, list[int]] = {}
     for node_id, node in enumerate(trace.nodes):
@@ -33,10 +33,16 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
                 pending.append(child)
 
     output_tokens = input_tokens = 0.0
+    seen: set[int] = set()
     for branch in trace.branches:
+        if not branch.trainable:
+            continue
         # Compute increments before weighting: a discounted predecessor still
         # contributes its full history to the next call's prompt.
         for call, increment in min_new_input_tokens(branch.calls):
+            if id(call) in seen:
+                continue
+            seen.add(id(call))
             weight = subagent_token_weight if call.node in subagents else 1.0
             output_tokens += weight * call.usage.completion_tokens
             input_tokens += weight * increment
@@ -66,15 +72,29 @@ class GRPOAlgorithm(Algorithm):
         if length_penalty is None:
             shaped_rewards = rewards
         else:
-            if isinstance(length_penalty, LinearSubagentLengthPenaltyConfig):
-                token_counts = [_length_penalty_tokens(trace, length_penalty.subagent_token_weight) for trace in traces]
-                output = torch.tensor([output for output, _ in token_counts], dtype=rewards.dtype)
-                input = torch.tensor([input for _, input in token_counts], dtype=rewards.dtype)
-            else:
-                output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
-                total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
-                input = total - output
-            turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
+            subagent_weight = (
+                length_penalty.subagent_token_weight
+                if isinstance(length_penalty, LinearSubagentLengthPenaltyConfig)
+                else 1.0
+            )
+            token_counts = [_length_penalty_tokens(trace, subagent_weight) for trace in traces]
+            output = torch.tensor([output for output, _ in token_counts], dtype=rewards.dtype)
+            input = torch.tensor([input for _, input in token_counts], dtype=rewards.dtype)
+            turns = torch.tensor(
+                [
+                    len(
+                        {
+                            id(node)
+                            for branch in trace.branches
+                            if branch.trainable
+                            for node in branch.nodes
+                            if node.sampled
+                        }
+                    )
+                    for trace in traces
+                ],
+                dtype=rewards.dtype,
+            )
             penalty_frac = (
                 length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
                 + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
