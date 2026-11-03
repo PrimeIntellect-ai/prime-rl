@@ -223,8 +223,9 @@ class Dispatcher:
         the checkpoint to save with their restore points."""
         self.held: set[asyncio.Task] = set()
         """The interrupted runs that replied and stay in flight (``interrupting``)."""
-        self.held_snapshots: set[str] = set()
-        """Snapshots the latest checkpoint resumes from: kept until a newer one is written."""
+        self.held_snapshots: dict[int, set[str]] = {}
+        """Per checkpoint step, the snapshots it resumes from: kept while the checkpoint
+        exists (``hold_snapshots``, ``release_snapshots``)."""
         self.sweep: asyncio.Task | None = None
         self.sweep_again = False
         self.live_events: list[dict[str, Any]] = []
@@ -659,11 +660,15 @@ class Dispatcher:
                 group.restores.append(restore)
         return list(groups.values())
 
-    def resume_open_work(self, groups: list[GroupState], snapshots: dict[str, tuple[str, dict]]) -> None:
-        """Reopen a checkpoint's open groups; those of envs this run no longer trains or
-        evaluates on are dropped, their restored members with them. ``snapshots`` are the
-        ones the checkpointed run owned: the next sweep deletes those the resume does not
-        use."""
+    def resume_open_work(
+        self, groups: list[GroupState], snapshots: dict[str, tuple[str, dict]], step: int, *, owned: bool = True
+    ) -> None:
+        """Reopen the open groups of the checkpoint of ``step``; those of envs this run
+        no longer trains or evaluates on are dropped, their restored members with them.
+        ``snapshots`` are the ones the checkpointed run owned. A resume of this run's own
+        checkpoint takes them over: the checkpoint keeps the ones it resumes from, and the
+        next sweep deletes the rest. A fork of another run's checkpoint (not ``owned``)
+        leaves them to that run, whose checkpoints may still resume from them."""
         assert self.train_envs is not None
         dropped = 0
         for group in groups:
@@ -673,25 +678,30 @@ class Dispatcher:
                 continue
             assert group.group_id is not None
             self.groups[group.group_id] = group
-        self.snapshots = dict(snapshots)
-        self.hold_snapshots(list(self.groups.values()))
+        if owned:
+            self.snapshots = dict(snapshots)
+            self.hold_snapshots(step, list(self.groups.values()))
         restores = sum(len(group.restores) for group in self.groups.values())
         get_logger().info(
             f"Resumed {len(self.groups)} open groups ({restores} rollouts to restore)"
             + (f", dropped {dropped} of removed envs" if dropped else "")
         )
 
-    def hold_snapshots(self, groups: list[GroupState], *, release: bool = True) -> None:
-        """A checkpoint resumes from these groups' restore points: keep their snapshots
-        until a newer checkpoint is written, and free the ones the last one held (not
-        with ``release=False``)."""
-        held = {
+    def hold_snapshots(self, step: int, groups: list[GroupState]) -> None:
+        """The checkpoint of ``step`` resumes from these groups' restore points: keep
+        their snapshots until ``release_snapshots`` frees the step."""
+        self.held_snapshots[step] = {
             restore.point["checkpoint"]["id"]
             for group in groups
             for restore in group.restores
             if restore.point["checkpoint"].get("snapshot") is not None
         }
-        self.held_snapshots = held if release else self.held_snapshots | held
+        self.sweep_snapshots()
+
+    def release_snapshots(self, steps: Iterable[int]) -> None:
+        """The checkpoints of ``steps`` are gone: free the snapshots they held."""
+        for step in steps:
+            self.held_snapshots.pop(step, None)
         self.sweep_snapshots()
 
     def sweep_snapshots(self) -> None:
@@ -715,9 +725,10 @@ class Dispatcher:
                 if meta.assembly is not None
                 for point in meta.assembly.restores.values()
             }
+            held = set().union(*self.held_snapshots.values())
             drop: dict[str, list[dict]] = defaultdict(list)
             for snapshot_id, (env_name, snapshot) in self.snapshots.items():
-                if snapshot_id not in newest and snapshot_id not in self.held_snapshots:
+                if snapshot_id not in newest and snapshot_id not in held:
                     drop[env_name].append(snapshot)
             for env_name, snapshots in drop.items():
                 # A removed env's snapshots go through any server that can delete them.

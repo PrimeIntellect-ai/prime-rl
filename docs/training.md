@@ -387,7 +387,7 @@ Two kinds of checkpoints exist, each set per env agent:
 - **Filesystem** (`[env.agent.checkpoint]`, on by default in verifiers) snapshots the box's files. The resumed rollout starts a new harness process in a new box with those files, which is told that the box was restored. Processes, sub-agents and in-memory state are gone.
 - **Memory** (`[env.agent.memory_checkpoint]`, off by default) also holds the box's processes and memory. The resumed rollout resumes the box, and its harness program carries on as it was. On prime, the checkpoint pauses the sandbox, which resumes once and on the same node; when it no longer resumes, the rollout restores its files instead. A periodic checkpoint takes a filesystem checkpoint here too, since a memory checkpoint stops the box.
 
-With `rollouts = true`, every env agent leaves its box checkpoints to the orchestrator (`after = "keep"`). The orchestrator keeps each in-flight rollout's checkpoint and the ones its latest checkpoint resumes from, and deletes the rest. A harness that keeps nothing in its box (`null`) off prime restores from the trace alone when its agent sets `boxless = true`.
+With `rollouts = true`, every env agent leaves its box checkpoints to the orchestrator (`after = "keep"`). The orchestrator keeps each in-flight rollout's newest checkpoint and the ones that each checkpoint on disk resumes from, and deletes the rest. When the trainer deletes an old checkpoint (`keep_last`, `keep_interval`), its box checkpoints go at the next save. A fork of another run's checkpoint (`resume.dir`) leaves that run's box checkpoints to it. A harness that keeps nothing in its box (`null`) off prime restores from the trace alone when its agent sets `boxless = true`.
 
 ```toml
 [ckpt]

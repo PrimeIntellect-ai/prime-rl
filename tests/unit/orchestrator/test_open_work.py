@@ -3,6 +3,7 @@ their in-flight rollouts' restore points, the sink's buffers, the env mix."""
 
 import asyncio
 import dataclasses
+import shutil
 import time
 import uuid
 from types import SimpleNamespace
@@ -123,7 +124,7 @@ def dispatcher(names: list[str]) -> Dispatcher:
     d.inflight = {}
     d.train_envs = TrainEnvs(names)
     d.snapshots = {}
-    d.held_snapshots = set()
+    d.held_snapshots = {}
     d.sweep = None
     d.sweep_again = False
     d.eval_envs = None
@@ -153,7 +154,7 @@ def test_open_work_holds_each_open_groups_inflight_and_unscheduled_members():
     assert a.episodes_to_schedule == 1 and a.restores == []
 
     resumed = dispatcher(["a", "c"])
-    resumed.resume_open_work(list(work.values()), {})
+    resumed.resume_open_work(list(work.values()), {}, step=3)
     assert list(resumed.groups) == [a_id]
 
 
@@ -215,12 +216,12 @@ def test_a_sweep_keeps_the_newest_and_held_snapshots_only():
         a.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "held", "snapshot": {"id": "held"}}})]
         d.inflight = {object(): inflight("a", a.group_id, streamed(["t1"]))}  # newest: ck-t1
         d.snapshots = {"held": ("a", {"id": "held"}), "ck-t1": ("a", {"id": "ck-t1"}), "stale": ("a", {"id": "stale"})}
-        d.hold_snapshots([a])
+        d.hold_snapshots(2, [a])
         await d.sweep
         assert d.train_envs.get("a").deleted == ["stale"]
         assert set(d.snapshots) == {"held", "ck-t1"}
-        # A newer checkpoint no longer resumes from it: the old held snapshot goes.
-        d.hold_snapshots([])
+        # The checkpoint that resumes from it is gone: the held snapshot goes.
+        d.release_snapshots([2])
         await d.sweep
         assert set(d.snapshots) == {"ck-t1"}
 
@@ -288,20 +289,46 @@ def test_a_group_waiting_in_the_queue_keeps_its_size():
     assert work["sink"]["group_targets"] == {"gq": 2}
 
 
-def test_a_checkpoint_being_written_holds_its_snapshots_and_the_last_ones():
+def test_each_kept_checkpoint_holds_its_snapshots(tmp_path):
+    """Every checkpoint still on disk resumes from its own snapshots; once the trainer
+    deletes a checkpoint's step directory, the next save frees them."""
+    from prime_rl.configs.orchestrator import CheckpointConfig
+    from prime_rl.orchestrator.ckpt import CheckpointManager
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+
+    async def run():
+        o = Orchestrator.__new__(Orchestrator)
+        o.ckpt_manager = CheckpointManager(tmp_path, CheckpointConfig())
+        o.dispatcher = d = dispatcher(["a"])
+        old, new = group("a", to_schedule=0, emitted=3), group("a", to_schedule=0, emitted=3)
+        old.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "old", "snapshot": {"id": "old"}}})]
+        new.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "new", "snapshot": {"id": "new"}}})]
+        d.snapshots = {"old": ("a", {"id": "old"}), "new": ("a", {"id": "new"})}
+
+        async def save_forked(state: dict, step: int) -> None:
+            o.ckpt_manager.get_ckpt_path(step).mkdir(parents=True)
+
+        o.ckpt_manager.save_forked = save_forked
+        await o.save_state({"open_work": {"groups": [old]}}, step=2)
+        await o.save_state({"open_work": {"groups": [new]}}, step=4)
+        await d.sweep
+        assert set(d.snapshots) == {"old", "new"}
+        shutil.rmtree(o.ckpt_manager.get_ckpt_path(2).parent)
+        await o.save_state({"open_work": {"groups": [new]}}, step=6)
+        await d.sweep
+        assert set(d.snapshots) == {"new"} and set(d.held_snapshots) == {4, 6}
+
+    asyncio.run(run())
+
+
+def test_a_fork_leaves_the_parents_snapshots_to_it():
     async def run():
         d = dispatcher(["a"])
-        last, new = group("a", to_schedule=0, emitted=3), group("a", to_schedule=0, emitted=3)
-        last.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "last", "snapshot": {"id": "last"}}})]
-        new.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "new", "snapshot": {"id": "new"}}})]
-        d.snapshots = {"last": ("a", {"id": "last"}), "new": ("a", {"id": "new"})}
-        d.hold_snapshots([last])
-        d.hold_snapshots([new], release=False)
-        await d.sweep
-        assert set(d.snapshots) == {"last", "new"}
-        d.hold_snapshots([new])
-        await d.sweep
-        assert set(d.snapshots) == {"new"}
+        a = group("a", to_schedule=0, emitted=3)
+        a.restores = [RestoreRequest(trace={}, point={"checkpoint": {"id": "ck", "snapshot": {"id": "ck"}}})]
+        d.resume_open_work([a], {"ck": ("a", {"id": "ck"})}, step=2, owned=False)
+        assert d.snapshots == {} and d.held_snapshots == {}
+        assert list(d.groups) == [a.group_id]
 
     asyncio.run(run())
 
@@ -439,6 +466,8 @@ def test_eval_epochs_survive_the_checkpoint(tmp_path):
         o.dispatcher.eval_envs, o.dispatcher.eval_source = o.eval_envs, o.eval_source
         o.dispatcher.mode = DispatcherMode.PREFER_TRAIN
         o.dispatcher.out_q = asyncio.Queue()
+        o.config = SimpleNamespace(resume=None)
+        o.resume_step = 6
         return o
 
     saved = orchestrator()

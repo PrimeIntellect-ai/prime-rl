@@ -1054,11 +1054,14 @@ class Orchestrator:
     async def save_state(self, state: dict, step: int) -> None:
         """Write a ``build_state`` of the run as it is now from a forked writer, while the
         loop goes on. Its box snapshots are held from the start: sweeps go on during the
-        write. The last checkpoint's stay held until this one is written."""
+        write. Each checkpoint holds its snapshots until its step directory is gone (the
+        trainer's ``keep_last`` and ``keep_interval``)."""
         groups = state["open_work"]["groups"] if "open_work" in state else []
-        self.dispatcher.hold_snapshots(groups, release=False)
+        self.dispatcher.hold_snapshots(step, groups)
         await self.ckpt_manager.save_forked(state, step)
-        self.dispatcher.hold_snapshots(groups)
+        self.dispatcher.release_snapshots(
+            [held for held in self.dispatcher.held_snapshots if not self.ckpt_manager.get_ckpt_path(held).exists()]
+        )
 
     def open_work(self) -> dict:
         """The in-flight and in-queue train and eval rollouts a resumed run picks up where
@@ -1093,7 +1096,9 @@ class Orchestrator:
         starts. Those of envs this run no longer trains or evaluates on are dropped; envs
         new to the run start sampling as the resumed rollouts drain."""
         self.train_sink.load_state_dict(work["sink"])
-        self.dispatcher.resume_open_work(work["groups"], work["snapshots"])
+        self.dispatcher.resume_open_work(
+            work["groups"], work["snapshots"], self.resume_step, owned=resume_path(self.config) is None
+        )
         # The open work continues the train groups the checkpoint left open, so the train
         # source must not re-run them whole as well; they close as they ship.
         self.train_source.reopened.clear()
