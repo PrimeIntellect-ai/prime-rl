@@ -339,6 +339,8 @@ def persist_arrays(work: dict, directory: Path) -> None:
         written = dict(zip(urls, results))
     persisted = {(url, key) for url, (keys, _) in written.items() for key in keys}
     restorable = {trace_id for _, trace_ids in written.values() for trace_id in trace_ids}
+    requested = sum(map(len, blobs.values())) + sum(map(len, traces.values()))
+    missing = requested - len(persisted) - len(restorable)
     for group in work["groups"]:
         for restore in group.restores:
             if path := restore.trace.get("info", {}).get(PAYLOAD_ARRAYS_KEY):
@@ -360,7 +362,6 @@ def persist_arrays(work: dict, directory: Path) -> None:
         group.restores = kept
         for restore in kept:
             restore.trace["info"][PAYLOAD_ARRAYS_KEY] = restore.trace["id"]
-    missing = sum(len(keys) for keys in blobs.values()) + sum(map(len, traces.values())) - len(persisted)
     get_logger().info(
         f"Persisted {len(persisted) + len(restorable)} array files, {len(restorable)} of in-flight rollouts"
         + (f" ({missing - dropped} missing)" if missing > dropped else "")

@@ -139,4 +139,4 @@ class TrainSource(Reconfigurable):
             else:
                 get_logger().info(f"Dropped {count} open group(s) of env {name} whose task is no longer in the taskset")
         if self.reopened:
-            get_logger().info(f"Re-running {len(self.reopened)} open group(s) from the checkpoint")
+            get_logger().info(f"Reopened {len(self.reopened)} open group(s) from the checkpoint")
