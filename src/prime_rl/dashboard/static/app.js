@@ -2654,7 +2654,7 @@ const BASE_LOG_PANES = [
   { comp: "envs", title: "all envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
 
-/* the panes this run can show: the fixed components plus one pane per env server
+/* the panes this run can show: the fixed components plus one pane per env worker pool
    (`env:<name>`), so a single env's log can be read on its own; "all envs" merges
    them all and is the default, the per-env panes are opted into */
 function logPanes() {
@@ -3309,7 +3309,7 @@ function episodeRowHtml(ep) {
       </tr>`;
 }
 
-/* a live rollout, streamed by its env server: the same columns, a pulsing dot for
+/* a live rollout, streamed by its env worker pool: the same columns, a pulsing dot for
    its number, no arrival yet, counts that grow with every turn, no reward yet */
 function liveRowHtml(r) {
   return `<tr class="live stage-${esc(r.stage)}${r.landedAt ? " landing" : ""}" ${r.trace && !r.landedAt ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
@@ -3356,7 +3356,7 @@ function renderEpisodeRows(reset = false) {
     episodeRowH = 0;
   }
   if (!rows.length) {
-    if (!state.filter.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env servers stream them");
+    if (!state.filter.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env worker pools stream them");
     else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
     else showTraceEmpty("no traces yet");
     return;
@@ -3378,7 +3378,7 @@ async function initTraces() {
 
 /* ------------------------------------------------------------ live traces */
 
-/* the env servers stream every live rollout turn by turn; the run's file
+/* the env worker pools stream every live rollout turn by turn; the run's file
    monitor keeps one file of deltas per live trace and drops it when the episode
    lands in the stream, so this table is exactly what is running right now */
 let liveInflight = false;

@@ -42,9 +42,36 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
 | `uv run pretrain` | Pretraining from scratch on tokenized shards. | Launches torchrun internally; see [Pretraining](#pretraining). |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
-| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
+| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-worker-pool` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
-| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source; each binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/<split>/<name>.address` for the orchestrator); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. on their own host) and the launcher expects the server to already run there. |
+| `uv run env-worker-pool` | One source's worker pool replica: a broker and its env workers. | Launchers start these automatically. Use this command for standalone pools, including sources whose `serve.address` points to an externally managed pool. |
+
+### Env worker pools
+
+Each train/eval source has its own env configuration. Two sources can use the same taskset
+with different agents or settings. Each source can have multiple worker pool replicas:
+single-node runs start one, and multi-node RL runs start one per inference node. An explicit
+`serve.address` selects one externally managed pool instead.
+
+```text
+Orchestrator
+└── Source (env configuration)
+    ├── Pool replica 1: PRL::EnvBroker
+    │   ├── PRL::EnvWorker
+    │   └── PRL::EnvWorker
+    └── Pool replica 2: PRL::EnvBroker
+        └── PRL::EnvWorker
+```
+
+The orchestrator selects the least-loaded replica; its broker dispatches to the least-busy
+worker. Each worker loads its own Verifiers env and can execute multiple episodes concurrently.
+The orchestrator loads the dataset and sends task data with each request. Even a one-worker
+pool has a broker and a separate worker process.
+
+`[serve]` configures the pool's address, static/elastic worker count and per-worker episode
+concurrency. Each broker publishes its bound address under
+`configs/attempt_N/resolved/envs/<split>/<name>.address` (or `<name>.<replica>.address` for
+multiple replicas). Broker and worker logs share the source's log file.
 
 ## RL Trainer
 
@@ -249,11 +276,11 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an online-eval process next to the trainer (it logs to `logs/attempt_<n>/eval.log`). NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the online-eval process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server, one env worker pool per eval source, and an online-eval process next to the trainer (it logs to `logs/attempt_<n>/eval.log`). NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the online-eval process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node Trainer and Inference Pool
 
-On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and online-eval process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env worker pools, and online-eval process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
 
 ```toml
 [deployment]
@@ -517,7 +544,7 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 ├── inference/
 │   ├── node_*.log               # per-node inference stdout (multi-node only)
 │   └── router.log               # the single global router (multi-node only)
-└── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
+└── envs/{train,eval}/<env_name>.log # source's worker pool (broker + worker processes)
 ```
 
 Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.level`. For multi-rank trainer debugging, drop into `logs/latest/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.

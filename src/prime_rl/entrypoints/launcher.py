@@ -23,7 +23,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     prepare_run,
     resolve_latest_ckpt_step,
-    write_env_server_config,
+    write_env_worker_pool_config,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -43,7 +43,7 @@ ONLINE_EVAL_CONFIG = "eval.json"
 ENVS_DIR = "envs"
 
 
-def eval_env_servers(config: SupervisedTrainerConfig) -> list[OnlineEvalSourceConfig]:
+def eval_env_worker_pools(config: SupervisedTrainerConfig) -> list[OnlineEvalSourceConfig]:
     """Every launcher-managed eval source. A source with ``serve.address`` set is
     externally managed — the launcher neither writes its config nor spawns a server for it."""
     if config.eval is None:
@@ -68,7 +68,7 @@ def resolve_resume_step(config: SupervisedTrainerConfig) -> int | None:
 
 def build_online_eval_config(config: SupervisedTrainerConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
-    fields filled from the SFT config. The launcher spawns the env servers itself; the
+    fields filled from the SFT config. The launcher spawns the env worker pools itself; the
     online-eval process finds each one through the address it publishes in the shared
     config attempt."""
     assert config.eval is not None
@@ -95,7 +95,7 @@ def config_components(
     config: SupervisedTrainerConfig, config_dir: Path, entrypoint: str
 ) -> list[tuple[str, Path | str]]:
     """The resolved configs a launch leaves in ``config_dir``: the entrypoint's config and, with
-    online evals, the inference, online-eval and env-server configs."""
+    online evals, the inference, online-eval and env-worker-pool configs."""
     components: list[tuple[str, Path | str]] = [(entrypoint, config_dir / f"{entrypoint}.json")]
     if config.deployment.type == "multi_node":
         components.append(("Trainer", config_dir / TRAINER_CONFIG))
@@ -103,7 +103,7 @@ def config_components(
         if config.inference is not None:
             components.append(("Inference", config_dir / INFERENCE_CONFIG))
         components.append(("Eval", config_dir / ONLINE_EVAL_CONFIG))
-        if eval_env_servers(config):
+        if eval_env_worker_pools(config):
             components.append(("Envs", f"{config_dir}/{ENVS_DIR}/eval/*.json"))
     return components
 
@@ -116,7 +116,7 @@ def write_config(config: SupervisedTrainerConfig, config_path: Path, exclude: se
 
 
 def write_eval_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, strip_router: bool = False) -> None:
-    """Write the inference, online-eval, and env-server configs for online evals."""
+    """Write the inference, online-eval, and env-worker-pool configs for online evals."""
     config_dir.mkdir(parents=True, exist_ok=True)
 
     if config.inference is not None:
@@ -132,11 +132,11 @@ def write_eval_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, str
     with open(config_dir / ONLINE_EVAL_CONFIG, "w") as f:
         json.dump(dump_resolved_config(build_online_eval_config(config)), f, indent=2)
 
-    # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>` binds an
+    # One EnvWorkerPoolConfig per launcher-managed eval source: `env-worker-pool @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
     # online-eval process picks it up.
-    for source in eval_env_servers(config):
-        write_env_server_config(config_dir, "eval", source, config.log)
+    for source in eval_env_worker_pools(config):
+        write_env_worker_pool_config(config_dir, "eval", source, config.log)
 
 
 def write_slurm_script(
@@ -205,7 +205,7 @@ def write_slurm_script(
                     "LOGURU_FORCE_COLORS": "1",
                     **config.env_vars,
                 },
-                "eval_env_names": [source.resolved_name for source in eval_env_servers(config)],
+                "eval_env_names": [source.resolved_name for source in eval_env_worker_pools(config)],
             }
         script = template.render(
             **config.slurm.template_vars,
@@ -295,7 +295,7 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
         num_train_nodes=num_nodes,
         eval=online_eval,
         inference=online_eval,
-        env_names={"eval": [source.resolved_name for source in eval_env_servers(config)]} if online_eval else None,
+        env_names={"eval": [source.resolved_name for source in eval_env_worker_pools(config)]} if online_eval else None,
         num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
     )
 
@@ -342,7 +342,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
             trainer=True,
             eval=config.eval is not None,
             inference=config.inference is not None,
-            env_names={"eval": [source.resolved_name for source in eval_env_servers(config)]},
+            env_names={"eval": [source.resolved_name for source in eval_env_worker_pools(config)]},
         )
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
@@ -389,14 +389,14 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
                 log_path=log_dir / "inference.log",
             )
 
-        # Start one env server per eval source. The online-eval process waits for each
+        # Start one env worker pool per eval source. The online-eval process waits for each
         # server's published address and polls until it answers.
-        for source in eval_env_servers(config):
+        for source in eval_env_worker_pools(config):
             name = source.resolved_name
-            logger.info(f"Starting {name} server")
+            logger.info(f"Starting {name} env worker pool")
             processes.start(
                 f"env/eval/{name}",
-                ["env-server", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
+                ["env-worker-pool", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
                 env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars},
                 log_path=log_dir / ENVS_DIR / "eval" / f"{name}.log",
             )
