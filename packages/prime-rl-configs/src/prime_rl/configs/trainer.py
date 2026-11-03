@@ -498,6 +498,9 @@ class CheckpointConfig(BaseConfig):
     async_save: bool = False
     """Write checkpoints in a background thread while training continues. Only applies with CPU optimizer offload (``model.offload`` = ``optimizer`` or ``full``); otherwise saves stay synchronous."""
 
+    remote_dir: str | None = None
+    """Object store URL checkpoints are uploaded to in the background once on disk, e.g. ``s3://bucket/run/checkpoints`` (credentials and endpoint from the ``AWS_*`` environment), with ``.metadata`` last. Resume downloads a step from it when the step is not complete on disk, into the checkpoint directory, which every node shares as for any multi-node checkpoint."""
+
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""
 

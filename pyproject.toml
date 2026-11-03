@@ -35,6 +35,7 @@ dependencies = [
     "msgspec>=0.18",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "obstore>=0.12.0",
 ]
 
 [project.scripts]
