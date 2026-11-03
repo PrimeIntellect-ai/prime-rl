@@ -350,6 +350,7 @@ class FileSystemWeightUpdateWorker(Worker):
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()
         device = next(model.parameters()).device
+        allocator = torch.cuda.memory_stats(device)
         events = [torch.cuda.Event(enable_timing=True)]
         events[0].record()
         for entries, gaps, values in delta:
@@ -361,10 +362,16 @@ class FileSystemWeightUpdateWorker(Worker):
         phases = [0.0, 0.0, 0.0]
         for index, (begin, end) in enumerate(zip(events, events[1:])):
             phases[index % 3] += begin.elapsed_time(end) / 1000
+        allocated = {
+            key: torch.cuda.memory_stats(device).get(key, 0) - allocator.get(key, 0)
+            for key in ("num_device_alloc", "num_device_free", "num_alloc_retries")
+        }
         logger.info(
             f"Applied sparse weight delta {step_dir.name}: {sum(len(gaps) for _, gaps, _ in delta)} changes in "
             f"{len(delta)} chunks, read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s "
-            f"(GPU: copy {phases[0]:.3f}s, decode {phases[1]:.3f}s, patch {phases[2]:.3f}s; host loop {host_time:.3f}s)"
+            f"(GPU: copy {phases[0]:.3f}s, decode {phases[1]:.3f}s, patch {phases[2]:.3f}s; host loop {host_time:.3f}s; "
+            f"cudaMalloc {allocated['num_device_alloc']}, cudaFree {allocated['num_device_free']}, "
+            f"allocator retries {allocated['num_alloc_retries']})"
         )
         return checksums
 
