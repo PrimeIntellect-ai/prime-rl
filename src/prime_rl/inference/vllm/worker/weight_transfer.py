@@ -15,7 +15,14 @@ from vllm.model_executor.model_loader.reload.layerwise import (
 from vllm.model_executor.model_loader.reload.meta import restore_layer_on_meta
 from vllm.model_executor.model_loader.reload.utils import get_layer_params_buffers, get_layer_tensors
 
-from prime_rl.utils.sparse_weights import FP8_BLOCK, as_bits, quantize_fp8_blocks
+from prime_rl.utils.sparse_weights import (
+    FP8_BLOCK,
+    MX_BLOCK,
+    as_bits,
+    quantize_fp8_blocks,
+    quantize_mx_blocks,
+    swizzled_mx_scale_offsets,
+)
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
@@ -85,7 +92,7 @@ class CheckpointIndexMap:
 
         def placeholders():
             for name, (shape, dtype) in tensors.items():
-                if name.endswith("_scale_inv"):
+                if name.endswith(("_scale_inv", "_mx_scale")):
                     continue  # fp8 block scales of a delta: recorded in fp8_layout
                 # fp8 tensors of a delta are quantized from bf16 checkpoint tensors
                 checkpoint_dtype = torch.bfloat16 if dtype == "float8_e4m3fn" else getattr(torch, dtype)
@@ -287,6 +294,17 @@ class CheckpointIndexMap:
                 if param.dtype != torch.float8_e4m3fn:
                     continue
                 scale = live.get(f"{self.param_names[index]}_scale_inv")
+                mx_scale = live.get(f"{self.param_names[index]}_scale")
+                if scale is None and mx_scale is not None and mx_scale.dtype == torch.uint8:
+                    self._mxfp8_write(
+                        name,
+                        (row0, rows, col0, cols, index, offset, *strides),
+                        mx_scale,
+                        read_tensor,
+                        modes,
+                        scale_params,
+                    )
+                    continue
                 num_rows, num_cols = param.shape[-2:]
                 row, col = offset // num_cols % num_rows, offset % num_cols
                 if (
@@ -345,6 +363,60 @@ class CheckpointIndexMap:
         self.checksum_plan = self.running = self.fused = None
         return self.fp8
 
+    def _mxfp8_write(self, name: str, write: tuple, scale: torch.Tensor, read_tensor, modes: dict, scale_params: dict):
+        """Record where the MXFP8 block scales of ``write`` (of ``name``, into an fp8 param) live:
+        ``{name}_mx_scale``, one e8m0 byte per 32 elements of a row, in the kernel's layout (row-major
+        ``[rows, cols / 32]``, or FlashInfer's F8_128x4 swizzle through offset tables). Checks the param's weights and
+        scales against vLLM's MXFP8 quantization of the checkpoint once per param."""
+        row0, rows, col0, cols, index, offset, row_stride, col_stride = write
+        param = self.params[index]
+        num_rows, num_cols = param.shape[-2:]
+        if param.dim() != 2 or col_stride != 1 or row_stride != num_cols or num_cols % MX_BLOCK or col0 % MX_BLOCK:
+            raise NotImplementedError(f"Sparse weight deltas cannot patch the MXFP8 weights of {name}")
+        param_row, param_col = divmod(offset, num_cols)
+        scale_cols = num_cols // MX_BLOCK
+        storage = scale.untyped_storage()
+        if storage._cdata not in scale_params:
+            scale_params[storage._cdata] = len(self.params)
+            self.params.append(scale.data.as_strided((storage.nbytes(),), (1,), 0))
+        scale_index, scale_name = scale_params[storage._cdata], f"{name}_mx_scale"
+        scale_write = (row0, rows, col0 // MX_BLOCK, -(-cols // MX_BLOCK), scale_index)
+        swizzled_size = -(-num_rows // 128) * 128 * -(-scale_cols // 4) * 4
+        if scale.shape == (num_rows, scale_cols) and scale.is_contiguous():
+            self.records.setdefault(scale_name, []).append(
+                (*scale_write, scale.storage_offset() + param_row * scale_cols + param_col // MX_BLOCK, scale_cols, 1)
+            )
+        elif scale.dim() == 1 and scale.numel() == swizzled_size and scale.is_contiguous():
+            self.records.setdefault(scale_name, []).append((*scale_write, scale.storage_offset(), 0, 0))
+            row_offsets, col_offsets = swizzled_mx_scale_offsets(num_rows, num_cols)
+            first_col = param_col // MX_BLOCK
+            self.map_write(
+                scale_name,
+                len(self.records[scale_name]) - 1,
+                row_offsets[param_row : param_row + rows],
+                col_offsets[first_col : first_col + scale_write[3]],
+            )
+        else:
+            raise NotImplementedError(f"Sparse weight deltas do not know the MXFP8 scale layout of {name}")
+        self.num_cols[scale_name] = self.num_cols[name] // MX_BLOCK
+        self.numel[scale_name] = self.numel[name] // MX_BLOCK
+        self.fp8[name] = "mxfp8"
+        if index in modes:
+            return
+        weight = read_tensor(name).to(param.device).view(-1, self.num_cols[name])
+        quantized, scales = quantize_mx_blocks(weight)
+        scale_k = len(self.records[scale_name]) - 1
+        expected = scales[row0 : row0 + rows, col0 // MX_BLOCK : col0 // MX_BLOCK + scale_write[3]]
+        held_scales = as_bits(self.params[scale_index].data).view(-1)[self._targets(scale_name, scale_k)]
+        if not torch.equal(
+            quantized[row0 : row0 + rows, col0 : col0 + cols], self._view(index, rows, cols, offset, [num_cols, 1])
+        ) or not torch.equal(as_bits(expected), held_scales):
+            raise NotImplementedError(
+                f"Sparse weight deltas cannot patch {name}: the engine's MXFP8 weights are not vLLM's MXFP8 "
+                "quantization of the checkpoint in a known layout"
+            )
+        modes[index] = "mxfp8"
+
     def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
         """The raw bits of one write of a checkpoint block into param ``index``."""
         return as_bits(self.params[index].data).view(-1).as_strided((rows, cols), tuple(strides), offset)
@@ -354,10 +426,10 @@ class CheckpointIndexMap:
         (fp8 tensors: whole 128-row blocks), for ``load_rows``."""
         ranges = {}
         for name, writes in self.records.items():
-            if name.endswith("_scale_inv"):
+            if name.endswith(("_scale_inv", "_mx_scale")):
                 continue  # scales are set with their weights
             begin, end = min(write[0] for write in writes), max(write[0] + write[1] for write in writes)
-            if name in self.fp8:
+            if self.fp8.get(name) in ("fp32", "ue8m0"):
                 num_rows = self.numel[name] // self.num_cols[name]
                 begin, end = begin // FP8_BLOCK[0] * FP8_BLOCK[0], min(-(-end // FP8_BLOCK[0]) * FP8_BLOCK[0], num_rows)
             ranges[name] = (begin, end)
@@ -371,8 +443,12 @@ class CheckpointIndexMap:
         self.running = None
         sources = [(name, rows, begin)]
         if name in self.fp8:
-            quantized, scales = quantize_fp8_blocks(rows, self.fp8[name] == "ue8m0")
-            sources = [(name, quantized, begin), (f"{name}_scale_inv", scales, begin // FP8_BLOCK[0])]
+            if self.fp8[name] == "mxfp8":
+                quantized, scales = quantize_mx_blocks(rows)
+                sources = [(name, quantized, begin), (f"{name}_mx_scale", scales, begin)]
+            else:
+                quantized, scales = quantize_fp8_blocks(rows, self.fp8[name] == "ue8m0")
+                sources = [(name, quantized, begin), (f"{name}_scale_inv", scales, begin // FP8_BLOCK[0])]
         for source_name, source, first in sources:
             for k, (row0, rows_, col0, cols, index, offset, *strides) in enumerate(self.records[source_name]):
                 block = source[row0 - first : row0 - first + rows_, col0 : col0 + cols]
