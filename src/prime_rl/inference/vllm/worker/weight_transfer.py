@@ -122,19 +122,33 @@ class CheckpointIndexMap:
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
         self.numel = {name: prod(shape) for name, (shape, _) in tensors.items()}
         self.checksum_plan = None
+        # ``held_checksums`` kept current by ``apply_delta``; None until the next full recompute
+        self.running: torch.Tensor | None = None
         self.fp8: dict[str, str] = {}
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
         self.names = set(self.records)
 
-    def held_checksums(self) -> tuple[list[str], torch.Tensor, torch.Tensor]:
-        """``bits_checksum`` of the live param elements each checkpoint tensor was written to, weighted by
-        their checkpoint positions: the names, their sums, and a mask of the ones this worker holds only
-        part of (TP slices)."""
+    def checksums(self, full: bool = False) -> tuple[list[str], torch.Tensor, torch.Tensor]:
+        """``held_checksums``, from the running sums ``apply_delta`` keeps unless ``full`` or nothing has
+        recomputed them since the last load."""
+        if full or self.running is None:
+            return self.held_checksums()
+        names, held, *_ = self._checksum_plan()
+        return names, self.running.clone(), held
+
+    def _checksum_plan(self):
         if self.checksum_plan is None:
             self.checksum_plan = self._plan_checksums()
-        names, partial, row_ranges, other_writes = self.checksum_plan
-        totals = torch.zeros(len(names), dtype=torch.int64, device=partial.device)
+        return self.checksum_plan
+
+    def held_checksums(self) -> tuple[list[str], torch.Tensor, torch.Tensor]:
+        """``bits_checksum`` of the live param elements each checkpoint tensor was written to, weighted by
+        their checkpoint positions: the names, their sums, and how many elements of each this worker holds
+        (fewer than the tensor's for TP slices, more workers than one for replicated KV heads). A full pass over
+        the params; it also resets the running sums ``apply_delta`` updates."""
+        names, held, row_ranges, other_writes, _ = self._checksum_plan()
+        totals = torch.zeros(len(names), dtype=torch.int64, device=held.device)
         for index, (starts, ends, ids, num_cols, firsts) in row_ranges.items():
             bits = as_bits(self.params[index].data)
             bits = bits.reshape(-1, bits.shape[-1])
@@ -161,7 +175,8 @@ class CheckpointIndexMap:
                 values = flat[offsets[part, None, None] + row * row_stride + col * col_stride].long()
                 weights = firsts[part, None, None] + num_cols[part, None, None] * row + col
                 totals.index_add_(0, ids[part], (values * weights).sum((1, 2)))
-        return names, totals, partial
+        self.running = totals.clone()
+        return names, totals, held
 
     def _plan_checksums(self):
         """Writes that cover whole rows of a param become row ranges, summed with cumsums over the rows
@@ -192,13 +207,15 @@ class CheckpointIndexMap:
         row_ranges = {
             index: tuple(torch.tensor(values, device=device) for values in lists) for index, lists in ranges.items()
         }
-        held = [sum(rows * cols for _, rows, _, cols, *_ in self.records[name]) for name in names]
-        partial = torch.tensor([h < self.numel[name] for h, name in zip(held, names)], device=device)
+        held = torch.tensor(
+            [sum(rows * cols for _, rows, _, cols, *_ in self.records[name]) for name in names], device=device
+        )
         other_writes = {
             shape: tuple(torch.tensor(values, device=device) for values in lists)
             for shape, lists in other_writes.items()
         }
-        return names, partial, row_ranges, other_writes
+        plan_ids = {name: name_id for name_id, name in enumerate(names)}
+        return names, held, row_ranges, other_writes, plan_ids
 
     def fp8_layout(self, model: Module, read_tensor) -> dict[str, str]:
         """The vLLM per-block quantization (``"fp32"`` or ``"ue8m0"`` scales) that reproduces each
@@ -270,7 +287,7 @@ class CheckpointIndexMap:
                 if self.fp8.setdefault(name, modes[index]) != modes[index]:
                     raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: mixed fp8 layouts")
         self.names |= set(self.records)
-        self.checksum_plan = None
+        self.checksum_plan = self.running = None
         return self.fp8
 
     def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
@@ -296,6 +313,7 @@ class CheckpointIndexMap:
         """Set the params from rows ``begin:`` of checkpoint tensor ``name`` (the ``row_ranges`` rows, on the
         params' device): the counterpart of ``apply_delta`` for full checkpoints. fp8 tensors are quantized
         like the engine does, block scales included; tensors the engine casts on load are cast the same way."""
+        self.running = None
         sources = [(name, rows, begin)]
         if name in self.fp8:
             quantized, scales = quantize_fp8_blocks(rows, self.fp8[name] == "ue8m0")
@@ -333,6 +351,13 @@ class CheckpointIndexMap:
             for k in range(max_records)
         ]
         entry_ends = torch.tensor([count for _, count in entries], device=device).cumsum(0)
+        # The running checksum of each entry's tensor (-1: not checksummed), updated with the changes alone
+        plan_ids = self._checksum_plan()[4] if self.running is not None else None
+        entry_ids = (
+            torch.tensor([plan_ids.get(name, -1) for name, _ in entries], device=device)
+            if plan_ids is not None
+            else None
+        )
         chunk = 1 << 25
         for start in range(0, indices.numel(), chunk):
             index = indices[start : start + chunk]
@@ -347,11 +372,22 @@ class CheckpointIndexMap:
                 hit = (row >= 0) & (row < table[entry, 2]) & (col >= 0) & (col < table[entry, 4])
                 target = (table[entry, 6] + row * table[entry, 7] + col * table[entry, 8])[hit]
                 owner = table[entry, 5][hit]
-                self._scatter_add(owner, target, source[hit])
+                tracked = None if entry_ids is None else (entry_ids[entry][hit], index[hit] + 1)
+                self._scatter_add(owner, target, source[hit], tracked)
 
-    def _scatter_add(self, owner: torch.Tensor, target: torch.Tensor, source: torch.Tensor) -> None:
+    def _scatter_add(
+        self,
+        owner: torch.Tensor,
+        target: torch.Tensor,
+        source: torch.Tensor,
+        tracked: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> None:
+        """Add ``source`` to the bits at ``target`` of params ``owner``. ``tracked`` (each change's checksum id
+        and checkpoint position + 1) moves the running checksums by ``position * (new - old)``."""
         order = torch.argsort(owner, stable=True)
         owner, target, source = owner[order], target[order], source[order]
+        if tracked is not None:
+            ids, weights = (values[order] for values in tracked)
         counts = torch.bincount(owner, minlength=len(self.params)).tolist()
         end = 0
         for index, count in enumerate(counts):
@@ -360,7 +396,14 @@ class CheckpointIndexMap:
                 continue
             flat = as_bits(self.params[index].data).view(-1)
             positions = target[begin:end]
-            flat.index_put_((positions,), flat[positions] + source[begin:end])
+            old = flat[positions]
+            new = old + source[begin:end]
+            flat.index_put_((positions,), new)
+            if tracked is not None:
+                part_ids = ids[begin:end]
+                keep = part_ids >= 0
+                change = (new.long() - old.long()) * weights[begin:end]
+                self.running.index_add_(0, part_ids[keep], change[keep])
 
 
 def _restore_checkpoint_format(model: Module) -> list[tuple]:

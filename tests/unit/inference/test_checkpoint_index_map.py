@@ -3,6 +3,7 @@ import torch
 from torch import nn
 
 from prime_rl.inference.vllm.worker.weight_transfer import CheckpointIndexMap
+from prime_rl.utils.sparse_weights import as_bits, bits_checksum
 
 
 class Toy(nn.Module):
@@ -31,3 +32,23 @@ def test_cast_tensors_load_by_value_and_reject_deltas():
 
     with pytest.raises(NotImplementedError):
         index_map.apply_delta([("norm", 1)], torch.tensor([0]), torch.tensor([1], dtype=torch.int16))
+
+
+def test_running_checksums_follow_deltas():
+    model = Toy()
+    index_map = CheckpointIndexMap(model, {"weight": ([4, 8], "bfloat16"), "norm": ([8], "bfloat16")})
+    weight = torch.randn(4, 8, dtype=torch.bfloat16)
+    index_map.load_rows("weight", weight, 0)
+    names, totals, held = index_map.checksums()
+    assert names == ["weight"] and held.tolist() == [32]
+    assert totals.tolist() == [bits_checksum(as_bits(weight))]
+
+    # Raw-bit differences, including ones that wrap around the int16 range
+    indices = torch.tensor([0, 5, 6, 31])
+    delta = torch.tensor([1, -3, 32767, -32768], dtype=torch.int16)
+    index_map.apply_delta([("weight", 4)], indices, delta)
+    new = as_bits(weight).clone().view(-1)
+    new[indices] += delta
+    _, running, _ = index_map.checksums()
+    assert running.tolist() == [bits_checksum(new)]
+    assert running.tolist() == index_map.checksums(full=True)[1].tolist()
