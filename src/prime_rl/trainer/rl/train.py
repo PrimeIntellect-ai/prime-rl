@@ -14,6 +14,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.optim.lr_scheduler import LambdaLR
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
@@ -233,6 +234,25 @@ def train(config: TrainerConfig):
             progress,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
+        # Under a constant schedule the restored param groups keep training at the checkpointed
+        # learning rate, which would silently override a changed ``optim.lr``: move every group
+        # to the configured one, optionally over a linear ramp (a resume mid-ramp ramps again
+        # from where the groups stand).
+        checkpointed_lr = optimizer.param_groups[0]["lr"]
+        if config.scheduler.type == "constant" and checkpointed_lr != config.optim.lr:
+            for group in optimizer.param_groups:
+                group["lr"] = group["initial_lr"] = config.optim.lr
+            warmup = config.optim.resume_lr_warmup_steps
+            start = checkpointed_lr / config.optim.lr
+            # Factor of ``lr`` for the k-th scheduler step after the resume: the first resumed step
+            # trains at ``start + (1 - start) / warmup``, step ``warmup`` and later at 1.
+            scheduler = LambdaLR(
+                optimizer, lambda k: start + (1 - start) * min(1.0, (k + 1) / warmup) if warmup > 0 else 1.0
+            )
+            logger.info(
+                f"Learning rate {checkpointed_lr:.2e} (checkpoint) -> {config.optim.lr:.2e} (config)"
+                + (f" over {warmup} steps" if warmup > 0 else "")
+            )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
         logger.info(
