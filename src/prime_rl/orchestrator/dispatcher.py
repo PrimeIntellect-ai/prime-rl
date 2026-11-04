@@ -142,6 +142,8 @@ class Dispatcher:
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
         on_calls: Callable[[int, int], None] | None = None,
+        on_pause: Callable[[], None] | None = None,
+        on_resume: Callable[[], None] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -159,6 +161,9 @@ class Dispatcher:
         self.on_episode_complete = on_episode_complete
         # Called with the ``(prefix, recompute)`` tokens of each live delta's model calls
         self.on_calls = on_calls
+        # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
+        self.on_pause = on_pause
+        self.on_resume = on_resume
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -392,6 +397,8 @@ class Dispatcher:
         cancels a rollout: it keeps sampling fresh tokens, and the sink masks
         the ones that age past ``max_staleness``."""
         self.policy_update_pending = True
+        if self.on_pause is not None:
+            self.on_pause()
         # Wait for a scheduling call that started before the pending update.
         # No rollout can cross the inference weight swap after this barrier.
         async with self.scheduling_lock:
@@ -400,6 +407,8 @@ class Dispatcher:
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
         self.policy_update_pending = False
+        if self.on_resume is not None:
+            self.on_resume()
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring

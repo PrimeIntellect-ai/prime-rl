@@ -224,6 +224,18 @@ def bucket_deltas(sample: EngineSample, previous: TimedSnapshot | None) -> dict[
     return deltas
 
 
+def counter_delta(sample: EngineSample, previous: TimedSnapshot | None, names: tuple[str, ...]) -> int:
+    """Increase of a counter (under its legacy or OpenMetrics sample name) since the previous scrape. The first
+    scrape has no baseline: a nonzero cumulative counter (e.g. after an orchestrator restart) is not fresh."""
+    if previous is None:
+        return 0
+    delta = 0
+    for name in names:
+        if name in sample.snapshot.counters:
+            delta = max(delta, int(sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)))
+    return delta
+
+
 def build_scope_metrics(
     scope: str,
     values_per_engine: list[dict[str, float]],
@@ -386,16 +398,7 @@ class InferenceMetricsCollector:
         elif num_gpu_blocks.isdigit() and block_size.isdigit():
             kv_capacity_tokens = int(num_gpu_blocks) * int(block_size)
 
-        # First poll has no baseline — a nonzero cumulative counter (e.g. after
-        # an orchestrator restart) is not a fresh preemption
         previous = self.previous.get(sample.key)
-        preemptions_delta = 0
-        if previous is not None:
-            for name in ("num_preemptions", "num_preemptions_total"):
-                if name in sample.snapshot.counters:
-                    delta = sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)
-                    preemptions_delta = max(preemptions_delta, int(delta))
-
         return EngineLoadSample(
             engine_id=sample.engine_id,
             role=sample.endpoint.role,
@@ -409,7 +412,12 @@ class InferenceMetricsCollector:
                 if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None
                 else None
             ),
-            preemptions_delta=preemptions_delta,
+            preemptions_delta=counter_delta(sample, previous, ("num_preemptions", "num_preemptions_total")),
+            finished_delta=counter_delta(sample, previous, ("request_success", "request_success_total")),
+            expired_kv_delta=counter_delta(
+                sample, previous, ("nixl_num_kv_expired_reqs", "nixl_num_kv_expired_reqs_total")
+            ),
+            host_kv_usage=sample.snapshot.gauges.get("hisparse_host_cache_usage_perc"),
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

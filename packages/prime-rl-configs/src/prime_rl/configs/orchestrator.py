@@ -441,12 +441,13 @@ class RecomputeConfig(BaseConfig):
     """Recompute-aware concurrency control. The recompute ratio is the share of
     each model call's already-computed prefix (the previous call's prompt) that
     the engine prefilled again instead of hitting its prefix cache, windowed over
-    the last minute of calls. While it is measured, it replaces the GPU-KV usage
+    the last minute of calls. While it is measured, waste (the ratio plus, in
+    P/D, the share of prefills whose KV lease expired) replaces the GPU-KV usage
     gauge for growth and trims: the gauge counts only running requests and is
-    blind to the evicted caches of episodes idle between turns. Preemption and
-    capacity-queue cuts still apply. Calls that do
-    not report cached tokens are skipped, so without them the controller behaves
-    as if this were unset."""
+    blind to the evicted caches of episodes idle between turns. Waste brakes only
+    while the engines are busy, preemptions trim without cancelling, and the
+    queue cut still applies. Calls that do not report cached tokens are skipped,
+    so without them the controller behaves as if this were unset."""
 
     grow_below: float = Field(0.4, gt=0, le=1)
     """Grow the cap only while the recompute ratio is below this. Growth tapers
