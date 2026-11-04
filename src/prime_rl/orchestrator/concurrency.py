@@ -115,6 +115,11 @@ CEILING_PROBE = 0.1
 full rate, rising back to full as the cap moves away below it (CUBIC-style), and stays at it above it to keep probing."""
 
 QUEUE_TOLERANCE = 0.1
+
+BUSY_QUEUE_FRACTION = 0.25
+"""With the recompute ratio measured: the recompute ratio brakes growth (and trims) only while the engines are busy,
+i.e. some capacity queue showed up in at least this fraction of the window's polls. On idle engines a recomputed
+prefix only costs spare prefill compute, so admitting more episodes still raises throughput."""
 """With the recompute ratio measured: capacity-queued requests up to this fraction of running ones are the normal
 burst of turns arriving together, so they neither mark the signal SOFT nor block growth."""
 """The growth gate expires this long after the poll that set it — if the
@@ -177,6 +182,8 @@ class ConcurrencyController(Reconfigurable):
         self.escalated = False
         # Per-poll (prefix, recompute) call tokens, and the ratio over the window
         self.recompute_polls: deque[tuple[int, int]] = deque(maxlen=RECOMPUTE_WINDOW_POLLS)
+        # Per poll of the same window: whether any request waited for capacity
+        self.queued_polls: deque[bool] = deque(maxlen=RECOMPUTE_WINDOW_POLLS)
         self.pending_prefix = 0
         self.pending_recompute = 0
         self.recompute_ratio: float | None = None
@@ -243,6 +250,12 @@ class ConcurrencyController(Reconfigurable):
         """Whether the measured recompute ratio drives growth and trims (``config.recompute`` set and measured)."""
         return self.config.recompute is not None and self.recompute_ratio is not None
 
+    @property
+    def engines_busy(self) -> bool:
+        """Whether a capacity queue showed up in ``BUSY_QUEUE_FRACTION`` of the window's polls: only then does
+        recompute compete with other requests for prefill compute."""
+        return bool(self.queued_polls) and sum(self.queued_polls) >= BUSY_QUEUE_FRACTION * len(self.queued_polls)
+
     def ceiling_rate(self) -> float:
         """Fraction of the full growth rate near the last preemption ceiling: ``CEILING_PROBE`` at or above it,
         rising linearly to 1 at half of it and below."""
@@ -307,7 +320,8 @@ class ConcurrencyController(Reconfigurable):
             worst = max(worst, "hard", key=SEVERITY.__getitem__)
         elif recompute is not None:
             queued = total_queued > QUEUE_TOLERANCE * total_running
-            if self.recompute_ratio >= recompute.grow_below or (queued and self.prev_queued):
+            self.queued_polls.append(total_queued > 0)
+            if (self.engines_busy and self.recompute_ratio >= recompute.grow_below) or (queued and self.prev_queued):
                 worst = max(worst, "soft", key=SEVERITY.__getitem__)
             self.prev_queued = queued
         elif max_usage > KV_USAGE_SOFT_CAP:
@@ -337,7 +351,7 @@ class ConcurrencyController(Reconfigurable):
         queue_allows = total_queued <= QUEUE_TOLERANCE * total_running if recompute is not None else total_queued == 0
         self.can_grow = worst == "clear" and queue_allows and not self.draining
         if recompute is not None:
-            headroom = 1.0 - self.recompute_ratio / recompute.grow_below
+            headroom = 1.0 - self.recompute_ratio / recompute.grow_below if self.engines_busy else 1.0
         else:
             headroom = 1.0 - max_usage / KV_USAGE_SOFT_CAP
         self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(0.0, headroom)
@@ -398,6 +412,7 @@ class ConcurrencyController(Reconfigurable):
             self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
         elif (
             recompute is not None
+            and self.engines_busy
             and self.recompute_ratio > recompute.trim_above
             and 0 < inflight <= self.max_inflight
             and self.recompute_trim_wait == 0
@@ -479,6 +494,8 @@ class ConcurrencyController(Reconfigurable):
         }
         if self.preemption_ceiling is not None:
             gauges["concurrency/preemption_ceiling"] = self.preemption_ceiling
+        if self.queued_polls:
+            gauges["concurrency/engines_busy"] = float(self.engines_busy)
         if self.recompute_ratio is not None:
             gauges["concurrency/recompute_ratio"] = self.recompute_ratio
         return gauges

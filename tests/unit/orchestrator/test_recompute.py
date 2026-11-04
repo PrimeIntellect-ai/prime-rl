@@ -53,21 +53,26 @@ def test_kv_soft_trim_applies_until_recompute_is_measured():
     assert limits == [16] and cancelled == []
 
 
-def test_recompute_replaces_the_kv_gauge():
+def test_recompute_replaces_the_kv_gauge_and_brakes_only_busy_engines():
     ctl, limits, cancelled = controller(inflight=20)
     ctl.record_calls(200_000, 20_000)
     ctl.observe(sample(0.85))  # a per-engine KV spike no longer trims or blocks growth
     assert ctl.recompute_ratio == 0.1
     assert ctl.signal == "clear" and ctl.can_grow and limits == []
+    assert ctl.growth_multiplier == 1.0 + 0.2  # idle engines: recompute costs only spare prefill compute
+
+    busy = queued_sample(running=40, waiting=2)  # a small queue every poll: engines busy, still clear
+    ctl.observe(busy)
+    assert ctl.engines_busy and ctl.signal == "clear"
     assert ctl.growth_multiplier == 1.0 + 0.2 * 0.75
 
     ctl.record_calls(800_000, 780_000)  # windowed: 800k of 1M
-    ctl.observe(sample(0.3))
+    ctl.observe(busy)
     assert ctl.recompute_ratio == 0.8
     assert ctl.signal == "soft" and not ctl.can_grow
     assert limits == [18] and cancelled == []  # trimmed without cancelling
 
-    ctl.observe(sample(0.3))  # no repeat trim within the window
+    ctl.observe(busy)  # no repeat trim within the window
     assert limits == [18]
 
 
