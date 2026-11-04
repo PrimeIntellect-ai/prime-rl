@@ -70,12 +70,13 @@ def run_processor(args: argparse.Namespace) -> None:
 
 
 def run_vllm(args: argparse.Namespace) -> None:
-    from transformers import AutoTokenizer
+    from transformers import AutoConfig, AutoTokenizer
     from vllm import LLM, SamplingParams
     from vllm.multimodal.media import MediaConnector
 
     prompt_ids = AutoTokenizer.from_pretrained(args.model).encode(PROMPT)
     video = MediaConnector().fetch_video(video_url(args.video), video_processor="Qwen3VLVideoProcessor").media
+    has_ngram_embeddings = bool(AutoConfig.from_pretrained(args.model).text_config.ple_layer_ids)
     # The engine settings of examples/extra/vlm/rl-qwen3.8.toml that change numerics or memory.
     llm = LLM(
         model=args.model,
@@ -85,7 +86,7 @@ def run_vllm(args: argparse.Namespace) -> None:
         enable_expert_parallel=args.tensor_parallel_size > 1,
         mm_encoder_tp_mode="data",
         mamba_cache_dtype="float32",
-        engram_config={"cpu_offload": True},
+        engram_config={"cpu_offload": True} if has_ngram_embeddings else None,
         max_model_len=4096,
         gpu_memory_utilization=0.85,
         enable_prefix_caching=False,
