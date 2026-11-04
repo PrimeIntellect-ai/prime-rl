@@ -48,9 +48,11 @@ TRACE_SIZES_MB = np.geomspace(0.5, MAX_SIZE_MB, 24)
 METRIC_ROWS = 2_000
 METRIC_KEYS = 200
 # The orchestrator's own work runs between monitor calls; a stall this long delays
-# dispatch and batch assembly visibly.
-MAX_LAG_S = 0.1
-P99_LAG_S = 0.025
+# dispatch and batch assembly visibly. Shared CI runners reach a p99 of 35 ms and
+# single stalls of 125 ms on their own; serializing episodes on the loop puts the p99
+# near 100 ms even on a fast machine.
+MAX_LAG_S = 0.25
+P99_LAG_S = 0.05
 # A log() call may await the monitor's own work, such as the file monitor's write on its
 # writer thread; the loop keeps serving other tasks meanwhile, which the lag limits cover.
 MAX_LOG_S = 1.0
