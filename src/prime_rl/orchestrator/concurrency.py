@@ -110,6 +110,10 @@ CALL_GROWTH_MAX = 1.1
 """With the recompute ratio measured: the most the cap grows per turn turnover (each finished model call advances it
 by ``1/inflight``). Agentic episodes run many calls, so this paces growth by turns rather than whole episodes."""
 
+CEILING_PROBE = 0.1
+"""With the recompute ratio measured: near the cap of the last preemption trim, growth slows to this fraction of its
+full rate, rising back to full as the cap moves away below it (CUBIC-style), and stays at it above it to keep probing."""
+
 QUEUE_TOLERANCE = 0.1
 """With the recompute ratio measured: capacity-queued requests up to this fraction of running ones are the normal
 burst of turns arriving together, so they neither mark the signal SOFT nor block growth."""
@@ -179,6 +183,8 @@ class ConcurrencyController(Reconfigurable):
         self.recompute_trim_wait = 0
         self.call_growth_multiplier = 1.0
         self.prev_queued = False
+        # The cap at the last preemption trim under recompute control: growth slows near it
+        self.preemption_ceiling: float | None = None
 
         self.set_limit: Callable[[int], None] | None = None
         self.get_inflight: Callable[[], int] | None = None
@@ -230,12 +236,20 @@ class ConcurrencyController(Reconfigurable):
         if self.recompute_control:
             inflight = self.get_inflight() if self.get_inflight is not None else 0
             if inflight > 0:
-                self._grow(inflight, self.call_growth_multiplier ** (1 / inflight))
+                self._grow(inflight, self.call_growth_multiplier ** (self.ceiling_rate() / inflight))
 
     @property
     def recompute_control(self) -> bool:
         """Whether the measured recompute ratio drives growth and trims (``config.recompute`` set and measured)."""
         return self.config.recompute is not None and self.recompute_ratio is not None
+
+    def ceiling_rate(self) -> float:
+        """Fraction of the full growth rate near the last preemption ceiling: ``CEILING_PROBE`` at or above it,
+        rising linearly to 1 at half of it and below."""
+        if self.preemption_ceiling is None:
+            return 1.0
+        distance = 1.0 - self.cap / self.preemption_ceiling
+        return min(1.0, max(CEILING_PROBE, distance / 0.5))
 
     def _grow(self, inflight: int, factor: float) -> None:
         if (
@@ -347,6 +361,17 @@ class ConcurrencyController(Reconfigurable):
         if self.draining:
             return
 
+        if preempted and not queue_overload and recompute is not None:
+            # Preemption only recomputes the preempted requests' prefill; cancelling episodes would
+            # waste their earlier turns. Lower the cap, remember where, and let the pool drain.
+            if self.recompute_trim_wait == 0 and 0 < inflight <= self.max_inflight:
+                self.preemption_ceiling = self.cap
+                self.resize_down(
+                    int(self.clamp(inflight * PREEMPTION_CUT_FRACTION)), inflight, reason="preemptions", cancel=False
+                )
+                self.recompute_trim_wait = RECOMPUTE_WINDOW_POLLS
+            return
+
         if preempted or queue_overload:
             fraction = ESCALATED_CUT_FRACTION if self.escalated else None
             if queue_overload:
@@ -452,6 +477,8 @@ class ConcurrencyController(Reconfigurable):
             "concurrency/signal": float(SEVERITY[self.signal]),
             "concurrency/growth_multiplier": self.growth_multiplier,
         }
+        if self.preemption_ceiling is not None:
+            gauges["concurrency/preemption_ceiling"] = self.preemption_ceiling
         if self.recompute_ratio is not None:
             gauges["concurrency/recompute_ratio"] = self.recompute_ratio
         return gauges

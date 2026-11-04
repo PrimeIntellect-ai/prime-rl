@@ -1,3 +1,5 @@
+import dataclasses
+
 from prime_rl.configs.orchestrator import ConcurrencyConfig, RecomputeConfig
 from prime_rl.orchestrator.concurrency import ConcurrencyController, EngineLoadSample
 from prime_rl.orchestrator.live import reuse
@@ -100,3 +102,15 @@ def test_recompute_control_grows_per_call_and_tolerates_a_small_queue():
     assert ctl.signal == "clear" and not ctl.can_grow
     ctl.observe(queued_sample(running=40, waiting=8))  # persisting: soft
     assert ctl.signal == "soft"
+
+
+def test_recompute_control_trims_on_preemption_without_cancelling_and_slows_near_it():
+    ctl, limits, cancelled = controller(inflight=20)
+    ctl.record_calls(1_000_000, 0)
+    preempted = [dataclasses.replace(queued_sample(running=20, waiting=0)[0], preemptions_delta=3)]
+    ctl.observe(preempted)
+    assert limits == [16] and cancelled == []  # trimmed to 0.8 x inflight, nothing cancelled
+    assert ctl.preemption_ceiling == 20
+    assert ctl.ceiling_rate() == (1 - 16 / 20) / 0.5  # near the ceiling: slower growth
+    ctl.cap = 25.0
+    assert ctl.ceiling_rate() == 0.1  # above it: keep probing slowly
