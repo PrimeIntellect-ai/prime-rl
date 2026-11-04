@@ -10,6 +10,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
+from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
@@ -92,10 +93,13 @@ class EnvServer:
         config: EnvConfig,
         address: str,
         max_concurrent: int | None,
+        *,
+        tools: dict[str, SharedToolServer] | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
+        self.tools = tools
         self.task_cls = type(self.env.taskset).task_type()
         self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from
@@ -245,8 +249,8 @@ class EnvServer:
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        # Shared servers and the interception live across requests in this worker.
-        async with self.env.serving():
+        # Workers borrow the broker's shared servers and own their interception.
+        async with self.env.serving(tools=self.tools):
             try:
                 while True:
                     events = dict(await poller.poll(timeout=100))
