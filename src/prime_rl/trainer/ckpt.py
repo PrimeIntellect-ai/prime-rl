@@ -19,7 +19,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.nn import Module
-from torch.optim.lr_scheduler import LRScheduler
+from torch.optim.lr_scheduler import ConstantLR, LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
 
@@ -249,6 +249,12 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
+        # A constant schedule holds no state worth restoring: the learning rate comes back with the
+        # optimizer's param groups. Its checkpoint may also carry another scheduler's state (e.g. a
+        # resume that ramped the learning rate with a LambdaLR), whose keys a ConstantLR doesn't have
+        # (factor, total_iters), so DCP would refuse the load: leave the scheduler out of it.
+        if isinstance(scheduler, ConstantLR) and scheduler.factor == 1.0:
+            scheduler = None
         _load_app_state(path, model, optimizers, scheduler, progress, model_only=self.skip_optimizer)
 
         # Load the dataloader
