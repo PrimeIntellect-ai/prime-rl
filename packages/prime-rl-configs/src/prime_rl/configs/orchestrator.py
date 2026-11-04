@@ -569,8 +569,8 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: OrchestratorControlConfig | None = None
-    """Serve the orchestrator's control API (pause at a step the trainer accepted, update the
-    config live). If None, it takes no control requests."""
+    """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
+    accepted, update the config live). If None, it takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

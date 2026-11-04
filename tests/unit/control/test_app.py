@@ -26,12 +26,16 @@ def update_request(config: OrchestratorConfig, **values) -> dict:
     return {"type": "update_config", "config": dump_resolved_config(config) | values}
 
 
-def test_pause_request(run):
-    response = run.client.post("/v1/actions", json={"type": "pause", "step": 3})
+@pytest.mark.parametrize("action_type", ["pause", "checkpoint"])
+def test_step_action_request(run, action_type):
+    response = run.client.post("/v1/actions", json={"type": action_type, "step": 3})
 
-    assert response.status_code == 202
-    assert response.json()["state"] == "pending"
-    assert response.json()["step"] == 3
+    assert response.status_code == 202, response.text
+    assert {key: response.json()[key] for key in ("type", "state", "step")} == {
+        "type": action_type,
+        "state": "pending",
+        "step": 3,
+    }
 
 
 def test_update_config_applied(run):

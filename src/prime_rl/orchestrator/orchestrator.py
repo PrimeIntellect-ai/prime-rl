@@ -1018,15 +1018,18 @@ class Orchestrator:
         return time.perf_counter() - t
 
     def apply_control(self) -> None:
-        """Save the state as of shipping the last step if a pause is due at it. A trainer paused
-        there never requests the next step, so this stays the last shipped step."""
+        """Save the state as of shipping the last step if a pause or checkpoint is due at it. A
+        trainer paused there never requests the next step, so this stays the last shipped step. A
+        checkpoint must arrive before the trainer finishes the step and requests the next one."""
         if self.shipped_state is None:
             return
         step, state = self.shipped_state
-        if self.controller.update(step):
-            self.ckpt_manager.save_state(state, step)
-            self.controller.mark_saved(step)
-            get_logger().info(f"Paused at step {step}, saved its state")
+        action_type = self.controller.update(step)
+        if action_type is None:
+            return
+        self.ckpt_manager.save_state(state, step)
+        self.controller.mark_saved(step)
+        get_logger().info(f"Saved the state of step {step} for a {action_type}")
 
     def apply_config_update(self) -> None:
         """Apply a queued config update from the step about to be collected. Runs right after
@@ -1094,7 +1097,8 @@ class Orchestrator:
         }
 
     async def serve_control(self) -> None:
-        """Apply each submitted pause on the event loop, also while a send blocks on the trainer."""
+        """Apply each submitted pause or checkpoint on the event loop, also while a send blocks on
+        the trainer."""
         while True:
             await self.control_requested.wait()
             self.control_requested.clear()
