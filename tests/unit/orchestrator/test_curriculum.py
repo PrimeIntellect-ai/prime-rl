@@ -209,10 +209,7 @@ def test_standard_sampler_matches_cycle_order() -> None:
     tasks = [make_task(i) for i in range(5)]
     sampler = StandardSampler(tasks)
     assert sample_keys(sampler, 23) == keys(list(itertools.islice(itertools.cycle(tasks), 23)))
-    assert sampler.state_dict() == {
-        "counts": {task.key: 5 if i < 3 else 4 for i, task in enumerate(tasks)},
-        "floor": 4,
-    }
+    assert sampler.state_dict() == {"counts": {task.key: 5 if i < 3 else 4 for i, task in enumerate(tasks)}}
 
 
 def test_standard_sampler_new_tasks_join_the_current_pass() -> None:
@@ -227,7 +224,7 @@ def test_standard_sampler_new_tasks_join_the_current_pass() -> None:
     assert sample_keys(restored, 12) == keys(current_pass + [first, *tasks, last])
 
 
-def test_standard_sampler_stops_sampling_removed_tasks() -> None:
+def test_standard_sampler_drops_removed_tasks() -> None:
     tasks = [make_task(i) for i in range(5)]
     sampler = StandardSampler(tasks)
     sample_keys(sampler, 7)
@@ -235,51 +232,18 @@ def test_standard_sampler_stops_sampling_removed_tasks() -> None:
     restored = StandardSampler(kept)
     restored.load_state_dict(sampler.state_dict())
 
-    # The checkpoint still holds the removed tasks' counts.
-    assert restored.state_dict() == {
-        "counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)},
-        "floor": 1,
-    }
+    assert restored.state_dict() == {"counts": {tasks[1].key: 2, tasks[3].key: 1, tasks[4].key: 1}}
     assert sample_keys(restored, 5) == keys([tasks[3], tasks[4], tasks[1], tasks[3], tasks[4]])
 
 
-def test_standard_sampler_resumes_the_count_of_a_re_added_task() -> None:
-    tasks = [make_task(i) for i in range(4)]
-    sampler = StandardSampler(tasks)
-    sample_keys(sampler, 6)  # counts 2, 2, 1, 1
-    # Drop tasks 0 and 2, then sample the rest past task 0's count.
-    without = StandardSampler([tasks[1], tasks[3]])
-    without.load_state_dict(sampler.state_dict())
-    sample_keys(without, 3)  # counts: task 1 3, task 3 3
-    # Tasks 0 and 2 come back: task 0 had count 2, task 2 had 1, both below the lowest count 3.
-    readded = StandardSampler(tasks)
-    readded.load_state_dict(without.state_dict())
-    assert readded.state_dict() == {"counts": dict.fromkeys(keys(tasks), 3), "floor": 3}
-
-    # A re-added task above the lowest count keeps its count and waits for the others.
-    high = StandardSampler(tasks)
-    sample_keys(high, 4)  # counts 1, 1, 1, 1
-    sample_keys(high, 1)  # task 0 at 2
-    only_rest = StandardSampler(tasks[1:])
-    only_rest.load_state_dict(high.state_dict())
-    back = StandardSampler(tasks)
-    back.load_state_dict(only_rest.state_dict())
-    assert back.state_dict()["counts"][tasks[0].key] == 2
-    assert sample_keys(back, 3) == keys(tasks[1:])
-
-
-def test_standard_sampler_starts_a_new_taskset_at_the_floor() -> None:
-    old = [make_task(i) for i in range(3)]
-    sampler = StandardSampler(old)
+def test_standard_sampler_restarts_counts_when_every_task_is_new() -> None:
+    sampler = StandardSampler([make_task(i) for i in range(3)])
     sample_keys(sampler, 4)
     tasks = [make_task(i) for i in range(10, 12)]
     restored = StandardSampler(tasks)
     restored.load_state_dict(sampler.state_dict())
 
-    assert restored.state_dict() == {
-        "counts": {old[0].key: 2, old[1].key: 1, old[2].key: 1, **dict.fromkeys(keys(tasks), 1)},
-        "floor": 1,
-    }
+    assert restored.state_dict() == {"counts": dict.fromkeys(keys(tasks), 0)}
 
 
 def test_standard_sampler_converts_a_legacy_cursor() -> None:
@@ -287,10 +251,7 @@ def test_standard_sampler_converts_a_legacy_cursor() -> None:
     restored = StandardSampler(tasks)
     restored.load_state_dict({"cursor": 7})
 
-    assert restored.state_dict() == {
-        "counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)},
-        "floor": 1,
-    }
+    assert restored.state_dict() == {"counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)}}
     assert sample_keys(restored, 6) == keys(list(itertools.islice(itertools.cycle(tasks), 7, 13)))
 
 
@@ -357,11 +318,6 @@ def test_difficulty_pool_sampler_drops_rewards_of_removed_tasks() -> None:
 
     assert restored.sampler.task_rewards == {tasks[0].key: 0.5, tasks[2].key: 0.5}
     assert restored.metrics()["sampler/pool/unseen"] == 1.0
-
-    readded = Curriculum(config, tasks)
-    readded.load_state_dict(restored.state_dict())
-    assert readded.sampler.task_rewards == dict.fromkeys(keys(tasks), 0.5)
-    assert readded.metrics()["sampler/pool/unseen"] == 0.0
 
 
 def make_env(name: str, tasks: list[vf.Task]) -> SimpleNamespace:
