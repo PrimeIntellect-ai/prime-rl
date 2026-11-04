@@ -22,7 +22,10 @@ each call's previously computed prefix the engines prefilled again), the ratio
 replaces GPU-KV usage for the growth taper, the soft signal and the trims.
 The KV gauge counts only running requests, so it misses the evicted caches of
 episodes idle between turns, and its per-engine maximum spikes whenever a few
-long contexts run on one engine at once. The overload cuts stay as the backstop.
+long contexts run on one engine at once. Growth is then paced by finished model
+calls (``CALL_GROWTH_MAX`` per turn turnover) rather than whole episodes, and a
+capacity queue up to ``QUEUE_TOLERANCE`` of the running requests (turns arriving
+together) does not hold it back. The overload cuts stay as the backstop.
 
 The cap starts at ``initial_inflight`` (else the pessimistic bound
 ``KV capacity / max_model_len``) and is clamped to
@@ -102,6 +105,14 @@ RECOMPUTE_TRIM_FRACTION = 0.9
 """A recompute trim lowers the cap to this fraction of the in-flight pool."""
 
 GROWTH_GATE_TTL_S = 15.0
+
+CALL_GROWTH_MAX = 1.1
+"""With the recompute ratio measured: the most the cap grows per turn turnover (each finished model call advances it
+by ``1/inflight``). Agentic episodes run many calls, so this paces growth by turns rather than whole episodes."""
+
+QUEUE_TOLERANCE = 0.1
+"""With the recompute ratio measured: capacity-queued requests up to this fraction of running ones are the normal
+burst of turns arriving together, so they neither mark the signal SOFT nor block growth."""
 """The growth gate expires this long after the poll that set it — if the
 metrics path stalls (an API server too loaded to answer is exactly the state
 runaway growth creates), growth freezes instead of compounding blind."""
@@ -166,6 +177,8 @@ class ConcurrencyController(Reconfigurable):
         self.pending_recompute = 0
         self.recompute_ratio: float | None = None
         self.recompute_trim_wait = 0
+        self.call_growth_multiplier = 1.0
+        self.prev_queued = False
 
         self.set_limit: Callable[[int], None] | None = None
         self.get_inflight: Callable[[], int] | None = None
@@ -204,20 +217,35 @@ class ConcurrencyController(Reconfigurable):
             # storm keeps the pool binding while idle engines read CLEAR, and
             # growing on it floods the engines once the environment recovers
             return
+        if self.recompute_control:
+            return  # growth is paced by calls instead (record_calls)
+        self._grow(inflight, self.growth_multiplier**fraction)
+
+    def record_calls(self, prefix: int, recompute: int) -> None:
+        """Prefix and recompute tokens of a finished model call (from the dispatcher's
+        live deltas), folded into the recompute ratio at the next poll. With the ratio
+        measured, each call also grows the cap by its share of a turn turnover."""
+        self.pending_prefix += prefix
+        self.pending_recompute += recompute
+        if self.recompute_control:
+            inflight = self.get_inflight() if self.get_inflight is not None else 0
+            if inflight > 0:
+                self._grow(inflight, self.call_growth_multiplier ** (1 / inflight))
+
+    @property
+    def recompute_control(self) -> bool:
+        """Whether the measured recompute ratio drives growth and trims (``config.recompute`` set and measured)."""
+        return self.config.recompute is not None and self.recompute_ratio is not None
+
+    def _grow(self, inflight: int, factor: float) -> None:
         if (
             self.target is None
             and self.can_grow
             and time.monotonic() < self.can_grow_until
             and inflight >= BINDING_FRACTION * self.max_inflight
         ):
-            self.cap = self.clamp(self.cap * self.growth_multiplier**fraction)
+            self.cap = self.clamp(self.cap * factor)
             self.apply_limit(int(self.cap), reason=None)
-
-    def record_calls(self, prefix: int, recompute: int) -> None:
-        """Prefix and recompute tokens of finished model calls (from the dispatcher's
-        live deltas), folded into the recompute ratio at the next poll."""
-        self.pending_prefix += prefix
-        self.pending_recompute += recompute
 
     def observe(self, samples: list[EngineLoadSample]) -> None:
         """Per-poll engine load push from the metrics collector: classify the
@@ -249,7 +277,7 @@ class ConcurrencyController(Reconfigurable):
             if sample.preemptions_delta > 0:
                 preempted = True
                 worst = "hard"
-            if sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
+            if recompute is None and sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
                 worst = max(worst, "soft", key=SEVERITY.__getitem__)
             max_usage = max(max_usage, sample.kv_usage)
             total_running += sample.running
@@ -264,8 +292,10 @@ class ConcurrencyController(Reconfigurable):
         if queue_overload:
             worst = max(worst, "hard", key=SEVERITY.__getitem__)
         elif recompute is not None:
-            if self.recompute_ratio >= recompute.grow_below:
+            queued = total_queued > QUEUE_TOLERANCE * total_running
+            if self.recompute_ratio >= recompute.grow_below or (queued and self.prev_queued):
                 worst = max(worst, "soft", key=SEVERITY.__getitem__)
+            self.prev_queued = queued
         elif max_usage > KV_USAGE_SOFT_CAP:
             worst = max(worst, "soft", key=SEVERITY.__getitem__)
         self.signal = worst
@@ -290,12 +320,14 @@ class ConcurrencyController(Reconfigurable):
                 self.escalated = False
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
         self.recompute_trim_wait = max(0, self.recompute_trim_wait - 1)
-        self.can_grow = worst == "clear" and total_queued == 0 and not self.draining
+        queue_allows = total_queued <= QUEUE_TOLERANCE * total_running if recompute is not None else total_queued == 0
+        self.can_grow = worst == "clear" and queue_allows and not self.draining
         if recompute is not None:
             headroom = 1.0 - self.recompute_ratio / recompute.grow_below
         else:
             headroom = 1.0 - max_usage / KV_USAGE_SOFT_CAP
         self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(0.0, headroom)
+        self.call_growth_multiplier = 1.0 + (CALL_GROWTH_MAX - 1.0) * max(0.0, headroom)
         self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
         if self.target is not None:
             return

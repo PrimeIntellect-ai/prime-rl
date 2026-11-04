@@ -67,3 +67,36 @@ def test_recompute_replaces_the_kv_gauge():
 
     ctl.observe(sample(0.3))  # no repeat trim within the window
     assert limits == [18]
+
+
+def queued_sample(running: int, waiting: int) -> list[EngineLoadSample]:
+    return [
+        EngineLoadSample(
+            engine_id="e0",
+            role=None,
+            kv_capacity_tokens=1_000_000,
+            max_model_len=32_768,
+            kv_usage=0.3,
+            running=running,
+            waiting=waiting,
+            waiting_capacity=waiting,
+            preemptions_delta=0,
+        )
+    ]
+
+
+def test_recompute_control_grows_per_call_and_tolerates_a_small_queue():
+    ctl, limits, _ = controller(inflight=20)
+    ctl.record_calls(1_000_000, 0)
+    ctl.observe(queued_sample(running=40, waiting=2))  # 5% queued: turns arriving together
+    assert ctl.signal == "clear" and ctl.can_grow
+    ctl.record_episode(10_000)  # episodes no longer pace growth
+    assert limits == []
+    for _ in range(20):  # one turn turnover of calls: up to CALL_GROWTH_MAX
+        ctl.record_calls(10_000, 0)
+    assert limits == [21, 22]  # x1.1 over one turnover
+
+    ctl.observe(queued_sample(running=40, waiting=8))  # 20% queued once: still clear, but no growth
+    assert ctl.signal == "clear" and not ctl.can_grow
+    ctl.observe(queued_sample(running=40, waiting=8))  # persisting: soft
+    assert ctl.signal == "soft"
