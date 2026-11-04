@@ -6,9 +6,10 @@
 
 The vLLM phases run without prime-rl's trainer models imported, which register their own config class for the
 model type. ``processor`` runs vLLM's Qwen3-VL multimodal processor and MRoPE on the video. ``vllm`` decodes the
-video with vLLM's media connector and scores the prompt with prime-rl's RL numerics (fp32 router logits and
-lm_head). ``trainer`` builds the sample the way the orchestrator and trainer do (video ref from the expanded
-prompt, ``materialize_images``, ``setup_model`` + ``forward``), on every rank of an FSDP mesh.
+video with vLLM's media connector and scores the prompt with the engine settings of the Qwen3.8 RL example,
+returning the routed experts. ``trainer`` builds the sample the way the orchestrator and trainer do (video ref
+from the expanded prompt, ``materialize_images``, ``setup_model`` + ``forward`` with router replay), on every rank
+of an FSDP mesh.
 """
 
 import argparse
@@ -92,6 +93,8 @@ def run_vllm(args: argparse.Namespace) -> None:
         enable_prefix_caching=False,
         limit_mm_per_prompt={"image": 0, "video": 1},
         mm_processor_cache_gb=0,
+        # The trainer replays the experts vLLM routed to (trainer.enable_router_replay)
+        enable_return_routed_experts=True,
         # prime-rl's inference defaults for RL (enable_fp32_router_logits / enable_fp32_lm_head)
         hf_overrides={"moe_router_dtype": "float32", "head_dtype": "float32"},
     )
@@ -101,7 +104,8 @@ def run_vllm(args: argparse.Namespace) -> None:
     )
     ids = list(output.prompt_token_ids)
     logprobs = [float("nan")] + [entry[token].logprob for entry, token in zip(output.prompt_logprobs[1:], ids[1:])]
-    torch.save({"prompt_ids": ids, "logprobs": logprobs}, args.out)
+    routed_experts = torch.from_numpy(output.outputs[0].routed_experts[: len(ids)].astype(np.int32))
+    torch.save({"prompt_ids": ids, "logprobs": logprobs, "routed_experts": routed_experts}, args.out)
 
 
 def run_trainer(args: argparse.Namespace) -> None:
@@ -142,6 +146,7 @@ def run_trainer(args: argparse.Namespace) -> None:
             mm_kwargs=mm_kwargs,
             mm_token_type_ids=torch.tensor([token_types], device="cuda"),
             seq_lens=torch.tensor([len(ids)], device="cuda"),
+            routed_experts=reference["routed_experts"].unsqueeze(0).cuda(),
         )
     if get_world().is_master:
         logprobs = [float("nan")] + out["logprobs"][0, :-1].tolist()
