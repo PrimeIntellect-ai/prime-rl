@@ -46,7 +46,7 @@ BINDING_FRACTION = 0.9
 """The cap counts as binding when inflight reaches this fraction of it."""
 
 
-KV_USAGE_SOFT_CAP = 0.8
+KV_USAGE_SOFT_CAP = 0.6
 """Above this usage, soft-trim: lower the cap and let completions drain the
 pool naturally — no work is cancelled."""
 
@@ -55,8 +55,12 @@ KV_USAGE_HARD_CAP = 0.9
 completions despite the closed gate, so also cancel the pool excess before
 thrash onset (a cliff, not a slope)."""
 
-KV_USAGE_TARGET = 0.7
+KV_USAGE_TARGET = 0.5
 """A trim resizes to inflight * target / usage — below the trigger, so pool growth has headroom before the next trim."""
+
+# exp(genebench round 2): soft cap 0.8 -> 0.6 and target 0.7 -> 0.5 (hard cap stays 0.9). On
+# Nemotron 3.5 Super + GeneBench agentic rollouts the prefix cache already starts evicting
+# between-turn contexts at ~0.6 KV on an engine (hit 94% -> 85%, prefill x4), well before 0.8.
 
 KV_TRIM_COOLDOWN_POLLS = 6
 """Polls between kv-headroom trims, letting each trim propagate before the next is sized."""
