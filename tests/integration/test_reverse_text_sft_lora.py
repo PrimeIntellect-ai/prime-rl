@@ -1,7 +1,10 @@
+import json
+import shutil
 from pathlib import Path
 from typing import Callable
 
 import pytest
+from safetensors import safe_open
 
 from tests.conftest import ProcessResult
 from tests.integration.dashboard_smoke import make_dashboard_test
@@ -64,8 +67,11 @@ def sft_lora_resume_process(
     wandb_project: str,
     wandb_name: str,
     output_dir: Path,
+    run_dir: Path,
 ) -> ProcessResult:
     """Fixture for resuming SFT LoRA CI integration test"""
+    # Remove the first run's adapter so the resume checks only pass if resume exports its own.
+    shutil.rmtree(run_dir / "adapter", ignore_errors=True)
     wandb_name += "-resume"
     cmd = [
         "uv",
@@ -89,9 +95,24 @@ def sft_lora_resume_process(
     return run_process(cmd, timeout=TIMEOUT)
 
 
-def test_no_error(sft_lora_process: ProcessResult):
+def _check_adapter(run_dir: Path) -> None:
+    adapter_dir = run_dir / "adapter"
+    config = json.loads((adapter_dir / "adapter_config.json").read_text())
+    assert config["peft_type"] == "LORA"
+    assert config["r"] == 8
+    with safe_open(adapter_dir / "adapter_model.safetensors", framework="pt", device="cpu") as weights:
+        keys = list(weights.keys())
+        assert keys
+        assert all("lora_A" in key or "lora_B" in key for key in keys)
+        for key in keys:
+            shape = weights.get_slice(key).get_shape()
+            assert shape[0 if "lora_A" in key else 1] == config["r"]
+
+
+def test_no_error(sft_lora_process: ProcessResult, run_dir: Path):
     """Tests that the SFT LoRA process does not fail."""
     assert sft_lora_process.returncode == 0, f"Process has non-zero return code ({sft_lora_process})"
+    _check_adapter(run_dir)
 
 
 def test_loss_goes_down(sft_lora_process: ProcessResult, run_dir: Path):
@@ -103,9 +124,10 @@ def test_loss_goes_down(sft_lora_process: ProcessResult, run_dir: Path):
     check_loss_goes_down(trainer_stdout)
 
 
-def test_no_error_resume(sft_lora_resume_process: ProcessResult):
+def test_no_error_resume(sft_lora_resume_process: ProcessResult, run_dir: Path):
     """Tests that the SFT LoRA resume process does not fail."""
     assert sft_lora_resume_process.returncode == 0, f"Process has non-zero return code ({sft_lora_resume_process})"
+    _check_adapter(run_dir)
 
 
 def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, run_dir: Path):
