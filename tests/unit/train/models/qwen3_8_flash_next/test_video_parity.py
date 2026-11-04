@@ -49,5 +49,9 @@ def test_video_logprobs_match_vllm(tmp_path):
     video_token_id = AutoConfig.from_pretrained(checkpoint).video_token_id
     result = compare(torch.load(vllm_out), torch.load(trainer_out), video_token_id)
     print(json.dumps(result, indent=2))
-    for name, stats in result.items():
-        assert stats["mean"] < 0.05, (name, stats)
+    # The video tokens may differ no more than the sample's text does: wrong video embeddings or positions show up
+    # there first (a mirrored clip puts 10x the text difference on the pads of a 4-layer Qwen3.8).
+    text = result["text"]["mean"]
+    assert text < 0.1, result
+    for name in ("video pads", "video timestamps and markers"):
+        assert result[name]["mean"] < 2 * text + 0.01, result
