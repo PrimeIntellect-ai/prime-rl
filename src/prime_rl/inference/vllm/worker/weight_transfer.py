@@ -1,6 +1,8 @@
+import re
 from collections import defaultdict
+from dataclasses import dataclass
 from math import prod
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import torch
 from torch.nn import Module
@@ -18,6 +20,48 @@ from vllm.model_executor.model_loader.reload.utils import get_layer_params_buffe
 from prime_rl.utils.sparse_weights import FP8_BLOCK, as_bits, quantize_fp8_blocks
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
+
+# The logical expert of a per-expert checkpoint tensor, e.g. "model.layers.3.mlp.experts.17.down_proj.weight"
+EXPERT_ID = re.compile(r"\.experts\.(\d+)\.")
+
+
+@dataclass(frozen=True)
+class ExpertSlots:
+    """The local expert slots of one MoE layer in a param: slot ``s`` holds the expert of global physical slot
+    ``physical[s]`` at elements ``[base + s * stride, base + (s + 1) * stride)`` of the param."""
+
+    layer: int
+    base: int
+    stride: int
+    physical: tuple[int, ...]
+
+
+def expert_slots(
+    params: Sequence[torch.Tensor],
+    expert_weights: Sequence[Sequence[torch.Tensor]],
+    local_to_global: Sequence[Sequence[int]],
+) -> dict[int, ExpertSlots]:
+    """The params (by index) that hold EPLB-managed experts. ``expert_weights[layer]`` are vLLM's
+    ``[local slots, -1]`` views of one MoE layer's expert params (``MixtureOfExperts.expert_weights``, which EPLB
+    moves rows of), and ``local_to_global[layer]`` each local slot's global physical slot."""
+    views = {}
+    for layer, weights in enumerate(expert_weights):
+        for view in weights:
+            assert view.shape[0] == len(local_to_global[layer])
+            views[view.untyped_storage().data_ptr()] = (layer, view)
+    slots = {}
+    for index, param in enumerate(params):
+        found = views.get(param.untyped_storage().data_ptr())
+        if found is None:
+            continue
+        layer, view = found
+        # In bytes: EPLB views 1-byte params as uint8, and the index map views fp8 block scales as flat storage
+        base, stride = view.storage_offset() * view.element_size(), view.stride(0) * view.element_size()
+        size = param.element_size()
+        if param.storage_offset() or base % size or stride % size:
+            raise NotImplementedError(f"Sparse weight deltas cannot follow EPLB in param {index}: unaligned slots")
+        slots[index] = ExpertSlots(layer, base // size, stride // size, tuple(local_to_global[layer]))
+    return slots
 
 
 def load_weights_checkpoint_layerwise(
@@ -135,6 +179,12 @@ class CheckpointIndexMap:
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
         self.names = set(self.records)
+        # Under EPLB (``track_experts``): the expert params' slots by param index, each expert tensor kind's writes
+        # into one slot, the expert tensors held, and the physical-to-logical expert map the records follow
+        self.slots: dict[int, ExpertSlots] = {}
+        self.experts: dict[str, tuple[int, list[tuple]]] = {}
+        self.expert_names: set[str] = set()
+        self.arrangement: torch.Tensor | None = None
 
     def map_write(
         self, name: str, k: int, row_offsets: torch.Tensor | None = None, col_offsets: torch.Tensor | None = None
@@ -233,12 +283,13 @@ class CheckpointIndexMap:
     def _plan_checksums(self):
         """Writes that cover whole rows of a param become row ranges, summed with cumsums over the rows
         of each param. Element ``(row, col)`` of a write is weighted by its checkpoint flat index + 1:
-        ``row * num_cols + first + col`` for a row range, with ``first`` per write."""
-        names = [
-            name
-            for name, writes in self.records.items()
-            if name not in self.unpatchable and sum(rows * cols for _, rows, _, cols, *_ in writes) <= self.numel[name]
-        ]
+        ``row * num_cols + first + col`` for a row range, with ``first`` per write. A tensor written whole ``k``
+        times (an expert with ``k`` local replicas under EPLB) sums to ``k`` times its checksum."""
+        names = []
+        for name, writes in self.records.items():
+            held = sum(rows * cols for _, rows, _, cols, *_ in writes)
+            if name not in self.unpatchable and (held <= self.numel[name] or held % self.numel[name] == 0):
+                names.append(name)
         device = self.params[0].device
         ranges: dict[int, list[list[int]]] = defaultdict(lambda: [[], [], [], [], []])
         other_writes: dict[tuple, list[list[int]]] = defaultdict(lambda: [[], [], [], []])
@@ -348,6 +399,92 @@ class CheckpointIndexMap:
     def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
         """The raw bits of one write of a checkpoint block into param ``index``."""
         return as_bits(self.params[index].data).view(-1).as_strided((rows, cols), tuple(strides), offset)
+
+    def track_experts(self, slots: dict[int, ExpertSlots], arrangement: torch.Tensor, num_experts: int) -> None:
+        """Follow EPLB's expert placement. EPLB moves whole slots of the expert params, so each kind of per-expert
+        checkpoint tensor (``...experts.{e}.down_proj.weight`` and its block scales) has the same writes into
+        whichever slot holds its expert; keep them per kind, so ``retarget`` can rewrite the expert records for any
+        placement. ``arrangement`` is the ``[moe layers, physical slots]`` physical-to-logical expert map the
+        records were made under, ``slots`` the expert params (``expert_slots``), ``num_experts`` the logical
+        experts per layer. Call after ``fp8_layout``, so the block scales are covered too."""
+        placement = arrangement.tolist()
+        experts: dict[tuple[str, str], tuple[int, list[tuple], str]] = {}
+        for name, writes in self.records.items():
+            in_slots = [write[4] in slots for write in writes]
+            if not any(in_slots):
+                continue
+            match = EXPERT_ID.search(name)
+            if not all(in_slots) or match is None or name in self.unpatchable:
+                raise NotImplementedError(f"Sparse weight deltas cannot follow EPLB in {name}: not a per-expert tensor")
+            # (layer, local slot) -> the writes into that slot
+            by_slot: dict[tuple[int, int], list[tuple]] = defaultdict(list)
+            for k, (row0, rows, col0, cols, index, offset, row_stride, col_stride) in enumerate(writes):
+                slot = slots[index]
+                local, in_slot = divmod(offset - slot.base, slot.stride)
+                tables = self.maps.get((name, k))
+                end = in_slot + (rows - 1) * row_stride + (cols - 1) * col_stride
+                if (
+                    not 0 <= local < len(slot.physical)
+                    or placement[slot.layer][slot.physical[local]] != int(match.group(1))
+                    or (tables is None and end >= slot.stride)
+                ):
+                    raise NotImplementedError(
+                        f"Sparse weight deltas cannot follow EPLB in {name}: a write outside its expert's slot"
+                    )
+                by_slot[(slot.layer, local)].append(
+                    (row0, rows, col0, cols, index, in_slot, row_stride, col_stride, tables)
+                )
+            (layer, _), template = next(iter(by_slot.items()))
+            kind = (name[: match.start(1)], name[match.end(1) :])
+            known_layer, known, _ = experts.setdefault(kind, (layer, template, name))
+            if known_layer != layer or any(
+                slot_layer != layer or not _same_writes(slot_writes, known)
+                for (slot_layer, _), slot_writes in by_slot.items()
+            ):
+                raise NotImplementedError(f"Sparse weight deltas cannot follow EPLB in {name}: its expert slots differ")
+        for (prefix, suffix), (_, _, example) in experts.items():
+            shape, mode = (self.num_cols[example], self.numel[example]), self.fp8.get(example)
+            for expert in range(num_experts):
+                name = f"{prefix}{expert}{suffix}"
+                weight = name.removesuffix("_scale_inv")
+                if name not in self.numel and (weight == name or weight not in self.numel):
+                    raise NotImplementedError(
+                        f"Sparse weight deltas cannot follow EPLB: {name} is not in the checkpoint"
+                    )
+                if (self.num_cols.setdefault(name, shape[0]), self.numel.setdefault(name, shape[1])) != shape:
+                    raise NotImplementedError(f"Sparse weight deltas cannot follow EPLB: {name} differs from {example}")
+                if mode is not None and self.fp8.setdefault(name, mode) != mode:
+                    raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: mixed fp8 layouts")
+        self.slots, self.experts = slots, experts
+        self.expert_names = {name for name in self.records if any(write[4] in slots for write in self.records[name])}
+        self.retarget(arrangement)
+
+    def retarget(self, arrangement: torch.Tensor) -> None:
+        """Rewrite the expert records for the physical-to-logical expert map ``arrangement`` (see ``track_experts``):
+        each local slot gets the writes of the expert it holds now, so loads and deltas reach every local replica of
+        an expert and no slot it left. Running checksums restart from the next full recompute."""
+        placement = arrangement.tolist()
+        for name in self.expert_names:
+            del self.records[name]
+        self.maps = {key: tables for key, tables in self.maps.items() if key[0] not in self.expert_names}
+        physical = {slot.layer: slot.physical for slot in self.slots.values()}
+        held = set()
+        for (prefix, suffix), (layer, template, _) in self.experts.items():
+            for local, slot_id in enumerate(physical[layer]):
+                expert = placement[layer][slot_id]
+                assert expert >= 0, f"Physical expert slot {slot_id} of MoE layer {layer} holds no expert"
+                name = f"{prefix}{expert}{suffix}"
+                writes = self.records.setdefault(name, [])
+                for *block, index, in_slot, row_stride, col_stride, tables in template:
+                    slot = self.slots[index]
+                    if tables is not None:
+                        self.maps[(name, len(writes))] = tables
+                    writes.append((*block, index, slot.base + local * slot.stride + in_slot, row_stride, col_stride))
+                held.add(name)
+        self.expert_names = held
+        self.names = set(self.records)
+        self.arrangement = arrangement.clone()
+        self.map_cache = self.checksum_plan = self.running = self.fused = None
 
     def row_ranges(self) -> dict[str, tuple[int, int]]:
         """Checkpoint tensor -> the rows ``[begin, end)`` of its ``[rows, num_cols]`` view this worker holds
@@ -552,6 +689,17 @@ class CheckpointIndexMap:
                 keep = part_ids >= 0
                 change = (new.long() - old.long()) * weights[begin:end]
                 self.running.index_add_(0, part_ids[keep], change[keep])
+
+
+def _same_writes(a: list[tuple], b: list[tuple]) -> bool:
+    """Whether two slots' writes (``track_experts``) agree, offset tables included."""
+
+    def same_tables(x, y) -> bool:
+        if x is None or y is None:
+            return x is y
+        return all(s is t if s is None or t is None else torch.equal(s, t) for s, t in zip(x, y))
+
+    return len(a) == len(b) and all(x[:8] == y[:8] and same_tables(x[8], y[8]) for x, y in zip(a, b))
 
 
 def _restore_checkpoint_format(model: Module) -> list[tuple]:

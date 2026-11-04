@@ -217,6 +217,9 @@ def server(config: InferenceConfig):
     lora_target_modules = config.vllm.lora_target_modules
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
+    # Read by the worker processes: the weight updates rearrange EPLB's experts instead of vLLM's trigger
+    if config.eplb_rebalance_interval is not None:
+        os.environ["PRIME_EPLB_REBALANCE_INTERVAL"] = str(config.eplb_rebalance_interval)
 
     namespace = config.to_namespace()
 

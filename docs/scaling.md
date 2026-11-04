@@ -306,6 +306,19 @@ interval = 50  # full checkpoint (anchor) every N steps
 - RL: deltas come from the optimizer step, with every optimizer and offload mode. Right before the step updates a chunk of parameters, their shards still hold the previous broadcast's weights; the trainer diffs the old and new values of each chunk as the step goes and writes the delta out. No copy of the weights is kept, except of the few tensors that are not optimizer parameters (buffers, frozen parameters, fp8 tensors whose 128-row blocks straddle trainer ranks). The trainer checks that no weight changed outside the optimizer step.
 - A broadcast that does not follow every optimizer step (the startup broadcast of a resumed run, SFT online evals) publishes a full checkpoint.
 - Anchors (full checkpoints) are written every `interval` steps, from the optimizer step. They slow that step down, so prefer a larger `interval`. An engine that joins, restarts or fails an update loads the latest complete anchor, reading only the rows it holds, and replays the deltas since.
+- EPLB (`inference.vllm.enable_eplb`) works with sparse deltas on a single engine (`data_parallel_size = 1`, experts spread over its tensor parallel workers), and needs `inference.eplb_rebalance_interval`. vLLM's own rearrangement trigger is then off: the engine records the expert load of every forward, and after every `eplb_rebalance_interval` weight updates it rearranges the experts inside the update pause. It then moves its delta writes to the new placement (each expert's writes go to all of its current replicas) and verifies the moved weights against the update's checksums. EPLB runs synchronously (`eplb_config.use_async = false`, the default with this setting). Other weight transports reject EPLB.
+
+  ```toml
+  [inference]
+  eplb_rebalance_interval = 10
+
+  [inference.vllm]
+  tensor_parallel_size = 4
+  enable_expert_parallel = true
+  enable_eplb = true
+  eplb_config = { num_redundant_experts = 4 }
+  ```
+
 - Not supported: LoRA, fp8 tensors whose columns are not a multiple of 128, and engines that transform weights after loading other than online `fp8_per_block` (e.g. FlashInfer TRTLLM/CUTLASS MoE, Marlin). fp8 deltas need the same vLLM and torch versions on the trainer and the engines.
 
 ### Custom Templates

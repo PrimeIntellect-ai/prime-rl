@@ -770,6 +770,43 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
+@pytest.mark.parametrize(
+    "weight_broadcast,inference,error",
+    [
+        ({"type": "filesystem", "delta": {}}, {"eplb_rebalance_interval": 2}, None),
+        ({"type": "filesystem"}, {"eplb_rebalance_interval": 2}, "sparse filesystem weight updates"),
+        ({"type": "nccl"}, {"eplb_rebalance_interval": 2}, "sparse filesystem weight updates"),
+        ({"type": "filesystem", "delta": {}}, {}, "eplb_rebalance_interval"),
+        ({"type": "filesystem", "delta": {}}, {"eplb_rebalance_interval": 2, "async": True}, "use_async = false"),
+    ],
+)
+def test_eplb_needs_sparse_filesystem_updates_that_rearrange(weight_broadcast, inference, error):
+    eplb_config = {"num_redundant_experts": 2}
+    if inference.pop("async", False):
+        eplb_config["use_async"] = True
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "weight_broadcast": weight_broadcast,
+        "inference": {
+            **inference,
+            "vllm": {
+                "tensor_parallel_size": 2,
+                "enable_expert_parallel": True,
+                "enable_eplb": True,
+                "eplb_config": eplb_config,
+            },
+        },
+        "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+    }
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            RLConfig.model_validate(data)
+        return
+    config = RLConfig.model_validate(data)
+    assert config.inference.vllm.eplb_config == {"num_redundant_experts": 2, "use_async": False}
+
+
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
     import json

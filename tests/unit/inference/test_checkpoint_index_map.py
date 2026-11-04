@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 
-from prime_rl.inference.vllm.worker.weight_transfer import CheckpointIndexMap
+from prime_rl.inference.vllm.worker.weight_transfer import CheckpointIndexMap, expert_slots
 from prime_rl.utils.sparse_weights import as_bits, bits_checksum
 
 
@@ -136,3 +136,145 @@ def test_fused_apply_matches_torch_apply():
     running = gpu_map.checksums()[1].cpu()
     assert running.tolist() == cpu_map.checksums()[1].tolist()
     assert running.tolist() == gpu_map.checksums(full=True)[1].cpu().tolist()
+
+
+NUM_EXPERTS, LOCAL_SLOTS, HIDDEN, INTERMEDIATE = 4, 3, 8, 4
+# EP rank 1 of 2 with 2 redundant experts: physical slots 3, 4, 5 of EPLB's initial placement [0, 1, 2, 3, 0, 1]
+INITIAL = [0, 1, 2, 3, 0, 1]
+LOCAL_TO_GLOBAL = [3, 4, 5]
+KINDS = {"gate_proj": [INTERMEDIATE, HIDDEN], "up_proj": [INTERMEDIATE, HIDDEN], "down_proj": [HIDDEN, INTERMEDIATE]}
+# Layer 0 holds expert 2 twice on this rank and drops expert 3; layer 1 moves its experts between slots
+MOVED = [[2, 3, 1, 0, 2, 2], [3, 2, 1, 1, 0, 3]]
+
+
+class ToyMoE(nn.Module):
+    """Two MoE layers whose loader writes each checkpoint expert into every local slot that holds it, by default of
+    EPLB's initial placement like vLLM's loader (gate and up packed into ``w13``)."""
+
+    def __init__(self):
+        super().__init__()
+        self.w13 = nn.ParameterList(
+            nn.Parameter(torch.zeros(LOCAL_SLOTS, 2 * INTERMEDIATE, HIDDEN, dtype=torch.bfloat16)) for _ in range(2)
+        )
+        self.w2 = nn.ParameterList(
+            nn.Parameter(torch.zeros(LOCAL_SLOTS, HIDDEN, INTERMEDIATE, dtype=torch.bfloat16)) for _ in range(2)
+        )
+        self.norm = nn.Parameter(torch.zeros(HIDDEN, dtype=torch.bfloat16))
+
+    def slot(self, layer: int, kind: str, slot: int) -> torch.Tensor:
+        if kind == "down_proj":
+            return self.w2[layer].data[slot]
+        rows = slice(0, INTERMEDIATE) if kind == "gate_proj" else slice(INTERMEDIATE, 2 * INTERMEDIATE)
+        return self.w13[layer].data[slot, rows]
+
+    def load_weights(self, weights, placement=(INITIAL, INITIAL)):
+        for name, tensor in weights:
+            if name == "norm":
+                self.norm.data.copy_(tensor)
+                continue
+            _, layer, _, _, expert, kind, _ = name.split(".")
+            for slot, physical in enumerate(LOCAL_TO_GLOBAL):
+                if placement[int(layer)][physical] == int(expert):
+                    self.slot(int(layer), kind, slot).copy_(tensor)
+
+    def expert_weights(self) -> list[list[torch.Tensor]]:
+        """Like vLLM's ``MixtureOfExperts.expert_weights``: each layer's expert params as ``[local slots, -1]``."""
+        return [[self.w13[layer].view(LOCAL_SLOTS, -1), self.w2[layer].view(LOCAL_SLOTS, -1)] for layer in range(2)]
+
+
+def moe_checkpoint(seed: int) -> dict[str, torch.Tensor]:
+    generator = torch.Generator().manual_seed(seed)
+    checkpoint = {"norm": torch.randn(HIDDEN, generator=generator).bfloat16()}
+    for layer in range(2):
+        for expert in range(NUM_EXPERTS):
+            for kind, shape in KINDS.items():
+                checkpoint[f"layers.{layer}.mlp.experts.{expert}.{kind}.weight"] = torch.randn(
+                    shape, generator=generator
+                ).bfloat16()
+    return checkpoint
+
+
+def eplb_index_map(model: ToyMoE) -> CheckpointIndexMap:
+    tensors = {name: (list(tensor.shape), "bfloat16") for name, tensor in moe_checkpoint(0).items()}
+    index_map = CheckpointIndexMap(model, tensors)
+    slots = expert_slots(index_map.params, model.expert_weights(), [LOCAL_TO_GLOBAL] * 2)
+    index_map.track_experts(slots, torch.tensor([INITIAL, INITIAL]), NUM_EXPERTS)
+    return index_map
+
+
+def load(index_map: CheckpointIndexMap, checkpoint: dict[str, torch.Tensor]) -> None:
+    for name, (begin, end) in index_map.row_ranges().items():
+        index_map.load_rows(name, checkpoint[name].view(-1, index_map.num_cols[name])[begin:end], begin)
+
+
+def held_checksums(index_map: CheckpointIndexMap, checkpoint: dict[str, torch.Tensor]) -> dict[str, int]:
+    """Each held tensor's checksum once per local copy, wrapping in int64 like the engine's sums."""
+    expected = {}
+    for name, writes in index_map.records.items():
+        copies = sum(rows * cols for _, rows, _, cols, *_ in writes) // index_map.numel[name]
+        checksum = torch.tensor(bits_checksum(as_bits(checkpoint[name])), dtype=torch.int64)
+        expected[name] = int(checksum * copies)
+    return expected
+
+
+def test_retargeted_experts_load_patch_and_checksum_like_a_fresh_load():
+    model = ToyMoE()
+    index_map = eplb_index_map(model)
+    # Slots 3, 4, 5 start out with experts 3, 0 (a redundant replica) and 1
+    held = {name.split(".")[4] for name in index_map.records if name.startswith("layers.0.")}
+    assert held == {"3", "0", "1"}
+    checkpoint = moe_checkpoint(1)
+    load(index_map, checkpoint)
+    names, totals, _ = index_map.checksums()
+    assert dict(zip(names, totals.tolist())) == held_checksums(index_map, checkpoint)
+
+    # EPLB moves whole slots in place, here as if from wherever each expert was
+    for layer, placement in enumerate(MOVED):
+        for slot, physical in enumerate(LOCAL_TO_GLOBAL):
+            for kind in KINDS:
+                model.slot(layer, kind, slot).copy_(
+                    checkpoint[f"layers.{layer}.mlp.experts.{placement[physical]}.{kind}.weight"]
+                )
+    index_map.retarget(torch.tensor(MOVED))
+    assert "layers.0.mlp.experts.3.down_proj.weight" not in index_map.names
+    assert len(index_map.records["layers.0.mlp.experts.2.down_proj.weight"]) == 2
+    names, totals, _ = index_map.checksums()
+    assert dict(zip(names, totals.tolist())) == held_checksums(index_map, checkpoint)
+
+    # A delta reaches both replicas of layer 0's expert 2 and skips the expert this worker no longer holds
+    generator = torch.Generator().manual_seed(2)
+    entries, indices, deltas, new = [], [], [], dict(checkpoint)
+    for name in ("layers.0.mlp.experts.2.gate_proj.weight", "layers.0.mlp.experts.3.up_proj.weight", "norm"):
+        changed = torch.randperm(checkpoint[name].numel(), generator=generator)[:5].sort().values
+        delta = torch.randint(-300, 300, (5,), generator=generator, dtype=torch.int16)
+        bits = as_bits(checkpoint[name]).clone().view(-1)
+        bits[changed] += delta
+        new[name] = bits.view(torch.bfloat16).view(checkpoint[name].shape)
+        entries.append((name, 5))
+        indices.append(changed)
+        deltas.append(delta)
+    index_map.apply_delta(entries, torch.cat(indices), torch.cat(deltas))
+
+    fresh = ToyMoE()
+    fresh.load_weights(new.items(), placement=MOVED)
+    for param, expected in zip(model.parameters(), fresh.parameters()):
+        assert torch.equal(as_bits(param.data), as_bits(expected.data))
+    names, running, _ = index_map.checksums()
+    assert dict(zip(names, running.tolist())) == held_checksums(index_map, new)
+    assert running.tolist() == index_map.checksums(full=True)[1].tolist()
+
+    # An anchor load writes every local replica of the current placement
+    reloaded = ToyMoE()
+    reloaded_map = eplb_index_map(reloaded)
+    reloaded_map.retarget(torch.tensor(MOVED))
+    load(reloaded_map, new)
+    for param, expected in zip(reloaded.parameters(), fresh.parameters()):
+        assert torch.equal(as_bits(param.data), as_bits(expected.data))
+
+
+def test_retarget_back_restores_the_records():
+    index_map = eplb_index_map(ToyMoE())
+    records = {name: sorted(writes) for name, writes in index_map.records.items()}
+    index_map.retarget(torch.tensor(MOVED))
+    index_map.retarget(torch.tensor([INITIAL, INITIAL]))
+    assert {name: sorted(writes) for name, writes in index_map.records.items()} == records

@@ -44,6 +44,9 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    # Set by `server()` from `inference.eplb_rebalance_interval`.
+    if os.environ.get("PRIME_EPLB_REBALANCE_INTERVAL") is not None:
+        monkey_patch_eplb_rearrange_on_weight_updates()
 
 
 @dataclass
@@ -995,3 +998,26 @@ def monkey_patch_dp_coordinator_startup_timeout():
             zmq_addr_pipe.close()
 
     DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
+
+
+def monkey_patch_eplb_rearrange_on_weight_updates():
+    """Under RL weight updates, the filesystem worker rearranges EPLB's experts itself, inside the update pause
+    (``FileSystemWeightUpdateWorker._maybe_rearrange_experts``), so sparse deltas always land on a known placement.
+    Disable vLLM's step-interval trigger, and record the expert load of every forward (vLLM records only the
+    window before its own trigger), so the window is current whenever the worker rearranges."""
+    import sys
+
+    from vllm.distributed.eplb.eplb_state import EplbState
+
+    original_add_model = EplbState.add_model
+
+    def add_model(self: EplbState, *args, **kwargs):
+        original_add_model(self, *args, **kwargs)
+        self.expert_rearrangement_step = 0
+        self.expert_rearrangement_step_interval = sys.maxsize
+
+    def should_record_current_step(self: EplbState, log_stats: bool = False) -> bool:
+        return True
+
+    EplbState.add_model = add_model
+    EplbState._should_record_current_step = should_record_current_step

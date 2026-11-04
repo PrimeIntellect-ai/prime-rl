@@ -1,5 +1,6 @@
 import itertools
 import json
+import os
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from math import prod
@@ -9,12 +10,14 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 import torch
 from torch.nn import Module
-from vllm.distributed.parallel_state import get_tp_group, get_world_group
+from vllm.distributed.eplb.eplb_state import EplbModelState, EplbState
+from vllm.distributed.parallel_state import get_ep_group, get_tp_group, get_world_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
 from prime_rl.inference.vllm.worker.weight_transfer import (
     CheckpointIndexMap,
+    expert_slots,
     load_weights_checkpoint_layerwise,
     update_mla_absorbed_weights,
 )
@@ -66,12 +69,17 @@ class FileSystemWeightUpdateWorker(Worker):
     A broadcast step dir holds a full HF checkpoint (anchor), a sparse delta
     against an earlier step, or both. The worker tracks which step it holds and
     applies a delta only on top of its base step; otherwise it reloads the
-    chain's anchor and replays the deltas since."""
+    chain's anchor and replays the deltas since.
+
+    Under EPLB with sparse deltas, experts move only inside a weight update: vLLM's own trigger is off
+    (``monkey_patch_eplb_rearrange_on_weight_updates``) and the worker rearranges them after every
+    ``PRIME_EPLB_REBALANCE_INTERVAL`` updates, then retargets the index map's expert writes to the new placement."""
 
     weight_step: int | None = None
     prefetched: tuple[str, Future] | None = None
     index_map: CheckpointIndexMap | None = None
     host_buffer: torch.Tensor | None = None
+    updates_since_rearrange: int = 0
 
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""
@@ -89,14 +97,15 @@ class FileSystemWeightUpdateWorker(Worker):
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
         self.prefetched = (weight_path, _prefetch_pool.submit(self._read_delta, Path(weight_path)))
 
-    def _read_delta(self, step_dir: Path) -> tuple[list[DeltaChunk], dict[str, int]]:
+    def _read_delta(self, step_dir: Path) -> tuple[list[DeltaChunk], dict[str, int], set[str] | None]:
         """Read this worker's part of a delta into a pinned host buffer reused across steps, in chunks of up to 2^26
-        changes of consecutive frames."""
+        changes of consecutive frames. Also returns the checkpoint tensors it kept (None: all)."""
         global _reader_pool
         if _reader_pool is None:
             _reader_pool = ThreadPoolExecutor(16)
         start = time.perf_counter()
-        frames, checksums = read_delta(step_dir, _reader_pool, None if self.index_map is None else self.index_map.names)
+        names = None if self.index_map is None else self.index_map.names
+        frames, checksums = read_delta(step_dir, _reader_pool, names)
         read_time = time.perf_counter() - start
         chunks, size = [[]], 0
         for frame in frames:
@@ -151,7 +160,7 @@ class FileSystemWeightUpdateWorker(Worker):
             f"Read sparse weight delta {step_dir.name}: {num_bytes / 2**30:.2f} GiB, "
             f"read+decompress {read_time:.2f}s, copy {time.perf_counter() - start - read_time:.2f}s"
         )
-        return pinned, checksums
+        return pinned, checksums, names
 
     def prefetch_weights_done(self) -> bool:
         if self.prefetched is None:
@@ -192,12 +201,14 @@ class FileSystemWeightUpdateWorker(Worker):
                 if plan["write_layout"]:
                     # A full broadcast: the trainer takes the layout at its first one, also after a restart
                     self._write_layout(step_dir.parent)
+            self._follow_experts()
             check = self._run_plan(plan)
         except Exception as e:  # re-raised below, once every worker of the TP group knows
             error = e
         self._raise_if_any_failed(error, f"update to {step_dir.name}")
         if check is not None:
             self._check(*check)
+        self._maybe_rearrange_experts(check)
         self.weight_step = step
 
     def _plan_update(self, step_dir: Path) -> dict:
@@ -323,9 +334,88 @@ class FileSystemWeightUpdateWorker(Worker):
             return torch.from_numpy(data).view(dtype).view(shape)
 
         index_map.fp8_layout(model, read_tensor)
+        eplb = self._eplb()
+        if eplb is not None:
+            self._track_experts(index_map, *eplb)
         if next(model.parameters()).is_cuda:
             index_map.fused_tables(warm_up=True)
         self.index_map = index_map
+
+    def _eplb(self) -> tuple[EplbState, EplbModelState] | None:
+        """vLLM's EPLB state and the served model's part of it, or None without EPLB."""
+        eplb_state = self.model_runner.eplb_state
+        if eplb_state is None:
+            return None
+        return eplb_state, eplb_state.model_states[self.model_config.compute_hash()]
+
+    def _track_experts(self, index_map: CheckpointIndexMap, eplb_state: EplbState, state: EplbModelState) -> None:
+        """Let ``index_map`` follow EPLB's expert placement. Its records are those of the loader, which writes
+        each checkpoint expert into its slots of EPLB's initial placement."""
+        if os.environ.get("PRIME_EPLB_REBALANCE_INTERVAL") is None or eplb_state.is_async:
+            raise NotImplementedError(
+                "Sparse weight deltas under EPLB need synchronous EPLB that rearranges experts only inside weight "
+                "updates: set inference.eplb_rebalance_interval and eplb_config.use_async = false"
+            )
+        if len(eplb_state.model_states) != 1:
+            raise NotImplementedError("Sparse weight deltas under EPLB do not support MoE draft models")
+        if get_ep_group().world_size != get_tp_group().world_size:
+            # The weight update's collectives (and the rearrangement) run per engine, over its TP group
+            raise NotImplementedError("Sparse weight deltas under EPLB need expert parallelism within one engine")
+        moe = state.model
+        initial = torch.tensor(
+            EplbState.build_initial_global_physical_to_logical_map(moe.num_routed_experts, moe.num_redundant_experts)
+        )
+        local_to_global = []
+        for layer in moe.moe_layers:
+            experts = layer.routed_experts
+            slots = [-1] * experts.local_num_experts
+            for physical, local in enumerate(experts._expert_map.tolist()):
+                if local >= 0:
+                    slots[local] = physical
+            local_to_global.append(slots)
+        index_map.track_experts(
+            expert_slots(index_map.params, moe.expert_weights, local_to_global),
+            initial.expand(moe.num_moe_layers, -1),
+            moe.num_logical_experts,
+        )
+
+    def _follow_experts(self) -> None:
+        """Retarget the index map's expert writes if EPLB moved experts since it last did."""
+        eplb = self._eplb()
+        if eplb is None or self.index_map is None:
+            return
+        live = eplb[1].physical_to_logical_map.cpu()
+        if torch.equal(live, self.index_map.arrangement):
+            return
+        moved = int((live != self.index_map.arrangement).sum())
+        self.index_map.retarget(live)
+        if self.index_map.params[0].is_cuda:
+            # The kernel is specialized on the most writes of a tensor, which replicas change
+            self.index_map.fused_tables(warm_up=True)
+        logger.info(f"Retargeted the sparse weight index map to EPLB's expert placement: {moved} slots changed")
+
+    def _maybe_rearrange_experts(self, check: tuple | None) -> None:
+        """Every ``PRIME_EPLB_REBALANCE_INTERVAL`` updates, rearrange the experts by the load EPLB recorded, inside
+        this update's pause, and follow them with the index map. Every worker of the engine runs this at the same
+        updates (EPLB's collectives). The params are then checked against this update's checksums again, which
+        verifies both EPLB's moves and the retargeted writes."""
+        eplb = self._eplb()
+        if eplb is None or self.index_map is None:
+            return
+        self.updates_since_rearrange += 1
+        if self.updates_since_rearrange < int(os.environ["PRIME_EPLB_REBALANCE_INTERVAL"]):
+            return
+        self.updates_since_rearrange = 0
+        eplb_state, state = eplb
+        start = time.perf_counter()
+        eplb_state.rearrange()
+        # The window holds loads per physical slot of the old placement
+        state.expert_load_window.zero_()
+        self._follow_experts()
+        torch.cuda.synchronize()
+        logger.info(f"Rearranged the EPLB experts in {time.perf_counter() - start:.2f}s")
+        if check is not None:
+            self._check(f"{check[0]} after rearranging experts", *self.index_map.held_checksums(), check[-1])
 
     def _write_layout(self, broadcast_dir: Path) -> None:
         """Report which checkpoint tensors this worker holds in fp8, so the trainer sends their deltas as fp8. The
@@ -344,9 +434,14 @@ class FileSystemWeightUpdateWorker(Worker):
         prefetched, self.prefetched = self.prefetched, None
         # Always wait: a running prefetch writes into the same host buffer
         delta = prefetched[1].result() if prefetched is not None else None
-        if prefetched is None or prefetched[0] != step_dir.as_posix():
+        # A prefetch from before the experts last moved (EPLB) may lack the ones this worker holds now
+        if (
+            delta is None
+            or prefetched[0] != step_dir.as_posix()
+            or (delta[2] is not None and not self.index_map.names <= delta[2])
+        ):
             delta = self._read_delta(step_dir)
-        delta, checksums = delta
+        delta, checksums, _ = delta
         read_time = time.perf_counter() - start
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()
@@ -376,14 +471,15 @@ class FileSystemWeightUpdateWorker(Worker):
         Workers sum their parts over the TP group, in one vector over every checkpoint tensor of the run, so each
         runs the same collectives whatever it holds. A tensor is checked when its holders cover it the same number
         of times each (TP slices: once; KV heads replicated over TP workers: once per replica); one held by workers
-        that overlap unevenly (fp8 tensors read in 128-row blocks) is checked only where a worker holds it whole."""
+        that overlap unevenly (fp8 tensors read in 128-row blocks, experts with more replicas on some workers under
+        EPLB) is checked only where a worker holds it whole, once or more."""
         start = time.perf_counter()
-        canonical, ids, counts, whole, multiplicity = self._coverage(names, held)
+        canonical, ids, counts, copies, multiplicity = self._coverage(names, held)
         device = totals.device
         sums = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), totals)
         has_expected = torch.tensor([name in expected for name in canonical], device=device)
         target = torch.tensor([expected.get(name, 0) for name in canonical], dtype=torch.int64, device=device)
-        mismatched = whole & has_expected & (sums != target)
+        mismatched = (copies > 0) & has_expected & (sums != copies * target)
         tp_group = get_tp_group()
         if tp_group.world_size > 1:
             group = tp_group.device_group
@@ -401,7 +497,8 @@ class FileSystemWeightUpdateWorker(Worker):
     def _coverage(self, names: list[str], held: torch.Tensor) -> tuple:
         """What ``_check`` needs of who holds what: every checkpoint tensor of the run (sorted), the positions of
         ``names`` in it, this worker's element counts and whole tensors, and how many times the TP group's holders
-        cover each tensor evenly (0: unevenly, or not held). Static for an index map, so kept for the ``names`` and
+        cover each tensor evenly (0: unevenly, or not held). A worker holds a tensor whole ``copies`` times (more than
+        once for an expert with several local replicas under EPLB). Static for an index map, so kept for the ``names`` and
         ``held`` of its checksum plan; every TP worker follows the same plan, so they compute it (and run its
         collectives) at the same updates."""
         cached = getattr(self, "coverage_cache", None)
@@ -414,7 +511,7 @@ class FileSystemWeightUpdateWorker(Worker):
         ids = torch.tensor([position[name] for name in names], dtype=torch.long, device=device)
         counts = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), held)
         numel = torch.tensor([self.index_map.numel[name] for name in canonical], device=device)
-        whole = counts == numel
+        copies = torch.where(counts % numel == 0, counts // numel, 0)
         multiplicity = torch.zeros_like(counts)
         tp_group = get_tp_group()
         if tp_group.world_size > 1:
@@ -427,7 +524,7 @@ class FileSystemWeightUpdateWorker(Worker):
             torch.distributed.all_reduce(fewest, op=torch.distributed.ReduceOp.MIN, group=group)
             even = (total_counts > 0) & (total_counts % numel == 0) & (most == fewest)
             multiplicity = torch.where(even, total_counts // numel, 0)
-        coverage = (canonical, ids, counts, whole, multiplicity)
+        coverage = (canonical, ids, counts, copies, multiplicity)
         self.coverage_cache = (names, held, coverage)
         return coverage
 

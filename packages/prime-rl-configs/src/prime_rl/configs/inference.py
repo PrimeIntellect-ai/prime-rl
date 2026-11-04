@@ -469,6 +469,9 @@ class InferenceConfig(BaseConfig):
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
+    eplb_rebalance_interval: int | None = Field(None, ge=1)
+    """Under EPLB (``vllm.enable_eplb``) with sparse filesystem weight updates, rearrange the experts after every this many weight updates, inside the update pause, instead of on vLLM's ``eplb_config.step_interval`` (which this disables). Needs synchronous EPLB: ``eplb_config.use_async`` defaults to false here. None: vLLM's own trigger, which weight updates do not support."""
+
     enable_fp32_router_logits: bool = True
     """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
 
@@ -523,6 +526,22 @@ class InferenceConfig(BaseConfig):
             raise ValueError("The llm-d router backend requires a multi-node or disaggregated SLURM deployment.")
         if self.router is None and self.deployment.type in ("multi_node", "disaggregated"):
             raise ValueError("Multi-node / disaggregated deployments require a router fronting the per-rank engines.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_eplb_rebalance_interval(self):
+        if self.eplb_rebalance_interval is None:
+            return self
+        if not self.vllm.enable_eplb:
+            raise ValueError("inference.eplb_rebalance_interval needs inference.vllm.enable_eplb.")
+        extra = self.vllm.model_extra
+        eplb_config = dict(extra.get("eplb_config") or {})
+        if eplb_config.setdefault("use_async", False):
+            raise ValueError(
+                "inference.eplb_rebalance_interval needs synchronous EPLB (eplb_config.use_async = false): "
+                "async EPLB moves experts layer by layer over later forwards, which could land on top of a weight update."
+            )
+        extra["eplb_config"] = eplb_config
         return self
 
     @model_validator(mode="after")

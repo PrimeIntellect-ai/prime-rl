@@ -474,12 +474,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_eplb(self):
-        if self.inference is not None and self.inference.vllm.enable_eplb:
-            raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
             if self.inference is not None:
@@ -718,6 +712,33 @@ class RLConfig(BaseConfig):
                 "env_server_replicas": env_server_replicas,
             }
         )
+        return self
+
+    @model_validator(mode="after")
+    def validate_eplb(self):
+        """EPLB moves experts between physical slots, so a weight update must write each expert to the slots that
+        hold it now. Sparse filesystem updates follow the placement; the experts move only inside the updates
+        (``inference.eplb_rebalance_interval``), of one engine. Runs after ``auto_setup_deployment`` fills DP."""
+        if self.inference is None or not self.inference.vllm.enable_eplb:
+            return self
+        weight_broadcast = self.trainer.weight_broadcast
+        if weight_broadcast.type != "filesystem" or weight_broadcast.delta is None:
+            raise ValueError(
+                "inference.vllm.enable_eplb with RL weight updates needs sparse filesystem weight updates "
+                "(weight_broadcast.type = 'filesystem' with [weight_broadcast.delta]): other transports load each "
+                "expert into its initial slot, not where EPLB moved it."
+            )
+        if self.inference.eplb_rebalance_interval is None:
+            raise ValueError(
+                "inference.vllm.enable_eplb with RL weight updates needs inference.eplb_rebalance_interval: the "
+                "experts may move only inside weight updates."
+            )
+        if self.inference.vllm.data_parallel_size != 1:
+            raise ValueError(
+                "inference.vllm.enable_eplb with RL weight updates needs inference.vllm.data_parallel_size = 1 "
+                "(expert parallelism over one engine's tensor parallel workers, e.g. tensor_parallel_size = "
+                "the inference GPUs): EPLB's rearrangement runs over the engine's workers inside a weight update."
+            )
         return self
 
     @model_validator(mode="after")
