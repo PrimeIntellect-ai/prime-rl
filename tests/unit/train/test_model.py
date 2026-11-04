@@ -3,7 +3,7 @@ import torch
 import torch.distributed as dist
 
 from prime_rl.configs.trainer import AttnImplementation, DebugModelConfig, ModelConfig
-from prime_rl.trainer.model import get_model, initialize_from_scratch
+from prime_rl.trainer.model import clear_padding_idx, get_model, initialize_from_scratch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
 BS = 1
@@ -91,6 +91,7 @@ def test_initialize_from_scratch_initializes_the_padding_embedding(attn):
     assert padding_idx is not None
     dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29513", world_size=1, rank=0)
     try:
+        clear_padding_idx(model)
         initialize_from_scratch(model)
     finally:
         dist.destroy_process_group()
