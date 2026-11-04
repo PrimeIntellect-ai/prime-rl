@@ -205,6 +205,8 @@ class Dispatcher:
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
         self.policy_update_pending = False
+        self.inference_available = True
+        """False while no policy inference server takes requests (all lost or rejoining)."""
         self.scheduling_lock = asyncio.Lock()
 
         self.stopped = asyncio.Event()
@@ -230,6 +232,17 @@ class Dispatcher:
     @property
     def available_permits(self) -> int:
         return self.max_inflight - self.current_inflight
+
+    def set_inference_available(self, available: bool) -> None:
+        """Hold all scheduling while no inference server takes requests, so episodes are not
+        dispatched only to fail."""
+        self.inference_available = available
+        get_logger().log(
+            "INFO" if available else "WARNING",
+            "Inference servers take requests again; scheduling resumes"
+            if available
+            else "No inference server takes requests; scheduling waits until one rejoins",
+        )
 
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
@@ -405,13 +418,13 @@ class Dispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            if self.policy_update_pending:
+            if self.policy_update_pending or not self.inference_available:
                 return
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
             async with self.scheduling_lock:
-                if self.policy_update_pending:
+                if self.policy_update_pending or not self.inference_available:
                     return
                 if self.mode == DispatcherMode.PREFER_EVAL:
                     # PREFER_EVAL is only entered when the orchestrator triggers

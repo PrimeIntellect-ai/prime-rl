@@ -82,6 +82,7 @@ class ZMQBatchSender(BatchSender):
         """Candidates ``authorize_recovery`` rejected: the serve loop tells their ranks."""
         self.delivery_lock = asyncio.Lock()
         self.serve_task: asyncio.Task | None = None
+        self.republish_version: int | None = None
         self.logger.debug(f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port})")
 
     def start(self) -> None:
@@ -105,6 +106,13 @@ class ZMQBatchSender(BatchSender):
             self.serve_task.result()
             raise RuntimeError("Batch sender stopped serving trainer requests")
         return self.live_delivered.result()
+
+    def request_republish(self, version: int | None) -> None:
+        """Ask the trainer to publish policy ``version`` again: inference lost every server, and the
+        returning ones need it before any batch can be produced. Answered once every rank waits for
+        the next step while no batch is pending, and only if the trainer holds ``version`` then.
+        ``None`` withdraws a request not answered yet."""
+        self.republish_version = version
 
     def authorize_recovery(self, previous_attempt: str, replacement_attempt: str) -> None:
         """Authorize one replacement on the sender's event loop after the old group is stopped.
@@ -149,6 +157,10 @@ class ZMQBatchSender(BatchSender):
         while True:
             while self.rejections:
                 await self._reply_hello(*self.rejections.pop(0))
+            if self.republish_version is not None:
+                # Answered here rather than in a task of its own: a failure ends the serve loop, which
+                # fails the run, instead of leaving the orchestrator waiting for the policy.
+                await self._deliver()
             if not await self.socket.poll(PROBE_INTERVAL_S * 1000, zmq.POLLIN):
                 if self.awaiting_admission is not None:
                     await self._admit()
@@ -186,6 +198,29 @@ class ZMQBatchSender(BatchSender):
             return
         step = self.delivery_step
         replaying = step < self.current_step
+        if self.republish_version is not None and not replaying and self.live is None:
+            version, self.republish_version = self.republish_version, None
+            if version == step - 1:
+                for identity, request in self.requests.values():
+                    asked = await self._reply(
+                        identity, [b"republish", request.attempt_id.encode(), str(step).encode(), str(version).encode()]
+                    )
+                    if not asked:
+                        # As for a batch: ranks asked without this one would publish without it.
+                        if self.journal is None:
+                            raise ConnectionError(
+                                "Trainer disconnected during a republish request without a recovery journal"
+                            )
+                        self.failed_attempt = active.attempt_id
+                        self.requests.clear()
+                        self.logger.warning(
+                            f"Trainer attempt {active.attempt_id} disconnected while asked to publish policy v{version} "
+                            "again; waiting for a replacement"
+                        )
+                        return
+                self.requests.clear()
+                self.logger.warning(f"Asked trainer attempt {active.attempt_id} to publish policy v{version} again")
+                return
         if replaying:
             payloads = await asyncio.to_thread(self._read_replay_batch, step)
         elif self.live is not None:
@@ -217,6 +252,7 @@ class ZMQBatchSender(BatchSender):
             return
         self.current_step += 1
         self.live = None
+        self.republish_version = None
         self.replay_plan = None
         self.live_delivered.set_result(send_time)
 
@@ -470,6 +506,18 @@ class ZMQBatchReceiver(BatchReceiver):
         self.socket.send(self.request_encoder.encode(request))
         # Read the response here: a liveness ping must not end the wait early.
         self.response = self._recv(copy=False)
+
+    def republish_requested(self) -> int | None:
+        frames = self.response
+        if frames is None or bytes(frames[0]) != b"republish":
+            return None
+        if (
+            bytes(frames[1]).decode() != self.trainer_group.attempt_id
+            or bytes(frames[2]) != str(self.current_step).encode()
+        ):
+            raise RuntimeError("Republish request does not match trainer attempt and step")
+        self.response = None
+        return int(bytes(frames[3]))
 
     def receive(self) -> list[MicroBatch]:
         """Receive a micro batch from the orchestrator."""

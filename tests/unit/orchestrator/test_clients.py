@@ -9,6 +9,7 @@ from verifiers.v1.configs.client import EvalClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
+    Engine,
     _is_retryable_lora_error,
     _pause_engines,
     check_health,
@@ -44,7 +45,9 @@ def test_is_retryable_lora_error_returns_false_for_non_http_error():
 
 def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client = AsyncMock()
-    admin_plane = MagicMock(clients=[mock_client])
+    admin_plane = MagicMock()
+    admin_plane.members.return_value = [Engine(mock_client)]
+    admin_plane.call = lambda engine, request: request()
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response

@@ -2,10 +2,13 @@
 
 import ctypes
 import os
+import pickle
 import time
 from collections.abc import Callable
+from datetime import timedelta
 
 import torch
+from torch.distributed import TCPStore
 from vllm.distributed.device_communicators.pynccl_wrapper import (
     NCCLLibrary,
     buffer_type,
@@ -15,6 +18,34 @@ from vllm.distributed.device_communicators.pynccl_wrapper import (
     ncclUniqueId,
 )
 from vllm.distributed.utils import StatelessProcessGroup
+
+# The NCCL unique ID rank 0 publishes on the group's store.
+UNIQUE_ID_KEY = "weight_broadcast/nccl_unique_id"
+# Attempts to reach the store last at most this long, so a cancelled rendezvous ends soon.
+STORE_CONNECT_ATTEMPT_S = 10.0
+
+
+def connect_store(
+    host: str, port: int, world_size: int, timeout: float, cancelled: Callable[[], bool] | None = None
+) -> TCPStore:
+    """Connect a client to the publisher's store, retrying until ``timeout`` or ``cancelled``: one
+    long connect attempt would wait on a dead or replaced publisher without checking either. The
+    client registers as one of ``world_size`` members, which a store created for a fixed group
+    waits for."""
+    deadline = time.monotonic() + timeout
+    while True:
+        attempt = max(1.0, min(STORE_CONNECT_ATTEMPT_S, deadline - time.monotonic()))
+        try:
+            store = TCPStore(
+                host, port, world_size, is_master=False, timeout=timedelta(seconds=attempt), use_libuv=False
+            )
+            store.set_timeout(timedelta(seconds=timeout))
+            return store
+        except Exception:
+            if cancelled is not None and cancelled():
+                raise RuntimeError("NCCL weight transfer was cancelled: a peer was replaced or lost") from None
+            if time.monotonic() >= deadline:
+                raise
 
 
 class _Config(ctypes.Structure):
@@ -43,7 +74,13 @@ class WeightBroadcastCommunicator:
     dies. Abort runs on the same thread as the NCCL calls, never concurrently.
     """
 
-    def __init__(self, group: StatelessProcessGroup, device: int | str | torch.device, timeout: float):
+    def __init__(
+        self,
+        group: StatelessProcessGroup,
+        device: int | str | torch.device,
+        timeout: float,
+        cancelled: Callable[[], bool] | None = None,
+    ):
         if timeout <= 0:
             raise ValueError("NCCL operation timeout must be positive")
         if os.environ.get("NCCL_COMM_BLOCKING") not in (None, "0"):
@@ -53,7 +90,7 @@ class WeightBroadcastCommunicator:
         self.timeout = timeout
         # A dead peer on an intra-node P2P/SHM path raises no NCCL error, so a coordinator that
         # knows the publisher is gone cancels the wait instead of letting it run to the deadline.
-        self.cancelled: Callable[[], bool] | None = None
+        self.cancelled = cancelled
         self.next_cancel_check = 0.0
         self.nccl = NCCLLibrary()
         self.comm = ncclComm_t()
@@ -74,12 +111,21 @@ class WeightBroadcastCommunicator:
             ncclComm_t,
             cudaStream_t,
         ]
-        unique_id = group.broadcast_obj(self.nccl.ncclGetUniqueId() if self.rank == 0 else None, src=0)
+        deadline = time.monotonic() + timeout
+        # Rank 0 publishes the NCCL ID; the others poll for it, so a cancelled or timed-out
+        # rendezvous ends instead of blocking in the store until a dead publisher answers.
+        if self.rank == 0:
+            unique_id = self.nccl.ncclGetUniqueId()
+            group.store.set(UNIQUE_ID_KEY, pickle.dumps(unique_id))
+        else:
+            while not group.store.check([UNIQUE_ID_KEY]):
+                self._poll(deadline)
+                time.sleep(0.05)
+            unique_id = pickle.loads(group.store.get(UNIQUE_ID_KEY))
         undef = -(2**31)
         config = _Config(ctypes.sizeof(_Config), 0xCAFEBEEF, 21700, 0, undef, undef, undef, None)
         with torch.cuda.device(self.device):
             try:
-                deadline = time.monotonic() + timeout
                 self._wait_launch(
                     init(ctypes.byref(self.comm), group.world_size, unique_id, self.rank, config), deadline
                 )
@@ -104,7 +150,7 @@ class WeightBroadcastCommunicator:
         if self.cancelled is not None and now >= self.next_cancel_check:
             self.next_cancel_check = now + CANCEL_CHECK_INTERVAL_S
             if self.cancelled():
-                raise RuntimeError("NCCL weight transfer was cancelled: its publisher was replaced")
+                raise RuntimeError("NCCL weight transfer was cancelled: a peer was replaced or lost")
         # Most metadata broadcasts finish in microseconds. Do not impose a
         # scheduler sleep on each one; yield during longer transfers/waits.
         if now >= deadline - self.timeout + 0.001:

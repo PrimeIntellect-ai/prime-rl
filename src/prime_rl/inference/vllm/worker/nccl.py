@@ -1,16 +1,17 @@
 import os
 import pickle
 from functools import partial
-from typing import TYPE_CHECKING, Generator, cast
+from typing import TYPE_CHECKING, Callable, Generator, cast
 
 import torch
+from torch.distributed import PrefixStore
 from torch.nn import Module
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
-from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator
+from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator, connect_store
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -74,16 +75,27 @@ class NCCLWeightBroadcastReceiver:
         device: int | str | torch.device,
         timeout: int,
         recoverable: bool = False,
+        session_id: str = "default",
+        cancelled: Callable[[], bool] | None = None,
     ):
-        logger.info(f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size})")
+        logger.info(
+            f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size}, "
+            f"session={session_id})"
+        )
         disable_nccl_p2p_if_unavailable()
 
-        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
-        self.communicator = (
-            WeightBroadcastCommunicator(pg, device=device, timeout=timeout)
-            if recoverable
-            else PyNcclCommunicator(pg, device=device)
-        )
+        if not recoverable:
+            pg = StatelessProcessGroup.create(
+                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
+            )
+            self.communicator = PyNcclCommunicator(pg, device=device)
+            return
+        store = connect_store(host, port, world_size, timeout, cancelled)
+        if session_id != "default":
+            # An elastic group: the trainer's store outlives every group, each under its session's keys.
+            store = PrefixStore(f"{session_id}/", store)
+        pg = StatelessProcessGroup(rank=rank, world_size=world_size, store=store)
+        self.communicator = WeightBroadcastCommunicator(pg, device=device, timeout=timeout, cancelled=cancelled)
 
     @torch.no_grad()
     def receive_state_dict(self):
@@ -109,14 +121,16 @@ class NCCLWeightUpdateWorker(Worker):
         timeout: int,
         session_id: str = "default",
         recoverable: bool = False,
+        abort_path: str | None = None,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
         Args:
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
+            session_id: The elastic transfer group to join; "default" for the trainer's startup group.
+            abort_path: Stops forming the group once it exists (a peer was lost).
         """
-        del session_id
         if receiver := getattr(self, "nccl_broadcast_receiver", None):
             if not isinstance(receiver.communicator, WeightBroadcastCommunicator):
                 raise RuntimeError("In-place NCCL reconnection requires weight_broadcast.recoverable=true")
@@ -141,6 +155,8 @@ class NCCLWeightUpdateWorker(Worker):
             device=self.device,
             timeout=timeout,
             recoverable=recoverable,
+            session_id=session_id,
+            cancelled=partial(os.path.exists, abort_path) if abort_path is not None else None,
         )
 
     def liveness_probe(self) -> None:

@@ -56,6 +56,7 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.inference_monitor import InferenceMonitor
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
@@ -194,6 +195,7 @@ class Orchestrator:
         # config is present
         self.heart = None
         self.inference_metrics = None
+        self.inference_monitor = None
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
@@ -315,6 +317,11 @@ class Orchestrator:
         t0 = time.perf_counter()
         await self.admin_plane.wait_for_ready(config.model.name)
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
+        if config.inference_monitor is not None:
+            self.inference_monitor = InferenceMonitor(
+                self.admin_plane, config.inference_monitor, served_policy=lambda: self.policy.version
+            )
+            self.inference_monitor.start()
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
         await asyncio.gather(*(env.setup() for env in self.train_envs))
@@ -367,6 +374,8 @@ class Orchestrator:
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
         )
+        # With inference recovery, scheduling waits while no inference server takes requests.
+        self.admin_plane.watch_availability(self.dispatcher.set_inference_available)
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
@@ -400,6 +409,7 @@ class Orchestrator:
             observers=[self.dispatcher],
             ckpt_step=sync_version,
             trainer_recovery=config.admit_replacement_trainers,
+            request_republish=getattr(self.sender, "request_republish", None) if config.inference_monitor else None,
         )
         self.watcher_ready.set()
         if self.eval_source is not None:
@@ -1186,6 +1196,8 @@ class Orchestrator:
             if self.inference_metrics is not None:
                 get_logger().debug("Stopping inference metrics collector")
                 await self.inference_metrics.stop()
+            if self.inference_monitor is not None:
+                await self.inference_monitor.stop()
             if self.clients is not None:
                 await self.clients.aclose()
             if self.admin_plane is not None:

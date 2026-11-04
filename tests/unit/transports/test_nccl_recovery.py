@@ -19,9 +19,13 @@ def _connect(rank, port, pipe, fail_init=False):
     torch.cuda.set_per_process_memory_fraction(0.08, rank)
     group = StatelessProcessGroup.create(host="127.0.0.1", port=port, rank=rank, world_size=2, store_timeout=15)
     if fail_init:
+        import pickle
+
         from vllm.distributed.device_communicators.pynccl_wrapper import NCCLLibrary
 
-        group.broadcast_obj(NCCLLibrary().ncclGetUniqueId(), src=0)
+        from prime_rl.transports.weights.nccl_communicator import UNIQUE_ID_KEY
+
+        group.store.set(UNIQUE_ID_KEY, pickle.dumps(NCCLLibrary().ncclGetUniqueId()))
         pipe.send("before_init")
         pipe.recv()
     return WeightBroadcastCommunicator(group, rank, 5), group

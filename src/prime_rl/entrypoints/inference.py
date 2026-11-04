@@ -1,3 +1,4 @@
+import ctypes
 import json
 import os
 import signal
@@ -179,6 +180,13 @@ def inference_slurm(config: InferenceConfig):
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
 
 
+def die_with_parent() -> None:
+    """Have the kernel SIGTERM this child when its parent dies (Linux ``PR_SET_PDEATHSIG``): a router
+    that outlives a killed inference server would keep its ports, and the restarted server's router
+    could not bind them."""
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)
+
+
 def start_router(config: InferenceConfig) -> subprocess.Popen:
     """Start the vllm-router on ``server.port``, fronting the local engine at ``backend_port``."""
     assert config.router is not None and config.router.type == "vllm-router"
@@ -205,7 +213,11 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
-    return subprocess.Popen(cmd)
+    if config.server.await_policy:
+        # Route only to engines that took the current policy (inference recovery).
+        cmd += ["--health-check-endpoint", "/ready", "--health-check-interval-secs", "2"]
+        cmd += ["--health-failure-threshold", "2", "--health-success-threshold", "1"]
+    return subprocess.Popen(cmd, preexec_fn=die_with_parent if sys.platform == "linux" else None)
 
 
 def inference_local(config: InferenceConfig):

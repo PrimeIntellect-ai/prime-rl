@@ -341,6 +341,15 @@ def train(config: TrainerConfig):
         logger.debug("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
+        while (version := dataloader.republish_requested()) is not None:
+            # Inference lost every server: the returning ones need the policy this trainer holds.
+            if weight_sender is None or version != progress.step - 1:
+                raise RuntimeError(f"Cannot publish policy v{version} again at step {progress.step}")
+            logger.warning(f"Inference lost its servers; publishing policy v{version} again")
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            weight_sender.broadcast(model, step=version)
+            dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
         logger.debug(f"Waited for batch for {format_time(wait_for_batch_time)}")
 

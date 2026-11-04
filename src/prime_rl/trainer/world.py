@@ -47,6 +47,18 @@ def reset_world():
     _WORLD = None
 
 
+def share_from_master(key: str, value: str | None, timeout: float) -> str:
+    """Hand the master's ``value`` to every rank through the c10d store, like ``wait_for_master``:
+    the master may take longer to decide than an NCCL collective's watchdog allows."""
+    store = dist.distributed_c10d._get_default_store()
+    if get_world().is_master:
+        assert value is not None
+        store.set(key, value)
+        return value
+    store.wait([key], timedelta(seconds=timeout))
+    return store.get(key).decode()
+
+
 def wait_for_master(key: str, timeout: float) -> None:
     """A barrier for work only the master does, which can outlast ``dist_timeout_seconds`` (a model
     conversion, waiting for a weight broadcast's receiver). The other ranks wait on the c10d store,

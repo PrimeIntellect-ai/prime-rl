@@ -2,6 +2,7 @@ import asyncio
 import gc
 import os
 import tempfile
+import time
 import uuid
 from argparse import Namespace
 from pathlib import Path
@@ -37,14 +38,55 @@ def models(request: Request) -> OpenAIServingModels:
 
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
-# A failed weight update and a later /resume can reach different API server processes of one
-# server, so the marker of an incomplete update is a file they share, named after the server
-# instance whose ID they inherit through the environment.
+# After the engine core dies, the API server's graceful shutdown can wait forever on requests the
+# dead engine never answers (e.g. a weight update). Exit hard so a supervisor can restart it.
+ENGINE_DEATH_EXIT_GRACE_S = 30.0
+
+
+async def exit_when_engine_dies(client: EngineClient) -> None:
+    while not client.errored:
+        await asyncio.sleep(1.0)
+    logger.error(f"The engine core died; exiting in {ENGINE_DEATH_EXIT_GRACE_S:.0f}s unless shutdown completes")
+    await asyncio.sleep(ENGINE_DEATH_EXIT_GRACE_S)
+    os._exit(1)
+
+
+# Every API server process of one server reports the same instance, readiness and model state: the
+# instance ID is inherited through the environment, and readiness, the policy served, the monitor's
+# lease and the marker of an incomplete update are files, since an update, a probe or a resume
+# reaches only the API process that took the request.
 INSTANCE_ID_ENV = "PRIME_RL_INFERENCE_INSTANCE_ID"
 
 
 def server_file(instance_id: str, kind: str) -> Path:
     return Path("/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()) / f"prime-rl-{instance_id}.{kind}"
+
+
+def write_server_file(path: Path, value: int | float | str) -> None:
+    """Replace the file whole: another API server process may read it at any moment, and an empty
+    file would read as no policy required."""
+    partial = path.with_name(f"{path.name}.{os.getpid()}")
+    partial.write_text(str(value))
+    os.replace(partial, path)
+
+
+def serve_policy(request: Request, version: int | str) -> None:
+    """Record the policy this server now holds."""
+    write_server_file(request.app.state.policy_file, version)
+
+
+def read_policy(path: Path) -> int:
+    try:
+        return int(path.read_text())
+    except (OSError, ValueError):
+        return -1
+
+
+def lease_lapsed(state, now: float) -> bool:
+    try:
+        return now > float(state.lease_file.read_text())
+    except (OSError, ValueError):
+        return False
 
 
 WORKER_EXTENSION_CLS = {
@@ -85,6 +127,7 @@ async def update_weights(request: Request):
         # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
         await client.update_weight_version(str(data["weight_version"]))
         request.app.state.invalid_file.unlink(missing_ok=True)
+        serve_policy(request, data["weight_version"])
     return {"status": "ok"}
 
 
@@ -94,6 +137,7 @@ async def update_weights_from_modelexpress(request: Request):
     client = engine_client(request)
     await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
     await client.update_weight_version(str(data["weight_version"]))
+    serve_policy(request, data["weight_version"])
     return {"status": "ok"}
 
 
@@ -139,7 +183,35 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)
+    serve_policy(raw_request, weight_version)
     return {"status": "ok"}
+
+
+@router.get("/ready")
+async def ready(request: Request, policy: int | None = None, lease: float | None = None):
+    """Whether this server serves a policy the orchestrator delivered (503 while it awaits one, or once
+    its engine core died). A router that health-checks this route skips a replacement server until its
+    first weight update; the orchestrator reads the instance ID to tell a replacement from a server
+    that came back.
+
+    The orchestrator's inference monitor passes the policy inference serves and a lease. A server
+    behind that policy, updated without it while the monitor could not reach it, awaits the next
+    update. One whose lease lapsed takes no requests until the monitor reaches it again. Either way it
+    stops serving a stale policy by itself, without a call from the orchestrator that could fail."""
+    state = request.app.state
+    now = time.time()
+    if lease is not None:
+        write_server_file(state.lease_file, now + lease)
+    # Readiness compares two versions that only grow, the policy held and the newest one required, so
+    # it holds whatever order a probe and a concurrent update on another API process write them in.
+    if policy is not None and read_policy(state.required_file) < policy:
+        write_server_file(state.required_file, policy)
+    awaiting = read_policy(state.policy_file) < read_policy(state.required_file) or lease_lapsed(state, now)
+    engine_dead = engine_client(request).errored
+    return JSONResponse(
+        {"instance_id": state.instance_id, "awaiting_policy": awaiting, "engine_dead": engine_dead},
+        status_code=503 if awaiting or engine_dead else 200,
+    )
 
 
 @router.get("/liveness")
@@ -171,7 +243,7 @@ async def init_broadcaster(request: Request):
         await engine_client(request).collective_rpc(
             "init_broadcaster",
             args=args,
-            kwargs={"recoverable": data["recoverable"]} if "recoverable" in data else {},
+            kwargs={key: data[key] for key in ("recoverable", "abort_path") if key in data},
         )
     return {"status": "ok"}
 
@@ -196,6 +268,10 @@ async def custom_init_app_state(
     state.weight_update_lock = asyncio.Lock()
     state.instance_id = os.environ.setdefault(INSTANCE_ID_ENV, uuid.uuid4().hex)
     state.invalid_file = server_file(state.instance_id, "invalid")
+    state.required_file = server_file(state.instance_id, "required")
+    state.policy_file = server_file(state.instance_id, "policy")
+    state.lease_file = server_file(state.instance_id, "lease")
+    state.engine_watchdog = asyncio.create_task(exit_when_engine_dies(engine_client), name="engine-watchdog")
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -272,7 +348,11 @@ def server(config: InferenceConfig):
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
     instance_id = os.environ[INSTANCE_ID_ENV] = uuid.uuid4().hex
-    atexit.register(server_file(instance_id, "invalid").unlink, missing_ok=True)
+    if config.server.await_policy:
+        # Take no requests before the first weight update.
+        write_server_file(server_file(instance_id, "required"), 0)
+    for kind in ("required", "policy", "lease", "invalid"):
+        atexit.register(server_file(instance_id, kind).unlink, missing_ok=True)
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

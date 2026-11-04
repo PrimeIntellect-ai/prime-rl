@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -104,6 +106,46 @@ class InferenceClient:
         await asyncio.gather(*(finish_session(session_id) for session_id in session_ids))
 
 
+@dataclass(eq=False)
+class Engine:
+    """One inference server of the admin plane. With inference recovery a server is ``live``, ``lost``
+    (left out of weight updates until it answers again) or ``joining`` (answers again and takes part
+    in the next weight update, but takes requests only once that update succeeded)."""
+
+    client: AsyncClient
+    role: str | None = None
+    status: Literal["live", "lost", "joining"] = "live"
+    instance_id: str | None = None
+    """The server process's ID from ``/ready``; a new one means the server was replaced."""
+    failed_probes: int = 0
+    calls: set[asyncio.Task] = field(default_factory=set)
+    """Admin calls in flight, cancelled when the server is lost."""
+    losses: int = 0
+    """How often the server was lost. A call it was lost during sees this change even if the server
+    already rejoins (e.g. a replacement process answered the next probe)."""
+
+    @property
+    def url(self) -> str:
+        return str(self.client.base_url)
+
+
+def loss_counts(engines: list[Engine]) -> list[tuple[Engine, int]]:
+    return [(engine, engine.losses) for engine in engines]
+
+
+def lost_since(counts: list[tuple[Engine, int]]) -> list[Engine]:
+    """Servers lost since ``counts`` were taken, including those that already rejoin."""
+    return [engine for engine, losses in counts if engine.status == "lost" or engine.losses != losses]
+
+
+class EngineLost(Exception):
+    """Inference servers were lost during a weight update that needs every server taking part."""
+
+    def __init__(self, engines: list[Engine]):
+        super().__init__(f"Lost inference servers {', '.join(engine.url for engine in engines)} during a weight update")
+        self.engines = engines
+
+
 class AdminPlane:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
@@ -134,6 +176,133 @@ class AdminPlane:
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._modelexpress_lock = asyncio.Lock()
+        self._engines: list[Engine] = []
+        self.abort_transfer: Callable[[], None] | None = None
+        """Stops the transfer in flight when a server is lost, if the transport needs every server."""
+        self.on_availability: Callable[[bool], None] | None = None
+        """Told whether any server takes requests, whenever that changes."""
+        self.loss_verdict_s: float | None = None
+        """With inference recovery: how long a failed admin call waits for the monitor to judge its
+        server, so the failure of a dying server counts as its loss rather than failing the update."""
+        self.losses = 0
+
+    @property
+    def engines(self) -> list[Engine]:
+        """One ``Engine`` per admin client, in client order (rebuilt if the clients are replaced)."""
+        if [engine.client for engine in self._engines] != self.clients:
+            roles = self.roles or [None] * len(self.clients)
+            self._engines = [Engine(client, role) for client, role in zip(self.clients, roles, strict=True)]
+        return self._engines
+
+    def members(self) -> list[Engine]:
+        """Servers that take part in weight updates."""
+        return [engine for engine in self.engines if engine.status != "lost"]
+
+    @property
+    def available(self) -> bool:
+        return any(engine.status == "live" for engine in self.engines)
+
+    def watch_availability(self, callback: Callable[[bool], None]) -> None:
+        """Tell ``callback`` whenever it changes whether any server takes requests, and at once if none
+        does: the monitor may have lost every server before the callback was attached."""
+        self.on_availability = callback
+        if not self.available:
+            callback(False)
+
+    def mark_lost(self, engine: Engine, reason: str) -> None:
+        """Leave a server out of weight updates and cancel its admin calls in flight."""
+        if engine.status == "lost":
+            return
+        was_available = self.available
+        engine.status = "lost"
+        engine.failed_probes = 0
+        engine.losses += 1
+        self.losses += 1
+        get_logger().warning(f"Lost inference server {engine.url} ({reason}); training continues without it")
+        for call in list(engine.calls):
+            call.cancel()
+        if self.abort_transfer is not None:
+            self.abort_transfer()
+        if was_available and not self.available and self.on_availability is not None:
+            self.on_availability(False)
+
+    def mark_joining(self, engine: Engine) -> None:
+        """Let a server that answers again take part in the next weight update."""
+        engine.status = "joining"
+        get_logger().info(f"Inference server {engine.url} is back; it rejoins at the next weight update")
+
+    def mark_joined(self, engines: list[Engine]) -> None:
+        """Joining servers that took a complete weight update take requests again."""
+        was_available = self.available
+        for engine in engines:
+            if engine.status == "joining":
+                engine.status = "live"
+                get_logger().info(f"Inference server {engine.url} rejoined and takes requests again")
+        if not was_available and self.available and self.on_availability is not None:
+            self.on_availability(True)
+
+    async def call(self, engine: Engine, request: Callable[[], Awaitable[None]], collective: bool = False) -> None:
+        """Run an admin call to one server, cancelled if the server is lost. A failed call first waits
+        for the monitor's verdict on its server (``loss_verdict_s``): the failure of a dying server
+        must not pass as a plain error. In a ``collective`` call, where one server's loss fails every
+        server's call, any loss ends the wait, and any failure aborts the transfer in progress."""
+        task = asyncio.current_task()
+        engine.calls.add(task)
+        own_losses, losses = engine.losses, self.losses
+        try:
+            await request()
+        except Exception:
+            if self.loss_verdict_s is not None:
+                deadline = time.monotonic() + self.loss_verdict_s
+                while (
+                    engine.losses == own_losses
+                    and not (collective and self.losses != losses)
+                    and time.monotonic() < deadline
+                ):
+                    await asyncio.sleep(0.5)
+            if collective and self.abort_transfer is not None:
+                # Also without a loss: the publisher and the other servers would wait for this one
+                # until their deadlines.
+                self.abort_transfer()
+            raise
+        finally:
+            engine.calls.discard(task)
+
+    async def _post_engines(
+        self, engines: list[Engine], path: str, collective: bool = False, **kwargs
+    ) -> tuple[list[float], list[Engine]]:
+        """POST ``path`` to every server concurrently (``collective``: see ``call``). Returns the request
+        times and the servers lost meanwhile (their calls are cancelled); raises another failure once
+        every request finished."""
+
+        async def post(engine: Engine) -> float:
+            start = time.perf_counter()
+            await self.call(engine, lambda: _admin_post(engine.client, path, **kwargs), collective)
+            return time.perf_counter() - start
+
+        counts = loss_counts(engines)
+        results = await asyncio.gather(*(post(engine) for engine in engines), return_exceptions=True)
+        lost = lost_since(counts)
+        times = []
+        for engine, result in zip(engines, results, strict=True):
+            if isinstance(result, BaseException):
+                if engine not in lost:
+                    raise result
+            else:
+                times.append(result)
+        return times, lost
+
+    async def _pause_members(self, engines: list[Engine], step: int) -> list[float]:
+        """Pause servers, prefill before decode (see ``_pause_engines``)."""
+        get_logger().debug(f"Pausing inference engines to update weights to policy v{step}")
+        pause_times: list[float] = []
+        for group in (
+            [engine for engine in engines if engine.role == "prefill"],
+            [engine for engine in engines if engine.role != "prefill"],
+        ):
+            times, _ = await self._post_engines(group, "/pause", params={"mode": "keep", "clear_cache": "false"})
+            pause_times += times
+        return pause_times
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -198,29 +367,108 @@ class AdminPlane:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
         abort_path: Path | None = None,
+        before_transfer: Callable[[list[Engine]], Awaitable[None]] | None = None,
+        all_or_nothing: bool = False,
+        engines: list[Engine] | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport. A recoverable
-        NCCL transfer stops waiting on its publisher once ``abort_path`` exists."""
+        """Update every member server through its configured weight transport. A recoverable
+        NCCL transfer stops waiting on its publisher once ``abort_path`` exists.
+
+        ``on_paused`` acknowledges the offer once the members are paused and ``before_transfer``
+        prepares the paused members (e.g. forms their transfer group). A server lost meanwhile is left out; with
+        ``all_or_nothing`` (one collective transfer) the transfer is stopped and ``EngineLost`` raised,
+        leaving the others paused for a retry. ``engines`` limits the update to some members (e.g.
+        servers catching up)."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
+        engines = self.members() if engines is None else engines
+        counts = loss_counts(engines)
+        pause_times = await self._pause_members(engines, step)
+        engines = [engine for engine in engines if engine not in lost_since(counts)]
         if on_paused is not None:
             on_paused()
-        transfer_times = await _post_all(
-            self.clients,
-            "/update_weights",
-            json={
-                "weight_dir": weight_dir_posix,
-                "weight_version": step,
-                **({"abort_path": abort_path.as_posix()} if abort_path is not None else {}),
-            },
-            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            retry=False,
-        )
+        if all_or_nothing and abort_path is not None:
+            self.abort_transfer = abort_path.touch
+        try:
+            if before_transfer is not None:
+                await before_transfer(engines)
+            transfer_times, lost = await self._post_engines(
+                engines,
+                "/update_weights",
+                collective=all_or_nothing,
+                json={
+                    "weight_dir": weight_dir_posix,
+                    "weight_version": step,
+                    **({"abort_path": abort_path.as_posix()} if abort_path is not None else {}),
+                },
+                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                retry=False,
+            )
+        except Exception:
+            # The others' transfer fails once a lost server's abort stopped it.
+            lost = [engine for engine in engines if engine in lost_since(counts)]
+            if not (all_or_nothing and lost):
+                raise
+            transfer_times = []
+        finally:
+            self.abort_transfer = None
+        if lost and all_or_nothing:
+            raise EngineLost(lost)
         # A failed transfer may have overwritten only part of the model. Keep all
         # engines paused until a complete replacement has succeeded everywhere.
-        resume_times = await _resume_engines(self.clients)
+        engines = [engine for engine in engines if engine not in lost_since(counts)]
+        resume_times, _ = await self._post_engines(engines, "/resume")
+        get_logger().debug("All inference engines resumed")
+        self.mark_joined(engines)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
+
+    async def form_nccl_group(
+        self,
+        engines: list[Engine],
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        gpus_per_server: int,
+        session_id: str,
+        abort_path: Path,
+    ) -> None:
+        """Join ``engines`` to a fresh NCCL transfer group of ``session_id``, ranked in their order after
+        the trainer. Raises ``EngineLost`` if a server is lost before the group formed."""
+        world_size = len(engines) * gpus_per_server
+        get_logger().info(f"Forming NCCL transfer group {session_id} with {len(engines)} servers ({world_size} GPUs)")
+
+        async def join(engine: Engine, rank_offset: int) -> None:
+            response = await engine.client.post(
+                "/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": world_size,
+                    "timeout": timeout,
+                    "session_id": session_id,
+                    "recoverable": True,
+                    "abort_path": abort_path.as_posix(),
+                },
+                timeout=httpx.Timeout(connect=10.0, read=timeout, write=60.0, pool=10.0),
+            )
+            response.raise_for_status()
+
+        counts = loss_counts(engines)
+        results = await asyncio.gather(
+            *(
+                self.call(engine, partial(join, engine, index * gpus_per_server), collective=True)
+                for index, engine in enumerate(engines)
+            ),
+            return_exceptions=True,
+        )
+        lost = lost_since(counts)
+        if lost:
+            raise EngineLost(lost)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def update_modelexpress_weights(
         self,
@@ -572,7 +820,9 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path, step: int) -> None:
+async def load_lora_adapter(
+    admin_plane: AdminPlane, lora_name: str, lora_path: Path, step: int, engines: list[Engine] | None = None
+) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
@@ -601,7 +851,18 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
         )
         response.raise_for_status()
 
-    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
+    # A server lost meanwhile is left out: it loads the adapter of the update it rejoins at.
+    engines = admin_plane.members() if engines is None else engines
+    counts = loss_counts(engines)
+    results = await asyncio.gather(
+        *[admin_plane.call(engine, partial(_load_lora_adapter, engine.client)) for engine in engines],
+        return_exceptions=True,
+    )
+    lost = lost_since(counts)
+    for engine, result in zip(engines, results, strict=True):
+        if isinstance(result, BaseException) and engine not in lost:
+            raise result
+    admin_plane.mark_joined([engine for engine in engines if engine not in lost])
 
 
 async def init_nixl_broadcast(

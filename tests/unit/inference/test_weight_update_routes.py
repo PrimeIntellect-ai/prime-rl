@@ -1,6 +1,7 @@
-"""The vLLM server's guard against resuming generation on a partially updated model."""
+"""State that the API server processes of one vLLM server share."""
 
 import asyncio
+import threading
 import uuid
 from types import SimpleNamespace
 
@@ -40,12 +41,14 @@ def test_a_failed_update_blocks_resume_on_every_api_process():
     """/update_weights and /resume can reach different API server processes of one server: none of
     them resumes before a complete update."""
     instance_id = uuid.uuid4().hex
-    marker = server.server_file(instance_id, "invalid")
+    marker, policy = (server.server_file(instance_id, kind) for kind in ("invalid", "policy"))
 
     async def run():
         engine = Engine()
         first, second = (
-            SimpleNamespace(engine_client=engine, weight_update_lock=asyncio.Lock(), invalid_file=marker)
+            SimpleNamespace(
+                engine_client=engine, weight_update_lock=asyncio.Lock(), invalid_file=marker, policy_file=policy
+            )
             for _ in range(2)
         )
         update = {"weight_dir": "/w", "weight_version": 1}
@@ -62,3 +65,26 @@ def test_a_failed_update_blocks_resume_on_every_api_process():
         asyncio.run(run())
     finally:
         marker.unlink(missing_ok=True)
+        policy.unlink(missing_ok=True)
+
+
+def test_a_reader_never_sees_a_partly_written_server_file(tmp_path):
+    """Another API server process reads readiness files at any moment: a torn required policy would read
+    as none required and take a server without a policy into service."""
+    path = tmp_path / "server.required"
+    server.write_server_file(path, 0)
+    done = threading.Event()
+    torn = []
+
+    def read() -> None:
+        while not done.is_set():
+            if server.read_policy(path) == -1:
+                torn.append(path)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    for version in range(1, 5000):
+        server.write_server_file(path, version)
+    done.set()
+    reader.join()
+    assert not torn and server.read_policy(path) == 4999

@@ -71,6 +71,19 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     reconnect after a failed transfer. This does not automatically restart trainers or
     reconcile policy versions. Both publisher and receiver must use the same setting."""
 
+    elastic: bool = False
+    """Form the transfer group per update around the inference servers taking part, instead of once
+    at startup for ``inference_world_size`` workers. The orchestrator sends each group's size with
+    its acknowledgement; an update a lost server interrupted is sent again without it, and a server
+    that returns joins the next update. Set by ``[inference_recovery]``; requires ``recoverable``.
+    Both publisher and receiver must use the same setting."""
+
+    @model_validator(mode="after")
+    def validate_elastic(self):
+        if self.elastic and not self.recoverable:
+            raise ValueError("weight_broadcast.elastic requires weight_broadcast.recoverable = true")
+        return self
+
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"
@@ -158,6 +171,34 @@ class TrainerRecoveryConfig(BaseConfig):
 
     max_restarts: int = Field(3, ge=1)
     """Times the ``rl`` launcher replaces a failed trainer group (``torchrun --max-restarts``)."""
+
+
+class InferenceRecoveryConfig(BaseConfig):
+    """Keep the orchestrator, the trainer and the other inference servers running when an inference
+    server fails.
+
+    The ``rl`` launcher restarts a failed server; the orchestrator's inference monitor
+    (``orchestrator.inference_monitor``) leaves it out of weight updates until it answers again."""
+
+    max_restarts: int = Field(3, ge=1)
+    """Times the ``rl`` launcher restarts each failed inference server."""
+
+
+class InferenceMonitorConfig(BaseConfig):
+    """Probe every policy inference server's ``/ready``. A server that stops answering is left out of
+    weight updates; the rollouts it was serving fail and the router sends new ones elsewhere. When a
+    server answers again (restarted, or recovered) it rejoins at the next weight update, and takes
+    requests only once that update gave it the current policy."""
+
+    probe_interval: float = Field(2.0, gt=0)
+    """Seconds between the orchestrator's ``/ready`` probes of each server."""
+
+    probe_timeout: float = Field(5.0, gt=0)
+    """Seconds a ``/ready`` probe may take before it counts as failed."""
+
+    lost_after: int = Field(5, ge=1)
+    """Consecutive failed probes after which a server counts as lost. Its in-flight weight update is
+    cancelled."""
 
 
 class ResumeConfig(BaseConfig):

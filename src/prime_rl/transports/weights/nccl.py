@@ -1,4 +1,7 @@
+import asyncio
+import os
 import pickle
+from datetime import timedelta
 from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
@@ -7,15 +10,25 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
+from torch.distributed import PrefixStore, TCPStore
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import Engine, EngineLost
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.vlm import get_layer_prefix
-from prime_rl.transports.weights.base import ABORTED_MARKER, WeightReceiver, WeightSender
+from prime_rl.trainer.world import wait_for_master
+from prime_rl.transports.weights.base import (
+    ABORTED_MARKER,
+    RECEIVED_MARKER,
+    BroadcastAborted,
+    WeightReceiver,
+    WeightSender,
+    write_marker,
+)
 from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
@@ -173,37 +186,98 @@ class NCCLBroadcaster:
         device: int | str | torch.device,
         timeout: int,
         recoverable: bool = False,
+        elastic: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = torch.bfloat16
+        self.device = device
+        self.timeout = timeout
+        self.elastic = elastic
+        self.session: str | None = None
+        """The elastic transfer group the communicator belongs to."""
+        self.communicator: PyNcclCommunicator | WeightBroadcastCommunicator | None = None
 
-        if self.world.is_master:
-            disable_nccl_p2p_if_unavailable()
-            # Trainer is on rank 0 in process group with all inference GPUs
-            pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
-            )
-            self.communicator = (
-                WeightBroadcastCommunicator(pg, device=device, timeout=timeout)
-                if recoverable
-                else PyNcclCommunicator(pg, device=device)
-            )
-            self.logger.debug("Initialized NCCL broadcast on master rank")
-        else:
+        if not self.world.is_master:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
+            return
+        disable_nccl_p2p_if_unavailable()
+        if elastic:
+            # Inference workers dial this store for every group the consumer forms; each group's keys
+            # live under its session, so a worker never reads a previous group's NCCL ID.
+            self.store = TCPStore(
+                host_name=host,
+                port=port,
+                is_master=True,
+                timeout=timedelta(seconds=timeout),
+                wait_for_workers=False,
+                use_libuv=False,
+            )
+            self.logger.debug("Initialized the elastic NCCL broadcast store on master rank")
+            return
+        # Trainer is on rank 0 in process group with all inference GPUs
+        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
+        self.communicator = (
+            WeightBroadcastCommunicator(pg, device=device, timeout=timeout)
+            if recoverable
+            else PyNcclCommunicator(pg, device=device)
+        )
+        self.logger.debug("Initialized NCCL broadcast on master rank")
+
+    def join_group(self, session: str, world_size: int, cancelled: Callable[[], bool]) -> None:
+        """Form the elastic group ``session`` of the trainer and ``world_size - 1`` inference workers,
+        unless the communicator already belongs to it."""
+        if self.session == session and self.communicator is not None and self.communicator.comm:
+            return
+        if self.communicator is not None:
+            self.communicator.close()
+        self.communicator = None
+        self.session = None
+        self.logger.info(f"Forming NCCL transfer group {session} with {world_size - 1} inference workers")
+        pg = StatelessProcessGroup(rank=0, world_size=world_size, store=PrefixStore(f"{session}/", self.store))
+        self.communicator = WeightBroadcastCommunicator(
+            pg, device=self.device, timeout=self.timeout, cancelled=cancelled
+        )
+        self.session = session
+
+    def join(self, ack: dict, cancelled: Callable[[], bool]) -> bool:
+        """Form the elastic group ``ack`` names (master only), giving up once ``cancelled``. Returns
+        whether the group formed."""
+        try:
+            self.join_group(ack["session"], ack["world_size"], cancelled)
+        except Exception as error:
+            self.logger.warning(f"Stopped sending weights to inference: {error!r}")
+            return False
+        self.communicator.cancelled = cancelled
+        return True
 
     @torch.no_grad()
-    def send(self, model: nn.Module) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL."""
+    def send(self, model: nn.Module, joined: bool = True) -> bool:
+        """Broadcast the state dict of a model into the inference pool using NCCL. With an elastic
+        group (formed by ``join`` beforehand, ``joined``), the master stops sending once a send fails
+        (e.g. an inference server was lost); the other ranks' gathers go on, and ``send`` returns False."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         chunked_ops = get_chunked_conversion_ops(model, state_dict)
         num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())
+        stopped = not joined
+
+        def master_sends(send: Callable[[], None]) -> None:
+            nonlocal stopped
+            if not self.elastic:
+                send()
+                return
+            if stopped:
+                return
+            try:
+                send()
+            except Exception as error:
+                stopped = True
+                self.logger.warning(f"Stopped sending weights to inference: {error!r}")
 
         if self.world.is_master:
-            broadcast_integer(num_state_dict_to_send, self.communicator)
+            master_sends(lambda: broadcast_integer(num_state_dict_to_send, self.communicator))
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
@@ -212,7 +286,7 @@ class NCCLBroadcaster:
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
+                master_sends(partial(broadcast_state_dict, layer_state_dict, self.communicator))
             del layer_state_dict
             for key, value in chunked_weights.items():
                 op = chunked_ops[key]
@@ -221,8 +295,11 @@ class NCCLBroadcaster:
                 for packet in op.iter_prime_to_hf(value, resolve_rows):
                     if self.world.is_master:
                         assert packet is not None
-                        broadcast_state_dict(packet, self.communicator)
+                        master_sends(partial(broadcast_state_dict, packet, self.communicator))
                     del packet
+        if self.elastic and self.communicator is not None:
+            self.communicator.cancelled = None
+        return not stopped
 
 
 class NCCLWeightSender(WeightSender):
@@ -243,11 +320,27 @@ class NCCLWeightSender(WeightSender):
             device,
             config.timeout,
             config.recoverable,
+            config.elastic,
         )
+        self.confirms_delivery = config.elastic
+        self.joins = 0
 
     @torch.no_grad()
-    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
-        self.nccl_broadcast_sender.send(model)
+    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> bool:
+        if not self.confirms_delivery:
+            return self.nccl_broadcast_sender.send(model)
+        joined = True
+        if self.world.is_master:
+            joined = self.nccl_broadcast_sender.join(self.ack, partial(os.path.exists, step_dir / ABORTED_MARKER))
+        # Forming the group can outlast the trainer's collective timeout, so the other ranks wait for
+        # it on the store, not in the gathers of ``send``, and longer than the group's own deadline.
+        self.joins += 1
+        wait_for_master(f"weight_broadcast/join/{self.joins}", 2 * self.timeout)
+        return self.nccl_broadcast_sender.send(model, joined)
+
+
+class NoServerLeft(Exception):
+    """Every server taking part in an update was lost before its transfer group formed."""
 
 
 class NCCLWeightReceiver(WeightReceiver):
@@ -256,7 +349,17 @@ class NCCLWeightReceiver(WeightReceiver):
     trainer enter the collective, so the handshake can never race a stale
     marker."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.group: list[tuple[Engine, int]] | None = None
+        """The servers of the current elastic transfer group, in rank order, each with its loss count when
+        the group formed; None until one forms."""
+        self.generation = 0
+
     async def initialize(self) -> None:
+        if self.config.elastic:
+            # Elastic groups form per update, around the servers taking part.
+            return
         await self.admin_plane.initialize_nccl(
             host=self.config.host,
             port=self.config.port,
@@ -270,14 +373,82 @@ class NCCLWeightReceiver(WeightReceiver):
     reconnect_retryable = False
 
     async def reconnect(self) -> None:
+        if self.config.elastic:
+            # The replacement trainer joins the group the next update forms.
+            self.group = None
+            return
         # Each worker aborts its communicator with the replaced trainer and joins a fresh one.
         await self.initialize()
 
     async def receive(self, step: int) -> None:
-        await self.admin_plane.update_weights(
-            self.step_dir(step),
-            transport="nccl",
-            step=step,
-            on_paused=lambda: self._ack(step),
-            abort_path=self.step_dir(step) / ABORTED_MARKER,
-        )
+        if not self.config.elastic:
+            await self.admin_plane.update_weights(
+                self.step_dir(step),
+                transport="nccl",
+                step=step,
+                on_paused=lambda: self._ack(step),
+                abort_path=self.step_dir(step) / ABORTED_MARKER,
+            )
+            return
+        while True:
+            attempt = self.offered_attempt(step)
+            try:
+                await self._receive_elastic(step, attempt)
+                return
+            except EngineLost as error:
+                # The other servers stopped with part of v{step}; the trainer offers it again.
+                self.group = None
+                self.logger.warning(f"{error}; receiving policy v{step} again without them")
+                await self.wait_for_new_offer(step, attempt)
+
+    async def _receive_elastic(self, step: int, attempt: str) -> None:
+        """Pause the servers taking part, acknowledge with the group they form (re-formed if the
+        servers changed), receive, and confirm delivery to the trainer."""
+        step_dir = self.step_dir(step)
+        abort_path = step_dir / ABORTED_MARKER
+        gpus_per_server = self.config.inference_world_size // len(self.admin_plane.engines)
+
+        async def form_group(engines: list[Engine]) -> None:
+            if not engines:
+                # Not acknowledged yet: a group of the trainer alone would confirm a version no
+                # server holds.
+                raise NoServerLeft
+            # A server lost since the group formed runs no communicator of it, even once it is back.
+            group = [(engine, engine.losses) for engine in engines]
+            reform = group != self.group
+            if reform:
+                self.generation += 1
+                self.group = None
+            session = f"g{self.generation}"
+            self._ack(step, attempt=attempt, session=session, world_size=1 + len(engines) * gpus_per_server)
+            if reform:
+                await self.admin_plane.form_nccl_group(
+                    engines,
+                    host=self.config.host,
+                    port=self.config.port,
+                    timeout=self.config.timeout,
+                    gpus_per_server=gpus_per_server,
+                    session_id=session,
+                    abort_path=abort_path,
+                )
+                self.group = group
+
+        while True:
+            while not self.admin_plane.members():
+                if self.aborted.is_set():
+                    raise BroadcastAborted(f"Stopped waiting for inference servers to receive v{step}")
+                await asyncio.sleep(1.0)
+            try:
+                await self.admin_plane.update_weights(
+                    step_dir,
+                    transport="nccl",
+                    step=step,
+                    abort_path=abort_path,
+                    before_transfer=form_group,
+                    all_or_nothing=True,
+                )
+            except NoServerLeft:
+                # Every server was lost while pausing: receive the offer once one is back.
+                continue
+            break
+        write_marker(step_dir / RECEIVED_MARKER, attempt)
