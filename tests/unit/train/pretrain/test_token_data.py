@@ -1,11 +1,13 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards
+from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, warn_if_no_document_separator
 from prime_rl.trainer.world import reset_world
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
@@ -133,3 +135,22 @@ def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders
     windows += [token for _ in range(6) for token in first_tokens(next(batches), config.seq_len)]
     reset_world()
     assert windows == expected
+
+
+def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):
+    """Both folders start with an empty file and an empty document; only the one whose first real document has no
+    separator warns."""
+    eos = 1
+    for name, document in (("separated", [5, 6, eos]), ("run-together", [5, 6, 7])):
+        folder = tmp_path / name
+        folder.mkdir()
+        for file, documents in (("00.ds", []), ("01.ds", [[], document])):
+            np.array([token for document in documents for token in document], dtype="<u4").tofile(folder / file)
+            np.cumsum([len(document) for document in documents], dtype="<u8").tofile(folder / f"{file}.index")
+            (folder / f"{file}.metadata").write_text("tokenizer|4\n")
+    warnings = []
+    monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    tokenizer = SimpleNamespace(all_special_ids=[eos], bos_token_id=None, decode=str)
+    warn_if_no_document_separator(TokenShards([tmp_path / "separated", tmp_path / "run-together"]), tokenizer)
+    assert len(warnings) == 1
+    assert "run-together" in warnings[0]

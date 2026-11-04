@@ -186,15 +186,22 @@ class TokenDataset(StatefulIterableDataset):
 
 
 def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> None:
-    """Warn when the first document of a folder neither ends with a special token nor starts with BOS: prime-rl
-    reads documents as they are, so shards tokenized without a separator run their documents together."""
-    first_files = {}
+    """Warn when the first non-empty document of a folder neither ends with a special token nor starts with BOS:
+    prime-rl reads documents as they are, so shards tokenized without a separator run their documents together."""
+    first_documents = {}
     for index, file in enumerate(shards.files):
-        first_files.setdefault(file.parent, index)
-    special_ids = set(tokenizer.all_special_ids)
-    for folder, index in first_files.items():
+        # Empty files and empty documents carry no separator to check.
+        if file.parent in first_documents or shards.starts[index + 1] == shards.starts[index]:
+            continue
         tokens, doc_ends = shards.open(index)
-        document = tokens[: int(doc_ends[0])]
+        begin = 0
+        for end in doc_ends:
+            if end > begin:
+                break
+            begin = end
+        first_documents[file.parent] = tokens[int(begin) : int(end)]
+    special_ids = set(tokenizer.all_special_ids)
+    for folder, document in first_documents.items():
         if int(document[-1]) in special_ids or int(document[0]) == tokenizer.bos_token_id:
             continue
         get_logger().warning(
