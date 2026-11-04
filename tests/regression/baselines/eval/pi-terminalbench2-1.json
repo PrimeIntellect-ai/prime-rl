@@ -1,4 +1,7 @@
 {
+  "tolerance": {
+    "error_rate": 0.1
+  },
   "date": "2026-11-04",
   "source": "https://github.com/PrimeIntellect-ai/prime-rl/actions/runs/41763261279",
   "commit": "791ba2d2922694b0855466986ec592c85854e85b",

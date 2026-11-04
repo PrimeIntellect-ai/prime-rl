@@ -112,6 +112,9 @@ def collect(run_dir: Path, repeat: int, wall_s: float | None) -> dict:
 def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
     """Render the comparison table against the baseline. Returns (lines, regressed)."""
     base = baseline["results"]
+    # A baseline can widen a metric's tolerance, e.g. for an eval whose errors are rare
+    # infra events the five baseline repeats under-sample.
+    min_tol = baseline.get("tolerance", {})
     n = len(base)
     lines = [
         "| Metric | Tonight | Baseline mean ± std | Δ | Tolerance | Status |",
@@ -129,7 +132,12 @@ def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
         if m.higher_is_better is None:
             tol, status = None, "–"
         else:
-            tol = max(K_SIGMA * base_std * math.sqrt(1 + 1 / n), m.floor_abs, m.floor_rel * abs(base_mean))
+            tol = max(
+                K_SIGMA * base_std * math.sqrt(1 + 1 / n),
+                m.floor_abs,
+                m.floor_rel * abs(base_mean),
+                min_tol.get(m.key, 0.0),
+            )
             worse = -delta if m.higher_is_better else delta
             if worse > tol:
                 status, regressed = "❌", True
@@ -219,7 +227,7 @@ def summarize(
             f"### {verdict}",
             "",
             f"Baseline: {len(baseline['results'])} repeats from [{baseline['date']}]({baseline['source']})."
-            f" Tolerance: max({K_SIGMA:g}σ of a single run, metric floor).",
+            f" Tolerance: max({K_SIGMA:g}σ of a single run, metric floor, baseline minimum).",
             "",
             *table,
             "",
@@ -296,6 +304,8 @@ def main() -> None:
         if len(results) < 2:
             raise SystemExit(f"a baseline needs 2+ results to measure the spread, got {len(results)}")
         baseline = make_baseline(results)
+        if args.out.exists() and (tolerance := json.loads(args.out.read_text()).get("tolerance")):
+            baseline = {"tolerance": tolerance, **baseline}
         args.out.write_text(json.dumps(baseline, indent=2) + "\n")
         args.report.write_text(report(baseline))
         return
