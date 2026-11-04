@@ -396,6 +396,68 @@ class CheckpointIndexMap:
         self.checksum_plan = self.running = self.fused = None
         return self.fp8
 
+    @torch.no_grad()
+    def match_boot(self, boot_rows: Iterable[tuple[str, int, torch.Tensor]]) -> int:
+        """Point every write at where the params hold its block, from the boot checkpoint's ``row_ranges`` rows
+        (``(name, begin, rows)`` on the params' device) while the params still hold them. Kernel processing after
+        loading can move blocks within a param (FlashInfer CUTLASS swaps the gate and up halves of fused expert
+        weights); a write whose block is at another write's place in the same param takes that place. Raises if a
+        block is nowhere. Before ``fp8_layout``; returns how many writes moved."""
+        groups: dict[tuple[int, int, int], list[tuple[str, int]]] = defaultdict(list)
+        for name, writes in self.records.items():
+            for k, (_, rows, _, cols, index, *_) in enumerate(writes):
+                groups[(index, rows, cols)].append((name, k))
+        hashes: dict[tuple[int, int, int], dict[int, list[tuple[str, int]]]] = {}
+        moves: dict[tuple[str, int], tuple[str, int]] = {}
+        taken: set[tuple[str, int]] = set()
+        for name, begin, rows in boot_rows:
+            sources = {}
+            for k, (row0, num_rows, col0, cols, index, *_) in enumerate(self.records[name]):
+                dtype = self.params[index].dtype
+                if dtype not in sources:
+                    sources[dtype] = _boot_bits(rows, dtype)
+                expected = [bits[row0 - begin : row0 - begin + num_rows, col0 : col0 + cols] for bits in sources[dtype]]
+                if any(torch.equal(block, self._live(name, k)) for block in expected):
+                    continue
+                group = (index, num_rows, cols)
+                if group not in hashes:
+                    hashes[group] = defaultdict(list)
+                    for slot in groups[group]:
+                        hashes[group][_block_hash(self._live(*slot))].append(slot)
+                found = [
+                    slot
+                    for block in expected
+                    for slot in hashes[group].get(_block_hash(block), ())
+                    if slot not in taken and torch.equal(block, self._live(*slot))
+                ]
+                if not found:
+                    raise NotImplementedError(
+                        f"Sparse weight deltas cannot patch {name}: the engine's {self.param_names[index]} does not "
+                        "hold the boot checkpoint's block of it anywhere a write of the index map goes"
+                    )
+                moves[(name, k)] = found[0]
+                taken.add(found[0])
+        # The moved writes trade places among themselves; taking an unmoved write's place would put two writes there
+        if taken != set(moves):
+            raise NotImplementedError(
+                f"Sparse weight deltas cannot patch {sorted({name for name, _ in moves})[:8]}: the engine's params "
+                "hold their blocks in a layout that is not a permutation of the index map's writes"
+            )
+        places = {slot: (self.records[slot[0]][slot[1]][4:], self.maps.get(slot)) for slot in moves}
+        for (name, k), slot in moves.items():
+            place, tables = places[slot]
+            self.records[name][k] = (*self.records[name][k][:4], *place)
+            self.maps.pop((name, k), None)
+            if tables is not None:
+                self.maps[(name, k)] = tables
+        self.map_cache = self.checksum_plan = self.running = self.fused = None
+        return len(moves)
+
+    def _live(self, name: str, k: int) -> torch.Tensor:
+        """The raw bits the params hold at write ``k`` of ``name``, ``[rows, cols]``."""
+        index = self.records[name][k][4]
+        return as_bits(self.params[index].data).view(-1)[self._targets(name, k)]
+
     def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
         """The raw bits of one write of a checkpoint block into param ``index``."""
         return as_bits(self.params[index].data).view(-1).as_strided((rows, cols), tuple(strides), offset)
@@ -494,7 +556,7 @@ class CheckpointIndexMap:
             if name.endswith("_scale_inv"):
                 continue  # scales are set with their weights
             begin, end = min(write[0] for write in writes), max(write[0] + write[1] for write in writes)
-            if name in self.fp8:
+            if any(self.params[write[4]].dtype == torch.float8_e4m3fn for write in writes):
                 num_rows = self.numel[name] // self.num_cols[name]
                 begin, end = begin // FP8_BLOCK[0] * FP8_BLOCK[0], min(-(-end // FP8_BLOCK[0]) * FP8_BLOCK[0], num_rows)
             ranges[name] = (begin, end)
@@ -700,6 +762,20 @@ def _same_writes(a: list[tuple], b: list[tuple]) -> bool:
         return all(s is t if s is None or t is None else torch.equal(s, t) for s, t in zip(x, y))
 
     return len(a) == len(b) and all(x[:8] == y[:8] and same_tables(x[8], y[8]) for x, y in zip(a, b))
+
+
+def _boot_bits(rows: torch.Tensor, dtype: torch.dtype) -> list[torch.Tensor]:
+    """The raw bits ``load_rows`` writes for checkpoint ``rows`` into a param of ``dtype``: fp8 in either scale
+    format (``fp8_layout`` picks one later), others cast like the engine's loader."""
+    if dtype == torch.float8_e4m3fn:
+        return [quantize_fp8_blocks(rows, ue8m0)[0] for ue8m0 in (True, False)]
+    return [as_bits(rows.to(dtype))]
+
+
+def _block_hash(bits: torch.Tensor) -> int:
+    """A position-weighted sum of a block's raw bits, to find a block among a param's writes."""
+    flat = bits.reshape(-1).long()
+    return int((flat * torch.arange(1, flat.numel() + 1, device=flat.device)).sum())
 
 
 def _restore_checkpoint_format(model: Module) -> list[tuple]:

@@ -278,3 +278,51 @@ def test_retarget_back_restores_the_records():
     index_map.retarget(torch.tensor(MOVED))
     index_map.retarget(torch.tensor([INITIAL, INITIAL]))
     assert {name: sorted(writes) for name, writes in index_map.records.items()} == records
+
+
+class FusedExperts(nn.Module):
+    """Two experts' gate and up projections loaded into one fused ``[experts, gate; up, hidden]`` param, then, like
+    FlashInfer CUTLASS's processing after loading, swapped to ``[up; gate]``."""
+
+    def __init__(self):
+        super().__init__()
+        self.w13 = nn.Parameter(torch.zeros(2, 8, 4, dtype=torch.bfloat16))
+
+    def load_weights(self, weights):
+        for name, tensor in weights:
+            expert, projection = int(name.split(".")[1]), name.split(".")[2]
+            self.w13.data[expert, (0 if projection == "gate" else 4) : (4 if projection == "gate" else 8)].copy_(tensor)
+
+    def swap_halves(self):
+        self.w13.data.copy_(self.w13.data.view(2, 2, 4, 4).flip(1).view(2, 8, 4))
+
+
+def fused_experts_boot():
+    tensors = {f"experts.{e}.{p}.weight": ([4, 4], "bfloat16") for e in range(2) for p in ("gate", "up")}
+    checkpoint = {name: torch.randn(4, 4, dtype=torch.bfloat16) for name in tensors}
+    model = FusedExperts()
+    model.load_weights(checkpoint.items())
+    model.swap_halves()
+    return model, tensors, checkpoint
+
+
+def test_match_boot_follows_a_post_load_gate_up_swap():
+    model, tensors, checkpoint = fused_experts_boot()
+    index_map = CheckpointIndexMap(model, tensors)
+    boot = model.w13.data.clone()
+    assert index_map.match_boot((name, 0, tensor) for name, tensor in checkpoint.items()) == 4
+    # Moved writes stay put on a second check, and a load through the index map keeps the engine's layout
+    assert index_map.match_boot((name, 0, tensor) for name, tensor in checkpoint.items()) == 0
+    for name, tensor in checkpoint.items():
+        index_map.load_rows(name, tensor, 0)
+    assert torch.equal(model.w13.data, boot)
+    names, totals, _ = index_map.checksums()
+    assert totals.tolist() == [bits_checksum(as_bits(checkpoint[name])) for name in names]
+
+
+def test_match_boot_raises_on_a_block_it_cannot_find():
+    model, tensors, checkpoint = fused_experts_boot()
+    index_map = CheckpointIndexMap(model, tensors)
+    model.w13.data[1, 0, 0] += 1
+    with pytest.raises(NotImplementedError, match="experts.1.up.weight"):
+        index_map.match_boot((name, 0, tensor) for name, tensor in checkpoint.items())
