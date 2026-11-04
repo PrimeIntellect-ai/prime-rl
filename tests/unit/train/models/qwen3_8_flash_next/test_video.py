@@ -3,6 +3,8 @@ pixel values and MRoPE positions."""
 
 import base64
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -212,68 +214,44 @@ def test_materialized_videos_match_vllm_processor(tmp_path):
     if not model_cached():
         pytest.skip(f"{MODEL}: processor files not cached locally")
     from transformers import AutoProcessor
-    from vllm.config import ModelConfig
-    from vllm.model_executor.models.qwen3_vl import Qwen3VLForConditionalGeneration
-    from vllm.multimodal import MULTIMODAL_REGISTRY
-    from vllm.multimodal.inputs import MultiModalFeatureSpec
-    from vllm.multimodal.media import MediaConnector
-    from vllm.multimodal.processing.context import TimingContext
-    from vllm.multimodal.processing.inputs import ProcessorInputs
 
-    model_config = ModelConfig(model=MODEL, revision=REVISION)
-    vllm_processor = MULTIMODAL_REGISTRY.create_processor(model_config)
     processor = AutoProcessor.from_pretrained(MODEL, revision=REVISION)
-    tokenizer = processor.tokenizer
-    prompt = tokenizer.encode(
-        "<|im_start|>user\n<|vision_start|><|video_pad|><|vision_end|>What happens?<|im_end|>\n<|im_start|>assistant\n"
-    )
-
     for path, expected in video_files(tmp_path):
-        url = "data:video/mp4;base64," + base64.b64encode(path.read_bytes()).decode()
-        video = MediaConnector().fetch_video(url, video_processor="Qwen3VLVideoProcessor").media
-        output = vllm_processor.apply(
-            ProcessorInputs(prompt=prompt, mm_data_items=vllm_processor.info.parse_mm_data({"video": [video]})),
-            TimingContext(),
-        )
-        ids = np.asarray(output["prompt_token_ids"])
-        (placeholder,) = output["mm_placeholders"]["video"]
-        vllm_kwargs = output["mm_kwargs"].get_data()
+        out = tmp_path / f"{path.stem}.pt"
+        script = Path(__file__).with_name("video_parity.py")
+        command = ["processor", "--model", MODEL, "--revision", REVISION, "--video", path, "--out", out]
+        subprocess.run([sys.executable, script, *command], check=True)
+        reference = torch.load(out)
+        ids = np.asarray(reference["prompt_ids"])
         token_types = np.zeros_like(ids)
         token_types[ids == VIDEO_PAD] = 2
 
+        url = "data:video/mp4;base64," + base64.b64encode(path.read_bytes()).decode()
         refs = _build_mm_refs([], [url], ids, token_types)
-        assert [(ref.offset, ref.length) for ref in refs.videos] == [(placeholder.offset, placeholder.length)]
+        assert [(ref.offset, ref.length) for ref in refs.videos] == [reference["placeholder"]]
 
         kwargs = materialize_qwen_vl_videos(refs, processor)
-        assert torch.equal(kwargs["video_grid_thw"], vllm_kwargs["video_grid_thw"])
+        assert torch.equal(kwargs["video_grid_thw"], reference["video_grid_thw"])
         # vLLM normalizes uint8 patches on device in fp32 with one rounding (its Triton kernel); the HF float
         # pixels give the same bf16 model input.
-        raw = vllm_kwargs["pixel_values_videos"]
+        raw = reference["pixel_values_videos"]
         assert raw.dtype == torch.uint8
         weight = ((1 / 255) / torch.tensor(0.5)).double()  # vLLM's FusedMMInputNorm, from the 0.5 mean / std
         normalized = (raw.double() * weight - 1.0).float()
         assert torch.equal(kwargs["pixel_values_videos"].bfloat16(), normalized.bfloat16())
 
-        timestamps = vllm_kwargs["timestamps"][0]
+        offset, length = reference["placeholder"]
         placeholder_ids = qwen_vl_video_placeholder_ids(
             grid_thw=kwargs["video_grid_thw"][0],
-            timestamps=timestamps,
-            tokenizer=tokenizer,
+            timestamps=reference["timestamps"][0],
+            tokenizer=processor.tokenizer,
             merge_size=2,
             vision_start_token_id=VISION_START,
             vision_end_token_id=VISION_END,
             video_token_id=VIDEO_PAD,
         )
-        assert placeholder_ids == ids[placeholder.offset : placeholder.offset + placeholder.length].tolist()
+        assert placeholder_ids == ids[offset : offset + length].tolist()
 
-        features = [
-            MultiModalFeatureSpec(
-                data=output["mm_kwargs"]["video"][0], modality="video", identifier="video", mm_position=placeholder
-            )
-        ]
-        vllm_positions, _ = Qwen3VLForConditionalGeneration._get_mrope_input_positions(
-            ids.tolist(), features, model_config.hf_config
-        )
         positions = build_mrope_position_ids(
             input_ids=torch.tensor([ids]),
             mm_token_type_ids=torch.tensor([token_types]),
@@ -282,9 +260,9 @@ def test_materialized_videos_match_vllm_processor(tmp_path):
             spatial_merge_size=2,
             seq_lens=torch.tensor([len(ids)]),
         )
-        torch.testing.assert_close(positions[:, 0], vllm_positions.to(positions.dtype))
+        torch.testing.assert_close(positions[:, 0], reference["positions"].to(positions.dtype))
 
         if expected is not None:
             assert kwargs["video_grid_thw"].tolist() == [expected["grid"]]
             assert int((ids == VIDEO_PAD).sum()) == expected["pads"]
-            assert placeholder.length == expected["length"]
+            assert length == expected["length"]

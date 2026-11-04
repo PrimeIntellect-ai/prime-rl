@@ -1,11 +1,14 @@
-"""Compare the trainer's logprobs on a Qwen3.8 video prompt with vLLM's prompt logprobs on the same prompt.
+"""vLLM references for Qwen3.8 video inputs, and the trainer side of the logprob comparison.
 
+    python video_parity.py processor --model MODEL --video clip.mp4 --out processor.pt
     python video_parity.py vllm --model DIR --video clip.mp4 --out vllm.pt --tensor-parallel-size 4
     torchrun --nproc-per-node 8 video_parity.py trainer --model DIR --video clip.mp4 --vllm vllm.pt --out trainer.pt
 
-The vLLM phase decodes the video with vLLM's media connector and scores the prompt with prime-rl's RL numerics
-(fp32 router logits and lm_head). The trainer phase builds the sample the way the orchestrator and trainer do (video
-ref from the expanded prompt, ``materialize_images``, ``setup_model`` + ``forward``), on every rank of an FSDP mesh.
+The vLLM phases run without prime-rl's trainer models imported, which register their own config class for the
+model type. ``processor`` runs vLLM's Qwen3-VL multimodal processor and MRoPE on the video. ``vllm`` decodes the
+video with vLLM's media connector and scores the prompt with prime-rl's RL numerics (fp32 router logits and
+lm_head). ``trainer`` builds the sample the way the orchestrator and trainer do (video ref from the expanded
+prompt, ``materialize_images``, ``setup_model`` + ``forward``), on every rank of an FSDP mesh.
 """
 
 import argparse
@@ -28,6 +31,44 @@ def video_url(path: str) -> str:
     return "data:video/mp4;base64," + base64.b64encode(Path(path).read_bytes()).decode()
 
 
+def run_processor(args: argparse.Namespace) -> None:
+    from vllm.config import ModelConfig
+    from vllm.model_executor.models.qwen3_vl import Qwen3VLForConditionalGeneration
+    from vllm.multimodal import MULTIMODAL_REGISTRY
+    from vllm.multimodal.inputs import MultiModalFeatureSpec
+    from vllm.multimodal.media import MediaConnector
+    from vllm.multimodal.processing.context import TimingContext
+    from vllm.multimodal.processing.inputs import ProcessorInputs
+
+    model_config = ModelConfig(model=args.model, revision=args.revision)
+    processor = MULTIMODAL_REGISTRY.create_processor(model_config)
+    prompt_ids = processor.info.get_tokenizer().encode(PROMPT)
+    video = MediaConnector().fetch_video(video_url(args.video), video_processor="Qwen3VLVideoProcessor").media
+    mm_items = processor.info.parse_mm_data({"video": [video]})
+    output = processor.apply(ProcessorInputs(prompt=prompt_ids, mm_data_items=mm_items), TimingContext())
+    (placeholder,) = output["mm_placeholders"]["video"]
+    features = [
+        MultiModalFeatureSpec(
+            data=output["mm_kwargs"]["video"][0], modality="video", identifier="video", mm_position=placeholder
+        )
+    ]
+    positions, _ = Qwen3VLForConditionalGeneration._get_mrope_input_positions(
+        output["prompt_token_ids"], features, model_config.hf_config
+    )
+    kwargs = output["mm_kwargs"].get_data()
+    torch.save(
+        {
+            "prompt_ids": output["prompt_token_ids"],
+            "placeholder": (placeholder.offset, placeholder.length),
+            "pixel_values_videos": kwargs["pixel_values_videos"],
+            "video_grid_thw": kwargs["video_grid_thw"],
+            "timestamps": kwargs["timestamps"],
+            "positions": positions,
+        },
+        args.out,
+    )
+
+
 def run_vllm(args: argparse.Namespace) -> None:
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
@@ -35,10 +76,16 @@ def run_vllm(args: argparse.Namespace) -> None:
 
     prompt_ids = AutoTokenizer.from_pretrained(args.model).encode(PROMPT)
     video = MediaConnector().fetch_video(video_url(args.video), video_processor="Qwen3VLVideoProcessor").media
+    # The engine settings of examples/extra/vlm/rl-qwen3.8.toml that change numerics or memory.
     llm = LLM(
         model=args.model,
+        seed=0,
+        dtype="bfloat16",
         tensor_parallel_size=args.tensor_parallel_size,
         enable_expert_parallel=args.tensor_parallel_size > 1,
+        mm_encoder_tp_mode="data",
+        mamba_cache_dtype="float32",
+        engram_config={"cpu_offload": True},
         max_model_len=4096,
         gpu_memory_utilization=0.85,
         enable_prefix_caching=False,
@@ -71,7 +118,7 @@ def run_trainer(args: argparse.Namespace) -> None:
 
     reference = torch.load(args.vllm)
     ids = np.asarray(reference["prompt_ids"])
-    config = ModelConfig(name=args.model, vlm=VLMConfig(), optimization_dtype="bfloat16")
+    config = ModelConfig(name=args.model, vlm=VLMConfig())
     processor = setup_processor(config)
     token_types = np.zeros_like(ids)
     token_types[ids == processor.video_token_id] = 2
@@ -123,14 +170,15 @@ def compare(vllm_out: dict, trainer_out: dict, video_token_id: int) -> dict[str,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=["vllm", "trainer"])
+    parser.add_argument("phase", choices=["processor", "vllm", "trainer"])
     parser.add_argument("--model", required=True)
+    parser.add_argument("--revision")
     parser.add_argument("--video", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--vllm", help="the vLLM phase's output (trainer phase)")
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     args = parser.parse_args()
-    run_vllm(args) if args.phase == "vllm" else run_trainer(args)
+    {"processor": run_processor, "vllm": run_vllm, "trainer": run_trainer}[args.phase](args)
 
 
 if __name__ == "__main__":
