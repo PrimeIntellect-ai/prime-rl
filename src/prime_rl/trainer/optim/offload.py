@@ -88,8 +88,12 @@ class GradientOffloadManager:
         chunk_ready_callback: Callable[[int], None],
         gradient_dtypes: dict[int, torch.dtype],
         compute_dtypes: dict[int, torch.dtype],
+        accumulate_on_gpu: bool = False,
     ):
         self._chunks = chunks
+        self._accumulate_on_gpu = accumulate_on_gpu
+        # FP32 sums of a step's earlier micro-step gradients, offloaded with the final backward's gradient
+        self._gpu_accumulators: dict[int, torch.Tensor] = {}
         self._dp_replicate = dp_replicate
         self._chunk_ready_callback = chunk_ready_callback
         self._timeout_seconds = timeout_seconds
@@ -123,8 +127,10 @@ class GradientOffloadManager:
             local = param.data.to_local()
             offsets[id(param)] = slab_numel
             slab_numel += (local.numel() + alignment - 1) // alignment * alignment
-            gradient_dtype = gradient_dtypes[id(param)]
-            max_param_numel[gradient_dtype] = max(max_param_numel[gradient_dtype], local.numel())
+            for transfer_dtype in (
+                {gradient_dtypes[id(param)], torch.float32} if accumulate_on_gpu else {gradient_dtypes[id(param)]}
+            ):
+                max_param_numel[transfer_dtype] = max(max_param_numel[transfer_dtype], local.numel())
         accumulator_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu")
         self._buffers: dict[int, _CPUGradientBuffer] = {}
         self._ready_events: dict[int, list[torch.cuda.Event]] = {}
@@ -521,43 +527,54 @@ class GradientOffloadManager:
                     f"Full-offload gradient dtype mismatch in chunk {self._chunk_by_param_id[param_id]}: "
                     f"expected {expected_dtype}, got {local_grad.dtype}"
                 )
-            buffer = self._buffers[param_id]
-            with self._condition:
-                self._raise_worker_error()
-                if not self._backward_open:
-                    raise RuntimeError("Gradient hook ran outside begin_backward/finish_backward")
-                if buffer.last_enqueued_backward == self._backward_generation:
-                    raise RuntimeError(
-                        f"Parameter in chunk {self._chunk_by_param_id[param_id]} produced more than one gradient "
-                        f"in backward {self._backward_generation}"
-                    )
-                generation = (self._step_generation, self._backward_generation)
-                event_index = (self._backward_generation - 1) % len(self._ready_events[param_id])
-                if any(
-                    (pending_backward - 1) % len(self._ready_events[param_id]) == event_index
-                    for _, pending_backward in buffer.pending_generations
-                ):
-                    raise RuntimeError(
-                        f"Gradient event window exhausted before an older contribution drained ({self._diagnostics()})"
-                    )
-                buffer.pending = True
-                buffer.pending_generations.add(generation)
-                buffer.pending_step, buffer.pending_backward = min(buffer.pending_generations)
-                buffer.last_enqueued_backward = self._backward_generation
-                self._backward_enqueued_param_ids.add(param_id)
-            ready_event = self._ready_events[param_id][event_index]
-            ready_event.record(torch.cuda.current_stream())
-            self._transfer_requests.put(
-                _GradientTransferRequest(
-                    param_id=param_id,
-                    local_grad=local_grad,
-                    ready_event=ready_event,
-                    step=self._step_generation,
-                    backward=self._backward_generation,
-                    final_backward=self._final_backward and self._overlap_optimizer,
-                )
-            )
+            if self._accumulate_on_gpu:
+                accumulator = self._gpu_accumulators.pop(param_id, None)
+                if accumulator is not None:
+                    local_grad = accumulator.add_(local_grad)
+                if not self._final_backward:
+                    self._gpu_accumulators[param_id] = local_grad if accumulator is not None else local_grad.float()
+                    param.grad = None
+                    continue
+            self._enqueue_transfer(param_id, local_grad)
             param.grad = None
+
+    def _enqueue_transfer(self, param_id: int, local_grad: torch.Tensor) -> None:
+        buffer = self._buffers[param_id]
+        with self._condition:
+            self._raise_worker_error()
+            if not self._backward_open:
+                raise RuntimeError("Gradient hook ran outside begin_backward/finish_backward")
+            if buffer.last_enqueued_backward == self._backward_generation:
+                raise RuntimeError(
+                    f"Parameter in chunk {self._chunk_by_param_id[param_id]} produced more than one gradient "
+                    f"in backward {self._backward_generation}"
+                )
+            generation = (self._step_generation, self._backward_generation)
+            event_index = (self._backward_generation - 1) % len(self._ready_events[param_id])
+            if any(
+                (pending_backward - 1) % len(self._ready_events[param_id]) == event_index
+                for _, pending_backward in buffer.pending_generations
+            ):
+                raise RuntimeError(
+                    f"Gradient event window exhausted before an older contribution drained ({self._diagnostics()})"
+                )
+            buffer.pending = True
+            buffer.pending_generations.add(generation)
+            buffer.pending_step, buffer.pending_backward = min(buffer.pending_generations)
+            buffer.last_enqueued_backward = self._backward_generation
+            self._backward_enqueued_param_ids.add(param_id)
+        ready_event = self._ready_events[param_id][event_index]
+        ready_event.record(torch.cuda.current_stream())
+        self._transfer_requests.put(
+            _GradientTransferRequest(
+                param_id=param_id,
+                local_grad=local_grad,
+                ready_event=ready_event,
+                step=self._step_generation,
+                backward=self._backward_generation,
+                final_backward=self._final_backward and self._overlap_optimizer,
+            )
+        )
 
     def _offload_hook(self, param: torch.Tensor) -> None:
         if not isinstance(param, nn.Parameter):
@@ -567,6 +584,11 @@ class GradientOffloadManager:
     def finish_backward(self, *, wait_for_copies: bool = True) -> None:
         remaining = [param for chunk in self._chunks for param in chunk if param.grad is not None]
         self._offload_params(remaining)
+        if self._final_backward:
+            # Parameters without a gradient in the final backward still owe their earlier micro steps
+            for param_id, accumulator in self._gpu_accumulators.items():
+                self._enqueue_transfer(param_id, accumulator)
+            self._gpu_accumulators.clear()
         with self._condition:
             if not self._backward_open:
                 raise RuntimeError("finish_backward called without begin_backward")
@@ -715,6 +737,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         optimizer: Optimizer,
         master_weights: dict[int, _MasterWeight],
         dp_replicate: int = 1,
+        accumulate_grads_on_gpu: bool = False,
     ):
         self.optimizer = optimizer
         self._initialized = False
@@ -742,6 +765,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             chunk_ready_callback=self._step_cpu_chunk,
             gradient_dtypes={id(master.model_param): master.gradient_dtype for master in master_weights.values()},
             compute_dtypes={id(master.model_param): master.compute_dtype for master in master_weights.values()},
+            accumulate_on_gpu=accumulate_grads_on_gpu,
         )
         self._initialize_cpu_optimizer_state()
 
