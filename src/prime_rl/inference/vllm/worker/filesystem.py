@@ -316,6 +316,15 @@ class FileSystemWeightUpdateWorker(Worker):
         model = self._model()
         index_map = CheckpointIndexMap(model, tensors)
         boot_dir = self._boot_dir()
+        live = dict(model.named_parameters())
+        # MXFP8 params: uint8 block scales next to the weight, laid out by kernels that ``fp8_layout`` probes
+        index_map.mx_params = {
+            index
+            for index, name in enumerate(index_map.param_names)
+            if f"{name}_scale_inv" not in live
+            and (scale := live.get(f"{name}_scale")) is not None
+            and scale.dtype == torch.uint8
+        }
         moved = index_map.match_boot(_read_rows(index_map, boot_dir, next(model.parameters()).device))
         if moved:
             logger.info(f"Moved {moved} index map writes to where the engine's kernel layout holds them")
