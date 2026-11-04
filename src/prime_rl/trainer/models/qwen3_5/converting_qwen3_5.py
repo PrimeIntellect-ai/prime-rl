@@ -9,6 +9,14 @@ def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
+    # A snapshot carrying `*.weight_scale_inv` siblings is a raw compressed-tensors fp8
+    # checkpoint (on-disk quantized format): never PrimeRL format, which stores plain
+    # `bfloat16` tensors. Without this guard a dense fp8 snapshot also trips the
+    # `A_log`-without-fused-experts fallback below, so the HF->PrimeRL auto-conversion
+    # (the only step that dequantizes) is skipped and the raw fp8 tensors are loaded
+    # into `bfloat16` linears without their scales.
+    if any(name.endswith("weight_scale_inv") for name in state_dict):
+        return False
     if any(name.endswith("mlp.experts.gate_proj") for name in state_dict):
         return True
     has_qwen_layers = any(name.endswith("linear_attn.A_log") for name in state_dict)
