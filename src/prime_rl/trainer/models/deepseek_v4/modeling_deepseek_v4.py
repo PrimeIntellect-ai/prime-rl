@@ -19,13 +19,13 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
-from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
     DeepseekV4HyperHead,
 )
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
+from prime_rl.trainer.models.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -143,7 +143,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         on-disk key names: a no-op for any snapshot that doesn't carry `.scale` siblings
         (e.g. the plain-`bfloat16` mini test checkpoint).
         """
-        dequantize_state_dict_(state_dict)
+        dequantize_state_dict_(state_dict, ".scale")
         return super().convert_to_prime(state_dict)
 
     def init_buffers_post_meta(self) -> None:

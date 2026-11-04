@@ -3,6 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
@@ -13,7 +14,6 @@ from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
 )
-from prime_rl.trainer.models.qwen3_5.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.qwen3_5.converting_qwen3_5 import (
     conversion_chain,
     is_hf_state_dict,
@@ -137,11 +137,10 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a HuggingFace state dict to PrimeRL format in-place.
 
-        Dequantizes the compressed-tensors fp8 weights of `-FP8` snapshots to `bfloat16`
-        first, on the raw on-disk key names: a no-op for any snapshot that doesn't carry
-        `*.weight_scale_inv` siblings (e.g. plain-BF16 releases or test checkpoints).
+        Dequantizes an `-FP8` release's `float8_e4m3fn` weights to `bfloat16` first, on the raw
+        on-disk key names: a no-op for a snapshot without `*.weight_scale_inv` siblings.
         """
-        dequantize_state_dict_(state_dict)
+        dequantize_state_dict_(state_dict, ".weight_scale_inv")
         return super().convert_to_prime(state_dict)
 
 
