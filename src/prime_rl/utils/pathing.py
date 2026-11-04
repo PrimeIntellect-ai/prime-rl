@@ -315,6 +315,12 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
+def get_run_start_path(output_dir: Path) -> Path:
+    """The trainer's record of how the run started. Cleared whenever a run starts, so a trainer start
+    that finds it replaces a failed trainer within the run."""
+    return output_dir / "run_start.json"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
@@ -427,10 +433,12 @@ def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale step artifacts past ``resume_step`` and broadcasts from it onward.
+    """Remove stale step artifacts past ``resume_step`` and broadcasts from it onward, and the trainer's
+    record of the previous run's start.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
+    get_run_start_path(output_dir).unlink(missing_ok=True)
     cleanup_rules = [
         (get_batch_dir(output_dir), lambda step: step > resume_step),
         (get_broadcast_dir(output_dir), lambda step: step >= resume_step),

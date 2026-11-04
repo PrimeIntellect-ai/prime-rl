@@ -121,9 +121,10 @@ def propagate_shared_fields(data: Any) -> Any:
 
     propagate("resume", "trainer.resume", "orchestrator.resume")
 
-    # [trainer_recovery] → both sub-configs; recovery replays the orchestrator's batch journal.
-    propagate("trainer_recovery", "trainer.recovery", "orchestrator.trainer_recovery")
+    # [trainer_recovery] configures the launcher's restarts; the orchestrator admits the replacement
+    # and replays its batch journal.
     if get("trainer_recovery") is not None:
+        fill("orchestrator.admit_replacement_trainers", True)
         fill("orchestrator.batch_journal", True)
 
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).

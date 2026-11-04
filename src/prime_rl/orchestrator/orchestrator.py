@@ -284,9 +284,9 @@ class Orchestrator:
             self.progress.step,
             config.rollout_transport,
             journal=config.batch_journal,
-            auto_recover=config.trainer_recovery is not None,
+            auto_recover=config.admit_replacement_trainers,
         )
-        if config.trainer_recovery is not None:
+        if config.admit_replacement_trainers:
             self.sender.on_replacement = self.on_trainer_replacement
         # Answer the trainer's handshake right away: it joins the session before its startup broadcast.
         self.sender.start()
@@ -399,7 +399,7 @@ class Orchestrator:
             policy=self.policy,
             observers=[self.dispatcher],
             ckpt_step=sync_version,
-            trainer_recovery=config.trainer_recovery is not None,
+            trainer_recovery=config.admit_replacement_trainers,
         )
         self.watcher_ready.set()
         if self.eval_source is not None:

@@ -815,7 +815,8 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
 
 
 def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
-    """[trainer_recovery] reaches both sub-configs, journals batches and makes NCCL recoverable."""
+    """[trainer_recovery] keeps the restart budget in the launcher; the orchestrator admits replacements,
+    journals batches and NCCL becomes recoverable."""
     import json
 
     base = {
@@ -837,9 +838,8 @@ def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
         RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "orchestrator": {"batch_journal": False}})
 
     config = RLConfig.model_validate({**base, "ckpt": {"interval": 5}})
-    assert config.trainer.recovery.max_restarts == 2
-    assert config.orchestrator.trainer_recovery == config.trainer.recovery
-    assert config.orchestrator.batch_journal
+    assert config.trainer_recovery.max_restarts == 2
+    assert config.orchestrator.admit_replacement_trainers and config.orchestrator.batch_journal
     assert config.trainer.weight_broadcast.recoverable and config.orchestrator.weight_broadcast.recoverable
     path = tmp_path / "rl.json"
     path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))

@@ -152,10 +152,9 @@ class ControlConfig(BaseConfig):
 class TrainerRecoveryConfig(BaseConfig):
     """Keep the orchestrator, inference and environments running when the trainer fails.
 
-    The orchestrator journals every batch until a trainer checkpoint covers it. A replacement
-    trainer group restores the latest committed checkpoint, replays the journaled batches after
-    it in order and then continues with new ones; it publishes weights again once it has
-    recomputed the policy inference already serves."""
+    The ``rl`` launcher restarts a failed trainer group; the orchestrator admits the replacement
+    (``orchestrator.admit_replacement_trainers``), replays the journaled batches since its
+    checkpoint and reconciles inference's policy with it."""
 
     max_restarts: int = Field(3, ge=1)
     """Times the ``rl`` launcher replaces a failed trainer group (``torchrun --max-restarts``)."""

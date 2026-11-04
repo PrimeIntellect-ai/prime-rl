@@ -208,7 +208,7 @@ class RLConfig(BaseConfig):
     rollout_transport: TransportConfig | None = None
 
     trainer_recovery: TrainerRecoveryConfig | None = None
-    """Replace a failed trainer group without restarting the orchestrator, inference or environments. Journals batches until trainer checkpoints commit (``orchestrator.batch_journal``), restarts the trainer up to ``max_restarts`` times, and makes NCCL weight transfers recoverable. Requires ``[ckpt]`` with an interval and the ZMQ rollout transport. Propagated to ``trainer.recovery`` and ``orchestrator.trainer_recovery``."""
+    """Replace a failed trainer group without restarting the orchestrator, inference or environments. Journals batches until trainer checkpoints commit (``orchestrator.batch_journal``), restarts the trainer up to ``max_restarts`` times, and makes NCCL weight transfers recoverable. Requires ``[ckpt]`` with an interval and the ZMQ rollout transport. The launcher owns ``max_restarts``; the orchestrator gets ``admit_replacement_trainers``."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 

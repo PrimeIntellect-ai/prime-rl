@@ -2,7 +2,6 @@ import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
 from functools import partial
-import os
 import time
 import asyncio
 from datetime import timedelta
@@ -157,27 +156,25 @@ def train(config: TrainerConfig):
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-    if config.recovery is not None:
-        # A replacement group continues from the newest checkpoint every rank finished; a newer
-        # step directory may hold an interrupted save. Ranks decide together: torchrun restarts a
-        # healthy node's ranks after a peer failure without counting the restart, and a recreated
-        # node starts from zero. A first attempt follows it only on a bare resume.
-        restart = torch.tensor([int(os.environ.get("TORCHELASTIC_RESTART_COUNT", "0"))], device="cuda")
-        dist.all_reduce(restart, op=dist.ReduceOp.MAX)
-        replacement = restart.item() > 0
-        committed = [ckpt_manager.latest_committed_step(this_run=replacement) if world.is_master else None]
-        dist.broadcast_object_list(committed, src=0)
-        resume_latest = config.resume is not None and config.resume.step is None and config.resume.dir is None
-        if committed[0] is not None and (replacement or resume_latest):
-            checkpoint_step, resume_dir = committed[0], None
-        if world.is_master and not replacement:
-            # A checkpoint from another run's timeline would fail the orchestrator's validation on
-            # every replacement attempt.
-            ckpt_manager.record_run_start(checkpoint_step if resume_dir is None else None)
-        if replacement:
-            logger.warning(
-                f"Replacement trainer attempt {restart.item()}: resuming from checkpoint step {checkpoint_step}"
-            )
+    # Every start decides from disk, so whatever restarts the trainer runs the same command. A start
+    # that finds the run's start record replaces a failed trainer within the run: it continues from
+    # the newest checkpoint every rank of this run finished (a newer step directory may hold an
+    # interrupted save). A first start records which committed checkpoints predate the run: one of
+    # another timeline would fail the orchestrator's validation on every replacement. A bare resume
+    # also starts from the newest committed checkpoint. Rank 0 decides for every rank.
+    decision = [None]
+    if world.is_master:
+        replacement = ckpt_manager.run_started()
+        decision = [(replacement, ckpt_manager.latest_committed_step(this_run=replacement))]
+    dist.broadcast_object_list(decision, src=0)
+    replacement, committed = decision[0]
+    resume_latest = config.resume is not None and config.resume.step is None and config.resume.dir is None
+    if committed is not None and (replacement or resume_latest):
+        checkpoint_step, resume_dir = committed, None
+    if replacement:
+        logger.warning(f"Replacing a failed trainer: resuming from checkpoint step {checkpoint_step}")
+    elif world.is_master:
+        ckpt_manager.record_run_start(checkpoint_step if resume_dir is None else None)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

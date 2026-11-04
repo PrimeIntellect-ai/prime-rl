@@ -99,6 +99,7 @@ def test_a_replacement_trainer_skips_checkpoints_of_another_timeline(tmp_path):
     replacement restores only the run's start or checkpoints the run committed itself."""
     from prime_rl.configs.trainer import CheckpointConfig
     from prime_rl.trainer.ckpt import CheckpointManager
+    from prime_rl.utils.pathing import clean_future_steps
 
     manager = CheckpointManager(tmp_path, CheckpointConfig())
     journal = BatchJournal(tmp_path)
@@ -113,7 +114,9 @@ def test_a_replacement_trainer_skips_checkpoints_of_another_timeline(tmp_path):
 
     for step in (5, 10, 15):
         commit(step, old)
+    assert not manager.run_started()
     manager.record_run_start(5)
+    assert manager.run_started()
     assert manager.latest_committed_step() == 15
     assert manager.latest_committed_step(this_run=True) == 5
     commit(10, new)
@@ -121,3 +124,6 @@ def test_a_replacement_trainer_skips_checkpoints_of_another_timeline(tmp_path):
     # A fresh start owns none of them.
     manager.record_run_start(None)
     assert manager.latest_committed_step(this_run=True) is None
+    # The launcher clears the record when the next run starts.
+    clean_future_steps(tmp_path, 15)
+    assert not manager.run_started()
