@@ -100,6 +100,9 @@ class LinearLengthPenaltyConfig(BaseConfig):
     num_turns_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
 
+    apply_to: Literal["all", "solved"] = "all"
+    """Which rollouts the penalty reaches. ``"all"`` penalizes every rollout in the group. ``"solved"`` penalizes only rollouts with reward >= 1 and normalizes each term by its max over those rollouts, so a failed rollout keeps its reward whatever its length and length never ranks failures against each other."""
+
 
 class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
     """Linear penalty using per-call output and new input tokens, weighted by semantic subagent membership before group normalization. Assumes branches do not share physical prefixes."""
