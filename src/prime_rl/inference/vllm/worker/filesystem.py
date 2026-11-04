@@ -4,7 +4,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from math import prod
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Iterator, NamedTuple
 
 import numpy as np
 import torch
@@ -302,7 +302,8 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def _build_index_map(self, step_dir: Path) -> None:
         """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint tensors to
-        the params, and find which ones this worker holds in fp8 (and their scale format)."""
+        the params (where the boot weights are, after the engine's processing), and find which ones this worker holds
+        in fp8 (and their scale format)."""
         if self.index_map is not None:
             return
         if (step_dir / DELTA_DIR / MANIFEST).exists():
@@ -314,7 +315,11 @@ class FileSystemWeightUpdateWorker(Worker):
             }
         model = self._model()
         index_map = CheckpointIndexMap(model, tensors)
-        boot = checkpoint_index(self._boot_dir())
+        boot_dir = self._boot_dir()
+        moved = index_map.match_boot(_read_rows(index_map, boot_dir, next(model.parameters()).device))
+        if moved:
+            logger.info(f"Moved {moved} index map writes to where the engine's kernel layout holds them")
+        boot = checkpoint_index(boot_dir)
 
         def read_tensor(name: str) -> torch.Tensor:
             shape, dtype, _ = boot[name]
@@ -449,26 +454,13 @@ class FileSystemWeightUpdateWorker(Worker):
             load_weights_checkpoint_layerwise(model, weights_iterator, self.model_runner.model_config, self.vllm_config)
             return None
         start = time.perf_counter()
-        index_map, index = self.index_map, checkpoint_index(step_dir)
-        device = next(model.parameters()).device
+        index_map = self.index_map
         # Checksums of anchors and full checkpoints written by the trainer (none for the boot checkpoint)
         expected = read_anchor_checksums(step_dir)
-
-        def read(name: str, begin: int, end: int) -> torch.Tensor:
-            num_cols, dtype = index_map.num_cols[name], index[name][1]
-            data = np.empty((end - begin) * num_cols * dtype.itemsize, np.uint8)
-            read_checkpoint_range(index[name], begin * num_cols, end * num_cols, data)
-            return torch.from_numpy(data).view(dtype).view(end - begin, num_cols)
-
-        ranges = list(index_map.row_ranges().items())
         num_bytes = 0
-        with ThreadPoolExecutor(16) as pool:
-            # A bounded window of reads ahead of the GPU writes
-            for window in itertools.batched(ranges, 64):
-                for (name, (begin, end)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
-                    rows = rows.to(device)
-                    index_map.load_rows(name, rows, begin)
-                    num_bytes += rows.nbytes
+        for name, begin, rows in _read_rows(index_map, step_dir, next(model.parameters()).device):
+            index_map.load_rows(name, rows, begin)
+            num_bytes += rows.nbytes
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
         logger.info(
@@ -476,3 +468,21 @@ class FileSystemWeightUpdateWorker(Worker):
         )
         # Checked from the params as loaded, so a wrong mapping or write in ``load_rows`` fails the check
         return step_dir.name, *index_map.held_checksums(), expected
+
+
+def _read_rows(index_map: CheckpointIndexMap, step_dir: Path, device) -> Iterator[tuple[str, int, torch.Tensor]]:
+    """``(name, begin, rows)``: the ``row_ranges`` rows of each checkpoint tensor in ``step_dir``, on ``device``."""
+    index = checkpoint_index(step_dir)
+
+    def read(name: str, begin: int, end: int) -> torch.Tensor:
+        num_cols, dtype = index_map.num_cols[name], index[name][1]
+        data = np.empty((end - begin) * num_cols * dtype.itemsize, np.uint8)
+        read_checkpoint_range(index[name], begin * num_cols, end * num_cols, data)
+        return torch.from_numpy(data).view(dtype).view(end - begin, num_cols)
+
+    ranges = list(index_map.row_ranges().items())
+    with ThreadPoolExecutor(16) as pool:
+        # A bounded window of reads ahead of the GPU writes
+        for window in itertools.batched(ranges, 64):
+            for (name, (begin, _)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
+                yield name, begin, rows.to(device)
