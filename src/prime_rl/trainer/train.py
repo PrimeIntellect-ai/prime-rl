@@ -45,7 +45,7 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
-    broadcast_pause,
+    broadcast_step_action,
     clip_grad_norm_,
     finish_backward,
     get_ckpt_disk_metrics,
@@ -398,16 +398,15 @@ def train(config: SFTConfig | PretrainConfig):
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
     control_server.start()
-    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
-        if config.control is not None:
-            paused = broadcast_pause(controller, progress.step)
-            is_last_step = is_last_step or paused
+        step_action = broadcast_step_action(controller, progress.step) if config.control is not None else None
+        paused = step_action == "pause"
+        is_last_step = is_last_step or paused
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -541,11 +540,13 @@ def train(config: SFTConfig | PretrainConfig):
         # online-eval steps — they are how the inference server picks up the new policy.
         save_ckpt_time = 0
         is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
-        if ckpt_manager is not None and is_ckpt_step and not is_last_step:
+        if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            if step_action == "checkpoint":
+                controller.mark_saved(progress.step)
 
             ckpt_manager.maybe_clean()
 
@@ -677,12 +678,12 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None or paused:
+    if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-        if paused:
+        if step_action is not None:
             controller.mark_saved(progress.step)
-        else:
+        if not paused:
             ckpt_manager.maybe_clean()
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
