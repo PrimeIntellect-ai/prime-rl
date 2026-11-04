@@ -19,11 +19,12 @@ class StandardSampler(TaskSampler):
     task, breaking ties by source order. A pass yields every task at the lowest count
     once, so a fixed taskset yields the same order as ``itertools.cycle``.
 
-    On resume, the counts are reconciled with the current taskset: removed tasks are
-    dropped, and new tasks start at the lowest count among the surviving tasks. New
-    tasks thus join the current pass, instead of being sampled first to catch up or
-    waiting for the other tasks to finish a pass. With no surviving tasks, counts
-    restart at zero.
+    On resume, the counts are reconciled with the current taskset. New tasks start at
+    the lowest count among the surviving tasks, so they join the current pass, instead
+    of being sampled first to catch up or waiting for the other tasks to finish a pass.
+    Removed tasks are never sampled, but their counts stay in the checkpoint: a task
+    added back resumes its count, or the lowest count if that is higher. With no
+    surviving tasks, counts restart at zero.
 
     A task iterator (a streaming taskset) has no task keys up front, so it checkpoints
     the number of tasks it yielded and skips that many on resume. That offset assumes
@@ -43,6 +44,8 @@ class StandardSampler(TaskSampler):
                 raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
             self.tasks_by_key = dict(zip(self.keys, self.tasks))
             self.counts = dict.fromkeys(self.keys, 0)
+            self.removed: dict[str, int] = {}
+            """Counts of checkpointed tasks no longer in the taskset, for a re-add."""
             self.start_pass()
         else:
             self.task_iterator = tasks
@@ -70,7 +73,9 @@ class StandardSampler(TaskSampler):
     def state_dict(self) -> dict[str, Any]:
         if self.tasks is None:
             return {"cursor": self.cursor}
-        return {"counts": dict(self.counts)}
+        if not self.removed:
+            return {"counts": dict(self.counts)}
+        return {"counts": dict(self.counts), "removed": dict(self.removed)}
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         if self.tasks is None:
@@ -96,13 +101,22 @@ class StandardSampler(TaskSampler):
                 "the taskset is unchanged since the checkpoint: if tasks were added, removed or reordered, "
                 "the resumed order is approximate"
             )
+        removed = state_dict.get("removed", {})
         surviving = {key: counts[key] for key in self.keys if key in counts}
-        start = min(surviving.values(), default=0)
-        self.counts = {key: surviving.get(key, start) for key in self.keys}
-        added, removed = len(self.keys) - len(surviving), len(counts) - len(surviving)
-        if added or removed:
+        readded = {key: removed[key] for key in self.keys if key in removed}
+        start = min(surviving.values(), default=min(readded.values(), default=0))
+        # A re-added task never resumes below the lowest count: it must not catch up.
+        self.counts = {
+            key: max(readded[key], start) if key in readded else surviving.get(key, start) for key in self.keys
+        }
+        current = set(self.keys)
+        self.removed = {key: count for key, count in {**removed, **counts}.items() if key not in current}
+        added = len(self.keys) - len(surviving) - len(readded)
+        newly_removed = len(counts) - len(surviving)
+        if added or readded or newly_removed:
             get_logger().info(
                 f"Reconciled sampling counts with the taskset: {added} new task(s) start at count {start}, "
-                f"{removed} removed task(s) dropped"
+                f"{len(readded)} re-added task(s) resume their count, {newly_removed} removed task(s) are kept "
+                "for a re-add"
             )
         self.start_pass()

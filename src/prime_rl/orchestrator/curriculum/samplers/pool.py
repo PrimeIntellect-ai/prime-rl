@@ -44,6 +44,8 @@ class DifficultyPoolSampler(TaskSampler):
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
         self._ordered_pools = tuple(ordered)
         self.task_rewards: dict[str, float] = {}
+        self.removed_rewards: dict[str, float] = {}
+        """Rewards of checkpointed tasks no longer in the taskset, for a re-add."""
 
     def task_pool(self, task_key: str) -> str | None:
         """Return the task's current pool, or ``None`` until it has a score."""
@@ -84,16 +86,20 @@ class DifficultyPoolSampler(TaskSampler):
     def state_dict(self) -> dict[str, Any]:
         return {
             "rng": self.rng.getstate(),
-            "task_rewards": dict(self.task_rewards),
+            "task_rewards": {**self.removed_rewards, **self.task_rewards},
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore rewards of tasks still in the taskset; new tasks start unseen."""
+        """Restore the rewards of tasks in the taskset, re-added ones included; new tasks
+        start unseen. The rewards of removed tasks stay in the checkpoint for a re-add."""
         self.rng.setstate(state_dict["rng"])
         task_rewards = state_dict["task_rewards"]
         self.task_rewards = {key: reward for key, reward in task_rewards.items() if key in self.tasks_by_key}
-        if removed := len(task_rewards) - len(self.task_rewards):
-            get_logger().info(f"Dropped the rewards of {removed} task(s) no longer in the taskset")
+        self.removed_rewards = {key: reward for key, reward in task_rewards.items() if key not in self.tasks_by_key}
+        if self.removed_rewards:
+            get_logger().info(
+                f"Kept the rewards of {len(self.removed_rewards)} task(s) no longer in the taskset, for a re-add"
+            )
 
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.pools, 0)
