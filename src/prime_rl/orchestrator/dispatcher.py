@@ -141,6 +141,7 @@ class Dispatcher:
         run_name: str | None,
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
+        on_calls: Callable[[int, int], None] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -156,6 +157,8 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
+        # Called with the ``(prefix, recompute)`` tokens of each live delta's model calls
+        self.on_calls = on_calls
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -541,7 +544,9 @@ class Dispatcher:
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
             first = not meta.live
-            live.apply(meta, delta)
+            prefix, recompute = live.apply(meta, delta)
+            if prefix and self.on_calls is not None:
+                self.on_calls(prefix, recompute)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)

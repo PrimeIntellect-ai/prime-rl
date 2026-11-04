@@ -17,6 +17,13 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
   excess load in the waiting queue). Cut, cancel the excess, then freeze
   cuts until the pool drains below the new cap.
 
+With ``config.recompute`` set and a measured recompute ratio (the share of
+each call's previously computed prefix the engines prefilled again), the ratio
+replaces GPU-KV usage for the growth taper, the soft signal and the trims.
+The KV gauge counts only running requests, so it misses the evicted caches of
+episodes idle between turns, and its per-engine maximum spikes whenever a few
+long contexts run on one engine at once. The overload cuts stay as the backstop.
+
 The cap starts at ``initial_inflight`` (else the pessimistic bound
 ``KV capacity / max_model_len``) and is clamped to
 ``[min_inflight, max_inflight]`` throughout, unless a manual target pins it.
@@ -31,6 +38,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -83,6 +91,15 @@ ESCALATION_GRACE_POLLS = 6
 """Polls after a drain completes during which a repeat overload cuts at the
 escalated fraction; past the grace window the system is considered recovered
 and escalation resets."""
+
+RECOMPUTE_WINDOW_POLLS = 12
+"""Polls of model calls the recompute ratio is measured over."""
+
+RECOMPUTE_MIN_PREFIX_TOKENS = 100_000
+"""Prefix tokens the window needs before its recompute ratio counts as measured."""
+
+RECOMPUTE_TRIM_FRACTION = 0.9
+"""A recompute trim lowers the cap to this fraction of the in-flight pool."""
 
 GROWTH_GATE_TTL_S = 15.0
 """The growth gate expires this long after the poll that set it — if the
@@ -143,6 +160,12 @@ class ConcurrencyController(Reconfigurable):
         # the new cap — the overload during drain is stale
         self.draining = False
         self.escalated = False
+        # Per-poll (prefix, recompute) call tokens, and the ratio over the window
+        self.recompute_polls: deque[tuple[int, int]] = deque(maxlen=RECOMPUTE_WINDOW_POLLS)
+        self.pending_prefix = 0
+        self.pending_recompute = 0
+        self.recompute_ratio: float | None = None
+        self.recompute_trim_wait = 0
 
         self.set_limit: Callable[[int], None] | None = None
         self.get_inflight: Callable[[], int] | None = None
@@ -190,9 +213,20 @@ class ConcurrencyController(Reconfigurable):
             self.cap = self.clamp(self.cap * self.growth_multiplier**fraction)
             self.apply_limit(int(self.cap), reason=None)
 
+    def record_calls(self, prefix: int, recompute: int) -> None:
+        """Prefix and recompute tokens of finished model calls (from the dispatcher's
+        live deltas), folded into the recompute ratio at the next poll."""
+        self.pending_prefix += prefix
+        self.pending_recompute += recompute
+
     def observe(self, samples: list[EngineLoadSample]) -> None:
         """Per-poll engine load push from the metrics collector: classify the
         signal, gate growth, and apply trims and cuts."""
+        self.recompute_polls.append((self.pending_prefix, self.pending_recompute))
+        self.pending_prefix = self.pending_recompute = 0
+        self.recompute_ratio = recompute_ratio(self.recompute_polls)
+        # Recompute-aware control while the ratio is measured
+        recompute = self.config.recompute if self.recompute_ratio is not None else None
         if not samples:
             return
         for sample in samples:
@@ -229,6 +263,9 @@ class ConcurrencyController(Reconfigurable):
         queue_overload = self.queue_overload_polls >= QUEUE_PERSISTENCE_POLLS
         if queue_overload:
             worst = max(worst, "hard", key=SEVERITY.__getitem__)
+        elif recompute is not None:
+            if self.recompute_ratio >= recompute.grow_below:
+                worst = max(worst, "soft", key=SEVERITY.__getitem__)
         elif max_usage > KV_USAGE_SOFT_CAP:
             worst = max(worst, "soft", key=SEVERITY.__getitem__)
         self.signal = worst
@@ -252,8 +289,13 @@ class ConcurrencyController(Reconfigurable):
             if self.escalation_grace <= 0:
                 self.escalated = False
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
+        self.recompute_trim_wait = max(0, self.recompute_trim_wait - 1)
         self.can_grow = worst == "clear" and total_queued == 0 and not self.draining
-        self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(0.0, 1.0 - max_usage / KV_USAGE_SOFT_CAP)
+        if recompute is not None:
+            headroom = 1.0 - self.recompute_ratio / recompute.grow_below
+        else:
+            headroom = 1.0 - max_usage / KV_USAGE_SOFT_CAP
+        self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(0.0, headroom)
         self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
         if self.target is not None:
             return
@@ -287,7 +329,7 @@ class ConcurrencyController(Reconfigurable):
             self.escalated = True
             return
 
-        if max_usage > KV_USAGE_SOFT_CAP and inflight > 0 and self.trim_cooldown == 0:
+        if recompute is None and max_usage > KV_USAGE_SOFT_CAP and inflight > 0 and self.trim_cooldown == 0:
             hard = max_usage > KV_USAGE_HARD_CAP
             target = int(self.clamp(inflight * KV_USAGE_TARGET / max_usage))
             self.resize_down(
@@ -297,6 +339,22 @@ class ConcurrencyController(Reconfigurable):
                 cancel=hard,
             )
             self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
+        elif (
+            recompute is not None
+            and self.recompute_ratio > recompute.trim_above
+            and 0 < inflight <= self.max_inflight
+            and self.recompute_trim_wait == 0
+        ):
+            # Recompute costs throughput, not a cliff: lower the cap and let
+            # completions drain the pool. Re-trim only once the pool has drained
+            # to the cap and a full window has been measured since.
+            self.resize_down(
+                int(self.clamp(inflight * RECOMPUTE_TRIM_FRACTION)),
+                inflight,
+                reason=f"recompute {self.recompute_ratio:.2f}",
+                cancel=False,
+            )
+            self.recompute_trim_wait = RECOMPUTE_WINDOW_POLLS
 
     def set_target(self, target: int | None) -> None:
         """Pin the cap at ``target``, outside the configured band too, or hand it back to the
@@ -334,9 +392,10 @@ class ConcurrencyController(Reconfigurable):
             return
         if reason is not None:
             verb = "Increased" if n_max > self.max_inflight else "Decreased"
+            rho = f" recompute={self.recompute_ratio:.2f}" if self.recompute_ratio is not None else ""
             get_logger().info(
                 f"{verb} concurrency {self.max_inflight} -> {n_max} ({reason}) - "
-                f"turnover={self.turnover:.1f} signal={self.signal}"
+                f"turnover={self.turnover:.1f} signal={self.signal}{rho}"
             )
         self.max_inflight = n_max
         if self.set_limit is not None:
@@ -354,10 +413,22 @@ class ConcurrencyController(Reconfigurable):
     # ── observability ────────────────────────────────────────────────────────
 
     def gauges(self) -> dict[str, float]:
-        return {
+        gauges = {
             "concurrency/max_inflight": float(self.max_inflight),
             "concurrency/turnover": self.turnover,
             "concurrency/capacity": float(self.capacity or 0),
             "concurrency/signal": float(SEVERITY[self.signal]),
             "concurrency/growth_multiplier": self.growth_multiplier,
         }
+        if self.recompute_ratio is not None:
+            gauges["concurrency/recompute_ratio"] = self.recompute_ratio
+        return gauges
+
+
+def recompute_ratio(polls: deque[tuple[int, int]]) -> float | None:
+    """Recompute tokens over prefix tokens across the window; None until the window
+    holds enough prefix tokens to be measured."""
+    prefix = sum(p for p, _ in polls)
+    if prefix < RECOMPUTE_MIN_PREFIX_TOKENS:
+        return None
+    return sum(r for _, r in polls) / prefix

@@ -211,6 +211,8 @@ The controller's idea is to treat the engines as ground truth and probe, instead
 
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`.
 
+The KV usage gauge counts only running requests. An agentic episode waiting on a tool holds no running request, so its prefix cache can be evicted while the gauge reads low, and its next turn prefills the whole history again. The controller measures this per model call from the cached-token counts the engines report: the recompute ratio is the share of each call's previous prompt that was not a cache hit, over the last minute (`concurrency/recompute_ratio`). Setting `[concurrency.recompute]` (experimental) makes it the growth and trim signal in place of KV usage: growth tapers to zero at `grow_below` (default 0.4), and above `trim_above` (default 0.7) the cap drops to 90% of the pool without cancelling anything. Preemption and queue cuts still apply. Calls that report no cached tokens are skipped. Until the controller has measured enough calls, it uses KV usage as before.
+
 ## Advanced Configuration
 
 ### KV Cache Offload

@@ -126,6 +126,7 @@ class EvalRunner:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_calls=self.concurrency.record_calls,
         )
         # No ``on_overload``: eval episodes are measurements and are never
         # cancelled — a cut only blocks admission until the pool drains.
