@@ -30,13 +30,13 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import (
     complete_joint_ckpt_step,
+    ensure_checkpoint_generation,
     get_all_ckpt_steps,
     get_ckpt_dir,
     get_step_path,
     invalidate_joint_ckpt_step,
     preflight_checkpoint_storage,
     prune_joint_ckpts,
-    read_checkpoint_generation,
 )
 
 
@@ -170,7 +170,7 @@ class CheckpointManager:
         self.prune_failures: set[int] = set()
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
-        self.generation = read_checkpoint_generation(self.ckpt_dir)["generation"] if joint else None
+        self.generation = ensure_checkpoint_generation(self.ckpt_dir)["generation"] if joint else None
         self.logger = get_logger()
         self.world = get_world()
 

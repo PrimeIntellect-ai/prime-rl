@@ -903,3 +903,14 @@ def test_nemotron_h_dcp_layout_exports_through_builtin_hf_model(tmp_path: Path, 
     assert not loading_info["missing_keys"]
     assert not loading_info["unexpected_keys"]
     assert not loading_info["mismatched_keys"]
+
+
+def test_direct_orchestrator_startup_persists_identity_before_hf_preflight(tmp_path, monkeypatch, fake_hub):
+    from prime_rl.orchestrator.ckpt import CheckpointRetention, setup_ckpt_manager
+
+    monkeypatch.setenv("PRL_RUN_ID", "hosted-fresh-run")
+    manager = setup_ckpt_manager(tmp_path, None)
+    retention = CheckpointRetention(manager.ckpt_dir, eval_envs=[])
+    validate_hf_token("org/model", tmp_path)
+    assert manager.generation == retention.generation == hf_export._hf_run_id(tmp_path) == "hosted-fresh-run"
+    assert not fake_hub.create_calls

@@ -377,6 +377,15 @@ def read_checkpoint_generation(ckpt_dir: Path) -> dict:
     return {"generation": state["generation"], "ceiling": ceiling}
 
 
+def ensure_checkpoint_generation(ckpt_dir: Path) -> dict:
+    """Persist an identity for direct component startup without resetting an existing generation."""
+    with checkpoint_lifecycle_lock(ckpt_dir):
+        path = get_generation_path(ckpt_dir)
+        if not path.exists():
+            _atomic_json(path, {"generation": os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex, "ceiling": None})
+        return read_checkpoint_generation(ckpt_dir)
+
+
 def start_checkpoint_generation(ckpt_dir: Path, *, generation: str, resume_step: int | None) -> None:
     """Start a writer generation in the current run root only; resume sources stay read-only."""
     if not generation:

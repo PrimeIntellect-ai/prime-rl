@@ -26,6 +26,7 @@ from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import (
     checkpoint_lifecycle_lock,
     complete_joint_ckpt_step,
+    ensure_checkpoint_generation,
     get_ckpt_dir,
     get_resume_ckpt_generations,
     get_retention_path,
@@ -41,7 +42,7 @@ class CheckpointManager:
     def __init__(self, output_dir: Path, config: CheckpointConfig) -> None:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
-        self.generation = read_checkpoint_generation(self.ckpt_dir)["generation"]
+        self.generation = ensure_checkpoint_generation(self.ckpt_dir)["generation"]
         self.prune_failures: set[int] = set()
 
     def get_ckpt_path(self, step: int) -> Path:
