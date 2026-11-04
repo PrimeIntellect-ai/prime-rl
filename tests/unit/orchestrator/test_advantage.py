@@ -290,6 +290,45 @@ def test_linear_turns_term_penalizes_more_turns():
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
+def test_linear_solved_scope_leaves_failed_rollouts_unshaped():
+    """With ``apply_to="solved"``, failed rollouts of any length share one advantage, while
+    solved ones are ranked by length against the longest solved rollout only."""
+    cfg = LinearLengthPenaltyConfig(
+        num_output_tokens_weight=0.2, num_input_tokens_weight=0.0, num_turns_weight=0.0, apply_to="solved"
+    )
+    advs = _grpo(_make_group(rewards=[1.0, 1.0, 0.0, 0.0], completion_lengths=[10, 20, 5, 400]), length_penalty=cfg)
+    assert advs[2] == pytest.approx(advs[3], abs=1e-6)
+    assert advs[0] > advs[1] > advs[2]
+    # pass rate 0.5; the longest solved rollout (20) takes the full 0.2 term, the shorter one half of it.
+    shaped = [1.0 - 0.5 * 0.2 * 0.5, 1.0 - 0.5 * 0.2, 0.0, 0.0]
+    baseline = sum(shaped) / 4
+    assert advs == pytest.approx([s - baseline for s in shaped], abs=1e-6)
+
+
+def test_linear_solved_scope_without_solves_is_plain_grpo():
+    """With no solved rollout, ``apply_to="solved"`` adds no penalty."""
+    cfg = LinearLengthPenaltyConfig(apply_to="solved")
+    group = _make_group(rewards=[0.0, 0.5, 0.0], completion_lengths=[10, 20, 30])
+    assert _grpo(group, length_penalty=cfg) == pytest.approx(
+        _grpo(_make_group(rewards=[0.0, 0.5, 0.0], completion_lengths=[10, 20, 30])), abs=1e-6
+    )
+
+
+def test_linear_all_scope_matches_default():
+    """``apply_to="all"`` is the default and leaves the penalty unchanged."""
+    lengths = [10, 20, 5, 400]
+    default = _grpo(
+        _make_group(rewards=[1.0, 1.0, 0.0, 0.0], completion_lengths=lengths),
+        length_penalty=LinearLengthPenaltyConfig(),
+    )
+    explicit = _grpo(
+        _make_group(rewards=[1.0, 1.0, 0.0, 0.0], completion_lengths=lengths),
+        length_penalty=LinearLengthPenaltyConfig(apply_to="all"),
+    )
+    assert default == explicit
+    assert default[2] > default[3]  # under "all", the longer failure is penalized more
+
+
 @pytest.mark.parametrize("subagent_token_weight", [0.0, 0.7, 1.0])
 @pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
 def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, term):
