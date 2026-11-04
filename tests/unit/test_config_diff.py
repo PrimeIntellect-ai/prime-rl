@@ -159,8 +159,12 @@ SOURCES_LIVE = {"source": [source("math", 2.0), source(None, 3.0, taskset="code"
             [source("math", 1.0, taskset="math-v2"), source(None, 1.0, taskset="code"), source("new", 5.0)],
             [source("math", 2.0, taskset="math-v2"), source(None, 3.0, taskset="code"), source("new", 5.0)],
         ),
+        (
+            [source("math", 1.0), source("code", 1.0, taskset="code")],
+            [source("math", 2.0), source("code", 3.0, taskset="code")],
+        ),
     ],
-    ids=["reordered", "replaced", "removed", "updated_and_added"],
+    ids=["reordered", "replaced", "removed", "updated_and_added", "named_as_resolved"],
 )
 def test_merge_resumed_config_matches_sources_by_name(launch, expected):
     assert merge_resumed_config(SOURCES, SOURCES_LIVE, {"source": launch}) == {"source": expected}

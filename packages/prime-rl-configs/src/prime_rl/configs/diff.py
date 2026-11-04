@@ -142,14 +142,20 @@ def merge_resumed_config(base: Any, applied: Any, launch: Any) -> Any:
     return launch
 
 
-def _source_key(item: Any) -> Any:
-    """The identity of a dumped source config: its name, else its env and taskset ids.
-    None for anything that is not a source."""
+def _source_key(item: Any) -> str | None:
+    """The identity of a dumped source config: its `resolved_name` (its name, else its env
+    id), the key `TrainSource` restores curricula by. None for anything that is not a source."""
     if not isinstance(item, dict) or "name" not in item or not isinstance(item.get("env"), dict):
         return None
+    if item["name"]:
+        return item["name"]
     env = item["env"]
     taskset = env.get("taskset")
-    return item["name"] or (env.get("id"), taskset.get("id") if isinstance(taskset, dict) else None)
+    taskset_id = taskset.get("id") if isinstance(taskset, dict) else None
+    # As `vf.EnvConfig.env_id`.
+    if taskset_id and env.get("id"):
+        return f"{env['id']}+{taskset_id}"
+    return taskset_id or env.get("id")
 
 
 _MISSING = object()
