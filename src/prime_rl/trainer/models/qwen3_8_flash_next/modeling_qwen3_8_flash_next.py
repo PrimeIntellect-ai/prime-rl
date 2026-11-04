@@ -24,7 +24,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen3_8FlashNextNGramHasher
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
-from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel, materialize_qwen_vl_images
+from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel, materialize_qwen_vl_media
 from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -220,8 +220,8 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
 
 
 class Qwen3_8FlashNextVLMModel(nn.Module):
-    """Composite (``qwen4_exp``) model: image embeddings replace the image placeholder embeddings, while PLE keeps
-    hashing the raw placeholder ids. ``language_model_only`` configs build no ``visual``."""
+    """Composite (``qwen4_exp``) model: image and video embeddings replace their placeholder embeddings, while PLE
+    keeps hashing the raw placeholder ids. ``language_model_only`` configs build no ``visual``."""
 
     def __init__(self, config: Qwen3_8FlashNextConfig) -> None:
         super().__init__()
@@ -244,20 +244,31 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         image_grid_thw: torch.LongTensor | None,
         mm_token_type_ids: torch.LongTensor | None,
         seq_lens: torch.LongTensor,
+        pixel_values_videos: torch.Tensor | None = None,
+        video_grid_thw: torch.LongTensor | None = None,
     ) -> tuple[torch.Tensor, torch.LongTensor]:
         vision_config = self.config.vision_config
         inputs_embeds = self.language_model.embed_tokens(input_ids)
         has_images = pixel_values is not None
-        vision_grid = image_grid_thw
-        if has_images:
-            pixel_values = pixel_values.to(self.visual.dtype)
-        else:
+        has_videos = pixel_values_videos is not None
+        # One vision call for images and videos, so every rank issues the same FSDP collectives.
+        vision_pixels = [pixel_values] if has_images else []
+        vision_grids = [image_grid_thw] if has_images else []
+        if has_videos:
+            vision_pixels.append(pixel_values_videos)
+            vision_grids.append(video_grid_thw)
+        if not vision_pixels:
             merge_size = vision_config.spatial_merge_size
             patch_dim = vision_config.in_channels * vision_config.temporal_patch_size * vision_config.patch_size**2
-            pixel_values = torch.zeros(merge_size**2, patch_dim, device=inputs_embeds.device, dtype=self.visual.dtype)
-            vision_grid = torch.tensor([[1, merge_size, merge_size]], device=inputs_embeds.device)
+            vision_pixels = [torch.zeros(merge_size**2, patch_dim, device=inputs_embeds.device)]
+            vision_grids = [torch.tensor([[1, merge_size, merge_size]], device=inputs_embeds.device)]
+        pixels = torch.cat([pixels.to(self.visual.dtype) for pixels in vision_pixels])
+        vision_embeds = self.visual(pixels, torch.cat(vision_grids)).pooler_output.to(inputs_embeds.dtype)
 
-        image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
+        num_image_embeds = (
+            int(image_grid_thw.prod(-1).sum()) // vision_config.spatial_merge_size**2 if has_images else 0
+        )
+        image_embeds, video_embeds = vision_embeds[:num_image_embeds], vision_embeds[num_image_embeds:]
         if has_images:
             image_mask = input_ids == self.config.image_token_id
             torch_compilable_check(
@@ -267,16 +278,26 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
             inputs_embeds = inputs_embeds.masked_scatter(
                 image_mask.unsqueeze(-1).expand_as(inputs_embeds), image_embeds
             )
-        else:
+        if has_videos:
+            video_mask = input_ids == self.config.video_token_id
+            torch_compilable_check(
+                video_mask.sum() * inputs_embeds.shape[-1] == video_embeds.numel(),
+                "Video features and video tokens do not match",
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(
+                video_mask.unsqueeze(-1).expand_as(inputs_embeds), video_embeds
+            )
+        if not has_images and not has_videos:
             # Every rank must retain the vision graph so FSDP collectives stay symmetric.
-            inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
+            inputs_embeds = inputs_embeds + vision_embeds.sum() * 0.0
 
-        if image_grid_thw is not None:
-            # Image inputs get MRoPE positions; text-only inputs keep the caller's positions.
+        if image_grid_thw is not None or video_grid_thw is not None:
+            # Image and video inputs get MRoPE positions; text-only inputs keep the caller's positions.
             position_ids = build_mrope_position_ids(
                 input_ids=input_ids,
                 mm_token_type_ids=mm_token_type_ids,
                 image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
                 spatial_merge_size=vision_config.spatial_merge_size,
                 seq_lens=seq_lens,
             )
@@ -290,6 +311,8 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        pixel_values_videos: torch.Tensor | None = None,
+        video_grid_thw: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
@@ -309,8 +332,11 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
             image_grid_thw,
             mm_token_type_ids,
             seq_lens,
+            pixel_values_videos,
+            video_grid_thw,
         )
-        if image_grid_thw is not None and self.cp_context.cp_enabled:
+        has_media = image_grid_thw is not None or video_grid_thw is not None
+        if has_media and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
             input_ids = shard_for_cp(input_ids, cp_rank=rank, cp_world_size=world_size)
@@ -349,7 +375,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.model.set_input_embeddings(embeddings)
 
-    materialize_images = staticmethod(materialize_qwen_vl_images)
+    materialize_images = staticmethod(materialize_qwen_vl_media)
 
     def num_active_params(self) -> int:
         if not self.is_vlm:
@@ -368,6 +394,8 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
+        pixel_values_videos: torch.Tensor | None = None,
+        video_grid_thw: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
@@ -381,6 +409,8 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
                 image_grid_thw=image_grid_thw,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=routed_experts,
+                pixel_values_videos=pixel_values_videos,
+                video_grid_thw=video_grid_thw,
                 seq_lens=seq_lens,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )

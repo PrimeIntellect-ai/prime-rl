@@ -88,12 +88,20 @@ def build_mrope_position_ids(
     image_grid_thw: torch.LongTensor | None,
     spatial_merge_size: int,
     seq_lens: torch.Tensor,
+    video_grid_thw: torch.LongTensor | None = None,
 ) -> torch.LongTensor:
     """``[3, 1, seq]`` MRoPE positions for a packed row: text advances all three axes together, each image spans
-    its (temporal, height, width) grid from the current position, and positions restart at every sequence."""
+    its (temporal, height, width) grid from the current position, and positions restart at every sequence.
+    A video's temporal patches are separated by timestamp text, so each one spans a ``(1, height, width)`` grid,
+    as in vLLM's Qwen3-VL ``get_mrope_input_positions``."""
     seq_lens = seq_lens.to(device=input_ids.device, dtype=torch.long)
 
     image_grids = iter(image_grid_thw) if image_grid_thw is not None else None
+    video_grids = None
+    if video_grid_thw is not None:
+        frame_grids = video_grid_thw.repeat_interleave(video_grid_thw[:, 0], dim=0)
+        frame_grids[:, 0] = 1
+        video_grids = iter(frame_grids)
     position_ids = torch.empty(3, 1, input_ids.shape[1], dtype=input_ids.dtype, device=input_ids.device)
     offset = 0
     for sequence_length_tensor in seq_lens:
@@ -110,27 +118,29 @@ def build_mrope_position_ids(
                 sequence_positions.append(text_positions.unsqueeze(0).expand(3, -1))
                 current_position += group_length
                 continue
-            if modality != 1:
+            if modality not in (1, 2):
                 raise ValueError(f"Unsupported Qwen3.8 Flash Next multimodal token type: {modality}")
-            if image_grids is None:
-                raise ValueError("image_grid_thw is required for image tokens")
+            name = "image" if modality == 1 else "video"
+            grids = image_grids if modality == 1 else video_grids
+            if grids is None:
+                raise ValueError(f"{name}_grid_thw is required for {name} tokens")
 
             remaining = group_length
             while remaining:
-                grid = next(image_grids, None)
+                grid = next(grids, None)
                 if grid is None:
-                    raise ValueError("Not enough image_grid_thw rows for the image tokens")
-                image_positions = get_vision_position_ids(
+                    raise ValueError(f"Not enough {name}_grid_thw rows for the {name} tokens")
+                vision_positions = get_vision_position_ids(
                     start_position=current_position,
                     grid_thw=grid,
                     spatial_merge_size=spatial_merge_size,
                     device=input_ids.device,
                 )
-                if image_positions.shape[1] > remaining:
-                    raise ValueError("Image token group length does not match image_grid_thw")
-                sequence_positions.append(image_positions)
+                if vision_positions.shape[1] > remaining:
+                    raise ValueError(f"{name.capitalize()} token group length does not match {name}_grid_thw")
+                sequence_positions.append(vision_positions)
                 current_position += max(int(grid[1]), int(grid[2])) // spatial_merge_size
-                remaining -= image_positions.shape[1]
+                remaining -= vision_positions.shape[1]
 
         positions = torch.cat(sequence_positions, dim=1)
         if positions.shape[1] != sequence_length:
@@ -140,6 +150,8 @@ def build_mrope_position_ids(
 
     if image_grids is not None and next(image_grids, None) is not None:
         raise ValueError("image_grid_thw contains unused rows")
+    if video_grids is not None and next(video_grids, None) is not None:
+        raise ValueError("video_grid_thw contains unused rows")
     return position_ids
 
 

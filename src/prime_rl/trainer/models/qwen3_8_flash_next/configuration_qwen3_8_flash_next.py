@@ -171,6 +171,7 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
         text_config: Qwen3_8FlashNextTextConfig | dict | None = None,
         vision_config: Qwen3_8FlashNextVisionConfig | dict | None = None,
         image_token_id: int = 248056,
+        video_token_id: int = 248057,
         vision_start_token_id: int = 248053,
         vision_end_token_id: int = 248054,
         language_model_only: bool = False,
@@ -184,6 +185,7 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
             vision_config = Qwen3_8FlashNextVisionConfig(**vision_config)
         self.vision_config = vision_config or Qwen3_8FlashNextVisionConfig()
         self.image_token_id = image_token_id
+        self.video_token_id = video_token_id
         self.vision_start_token_id = vision_start_token_id
         self.vision_end_token_id = vision_end_token_id
         # Text-only checkpoint: no vision tower is built (vLLM's `--language-model-only`).

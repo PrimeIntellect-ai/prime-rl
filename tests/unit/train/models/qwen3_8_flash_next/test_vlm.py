@@ -60,6 +60,7 @@ def get_vlm_config():
             out_hidden_size=256,
         ),
         image_token_id=250,
+        video_token_id=251,
         vision_start_token_id=252,
         vision_end_token_id=253,
     )
@@ -87,10 +88,22 @@ def get_image_inputs(config, device="cuda", dtype=torch.bfloat16, image_grid=(1,
     return pixel_values, image_grid_thw, num_image_tokens
 
 
-def get_mm_token_type_ids(input_ids, image_token_id):
+def get_mm_token_type_ids(input_ids, image_token_id, video_token_id=251):
     mm_token_type_ids = torch.zeros_like(input_ids)
     mm_token_type_ids[input_ids == image_token_id] = 1
+    mm_token_type_ids[input_ids == video_token_id] = 2
     return mm_token_type_ids
+
+
+def get_video_inputs(config, device="cuda", dtype=torch.bfloat16, video_grid=(2, 4, 4)):
+    """Video inputs and vLLM's placeholder layout: per temporal patch, timestamp text, then the pads in markers."""
+    pixel_values_videos, video_grid_thw, num_video_tokens = get_image_inputs(config, device, dtype, video_grid)
+    frame_tokens = num_video_tokens // video_grid[0]
+    placeholder = []
+    for frame in range(video_grid[0]):
+        placeholder += [40 + frame, 41, config.vision_start_token_id]
+        placeholder += [config.video_token_id] * frame_tokens + [config.vision_end_token_id]
+    return pixel_values_videos, video_grid_thw, torch.tensor([placeholder], device=device)
 
 
 def get_seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
@@ -126,6 +139,55 @@ def test_vlm_forward():
         seq_lens=get_seq_lens(input_ids_mm),
     )
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("with_image", [False, True])
+def test_vlm_video_forward_backward(with_image):
+    """Videos, alone or next to an image, go through one vision call and reach the logits and the vision weights."""
+    config = get_vlm_config()
+    model = get_model(config)
+    pixel_values_videos, video_grid_thw, video_part = get_video_inputs(config)
+    text_part = torch.randint(0, 200, (1, 10), device="cuda")
+    parts = [text_part[:, :3], video_part, text_part[:, 3:6]]
+    mm_kwargs = {"pixel_values_videos": pixel_values_videos, "video_grid_thw": video_grid_thw}
+    if with_image:
+        pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
+        parts.append(torch.full((1, n_img_tokens), config.image_token_id, device="cuda"))
+        mm_kwargs |= {"pixel_values": pixel_values, "image_grid_thw": image_grid_thw}
+    input_ids = torch.cat([*parts, text_part[:, 6:]], dim=1)
+
+    def run(video_scale):
+        kwargs = dict(mm_kwargs, pixel_values_videos=mm_kwargs["pixel_values_videos"] * video_scale)
+        return model(
+            input_ids=input_ids,
+            mm_token_type_ids=get_mm_token_type_ids(input_ids, config.image_token_id, config.video_token_id),
+            seq_lens=get_seq_lens(input_ids),
+            **kwargs,
+        )["logits"]
+
+    logits = run(1.0)
+    assert logits.shape == (1, input_ids.shape[1], config.text_config.vocab_size)
+    assert not torch.equal(logits, run(-1.0))
+    logits.sum().backward()
+    assert model.model.visual.patch_embed.proj.weight.grad is not None
+
+
+@pytest.mark.gpu
+def test_vlm_rejects_video_feature_count_mismatch():
+    config = get_vlm_config()
+    model = get_model(config)
+    pixel_values_videos, video_grid_thw, video_part = get_video_inputs(config)
+    input_ids = torch.cat([torch.tensor([[10]], device="cuda"), video_part[:, :-2], video_part[:, -1:]], dim=1)
+
+    with pytest.raises(ValueError, match="Video features and video tokens do not match"):
+        model(
+            input_ids=input_ids,
+            pixel_values_videos=pixel_values_videos,
+            video_grid_thw=video_grid_thw,
+            mm_token_type_ids=get_mm_token_type_ids(input_ids, config.image_token_id, config.video_token_id),
+            seq_lens=get_seq_lens(input_ids),
+        )
 
 
 @pytest.mark.gpu
@@ -357,9 +419,9 @@ def test_mrope_rejects_image_length_grid_mismatch():
 
 def test_mrope_rejects_unsupported_modalities():
     input_ids = torch.tensor([[10, 99]])
-    mm_token_type_ids = torch.tensor([[0, 2]])
+    mm_token_type_ids = torch.tensor([[0, 3]])
 
-    with pytest.raises(ValueError, match="Unsupported Qwen3.8 Flash Next multimodal token type: 2"):
+    with pytest.raises(ValueError, match="Unsupported Qwen3.8 Flash Next multimodal token type: 3"):
         build_mrope_position_ids(
             input_ids=input_ids,
             mm_token_type_ids=mm_token_type_ids,

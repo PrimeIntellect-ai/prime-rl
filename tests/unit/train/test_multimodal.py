@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from prime_rl.trainer.models.qwen3_5.vision import materialize_qwen_vl_images
-from prime_rl.transports.batch import MMImageRef, MMRefs
+from prime_rl.transports.batch import MMImageRef, MMRefs, MMVideoRef
 
 _IMAGE_URL = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -30,3 +30,9 @@ def test_qwen_images_materialize_and_validate_expansion():
     assert set(materialize_qwen_vl_images(_refs(2), processor)) == {"pixel_values", "image_grid_thw"}
     with pytest.raises(ValueError, match="placeholder lengths differ"):
         materialize_qwen_vl_images(_refs(1), processor)
+
+
+def test_qwen35_images_reject_videos():
+    refs = MMRefs(images=[], videos=[MMVideoRef(url="data:video/mp4;base64,AAAA", offset=1, length=2)])
+    with pytest.raises(ValueError, match="does not support video"):
+        materialize_qwen_vl_images(refs, SimpleNamespace())
