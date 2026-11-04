@@ -11,14 +11,15 @@ model = "internal/deepseek-v4.1-flash-1017-ci"
 group_size = 1
 dashboard = false
 
-# Rollouts have no timeout, and the tasks' own agent and verifier timeouts are
-# dropped, so a slow endpoint shows up as time to finish, not as failed tasks.
+# The tasks' own agent and verifier timeouts are dropped. One 4 h agent budget
+# replaces them, so the eval fits in the 6 h CI job limit. A rollout that runs
+# out of time gets no score (reward 0), so a slow endpoint lowers accuracy and
+# raises time to finish, but does not count as an error. Failed rollouts are not
+# retried: a retry would start a new 4 h budget late in the run.
 [[source]]
 env.taskset.id = "pi-terminalbench2-1"
 env.taskset.ignore_timeouts = true
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
-env.agent.retries.rules = [
-  {type = "ProviderError", max_retries = 1},
-  {type = "SandboxError", max_retries = 1},
-]
+env.agent.timeout.rollout = 14400
+env.agent.scoring.skip_on_timeout = true
