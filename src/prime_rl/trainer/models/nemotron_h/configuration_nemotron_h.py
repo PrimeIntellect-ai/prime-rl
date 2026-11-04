@@ -92,7 +92,11 @@ class NemotronHConfig(PretrainedConfig):
         self.expand = expand
         self.time_step_min = time_step_min
         self.time_step_max = time_step_max
-        self.time_step_limit = time_step_limit
+        self.time_step_limit = (
+            tuple(float(value["__float__"]) if isinstance(value, dict) else value for value in time_step_limit)
+            if time_step_limit is not None
+            else None
+        )
         self.time_step_floor = time_step_floor
         self.use_conv_bias = use_conv_bias
         self.chunk_size = chunk_size
@@ -137,4 +141,29 @@ class NemotronHConfig(PretrainedConfig):
         self.layers_block_type = self.layers_block_type[:value]
 
 
-__all__ = ["NemotronHConfig"]
+class NemotronHOmniConfig(PretrainedConfig):
+    """Nemotron-H Omni checkpoint metadata for text-only training."""
+
+    model_type = "nemotron_h_omni"
+    sub_configs = {"llm_config": NemotronHConfig}
+
+    def __init__(
+        self,
+        llm_config: dict | NemotronHConfig | None = None,
+        tie_word_embeddings: bool = False,
+        **kwargs,
+    ) -> None:
+        self.llm_config = (
+            NemotronHConfig(**llm_config) if isinstance(llm_config, dict) else llm_config
+        ) or NemotronHConfig()
+        kwargs.setdefault("pad_token_id", self.llm_config.pad_token_id)
+        kwargs.setdefault("bos_token_id", self.llm_config.bos_token_id)
+        kwargs.setdefault("eos_token_id", self.llm_config.eos_token_id)
+        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
+
+    @property
+    def text_config(self) -> NemotronHConfig:
+        return self.llm_config
+
+
+__all__ = ["NemotronHConfig", "NemotronHOmniConfig"]

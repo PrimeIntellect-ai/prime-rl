@@ -8,7 +8,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputL
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig, NemotronHOmniConfig
 from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     conversion_chain,
     is_hf_state_dict,
@@ -129,7 +129,7 @@ class NemotronHDecoderLayer(nn.Module):
 
 
 class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
-    config: NemotronHConfig
+    config: NemotronHConfig | NemotronHOmniConfig
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -144,7 +144,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
         return is_prime_state_dict(state_dict)
 
     @classmethod
-    def conversion_chain(cls, config: NemotronHConfig):
+    def conversion_chain(cls, config: NemotronHConfig | NemotronHOmniConfig):
         return conversion_chain(config)
 
     @classmethod
@@ -196,10 +196,11 @@ class NemotronHModel(NemotronHPreTrainedModel):
 
 
 class NemotronHForCausalLM(NemotronHPreTrainedModel):
-    def __init__(self, config: NemotronHConfig) -> None:
+    def __init__(self, config: NemotronHConfig | NemotronHOmniConfig) -> None:
         super().__init__(config)
-        self.model = NemotronHModel(config)
-        self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
+        text_config = getattr(config, "text_config", config)
+        self.model = NemotronHModel(text_config)
+        self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
 
     def forward(
         self,
