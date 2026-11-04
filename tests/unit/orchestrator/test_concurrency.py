@@ -1,8 +1,10 @@
 import pytest
 
-from prime_rl.configs.orchestrator import ConcurrencyConfig, RecomputeConfig
+from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.orchestrator.concurrency import (
-    QUEUE_PERSISTENCE_POLLS,
+    LOAD_WINDOW_POLLS,
+    RESUME_SKIP_POLLS,
+    THROUGHPUT_WINDOW_POLLS,
     ConcurrencyController,
     EngineLoadSample,
     quantile,
@@ -18,7 +20,8 @@ def engine(
     kv_usage: float = 0.3,
     preemptions: int = 0,
     finished: int = 0,
-    expired: int = 0,
+    generated: int = 0,
+    latency: float = 0.0,
     host_kv_usage: float | None = None,
 ) -> EngineLoadSample:
     return EngineLoadSample(
@@ -32,19 +35,34 @@ def engine(
         waiting_capacity=None,
         preemptions_delta=preemptions,
         finished_delta=finished,
-        expired_kv_delta=expired,
+        generation_tokens_delta=generated,
+        latency_delta=latency,
         host_kv_usage=host_kv_usage,
     )
 
 
-def controller(inflight: int = 20, recompute: bool = False) -> tuple[ConcurrencyController, list[int], list[int]]:
-    config = ConcurrencyConfig(
-        initial_inflight=20, recompute=RecomputeConfig(grow_below=0.4, trim_above=0.7) if recompute else None
-    )
-    ctl = ConcurrencyController(config, fallback_cost=1)
-    limits, cancelled = [], []
-    ctl.bind(set_limit=limits.append, get_inflight=lambda: inflight, on_overload=cancelled.append)
-    return ctl, limits, cancelled
+class Pool:
+    """The dispatcher side: units in flight, and what the controller asked for."""
+
+    def __init__(self, inflight: int):
+        self.inflight = inflight
+        self.limits: list[int] = []
+        self.cancelled: list[int] = []
+
+
+def controller(inflight: int = 100, measured: bool = True) -> tuple[ConcurrencyController, Pool]:
+    ctl = ConcurrencyController(ConcurrencyConfig(initial_inflight=100), fallback_cost=1)
+    pool = Pool(inflight)
+    ctl.bind(set_limit=pool.limits.append, get_inflight=lambda: pool.inflight, on_overload=pool.cancelled.append)
+    if measured:
+        ctl.record_calls(1_000_000, 0)
+    return ctl, pool
+
+
+def turnover(ctl: ConcurrencyController, pool: Pool) -> None:
+    """Every unit in flight completes (and is replaced) a little over once."""
+    for _ in range(pool.inflight + 1):
+        ctl.record_episode(10_000)
 
 
 def test_quantile_interpolates():
@@ -52,67 +70,119 @@ def test_quantile_interpolates():
     assert quantile([0.0, 0.0, 0.2, 1.0], 0.9) == pytest.approx(0.76)
 
 
-def test_kv_trim_ignores_one_hot_engine():
-    ctl, limits, _ = controller()
-    ctl.observe([engine("e0", kv_usage=0.95), *(engine(f"e{i}", kv_usage=0.1) for i in range(1, 4))])
-    assert ctl.kv_usage < 0.8 and limits == []
+def test_queued_share_adds_roles_and_counts_idle_units():
+    ctl, _ = controller(inflight=60)
+    # Prefill queue plus decode's pending KV pulls, over all units in flight (most of them idle on tools)
+    ctl.observe([engine("p0", "prefill", running=2, waiting=4), engine("d0", "decode", running=40, waiting=2)])
+    assert ctl.queued_share == pytest.approx(0.1)
+    assert ctl.queued_share_by_role == {"prefill": pytest.approx(4 / 60), "decode": pytest.approx(2 / 60)}
+    assert ctl.growth_multiplier == 1.0 and ctl.signal == "soft"
+    assert ctl.capacity == 1_000_000  # the running set's capacity: decode engines only
 
+
+def test_growth_per_turnover_tapers_with_the_queue():
+    ctl, pool = controller()
+    turnover(ctl, pool)
+    ctl.observe([engine()])
+    assert ctl.cap == pytest.approx(300, rel=0.02)  # empty queues: x3 per turnover
+
+    ctl, pool = controller()
+    turnover(ctl, pool)
+    ctl.observe([engine(waiting=5)])  # halfway to the target
+    assert ctl.cap == pytest.approx(200, rel=0.02)
+
+    ctl, pool = controller(inflight=50)
+    turnover(ctl, pool)
+    ctl.observe([engine()])
+    assert pool.limits == []  # the cap does not bind admission
+
+
+def test_queue_trims_the_surplus_without_cancelling():
+    ctl, pool = controller()
+    for _ in range(LOAD_WINDOW_POLLS):
+        ctl.observe([engine(waiting=30)])
+    assert pool.limits == [int(100 * (1 - 0.3 + 0.1))] and pool.cancelled == []  # the units queued past the target
+
+    ctl.observe([engine(waiting=30)])
+    assert len(pool.limits) == 1  # no repeat before the pool drained to the cap
+
+
+def test_queue_still_overloaded_after_a_drained_trim_cancels():
+    ctl, pool = controller()
+    for _ in range(LOAD_WINDOW_POLLS):
+        ctl.observe([engine(waiting=30)])
+    pool.inflight = pool.limits[-1]
+    turnover(ctl, pool)
+    for _ in range(LOAD_WINDOW_POLLS):
+        ctl.observe([engine(waiting=int(0.6 * pool.inflight))])
+    target = int(pool.inflight * (1 - 0.6 + 0.1))
+    assert pool.limits[1:] == [target] and pool.cancelled == [pool.inflight - target]
+
+
+def test_kv_gauge_applies_until_recompute_is_measured():
+    ctl, pool = controller(measured=False)
+    ctl.observe([engine("e0", kv_usage=0.95), *(engine(f"e{i}", kv_usage=0.1) for i in range(1, 4))])
+    assert pool.limits == []  # one hot engine is a placement problem
     ctl.observe([engine(f"e{i}", kv_usage=0.85) for i in range(4)])
-    assert limits == [16]  # pool-wide pressure still soft-trims (20 * 0.7 / 0.85)
+    assert pool.limits == [82] and pool.cancelled == []  # 100 * 0.7 / 0.85, soft
+
+    ctl, pool = controller()
+    ctl.observe([engine(f"e{i}", kv_usage=0.85) for i in range(4)])
+    assert pool.limits == []  # measured recompute: the gauge misses idle sessions' evicted caches
 
 
 def test_hisparse_host_pool_replaces_the_gpu_gauge():
-    ctl, _, _ = controller()
+    ctl, _ = controller()
     ctl.observe([engine(kv_usage=0.95, host_kv_usage=0.2)])
     assert ctl.kv_usage == 0.2
 
 
-def test_preemptions_cut_by_pooled_rate():
-    ctl, limits, cancelled = controller()
-    ctl.observe([engine(f"e{i}", finished=50) for i in range(4)])
-    ctl.observe([engine("e0", preemptions=1, finished=50), *(engine(f"e{i}", finished=50) for i in range(1, 4))])
-    assert ctl.preemption_rate == 1 / 400 and ctl.signal == "clear" and limits == []
+def test_preemption_rate_trims_without_cancelling():
+    ctl, pool = controller()
+    ctl.observe([engine(f"e{i}", finished=50, preemptions=1 if i == 0 else 0) for i in range(4)])
+    assert ctl.preemption_rate == 1 / 200 and pool.limits == []
 
-    ctl.observe([engine(f"e{i}", preemptions=2, finished=50) for i in range(4)])
-    assert ctl.signal == "hard" and limits == [16] and cancelled == [4]
-
-
-def test_prefill_saturation_binds_in_pd():
-    ctl, limits, cancelled = controller()
-    samples = [engine("p0", "prefill", running=2, waiting=4), engine("d0", "decode", running=40)]
-    ctl.observe(samples)
-    assert ctl.saturation_by_role == {"prefill": 2.0, "decode": 0.0}
-    assert not ctl.can_grow
-    for _ in range(QUEUE_PERSISTENCE_POLLS - 1):
-        ctl.observe(samples)
-    assert limits == [18] and cancelled == [2]  # persistent prefill queue: the cliff
-    assert ctl.capacity == 1_000_000  # bootstrap capacity counts decode engines only
+    ctl.observe([engine(f"e{i}", finished=50, preemptions=10) for i in range(4)])
+    assert pool.limits == [80] and pool.cancelled == [] and ctl.ceiling == 100
 
 
 def test_weight_update_pause_freezes_and_skips_the_backlog():
-    ctl, limits, _ = controller()
+    ctl, pool = controller()
     ctl.pause()
     ctl.observe([engine(running=0, waiting=50, preemptions=5)])
-    assert ctl.signal == "clear" and not ctl.load_polls
+    assert not ctl.polls
 
     ctl.resume()
-    backlog = [engine(running=10, waiting=20)]
-    for _ in range(QUEUE_PERSISTENCE_POLLS):
-        ctl.observe(backlog)
-    assert limits == [] and ctl.queue_overload_polls == 0 and not ctl.can_grow
-    for _ in range(QUEUE_PERSISTENCE_POLLS):
-        ctl.observe(backlog)
-    assert limits == [18]  # past the window a persistent queue cuts again
+    for _ in range(RESUME_SKIP_POLLS):
+        ctl.observe([engine(waiting=50)])
+    assert not ctl.polls and pool.limits == []
+    for _ in range(LOAD_WINDOW_POLLS):
+        ctl.observe([engine(waiting=50)])
+    assert pool.limits == [int(100 * (1 - 0.5 + 0.1))]  # past the backlog a standing queue trims again
 
 
-def test_expired_leases_trim_busy_engines():
-    ctl, limits, cancelled = controller(recompute=True)
-    ctl.record_calls(1_000_000, 0)
-    ctl.observe(
-        [
-            engine("p0", "prefill", running=4, waiting=1, finished=100, expired=5),
-            engine("d0", "decode", running=40, finished=100),
-        ]
-    )
-    assert ctl.expired_lease_rate == 0.05 and ctl.waste == 0.05 and ctl.engines_busy
-    assert limits == [18] and cancelled == []
+def test_throughput_cliff_cuts_and_cancels():
+    ctl, pool = controller()
+    turnover(ctl, pool)  # a pool that turned over carries its steady load
+    healthy = [engine(waiting=10, finished=10, generated=1000, latency=20.0)]
+    for _ in range(THROUGHPUT_WINDOW_POLLS):
+        ctl.observe(healthy)
+    assert ctl.best_throughput == 1000
+
+    thrashing = [engine(waiting=10, finished=4, generated=400, latency=4 * 10.0)]  # 10 s per call, was 2 s
+    polls = 0
+    while not pool.cancelled:
+        ctl.observe(thrashing)
+        polls += 1
+    assert polls > 1.5 * THROUGHPUT_WINDOW_POLLS  # the window filled with the thrash, then it held for a window
+    assert pool.limits == [50] and pool.cancelled == [50] and ctl.ceiling == 50  # cut to half at most
+
+
+def test_slower_environment_is_not_a_cliff():
+    ctl, pool = controller()
+    turnover(ctl, pool)
+    for _ in range(THROUGHPUT_WINDOW_POLLS):
+        ctl.observe([engine(waiting=10, finished=10, generated=1000, latency=20.0)])
+    for _ in range(2 * THROUGHPUT_WINDOW_POLLS):
+        ctl.observe([engine(waiting=10, finished=4, generated=400, latency=8.0)])  # fewer calls, as fast
+    assert pool.cancelled == []

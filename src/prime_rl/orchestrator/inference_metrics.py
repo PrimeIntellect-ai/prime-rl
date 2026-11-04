@@ -236,6 +236,14 @@ def counter_delta(sample: EngineSample, previous: TimedSnapshot | None, names: t
     return delta
 
 
+def histogram_sum_delta(sample: EngineSample, previous: TimedSnapshot | None, name: str) -> float:
+    """Increase of a histogram's ``_sum`` since the previous scrape (0 on the first scrape or a reset)."""
+    if previous is None or name not in sample.snapshot.histograms:
+        return 0.0
+    delta = sample.snapshot.histograms[name].sum - previous.snapshot.histograms.get(name, HistogramSnapshot()).sum
+    return max(delta, 0.0)
+
+
 def build_scope_metrics(
     scope: str,
     values_per_engine: list[dict[str, float]],
@@ -418,6 +426,8 @@ class InferenceMetricsCollector:
                 sample, previous, ("nixl_num_kv_expired_reqs", "nixl_num_kv_expired_reqs_total")
             ),
             host_kv_usage=sample.snapshot.gauges.get("hisparse_host_cache_usage_perc"),
+            generation_tokens_delta=counter_delta(sample, previous, ("generation_tokens", "generation_tokens_total")),
+            latency_delta=histogram_sum_delta(sample, previous, "e2e_request_latency_seconds"),
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

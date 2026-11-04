@@ -437,38 +437,9 @@ class CheckpointConfig(BaseConfig):
     """Step interval at which to save the orchestrator checkpoint."""
 
 
-class RecomputeConfig(BaseConfig):
-    """Recompute-aware concurrency control. The recompute ratio is the share of
-    each model call's already-computed prefix (the previous call's prompt) that
-    the engine prefilled again instead of hitting its prefix cache, windowed over
-    the last minute of calls. While it is measured, waste (the ratio plus, in
-    P/D, the share of prefills whose KV lease expired) replaces the GPU-KV usage
-    gauge for growth and trims: the gauge counts only running requests and is
-    blind to the evicted caches of episodes idle between turns. Waste brakes only
-    while the engines are busy, preemptions trim without cancelling, and the
-    queue cut still applies. Calls that do not report cached tokens are skipped,
-    so without them the controller behaves as if this were unset."""
-
-    grow_below: float = Field(0.4, gt=0, le=1)
-    """Grow the cap only while the recompute ratio is below this. Growth tapers
-    linearly to zero as the ratio approaches it. Lower it for models whose
-    prefill is expensive relative to decode."""
-
-    trim_above: float = Field(0.7, gt=0, le=1)
-    """Above this recompute ratio, lower the cap to 90% of the in-flight pool.
-    Nothing is cancelled: completions drain the pool to the new cap, and the trim
-    does not repeat until they have and a full window has been measured since."""
-
-    @model_validator(mode="after")
-    def validate_thresholds(self):
-        if self.trim_above < self.grow_below:
-            raise ValueError("concurrency.recompute.trim_above must not be below grow_below")
-        return self
-
-
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
-    in-flight episode cap from engine KV pressure; these fields only bound and
+    in-flight episode cap from engine load; these fields only bound and
     seed it."""
 
     initial_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
@@ -477,12 +448,8 @@ class ConcurrencyConfig(BaseConfig):
     min_inflight: Annotated[int, Live()] = Field(1, ge=1)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: Annotated[int | None, Live()] = Field(1024, ge=1)
-    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
-
-    recompute: RecomputeConfig | None = None
-    """Recompute-aware control (experimental). If None, the measured recompute
-    ratio is only reported as ``concurrency/recompute_ratio``."""
+    max_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
+    """Maximum number of in-flight episodes. None (the default) leaves the cap to the controller. Set it to bound other external resources the episodes hold (e.g. sandboxes)."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
