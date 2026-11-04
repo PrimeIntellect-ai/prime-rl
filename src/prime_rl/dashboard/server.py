@@ -240,8 +240,10 @@ def resolved_config_dir(run_dir: Path, attempt: str = "latest") -> Path:
 
 def main_config(run_dir: Path) -> tuple[str, dict]:
     configs = resolved_config_dir(run_dir)
-    if (configs / "sft.json").exists():
-        return "sft", read_json(configs / "sft.json")
+    # Pretraining uses the same trainer as SFT, so the dashboard shows its runs as SFT runs.
+    for name in ("sft.json", "pretrain.json"):
+        if (configs / name).exists():
+            return "sft", read_json(configs / name)
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
     if (configs / "eval.json").exists():

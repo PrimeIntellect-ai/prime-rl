@@ -150,7 +150,7 @@ def test_online_evals_share_the_launchers_run(sdk_runs, tmp_path):
     """The sft launcher registers the run and makes its id the run identity; the trainer
     and the online-eval process attach to it and only flush. The launcher finishes the
     run once both exited."""
-    from prime_rl.entrypoints.sft import build_online_eval_config
+    from prime_rl.entrypoints.launcher import build_online_eval_config
     from prime_rl.monitors.prime import launch_run
 
     config = _sft_config(
@@ -195,7 +195,7 @@ def test_slurm_run_owner_fails_the_run_with_its_step(sdk_runs, tmp_path, monkeyp
     its id to the step, and finishes the run when the step succeeds or fails it when the
     step fails."""
     from prime_rl.entrypoints import run_owner
-    from prime_rl.entrypoints.sft import write_config
+    from prime_rl.entrypoints.launcher import write_config
 
     monkeypatch.setenv("RUN_ID", "")
     monkeypatch.setattr(run_owner.signal, "signal", lambda *args: None)

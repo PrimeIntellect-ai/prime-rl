@@ -627,6 +627,33 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def clear_padding_idx(model: nn.Module) -> None:
+    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
+    embedding at zero and keep it frozen, also after a resume."""
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            module.padding_idx = None
+
+
+@torch.no_grad()
+def initialize_from_scratch(model: nn.Module) -> None:
+    """Initialize the weights with the model's own init (``initialize_weights``, which applies its
+    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
+    get_logger().info("Initializing the weights from scratch")
+    model.to_empty(device="cuda")
+    torch.distributed.barrier()
+    model.init_buffers_post_meta()
+    local_params = {
+        name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
+    }
+    for param in local_params.values():
+        param.fill_(float("nan"))
+    model.initialize_weights()
+    uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
+    if uninitialized:
+        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -903,6 +930,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -965,6 +993,8 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
+    if init_from_scratch:
+        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
@@ -973,6 +1003,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
+    elif init_from_scratch:
+        initialize_from_scratch(model)
     else:
         load_dcp_from_hf(model, config)
 
