@@ -169,6 +169,7 @@ override-dependencies = [
 # `uv sync --all-packages`.
 [tool.uv.workspace]
 members = [
+    "environments/prebuilt_harbor",
     "deps/prime-envs/environments/*/*",
     "deps/verifiers/environments/alphabet_sort",
     "deps/verifiers/environments/color_codeword",

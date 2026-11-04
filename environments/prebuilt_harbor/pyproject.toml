@@ -1,0 +1,17 @@
+[project]
+name = "prebuilt-harbor"
+version = "0.1.0"
+description = "Harbor tasks graded in separate verifier boxes from prebuilt images, loaded from a local directory or a Hugging Face dataset archive."
+tags = ["harbor", "terminal", "multi-turn", "sandbox", "v1"]
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers[harbor]",
+    "huggingface-hub",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["prebuilt_harbor"]
