@@ -535,7 +535,8 @@ class MegaMoEExpertCompute:
         precision: MegaMoePrecision = "bf16",
     ) -> None:
         if not mega_moe_available(precision):
-            kernels = " and ".join(f"`{name}`" for name in _REQUIRED_KERNELS[precision])
+            names = [*_REQUIRED_KERNELS[precision], *(["SymmBuffer.num_bytes"] if precision == "mxfp8_qat" else [])]
+            kernels = " and ".join(f"`{name}`" for name in names)
             raise RuntimeError(
                 f"Mega MoE `{precision}` requires an SM{_MIN_CAPABILITY[precision][0]}0+ GPU and the "
                 "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed over the public one; "
