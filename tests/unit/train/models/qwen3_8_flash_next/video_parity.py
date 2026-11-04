@@ -90,7 +90,7 @@ def run_vllm(args: argparse.Namespace) -> None:
         engram_config={"cpu_offload": True} if has_ngram_embeddings else None,
         max_model_len=4096,
         gpu_memory_utilization=0.85,
-        enable_prefix_caching=False,
+        enable_prefix_caching=True,  # required for returning routed experts; nothing to reuse in one request
         limit_mm_per_prompt={"image": 0, "video": 1},
         mm_processor_cache_gb=0,
         # The trainer replays the experts vLLM routed to (trainer.enable_router_replay)
