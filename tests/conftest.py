@@ -94,12 +94,13 @@ Command = list[str]
 class ProcessResult:
     """Result object containing process information and captured output."""
 
-    def __init__(self, process: subprocess.Popen):
+    def __init__(self, process: subprocess.Popen, timed_out: bool = False):
         self.returncode = process.returncode
         self.pid = process.pid
+        self.timed_out = timed_out
 
     def __repr__(self):
-        return f"ProcessResult(returncode={self.returncode}, pid={self.pid})"
+        return f"ProcessResult(returncode={self.returncode}, pid={self.pid}, timed_out={self.timed_out})"
 
 
 @pytest.fixture(scope="module")
@@ -109,9 +110,11 @@ def run_process() -> Callable[[Command, Environment, int], ProcessResult]:
     def _run_process(command: Command, env: Environment = {}, timeout: int | None = None) -> ProcessResult:
         """Run a subprocess with given command and environment with a timeout"""
         process = subprocess.Popen(command, env={**os.environ, **env})
+        timed_out = False
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            timed_out = True
             cleanup_process(process.pid, signal.SIGTERM)
             try:
                 process.wait(timeout=30)
@@ -119,6 +122,6 @@ def run_process() -> Callable[[Command, Environment, int], ProcessResult]:
                 cleanup_process(process.pid, signal.SIGKILL)
                 process.wait()
 
-        return ProcessResult(process)
+        return ProcessResult(process, timed_out)
 
     return _run_process
