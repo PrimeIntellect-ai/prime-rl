@@ -41,6 +41,7 @@ def sft_args(case: Case, model_name: str) -> list[str]:
     tiny_model = case.arch.model
     args = ["@", (CONFIG_DIR / "base.toml").as_posix(), "--model.name", model_name]
     args += ["--tokenizer.name", tiny_model.tokenizer, "--deployment.num-train-gpus", str(NUM_GPUS)]
+    args += ["--no-monitors.prime"]
     if tiny_model.renderer is not None:
         args += ["--renderer.name", tiny_model.renderer]
     return args + to_cli(case.overrides())
