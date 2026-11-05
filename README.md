@@ -24,6 +24,10 @@ prime-rl: Async RL Training at Scale
   </a>
 </p>
 
+<p align="center">
+  <b>English</b> | <a href="https://github.com/PrimeIntellect-ai/prime-rl/blob/main/README.zh.md">简体中文</a>
+</p>
+
 ## Overview
 
 prime-rl is a framework for large-scale reinforcement learning. It is designed to be easy to use and hackable, yet capable of scaling to 1000+ GPUs. Here is what we think sets it apart:
