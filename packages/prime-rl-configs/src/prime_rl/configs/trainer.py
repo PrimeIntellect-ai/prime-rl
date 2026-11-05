@@ -43,7 +43,7 @@ class ActivationOffloadingConfig(BaseConfig):
     """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
 
     max_inflight_activations: int = Field(5, ge=1)
-    """Max activations kept on GPU while their offload copies are in flight on the side stream. Higher values give more copy/compute overlap at the cost of GPU memory."""
+    """Max activations kept on GPU while their copies run on the side stream: in forward, copies to CPU still in flight; in backward, copies back prefetched ahead of use. Higher values give more copy/compute overlap at the cost of GPU memory."""
 
 
 OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
