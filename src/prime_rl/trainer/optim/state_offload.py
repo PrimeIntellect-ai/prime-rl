@@ -2,9 +2,26 @@ import copy
 
 import torch
 from torch.distributed.tensor import DTensor
-from torch.optim import Optimizer
+from torch.optim import AdamW, Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
+
+# Byte budget of one staging chunk. A single state larger than this gets a chunk of its own.
+CHUNK_BYTES = 1 << 30
+# Alignment of each state view inside a staging buffer.
+ALIGN_BYTES = 512
+
+
+def _local(value: torch.Tensor) -> torch.Tensor:
+    return value._local_tensor if isinstance(value, DTensor) else value
+
+
+def _with_local(value: torch.Tensor, local: torch.Tensor) -> torch.Tensor:
+    if not isinstance(value, DTensor):
+        return local
+    new_dtensor = copy.copy(value)
+    new_dtensor._local_tensor = local
+    return new_dtensor
 
 
 class CPUOffloadOptimizer(OffloadOptimizer):
@@ -15,15 +32,13 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     at the same time: peak memory becomes max(activations, opt_states) instead of sum.
     """
 
-    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
+    def __init__(self, optimizer: Optimizer):
         self.optimizer = optimizer
-        self.pin_memory = pin_memory
         self._initialized = False
         self._cpu_buffers: dict[tuple[torch.Tensor, str], torch.Tensor] = {}
+        self._streams: tuple[torch.cuda.Stream, torch.cuda.Stream] | None = None
 
     def _offload_to_cpu(self, param: torch.Tensor, key: str, src: torch.Tensor) -> torch.Tensor:
-        if not self.pin_memory:
-            return src.to("cpu", non_blocking=True)
         buffer = self._cpu_buffers.get((param, key))
         if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
             buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
@@ -62,6 +77,12 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             self._initialized = True
             return result
 
+        # A parameter without state yet (no grad on any earlier step) is initialized by the full path below.
+        if isinstance(self.optimizer, AdamW) and all(
+            p in self.state for group in self.param_groups for p in group["params"] if p.grad is not None
+        ):
+            return self._chunked_step()
+
         # Move states to GPU
         self._move_states("cuda")
 
@@ -72,6 +93,88 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         self._move_states("cpu")
 
         return result
+
+    def _plan_chunks(self) -> tuple[list[tuple[set[torch.Tensor], list[tuple[torch.Tensor, str, int]]]], int]:
+        """Group whole parameters into chunks; each state except the CPU step counter gets an offset into a staging buffer."""
+        chunks, params, entries, used, max_used = [], set(), [], 0, 0
+        for param, state in self.optimizer.state.items():
+            param_entries, param_bytes = [], 0
+            for key, value in state.items():
+                if key == "step":
+                    continue
+                local = _local(value)
+                param_entries.append((param, key, param_bytes))
+                param_bytes += -(-local.numel() * local.element_size() // ALIGN_BYTES) * ALIGN_BYTES
+            if params and used + param_bytes > CHUNK_BYTES:
+                chunks.append((params, entries))
+                params, entries, used = set(), [], 0
+            params.add(param)
+            entries.extend((param, key, used + offset) for param, key, offset in param_entries)
+            used += param_bytes
+            max_used = max(max_used, used)
+        if params:
+            chunks.append((params, entries))
+        return chunks, max_used
+
+    def _step_params(self, params: set[torch.Tensor]):
+        groups = self.optimizer.param_groups
+        all_params = [group["params"] for group in groups]
+        for group in groups:
+            group["params"] = [param for param in group["params"] if param in params]
+        try:
+            self.optimizer.step()
+        finally:
+            for group, group_params in zip(groups, all_params):
+                group["params"] = group_params
+
+    def _chunked_step(self):
+        """Step chunk by chunk through two staging buffers: while chunk i updates on the compute stream,
+        chunk i+1 loads on one side stream and chunk i-1 writes back on another.
+
+        The step counters stay on CPU, as in plain torch AdamW, so the update never syncs the device."""
+        if self._streams is None:
+            self._streams = (torch.cuda.Stream(), torch.cuda.Stream())
+        h2d, d2h = self._streams
+        compute = torch.cuda.current_stream()
+        chunks, buffer_bytes = self._plan_chunks()
+        if not chunks:
+            return
+        state = self.optimizer.state
+        # Allocated on the compute stream, so the caching allocator reuses the same blocks every step.
+        buffers = [torch.empty(buffer_bytes, dtype=torch.uint8, device="cuda") for _ in range(2)]
+        h2d.wait_stream(compute)
+        written_back: list[torch.cuda.Event | None] = [None, None]
+        cpu_values: list[dict[tuple[torch.Tensor, str], torch.Tensor]] = [{}, {}]
+
+        def load(i: int) -> torch.cuda.Event:
+            buffer, slot = buffers[i % 2], cpu_values[i % 2]
+            with torch.cuda.stream(h2d):
+                if written_back[i % 2] is not None:
+                    h2d.wait_event(written_back[i % 2])
+                slot.clear()
+                for param, key, offset in chunks[i][1]:
+                    cpu_value = state[param][key]
+                    cpu_local = _local(cpu_value)
+                    nbytes = cpu_local.numel() * cpu_local.element_size()
+                    gpu_local = buffer[offset : offset + nbytes].view(cpu_local.dtype).view(cpu_local.shape)
+                    gpu_local.copy_(cpu_local, non_blocking=True)
+                    slot[param, key] = cpu_value
+                    state[param][key] = _with_local(cpu_value, gpu_local)
+                return h2d.record_event()
+
+        loaded = load(0)
+        for i, (params, _) in enumerate(chunks):
+            next_loaded = load(i + 1) if i + 1 < len(chunks) else None
+            compute.wait_event(loaded)
+            self._step_params(params)
+            d2h.wait_stream(compute)
+            with torch.cuda.stream(d2h):
+                for (param, key), cpu_value in cpu_values[i % 2].items():
+                    _local(cpu_value).copy_(_local(state[param][key]), non_blocking=True)
+                    state[param][key] = cpu_value
+                written_back[i % 2] = d2h.record_event()
+            loaded = next_loaded
+        torch.cuda.synchronize()
 
     def zero_grad(self, set_to_none: bool = True):
         self.optimizer.zero_grad(set_to_none=set_to_none)
