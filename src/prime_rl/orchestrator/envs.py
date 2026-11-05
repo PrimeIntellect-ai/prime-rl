@@ -78,8 +78,11 @@ class Env:
         and iterated from there; an unbounded one streams off the taskset. Consumed once — by ``TrainSource`` (train) or
         ``EvalEnv.start`` (eval)."""
         self._env_clients: list[EnvClient] = []
-        self._in_flight: list[int] = []
-        """Runs in flight per replica, to route each run to the least loaded one."""
+        self._running: list[set[asyncio.Task]] = []
+        """The runs in flight per replica: each run goes to the least loaded one, and the
+        health monitor fails the runs of a replica that stops answering."""
+        self.down: set[int] = set()
+        """Replicas that stopped answering health checks; runs avoid them while one is up."""
 
     @property
     def name(self) -> str:
@@ -102,7 +105,7 @@ class Env:
             )
         get_logger().debug(f"Connecting {self.name} to env servers {addresses}")
         self._env_clients = [EnvClient(address=address) for address in addresses]
-        self._in_flight = [0] * len(addresses)
+        self._running = [set() for _ in addresses]
         # The servers may still be coming up (the launcher spawns them concurrently with
         # the orchestrator), so poll until they answer.
         await asyncio.gather(
@@ -136,11 +139,14 @@ class Env:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
         change of one of the episode's traces — as it lands. The run goes to the replica
-        with the fewest runs in flight."""
+        with the fewest runs in flight, skipping replicas that are down unless all are."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
-        replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
-        self._in_flight[replica] += 1
+        replicas = range(len(self.env_clients))
+        up = [replica for replica in replicas if replica not in self.down] or replicas
+        replica = min(up, key=lambda replica: len(self._running[replica]))
+        task = asyncio.current_task()
+        self._running[replica].add(task)
         try:
             return await self.env_clients[replica].run(
                 task_data=task_data,
@@ -150,7 +156,10 @@ class Env:
                 on_delta=on_delta,
             )
         finally:
-            self._in_flight[replica] -= 1
+            self._running[replica].discard(task)
+
+    def running_on(self, replica: int) -> set[asyncio.Task]:
+        return self._running[replica]
 
 
 class TrainEnv(Env):
