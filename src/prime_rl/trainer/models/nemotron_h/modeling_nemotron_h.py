@@ -105,6 +105,11 @@ class NemotronHDecoderLayer(nn.Module):
                     **moe_kwargs,
                 )
 
+    @property
+    def is_token_local(self) -> bool:
+        """Each token's output depends on that token alone (see ``TokenChunkedCheckpointWrapper``)."""
+        return self.layer_type == "moe"
+
     def forward(
         self,
         hidden_states: torch.Tensor,
