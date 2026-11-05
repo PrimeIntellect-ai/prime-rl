@@ -1,0 +1,173 @@
+# Nemotron 3.5 Super (text backbone) — distillation SFT on GLM-5.3 abundant-programbench trajectories (OpenCode harness).
+# The ProgramBench recipe (sft-hosted-programbench-1m.toml: 1M context, cp16/ep16, batch 6, lr 1e-5, warmup 10% of
+# epoch 1, cosine to 1e-6, 2 epochs, 10% held-out tasks validated every ~0.2 epoch, best/last retention, text-only HF
+# export at the end). User, 2026-11-05: training setup exactly as the GLM-5.3 collection setup, 4 nodes, 2 epochs,
+# 10% validation, every rollout kept.
+# prime train configs/advanced/nemotron-3-super/sft-hosted-abundant-programbench-1m.toml \
+#     --volume nemotron-sft-programbench -e ~/.config/prime-export/hf.env -y
+# (the ProgramBench volume, expanded to 8 TiB: it already holds the verified base model; the ProgramBench run's
+# outputs under runs/asv9y00h08g8h82mo5pkf2ui/ stay untouched)
+#
+# Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
+# trained as its text-only language model (/volume/models/nemotron-3.5-super-text). verify_checkpoint.py
+# --revision fb0ee0bc... on this volume, 2026-11-05: PASS (162/162 sampled tensors byte-identical).
+#
+# Data: datasets/nemotron-distill-sft-abundant-programbench-1m, subset abundant-programbench, from export
+# abundant-programbench-glm53-measure-sft-20261105 (sha256 d92b6028...1669; 7,325 rows = 6,998 traces of 875 tasks,
+# exported as 6,998 main conversations + 63 continuations after a compaction + 264 subagent conversations).
+# Collection (runs abundant-programbench-glm-measure-20261023 + abundant-reaper3/4, checked per trace): OpenCode
+# 2.1.4 with input_modalities text, 64 MiB shell-output cap, location_idle_timeout=false; compaction 1048576 /
+# 917504 / 131072; GLM-5.3 (internal high-throughput; 1 trace OpenRouter) at temperature 1.0, reasoning effort high,
+# no turn/token limits; every trace ended agent_completed, none timed out. OpenCode sends GLM its past reasoning,
+# so truncate_history_thinking = false matches what GLM saw. Every rollout is kept: no reward filter (binary
+# reward, reward-0 rows kept), no teacher filter. Dropped only: 59 rows with an interrupted provider stream and
+# 24 conversations longer than the model's 1M context in Nemotron tokens. Build (on the QC box):
+# handoff/nemotron-3.5-super-sft-abundant-programbench/data-prep.
+#   train      6,516 rows, 787 tasks, 2,719.7M tokens, 2,017.5M loss tokens
+#   validation   726 rows,  88 tasks (data-prep/abundant-programbench-val-tasks.txt, 10% by task, best-balanced
+#                of 20k candidates, max |SMD| 0.043), 306.9M tokens
+# Packed as the trainer packs them (seed 42, 2 data ranks x 2 workers, data-prep/packing.py): 3,352 packed rows
+# in epoch 1 (558.67 steps at batch_size 6), 6,701 over 2 epochs (1116.83 steps).
+#
+# Disk (8 TiB volume, ~2.73 TB already used by the ProgramBench run + base model): a full checkpoint is ~1.45 TB,
+# the best snapshot ~0.48 TB, each HF export ~0.25 TB. Peak ~3.4 TB for this run (previous checkpoint + the one
+# being written + best), ~6.1 TB on the volume in all.
+image_tag = "v0.10.1.dev74"
+# exp/nemotron-sft-abundant-programbench = exp/nemotron-sft-programbench @ 677fef0c1 + this config: the code of the
+# ProgramBench, swe-marathon / nl2repo 1M and GeneBench runs.
+source_ref = "exp/nemotron-sft-abundant-programbench"
+gpu_type = "H200_141GB"
+
+# 2 epochs: 6,701 packed rows / 6 = 1116.83 steps. 1,116 is the floor.
+max_steps = 1116
+dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
+
+[scheduler]
+type = "cosine"
+warmup_steps = 56   # 10% of epoch 1 (558.67 steps); linear 1e-6 (step 1, start = min_lr) -> 1e-5 (step 57)
+min_lr = 1e-6       # then cosine decay to 1e-6 at max_steps
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 4
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "nemotron-3.5-super-distill-sft-abundant-programbench-1m-2ep"
+
+[ckpt]
+# Resumable checkpoints for crash recovery every 62 steps (~3 h at ~190 s/step; a save takes ~205 s): 62, 124, ...,
+# 1054. None falls on a validation step (multiples of 112). The final step is saved once, after the loop.
+interval = 62
+# Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
+# is always saved. The best weights are kept separately ([val] keep_best).
+keep_last = 1
+
+[resume]
+
+[model]
+name = "/volume/models/nemotron-3.5-super-text"
+attn = "flash_attention_3"
+# seq_len 1048576 (1M, the model's max) at cp=16 / ep=16 on 32 GPUs: as the swe-marathon, nl2repo and GeneBench
+# 1M runs.
+cp = 16
+ep = 16
+fused_lm_head_token_chunk_size = 1024
+
+[model.ac]
+token_chunk_size = 8192
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
+name = "nemotron-3.5"
+# GLM-5.3 saw its past reasoning during collection (Nemotron tokens per row / GLM's last prompt ~1.10, with reasoning
+# ~76% of the characters), so past reasoning stays in the rendered history.
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-abundant-programbench-1m"
+seq_len = 1048576
+batch_size = 6   # packed rows: ~4.9M tokens per step; 2 data ranks x 3 grad-accum micro-steps
+micro_batch_size = 1
+num_workers = 2
+stopping_strategy = "all_exhausted"
+shuffle = true
+seed = 42
+subsets = [
+    "abundant-programbench",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# Validation on the held-out tasks: 380 packed rows per pass (190 per data rank), ~50 min per pass
+# (ProgramBench measured ~44 min for 332 rows). The rows are stored in an order that packs evenly on the 2 data ranks
+# (world 32 / cp 16 x num_workers 1): built with --val-data-ranks 2, keep shuffle = false and num_workers = 1.
+# after_optimizer_step: val/loss at step N is the loss of the weights after N updates, and the final step is
+# validated too: base (eval_on_start, before step 1), then after steps 112, 224, ..., 1008 and 1116 (10
+# candidates, ~0.2 epoch apart).
+# keep_best: the lowest of those losses keeps a weights-only snapshot in runs/<id>/best-weights/ (best.json: step,
+# loss, every candidate's loss); the eval_on_start pass is not a candidate.
+[val]
+interval = 112
+eval_on_start = true
+after_optimizer_step = true
+keep_best = true
+
+[val.data]
+type = "sft"
+name = "/volume/datasets/nemotron-distill-sft-abundant-programbench-1m"
+subsets = [
+    "abundant-programbench",
+]
+splits = [
+    "validation",
+]
+seq_len = 1048576
+batch_size = 6
+micro_batch_size = 1
+num_workers = 1
+shuffle = false
+
+[val.data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# After the final step and checkpoint: the best and the last weights as text-only NemotronHForCausalLM models,
+# written into the layout of /volume/models/nemotron-3.5-super-text (63 shards, 42,683 tensors; the untrained
+# mtp.* tensors copied as they are) under runs/<id>/hf-export/{best,last}/, then pushed to private repos.
+[hf_export]
+checkpoints = ["best", "last"]
+best_repo = "PrimeIntellect/Nemotron-3.5-Super-abundant-programbench-sft-best"
+last_repo = "PrimeIntellect/Nemotron-3.5-Super-abundant-programbench-sft-last"
+private = true
+model_card = """
+- Base: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision fb0ee0bc), its language model only.
+- Data: every GLM-5.3 abundant-programbench trajectory in the OpenCode harness (export
+  abundant-programbench-glm53-measure-sft-20261105; main conversations, continuations after compaction and subagent
+  conversations; no reward or teacher filter, interrupted streams and conversations over 1M tokens dropped),
+  787 training tasks, 1M-token packed sequences, 2 epochs, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
+- Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
+  `chat_template_kwargs={"truncate_history_thinking": false}`.
+"""
