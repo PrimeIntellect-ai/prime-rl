@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
@@ -40,22 +39,10 @@ class BatchSender(ABC):
             for micro_batch in micro_batches:
                 if micro_batch.mm_refs is not None:
                     raise ValueError("Batch journaling does not yet retain external multimodal inputs")
-            batches = [msgspec.structs.replace(mb, journal_batch_id=batch_id) for mb in micro_batches]
-            grid.append(batches)
-        batches = [mb for rank in grid for mb in rank]
-        urls = []
-        if any(mb.payloads is not None for mb in batches):
-            from prime_rl.transports.payload import delete_payloads, resolve_payloads
-
-            with ThreadPoolExecutor(32, thread_name_prefix="journal-payload") as pool:
-                failed, urls = resolve_payloads(batches, pool)
-            if failed:
-                raise RuntimeError("Cannot journal a batch with missing training payloads")
+            grid.append([msgspec.structs.replace(mb, journal_batch_id=batch_id) for mb in micro_batches])
+        # Training arrays stay on the env servers: the trainer saves the ones it fetched beside the batch.
         payloads = [self.encode(rank) for rank in grid]
         self.journal.write(batch_id, payloads)
-        if urls:
-            # The committed bytes retain the arrays independently of the env servers.
-            delete_payloads(urls)
         self.journal_write_time = perf_counter() - start
         return payloads
 

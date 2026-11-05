@@ -54,7 +54,8 @@ def _write_atomic(path: Path, payload: bytes) -> None:
 
 
 class BatchJournal:
-    """Exact transport payloads, retained until a trainer checkpoint covers them."""
+    """Exact transport payloads, and the training arrays the trainer fetched for them, retained
+    until a trainer checkpoint covers them."""
 
     def __init__(self, output_dir: Path):
         self.path = output_dir / "batch_journal"
@@ -102,6 +103,20 @@ class BatchJournal:
                 raise ValueError(f"Journal payload checksum mismatch: {batch_id}, rank {rank}")
             payloads.append(payload)
         return payloads
+
+    def arrays_path(self, batch_id: str, data_rank: int) -> Path:
+        return self.batch_path(batch_id) / f"arrays_rank_{data_rank}.bin"
+
+    def write_arrays(self, batch_id: str, data_rank: int, arrays: bytes) -> None:
+        """Keep the training arrays a data rank fetched for a journaled batch beside it, until the
+        checkpoint that releases the batch."""
+        _write_atomic(self.arrays_path(batch_id, data_rank), arrays)
+
+    def read_arrays(self, batch_id: str, data_rank: int) -> bytes | None:
+        try:
+            return self.arrays_path(batch_id, data_rank).read_bytes()
+        except FileNotFoundError:
+            return None
 
     def commit_checkpoint(self, checkpoint_path: Path, step: int, batch_id: str) -> None:
         """Call only after every trainer rank has completed the checkpoint write."""

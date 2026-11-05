@@ -320,20 +320,22 @@ def train(config: TrainerConfig):
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
-            # Every rank has fetched its arrays now, so one rank per data rank frees them
-            # (dummy micro batches may reuse another data rank's, hence after the world
-            # all-reduce).
-            if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
-                dataloader.release_payloads()
+            dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             # A step where no micro batch's arrays could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env servers): stop instead of
-            # training on nothing.
+            # training on nothing. Raised before the arrays are released: a journaled batch
+            # would otherwise be saved with every micro batch dropped, and its replay would
+            # fail again instead of fetching them.
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
                     "Could not fetch the training arrays of any micro batch this step; check that "
                     "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
                 )
-            dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
+            # Every rank has fetched its arrays now, so one rank per data rank frees them
+            # (dummy micro batches may reuse another data rank's, hence after the world
+            # all-reduce).
+            if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
+                dataloader.release_payloads(dropped)
             drop_micro_batches(micro_batches, dropped)
             dropped_micro_batches = int(failed.sum().item())
             if dropped:
@@ -701,7 +703,9 @@ def train(config: TrainerConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
+            dataloader.wait_for_saved()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, batch_id=dataloader.last_batch_id)
+            dataloader.release_saved()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
@@ -822,7 +826,9 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
+        dataloader.wait_for_saved()
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, batch_id=dataloader.last_batch_id)
+        dataloader.release_saved()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
