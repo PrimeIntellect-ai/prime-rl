@@ -32,7 +32,7 @@ from collections.abc import Callable
 import msgpack
 import zmq
 import zmq.asyncio
-from verifiers.v1.utils.loaders import resolve_env_config
+from verifiers.v1.utils.loaders import load_environment, resolve_env_config
 
 from prime_rl.configs.env_server import ElasticPoolConfig, PoolConfig, StaticPoolConfig
 from prime_rl.env.server import LATE_CANCEL_SECONDS, EnvServer
@@ -90,6 +90,7 @@ class EnvServerPool:
         self.config_data = config_data
         self.max_concurrent = max_concurrent
         self.worker_setup = worker_setup
+        self.shared_tools = {}
         self._ipc_dir = tempfile.mkdtemp(prefix="prl-env-pool-", dir="/tmp")
         self.workers: list[dict] = []
         self._mpctx = mp.get_context("spawn")
@@ -119,6 +120,7 @@ class EnvServerPool:
                 max_concurrent=self.max_concurrent,
                 death_pipe=child_conn,
                 worker_setup=self.worker_setup,
+                tools=self.shared_tools,
             ),
             daemon=False,
         )
@@ -158,20 +160,23 @@ class EnvServerPool:
         return "inf" if self.max_workers is None else str(self.max_workers)
 
     async def run(self) -> None:
-        self._poller = zmq.asyncio.Poller()
-        self._poller.register(self.frontend, zmq.POLLIN)
-        # Elastic: start with one and scale up on demand. Static: pre-spawn the lot.
-        for _ in range(1 if self.elastic else self.max_workers):
-            self._spawn_worker()
-        # request_id -> {client_id, worker}
-        pending: dict[bytes, dict] = {}
-        # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
-        # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
-        replied: dict[bytes, tuple[float, dict]] = {}
-        get_logger().info(
-            f"EnvServerPool up (address={self.address}, workers={len(self.workers)}/{self._cap_str}, pool={self.pool!r})"
-        )
+        resources = contextlib.AsyncExitStack()
         try:
+            # The broker owns expensive servers once; workers receive only connection details.
+            env = load_environment(resolve_env_config(self.config_data))
+            self.shared_tools = await resources.enter_async_context(env.shared_tools())
+            self._poller = zmq.asyncio.Poller()
+            self._poller.register(self.frontend, zmq.POLLIN)
+            # Elastic: start with one and scale up on demand. Static: pre-spawn the lot.
+            for _ in range(1 if self.elastic else self.max_workers):
+                self._spawn_worker()
+            # request_id -> {client_id, worker}
+            pending: dict[bytes, dict] = {}
+            # Preserve routing for a late cancel of a reply's kept training arrays.
+            replied: dict[bytes, tuple[float, dict]] = {}
+            get_logger().info(
+                f"EnvServerPool up (address={self.address}, workers={len(self.workers)}/{self._cap_str}, pool={self.pool!r})"
+            )
             in_flight = 0
             while True:
                 events = dict(await self._poller.poll())
@@ -268,7 +273,10 @@ class EnvServerPool:
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
-            self._shutdown()
+            try:
+                self._shutdown()
+            finally:
+                await resources.aclose()
 
     def _shutdown(self) -> None:
         for w in self.workers:
@@ -300,6 +308,7 @@ def serve_worker(
     max_concurrent: int | None,
     death_pipe,
     worker_setup: Callable[[], None] | None,
+    tools: dict,
 ) -> None:
     """A pool worker process: one `EnvServer` on its ipc address. It self-terminates if
     the broker dies — see `_arm_teardown`."""
@@ -307,7 +316,7 @@ def serve_worker(
     if worker_setup is not None:
         worker_setup()
     try:
-        asyncio.run(EnvServer(resolve_env_config(config_data), address, max_concurrent).run())
+        asyncio.run(EnvServer(resolve_env_config(config_data), address, max_concurrent, tools=tools).run())
     except KeyboardInterrupt:
         pass
     except Exception:
