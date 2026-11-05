@@ -34,6 +34,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
+from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
 from prime_rl.orchestrator import live
@@ -540,6 +541,10 @@ class Dispatcher:
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            # A recursive harness's sub-agents are routed as sessions of their own.
+            for call in delta.get("calls", ()):
+                if (acp := call.get("acp")) is not None:
+                    session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
