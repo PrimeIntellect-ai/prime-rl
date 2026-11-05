@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import wraps
 from math import prod
 from threading import Event
@@ -37,6 +37,7 @@ from prime_rl.transports.weights.nixl.graph import (
     apply_chain,
     make_hf_lazy_weights,
     plan_tensor_replay,
+    staging_copies,
 )
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.transports.weights.nixl.tensor_routing import route_sharded_tensor
@@ -182,7 +183,7 @@ class NIXLWeightUpdateWorker(Worker):
                         table,
                         device=self.device,
                         recorder=recorder,
-                        hf_config=self.model_runner.model_config.hf_text_config,
+                        hf_config=self.model_runner.model_config.hf_config,
                     )
                 )
 
@@ -281,6 +282,8 @@ class NIXLWeightUpdateWorker(Worker):
                 tuple(source.shape),
                 getattr(torch, source.wire_dtype),
                 copy.ops,
+                source_name=copy.source_name,
+                plans=replay_plans,
             )
         return replay_plans
 
@@ -290,15 +293,12 @@ class NIXLWeightUpdateWorker(Worker):
         copies: list[RecordedCopy],
         replay_plans: dict[int, TensorReplayPlan],
     ) -> dict[torch.dtype, int]:
-        tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
             tensor.name: group_index for group_index, group in enumerate(table.groups) for tensor in group.tensors
         }
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
-        for copy in copies:
-            source = tensors[copy.source_name]
-            source_dtype = getattr(torch, source.wire_dtype)
-            group_elements[source_dtype][tensor_groups[source.name]] += prod(replay_plans[id(copy)].source_shape)
+        for copy, replay_plan, _ in staging_copies(copies, replay_plans):
+            group_elements[replay_plan.staging_dtype][tensor_groups[copy.source_name]] += prod(replay_plan.source_shape)
         return {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
 
     def allocate_receive_arenas(
@@ -360,6 +360,8 @@ class NIXLWeightUpdateWorker(Worker):
         transfer_groups: list[WeightTransferGroup] = []
 
         for group_index, group in enumerate(table.groups):
+            incoming_plans: list[TensorCopyPlan] = []
+            staging_plans: dict[int, TensorCopyPlan] = {}
             copy_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             persistent_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             local_descs: dict[int, list[MemDesc]] = defaultdict(list)
@@ -369,30 +371,65 @@ class NIXLWeightUpdateWorker(Worker):
                 for dtype, elements in receive_buffer_elements.items()
             }
 
-            for copy in copies_by_group[group_index]:
-                replay_plan = replay_plans[id(copy)]
-                source = tensors[copy.source_name]
-                source_dtype = getattr(torch, source.wire_dtype)
+            for copy, replay_plan, key in staging_copies(copies_by_group[group_index], replay_plans):
+                source_dtype = replay_plan.staging_dtype
                 numel = prod(replay_plan.source_shape)
                 cursor = cursors[source_dtype]
                 staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(replay_plan.source_shape)
                 cursors[source_dtype] += numel
+                staging_plans[key] = TensorCopyPlan(copy, staging_tensor, replay_plan.replay_ops)
+                sources_to_stage = [(copy, replace(replay_plan, replay_ops=()), staging_tensor)]
+                if replay_plan.incoming_copies:
+                    sources_to_stage = [
+                        (
+                            incoming,
+                            replay_plans[id(incoming)],
+                            staging_tensor.as_strided(
+                                incoming.destination_shape,
+                                incoming.destination_stride,
+                                staging_tensor.storage_offset() + incoming.destination_offset,
+                            ),
+                        )
+                        for incoming in replay_plan.incoming_copies
+                    ]
+                for incoming, input_plan, destination in sources_to_stage:
+                    if input_plan.can_receive_into(source_dtype):
+                        for route in route_sharded_tensor(input_plan, tensors[incoming.source_name], destination):
+                            local_descs[route.agent].append((route.destination_addr, route.nbytes, self.device.index))
+                            remote_descs[route.agent].append(
+                                (route.source_addr, route.nbytes, agent_devices[route.agent])
+                            )
+                    else:
+                        input_key = id(input_plan.incoming_copies) if input_plan.incoming_copies else id(incoming)
+                        incoming_plans.append(
+                            TensorCopyPlan(
+                                recorded_copy=replace(
+                                    incoming,
+                                    destination_module=staging_plans[key],
+                                    destination_name="staging_tensor",
+                                    destination_offset=staging_tensor.storage_offset() + incoming.destination_offset,
+                                ),
+                                staging_tensor=staging_plans[input_key].staging_tensor,
+                                replay_ops=input_plan.replay_ops,
+                            )
+                        )
+
+            for copy in copies_by_group[group_index]:
+                replay_plan = replay_plans[id(copy)]
+                key = id(replay_plan.incoming_copies) if replay_plan.incoming_copies else id(copy)
                 copy_plan = TensorCopyPlan(
                     recorded_copy=copy,
-                    staging_tensor=staging_tensor,
+                    staging_tensor=staging_plans[key].staging_tensor,
                     replay_ops=replay_plan.replay_ops,
                 )
                 plans = persistent_plans_by_layer if copy.is_persistent else copy_plans_by_layer
                 plans[id(copy.destination_module)].append(copy_plan)
 
-                for route in route_sharded_tensor(replay_plan, source, staging_tensor):
-                    local_descs[route.agent].append((route.destination_addr, route.nbytes, self.device.index))
-                    remote_descs[route.agent].append((route.source_addr, route.nbytes, agent_devices[route.agent]))
-
             transfer_groups.append(
                 WeightTransferGroup(
                     name=group.name,
-                    layers=self.build_layer_transfer_plans(
+                    layers=[LayerWeightTransferPlan(None, [], incoming_plans)]
+                    + self.build_layer_transfer_plans(
                         reload_layers,
                         copy_plans_by_layer,
                         persistent_plans_by_layer,
