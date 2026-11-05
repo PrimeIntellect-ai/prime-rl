@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from pydantic_config import ConfigFileError
 
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.sft import SFTConfig
@@ -113,8 +114,11 @@ def test_validation_stops_every_rank_at_the_same_window(
 
 def test_sft_validates_on_held_out_shards(folders: list[Path], tmp_path: Path):
     """`uv run sft` takes held-out token shards as validation data, capped at val.num_samples windows. val.data
-    without a type stays an SFT dataset."""
-    args = ["--output-dir", str(tmp_path), "--val.num-samples", "5", "--val.data.seq-len", "8"]
+    without a type is an SFT dataset, and val needs data."""
+    args = ["--output-dir", str(tmp_path), "--val.num-samples", "5"]
+    with pytest.raises(ConfigFileError, match="val.data"):
+        cli(SFTConfig, args=args)
+    args += ["--val.data.seq-len", "8"]
     assert cli(SFTConfig, args=args).val.data.type == "sft"
 
     paths = json.dumps([folder.as_posix() for folder in folders])
