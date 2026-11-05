@@ -186,3 +186,16 @@ def test_slower_environment_is_not_a_cliff():
     for _ in range(2 * THROUGHPUT_WINDOW_POLLS):
         ctl.observe([engine(waiting=10, finished=4, generated=400, latency=8.0)])  # fewer calls, as fast
     assert pool.cancelled == []
+
+
+def test_throughput_cliff_without_the_latency_metric_cuts_on_a_standing_queue():
+    ctl, pool = controller()
+    turnover(ctl, pool)
+    for _ in range(THROUGHPUT_WINDOW_POLLS):
+        ctl.observe([engine(waiting=10, finished=10, generated=1000)])  # no e2e latency histogram exported
+    collapsed = [engine(waiting=80, finished=1, generated=100)]  # most units stuck in the engine queue
+    for _ in range(3 * THROUGHPUT_WINDOW_POLLS):
+        ctl.observe(collapsed)
+        if pool.cancelled:
+            break
+    assert pool.cancelled  # the turnover never comes past a cliff; the cut does not wait for it

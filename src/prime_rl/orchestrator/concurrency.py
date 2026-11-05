@@ -374,10 +374,15 @@ class ConcurrencyController(Reconfigurable):
             if self.throughput > self.best_throughput and self.turnover - self.cliff_turnover >= 1.0:
                 self.best_throughput, self.best_inflight = self.throughput, window_inflight
                 self.best_latency = self.latency
+            # The engines, not a slower environment, lost the throughput: their latency stretched, or requests stand
+            # queued in them (a slower environment queues nothing). Either holds when the latency metric is missing.
+            engine_bound = (
+                self.best_latency > 0 and self.latency > LATENCY_CLIFF_STRETCH * self.best_latency
+            ) or self.queued_share_window > QUEUE_OVERLOAD
             below = (
                 self.throughput < (1 - THROUGHPUT_CLIFF_DROP) * self.best_throughput
                 and window_inflight >= 0.9 * self.best_inflight
-                and self.latency > LATENCY_CLIFF_STRETCH * self.best_latency
+                and engine_bound
             )
             self.cliff_polls = self.cliff_polls + 1 if below else 0
             cliff = self.cliff_polls >= THROUGHPUT_WINDOW_POLLS
@@ -419,12 +424,20 @@ class ConcurrencyController(Reconfigurable):
         if inflight <= 0:
             return
         # A trim acts once the pool has drained to it and turned over: until then the units in flight are the ones
-        # that overloaded the engines, matured further while admission waited
+        # that overloaded the engines, matured further while admission waited. An overloaded queue does not wait for
+        # the turnover: past a cliff, units finish too slowly for one to come.
         settled = (
-            not self.draining and self.trim_wait == 0 and self.turnover - self.trim_turnover >= TRIM_SPACING_TURNOVERS
+            not self.draining
+            and self.trim_wait == 0
+            and (
+                self.turnover - self.trim_turnover >= TRIM_SPACING_TURNOVERS
+                or self.queued_share_window > QUEUE_OVERLOAD
+            )
         )
 
-        if cliff and not self.draining:
+        # Not gated on draining: a non-cancelling trim never drains past a cliff, and the cut clears the throughput
+        # window, so a second cut needs a full window of fresh evidence
+        if cliff:
             # As many units finish less work, each slower: past a cliff (cache thrash as the pool matured, a
             # collapsed frontend), which completions alone drain too slowly to escape
             target = int(self.clamp(inflight * max(CLIFF_CUT_MIN, self.throughput / self.best_throughput)))
