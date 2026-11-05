@@ -23,16 +23,16 @@ logger = init_logger("vllm.inference.vllm.worker_nccl")
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
     """Receive an integer from the trainer master rank using NCCL communicator."""
-    integer_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
+    integer_tensor = torch.tensor([10], dtype=torch.long, device=communicator.device)
     communicator.broadcast(integer_tensor, src=0)
     return cast(int, integer_tensor.item())
 
 
 def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str, torch.Tensor], None, None]:
     """Stream tensors in a state dict broadcasted over NCCL."""
-    size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
+    size_tensor = torch.tensor([10], dtype=torch.long, device=communicator.device)
     communicator.broadcast(size_tensor, src=0)
-    state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
+    state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8, device=communicator.device)
     communicator.broadcast(state_tensor, src=0)
 
     metadata = pickle.loads(bytes(state_tensor.cpu().numpy()))
