@@ -1,24 +1,46 @@
+import dion
 import torch
 import torch.distributed as dist
-from dion import Muon
+from dion.opt_utils import create_param_batches
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import AdamW, Optimizer
+from torch.optim import Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.optim.base import ChunkedUpdates, OptimizerLike
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
-from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
-from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sign_sgd import SignSGD as _SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+
+
+# The optimizers on the GPU take an ``update_hook``
+class AdamW(ChunkedUpdates, torch.optim.AdamW):
+    pass
+
+
+class SignSGD(ChunkedUpdates, _SignSGD):
+    pass
+
+
+class Muon(ChunkedUpdates, dion.Muon):
+    def update_units(self, group: dict):
+        if group["algorithm"] != "muon":
+            yield from super().update_units(group)
+            return
+        # Muon's batches of matrices it orthogonalizes together, the same on every rank: they run collectives
+        world_size = self._get_group_mesh_info(group)[1]
+        params = [param for param in group["params"] if param.grad is not None]
+        for batch in create_param_batches(params, world_size, self._matrix_partitions):
+            yield batch, sum(param.numel() for param in batch) // world_size
 
 
 def _warmup_muon_mesh(mesh: DeviceMesh) -> None:

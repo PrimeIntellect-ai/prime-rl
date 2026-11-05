@@ -1,3 +1,5 @@
+import asyncio
+import time
 from pathlib import Path
 
 import torch.nn as nn
@@ -8,7 +10,7 @@ from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
-from prime_rl.utils.pathing import wait_for_path
+from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, revalidate
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -64,10 +66,33 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
-    async def receive(self, step: int) -> None:
+    prepared_step: int | None = None
+
+    async def prepare(self, step: int) -> None:
+        """Acknowledge v{step} and wait for its weights while the engines keep serving: a sparse delta's manifest
+        comes first and its part files as the trainer encodes, so the engines read and decode them now and the
+        pause only applies the delta."""
+        if self.prepared_step == step:
+            return
         weights_dir = self.step_dir(step)
+        manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
         self._ack(step)
-        await wait_for_path(weights_dir / FINISHED_MARKER)
+        while not (manifest.exists() or finished.exists()):
+            await asyncio.sleep(0.05)
+            revalidate(manifest.parent)
+        if manifest.exists():
+            start = time.perf_counter()
+            await self.admin_plane.prefetch_weights(weights_dir)
+            self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
+        self.prepared_step = step
+
+    async def receive(self, step: int) -> None:
+        await self.prepare(step)
+        weights_dir = self.step_dir(step)
+        finished = weights_dir / FINISHED_MARKER
+        while not finished.exists():
+            await asyncio.sleep(0.05)
+            revalidate(weights_dir)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:

@@ -719,6 +719,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self.optimizer = optimizer
         self._initialized = False
         self._master_weights = master_weights
+        # Replaces the H2D copy of each parameter's new values (pinned host) into its local shard, which still
+        # holds the previous values; it must do the copy itself
+        self.weight_hook: Callable[[torch.Tensor, torch.Tensor], None] | None = None
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
         # their H2D/D2H staging in new per-stream allocator pools, growing
@@ -797,7 +800,10 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                     raise TypeError(
                         f"Full-offload H2D source dtype mismatch: expected {master.compute_dtype}, got {source.dtype}"
                     )
-                local_param.copy_(source, non_blocking=True)
+                if self.weight_hook is None:
+                    local_param.copy_(source, non_blocking=True)
+                else:
+                    self.weight_hook(local_param, source)
 
     def _step_native_cpu_adamw_chunk(
         self,
