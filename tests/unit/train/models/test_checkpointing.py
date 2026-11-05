@@ -31,7 +31,9 @@ def test_selective_policy_saves_default_and_custom_targets():
     assert _selective_checkpoint_policy(context, torch.ops.aten.mm.default) is CheckpointPolicy.MUST_SAVE
     assert _selective_checkpoint_policy(context, torch.ops.aten.addmm.default) is CheckpointPolicy.MUST_SAVE
     assert _selective_checkpoint_policy(context, torch.ops.aten.bmm.default) is CheckpointPolicy.MUST_SAVE
-    assert _selective_checkpoint_policy(context, torch.ops.aten._grouped_mm.default) is CheckpointPolicy.MUST_SAVE
+    assert (
+        _selective_checkpoint_policy(context, torch.ops.aten._grouped_mm.default) is CheckpointPolicy.PREFER_RECOMPUTE
+    )
     assert (
         _selective_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
         is CheckpointPolicy.MUST_SAVE
