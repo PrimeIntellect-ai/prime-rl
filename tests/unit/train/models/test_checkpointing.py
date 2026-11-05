@@ -1,6 +1,8 @@
 import pytest
 import torch
+from functorch.compile import min_cut_rematerialization_partition, nop
 from torch import nn
+from torch._dynamo.backends.common import aot_autograd
 from torch.utils.checkpoint import CheckpointPolicy, SelectiveCheckpointContext
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
@@ -18,6 +20,16 @@ class IdentityExperts(nn.Module):
 
     def forward(self, x: torch.Tensor, _token_counts: torch.Tensor) -> torch.Tensor:
         return x
+
+
+class TwoProjections(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first = nn.Linear(8, 8, bias=False)
+        self.second = nn.Sequential(nn.Linear(8, 8, bias=False))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.second(torch.relu(self.first(x))).sin()
 
 
 def test_selective_policy_saves_default_and_custom_targets():
@@ -67,6 +79,48 @@ def test_selective_policy_saves_default_and_custom_targets():
         _selective_checkpoint_policy(context, torch.ops.prime_rl.fp8_indexer.default, targets=custom_targets)
         is CheckpointPolicy.MUST_SAVE
     )
+
+
+@pytest.mark.parametrize(
+    ("targets", "saved_mm_modules"),
+    [
+        (["aten::mm"], ["first", "second.0"]),
+        (["aten::mm@first"], ["first"]),
+        (["aten::mm@second"], ["second.0"]),
+        (["aten::mm@sec*.0"], ["second.0"]),
+    ],
+)
+def test_module_qualified_targets_save_only_matching_call_sites(targets, saved_mm_modules):
+    saved_nodes = []
+
+    def recording_partition(joint_module, joint_inputs, *, num_fwd_outputs, **kwargs):
+        forward, backward = min_cut_rematerialization_partition(
+            joint_module, joint_inputs, num_fwd_outputs=num_fwd_outputs, **kwargs
+        )
+        saved_nodes.extend(forward.graph.find_nodes(op="output")[0].args[0][num_fwd_outputs:])
+        return forward, backward
+
+    config = ActivationCheckpointConfig(mode="selective", targets=targets)
+    checkpointed = get_activation_checkpoint_wrapper(config)(TwoProjections())
+    compiled = torch.compile(
+        checkpointed, backend=aot_autograd(fw_compiler=nop, partition_fn=recording_partition), fullgraph=True
+    )
+    compiled(torch.randn(4, 8, requires_grad=True)).sum().backward()
+
+    saved_mm_paths = [
+        list(node.meta["nn_module_stack"].values())[-1][0]
+        for node in saved_nodes
+        if node.target is torch.ops.aten.mm.default
+    ]
+    assert [path.rpartition("_checkpoint_wrapped_module'].")[2] for path in saved_mm_paths] == saved_mm_modules
+
+
+def test_module_qualified_targets_raise_without_compile():
+    config = ActivationCheckpointConfig(mode="selective", targets=["aten::mm@first"])
+    checkpointed = get_activation_checkpoint_wrapper(config)(TwoProjections())
+
+    with pytest.raises(RuntimeError, match="torch.compile"):
+        checkpointed(torch.randn(4, 8, requires_grad=True))
 
 
 @pytest.mark.parametrize("mode", ["full", "selective"])
