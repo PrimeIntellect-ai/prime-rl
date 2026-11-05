@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Discriminator, Field, Tag, model_validator
+from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -112,21 +112,21 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-def val_data_type(data: dict | SFTDataConfig | DatatroveDataConfig) -> str:
-    """The ``type`` of validation data. Without one, it is an SFT dataset."""
-    return data.get("type", "sft") if isinstance(data, dict) else data.type
-
-
-ValDataConfig: TypeAlias = Annotated[
-    Annotated[SFTDataConfig, Tag("sft")] | Annotated[DatatroveDataConfig, Tag("datatrove")],
-    Discriminator(val_data_type),
-]
+ValDataConfig: TypeAlias = Annotated[SFTDataConfig | DatatroveDataConfig, Field(discriminator="type")]
 
 
 class SFTValConfig(BaseValConfig):
     data: ValDataConfig
     """An SFT dataset, or held-out datatrove token shards (``type = "datatrove"``) to track the loss on
     pretraining-style text."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_data_type(cls, data):
+        """A ``[val.data]`` without a ``type`` is an SFT dataset."""
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = {**data, "data": {"type": "sft", **data["data"]}}
+        return data
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
