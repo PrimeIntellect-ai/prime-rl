@@ -329,6 +329,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
+    """Backend of the DeepSeek V4 compressors' softmax-gated pooling: ``cudnn`` uses the cuDNN frontend's fused CSA/HCA compressor and falls back to the torch ops where its kernels don't apply. ``cudnn`` scans each entry's document list, so it wins on rows of few long documents and loses to the flat torch ops on rows of many short documents."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 

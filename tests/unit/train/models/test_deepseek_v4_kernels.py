@@ -7,10 +7,19 @@ from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, max_sparse_attn_slots
+from prime_rl.trainer.models.deepseek_v4.attention import (
+    CompressionLayout,
+    DeepseekV4Attention,
+    PackedContext,
+    max_sparse_attn_slots,
+)
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_compressor_pool import (
+    cudnn_pooling_supported,
+    dsv4_compressor_pool,
+)
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.layers.fp8_linear import (
@@ -909,3 +918,60 @@ def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
     _assert_frobenius_relative(logits, ref_logits, 1e-2, "logits")
     for name, fused, reference in zip(("x", "fn", "scale", "base"), fused_inputs, reference_inputs):
         _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
+
+
+def _compressor_pool_reference(kv, gate, position_bias, layout, n_series):
+    """The torch path's pooling, in the inputs' dtype: gather each window, overlap the `Ca` series, softmax, sum."""
+    head_dim = kv.shape[1] // n_series
+    kv, gate = kv[layout.entry_tok_idx], gate[layout.entry_tok_idx] + position_bias
+    if n_series == 2:
+        previous = (torch.arange(kv.shape[0], device=kv.device) - 1).clamp(min=0)
+        first = (layout.entry_local_idx == 0)[:, None, None]
+        kv = torch.cat([kv[previous, :, :head_dim].masked_fill(first, 0.0), kv[..., head_dim:]], dim=1)
+        gate = torch.cat([gate[previous, :, :head_dim].masked_fill(first, float("-inf")), gate[..., head_dim:]], dim=1)
+    return (kv * gate.softmax(dim=1)).sum(dim=1)
+
+
+@pytest.mark.skipif(not cudnn_pooling_supported(4, 512), reason="the cuDNN compressor kernels need an SM90+ GPU")
+@pytest.mark.parametrize(
+    ("compress_rate", "n_series", "head_dim"), [(4, 2, 512), (4, 2, 128), (128, 1, 512)], ids=["csa", "indexer", "hca"]
+)
+def test_cudnn_compressor_pool_matches_fp64_reference(compress_rate, n_series, head_dim):
+    """Entries and every gradient within one bf16 rounding of an fp64 pooling, eager and compiled alike.
+
+    The documents cover a row with no entries, tails that end mid-window and a document of exactly two
+    windows. The position bias is bf16, as FSDP hands parameters to the compressor.
+    """
+    doc_lens = torch.tensor([3, 517, 1000, 2 * compress_rate, 4101])
+    cu_seqlens = torch.nn.functional.pad(doc_lens.cumsum(0), (1, 0)).cuda()
+    layout = CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=compress_rate)
+    n_entries = layout.entry_tok_idx.shape[0]
+    width = n_series * head_dim
+    kv = torch.randn(int(doc_lens.sum()), width, device="cuda").bfloat16()
+    gate = (2 * torch.randn_like(kv, dtype=torch.float32)).bfloat16()
+    position_bias = torch.randn(compress_rate, width, device="cuda").bfloat16()
+    grad = torch.randn(n_entries, head_dim, device="cuda")
+
+    def pool(kv, gate, position_bias):
+        return dsv4_compressor_pool(
+            kv, gate, position_bias, layout.cu_seqlens, layout.cu_entries, compress_rate, n_series, n_entries
+        )
+
+    eager_inputs, compiled_inputs = _leaves(kv, gate, position_bias), _leaves(kv, gate, position_bias)
+    reference_inputs = _leaves(kv.double(), gate.double(), position_bias.double())
+    eager = pool(*eager_inputs)
+    compiled = torch.compile(pool, fullgraph=True, dynamic=True)(*compiled_inputs)
+    reference = _compressor_pool_reference(*reference_inputs, layout, n_series)
+    for out, inputs in ((eager, eager_inputs), (compiled, compiled_inputs), (reference, reference_inputs)):
+        out.backward(grad.to(out.dtype))
+
+    assert eager.dtype == torch.bfloat16 and eager.shape == (n_entries, head_dim)
+    assert torch.equal(compiled, eager)
+    # The position bias gradient sums over entries with fp32 atomics, so only kv and gate repeat bit for bit.
+    for compiled_leaf, eager_leaf in zip(compiled_inputs[:2], eager_inputs[:2]):
+        assert torch.equal(compiled_leaf.grad, eager_leaf.grad)
+    bf16_eps = torch.finfo(torch.bfloat16).eps
+    _assert_relative(eager, reference, bf16_eps, "entries")
+    for name, eager_leaf, reference_leaf in zip(("kv", "gate", "position_bias"), eager_inputs, reference_inputs):
+        assert eager_leaf.grad.dtype == torch.bfloat16
+        _assert_relative(eager_leaf.grad, reference_leaf.grad, bf16_eps, f"grad {name}")
