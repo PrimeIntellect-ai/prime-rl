@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import DatatroveDataConfig
+from prime_rl.configs.supervised import DatatroveDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 

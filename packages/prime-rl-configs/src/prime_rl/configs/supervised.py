@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, ClassVar, TypeAlias
+from typing import Annotated, ClassVar, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -51,6 +51,25 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class DatatroveDataConfig(BaseDataConfig):
+    """Tokenized shards written by datatrove's ``DocumentTokenizer``, read as one token pool and cut into samples of
+    ``seq_len`` tokens."""
+
+    type: Literal["datatrove"] = "datatrove"
+
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
+
+    seed: int = 0
+    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
+    and from a new random offset."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
+    whole sample and positions run over it."""
+
+
 class BaseValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -59,6 +78,9 @@ class BaseValConfig(BaseConfig):
     """Run validation before the first training step."""
 
     data: BaseDataConfig
+
+    num_samples: int | None = Field(None, ge=1)
+    """Samples per validation, the same ones every time. If None, one full pass over the validation data."""
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):

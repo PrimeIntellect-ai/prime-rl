@@ -1,9 +1,8 @@
-from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, TypeAlias
 
 from pydantic import Field
 
-from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import BaseValConfig, DatatroveDataConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
@@ -14,31 +13,9 @@ from prime_rl.configs.trainer import (
 )
 
 
-class DatatroveDataConfig(BaseDataConfig):
-    """Tokenized shards written by datatrove's ``DocumentTokenizer``, read as one token pool and cut into samples of
-    ``seq_len`` tokens."""
-
-    type: Literal["datatrove"] = "datatrove"
-
-    paths: list[Path] = Field(min_length=1)
-    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
-    The files of all folders (in folder order, then file name order) are read as one token pool."""
-
-    seed: int = 0
-    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
-    and from a new random offset."""
-
-    document_masking: bool = True
-    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
-    whole sample and positions run over it."""
-
-
 class PretrainValConfig(BaseValConfig):
     data: DatatroveDataConfig
     """Held-out shard folders."""
-
-    num_samples: int | None = Field(None, ge=1)
-    """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
 
 
 class PretrainAdamWConfig(AdamWConfig):

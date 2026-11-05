@@ -196,7 +196,7 @@ def train(config: SFTConfig | PretrainConfig):
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     val_raw_dataset = None
-    if config.val is not None and isinstance(config, SFTConfig):
+    if config.val is not None and config.val.data.type == "sft":
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
@@ -324,7 +324,7 @@ def train(config: SFTConfig | PretrainConfig):
         return mean_loss, nan_count.item()
 
     def run_validation(step: int) -> None:
-        if isinstance(config, PretrainConfig):
+        if config.val.data.type == "datatrove":
             val_dataset = setup_token_dataset(
                 config.val.data, config.model.cp, max_epochs=1, num_samples=config.val.num_samples
             )
@@ -334,6 +334,7 @@ def train(config: SFTConfig | PretrainConfig):
                 config.val.data,
                 config.model.cp,
                 max_epochs=1,
+                max_examples=config.val.num_samples,
                 raw_dataset=val_raw_dataset,
                 renderer_config=config.renderer,
                 processor=processor,
