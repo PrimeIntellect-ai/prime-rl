@@ -43,7 +43,7 @@ jobs:
   unit-gpu:
     name: Unit (GPU)
     needs: gate
-    runs-on: prime-rl-2xh200
+    runs-on: prime-rl-2xh100
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -84,7 +84,7 @@ jobs:
   integration:
     name: Integration / ${{ matrix.name }}
     needs: gate
-    runs-on: prime-rl-2xh200
+    runs-on: prime-rl-2xh100
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -92,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
-      # i.e. 6 h200 pods per PR. Tune together with the ARC scale set maxRunners.
+      # i.e. 6 h100 pods per PR. Tune together with the ARC scale set maxRunners.
       max-parallel: 5
       matrix:
         include:
