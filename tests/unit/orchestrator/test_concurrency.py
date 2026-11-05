@@ -1,14 +1,36 @@
 import pytest
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
+from prime_rl.orchestrator import concurrency
 from prime_rl.orchestrator.concurrency import (
     LOAD_WINDOW_POLLS,
     RESUME_SKIP_POLLS,
     THROUGHPUT_WINDOW_POLLS,
     ConcurrencyController,
     EngineLoadSample,
+    Poll,
+    RoleLoad,
+    per_second,
     quantile,
 )
+
+POLL_SECONDS = 5.0
+
+
+class Clock:
+    """Stands in for the controller module's ``time``: every poll reads one poll interval later."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        self.now += POLL_SECONDS
+        return self.now
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch):
+    monkeypatch.setattr(concurrency, "time", Clock())
 
 
 def engine(
@@ -65,9 +87,27 @@ def turnover(ctl: ConcurrencyController, pool: Pool) -> None:
         ctl.record_episode(10_000)
 
 
+def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int) -> None:
+    """The pool fills the cap, turns over every 50 polls, and the engines generate ``throughput(inflight)`` tokens
+    per second."""
+    for _ in range(polls):
+        pool.inflight = ctl.max_inflight
+        for _ in range(max(1, pool.inflight // 50)):
+            ctl.record_episode(10_000)
+        ctl.record_calls(1_000_000, 0)
+        ctl.observe([engine(finished=10, generated=int(throughput(pool.inflight) * POLL_SECONDS))])
+
+
 def test_quantile_interpolates():
     assert quantile([0.5], 0.9) == 0.5
     assert quantile([0.0, 0.0, 0.2, 1.0], 0.9) == pytest.approx(0.76)
+
+
+def test_throughput_is_per_second_of_poll_interval():
+    load = RoleLoad(running=1, queued=0, preemptions=0, finished=1, expired=0, kv_usage=0.0, generated=1000)
+    # A poll loop slowed to 10 s under load reads the same throughput, not twice as much
+    assert per_second([Poll({"colocated": load}, inflight=10, seconds=5.0)] * 2) == 200
+    assert per_second([Poll({"colocated": load}, inflight=10, seconds=10.0)] * 2) == 100
 
 
 def test_queued_share_adds_roles_and_counts_idle_units():
@@ -80,7 +120,7 @@ def test_queued_share_adds_roles_and_counts_idle_units():
     assert ctl.capacity == 1_000_000  # the running set's capacity: decode engines only
 
 
-def test_growth_per_turnover_tapers_with_the_queue():
+def test_ramp_grows_per_turnover_tapered_by_the_queue():
     ctl, pool = controller()
     turnover(ctl, pool)
     ctl.observe([engine()])
@@ -95,6 +135,29 @@ def test_growth_per_turnover_tapers_with_the_queue():
     turnover(ctl, pool)
     ctl.observe([engine()])
     assert pool.limits == []  # the cap does not bind admission
+
+
+def test_ramp_ends_where_growth_stops_paying():
+    ctl, pool = controller()
+    # Throughput stops growing at 150 units in flight (e.g. a saturated API server: no engine queue)
+    run(ctl, pool, lambda inflight: 10 * min(inflight, 150), polls=400)
+    assert not ctl.ramping
+    assert 130 <= ctl.max_inflight < 400
+
+
+def test_probe_keeps_a_step_up_that_pays():
+    ctl, pool = controller()
+    ctl.ramping = False
+    run(ctl, pool, lambda inflight: 10 * inflight, polls=400)  # throughput in proportion to the pool
+    assert ctl.max_inflight > 200 and all(limit >= 100 for limit in pool.limits)
+
+
+def test_probe_returns_from_a_step_up_that_buys_nothing():
+    ctl, pool = controller()
+    ctl.ramping = False
+    run(ctl, pool, lambda inflight: 10 * min(inflight, 100), polls=300)  # the knee is at 100
+    assert max(pool.limits) == 125  # one step up, rejected, then one step down, rejected
+    assert 86 <= ctl.max_inflight <= 100 and ctl.elasticity is not None
 
 
 def test_queue_trims_the_surplus_without_cancelling():
@@ -167,7 +230,7 @@ def test_throughput_cliff_cuts_and_cancels():
     healthy = [engine(waiting=10, finished=10, generated=1000, latency=20.0)]
     for _ in range(THROUGHPUT_WINDOW_POLLS):
         ctl.observe(healthy)
-    assert ctl.best_throughput == 1000
+    assert ctl.best_throughput == pytest.approx(1000 / POLL_SECONDS, rel=0.01)  # tokens per second
 
     thrashing = [engine(waiting=10, finished=4, generated=400, latency=4 * 10.0)]  # 10 s per call, was 2 s
     polls = 0
