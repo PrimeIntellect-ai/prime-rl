@@ -121,6 +121,8 @@ class SparseAttentionIndexer(nn.Module):
             causal_block_end.to(torch.int32),
             self.block_budget,
         )
+        # Canonical block order keeps attention reductions independent of selector scheduling.
+        selected_blocks = selected_blocks.sort(dim=-1).values
 
         num_blocks = block_start_tokens.shape[0]
         sentinel = total_tokens
