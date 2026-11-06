@@ -1,7 +1,7 @@
 """Collect, summarize and gate runs of the eval suite in the regression workflow.
 
     python tests/regression/scripts/eval.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
-    python tests/regression/scripts/eval.py summarize results/*.json --baseline baselines/eval/gsm8k.json
+    python tests/regression/scripts/eval.py summarize results/*.json --name gsm8k --baseline baselines/eval/gsm8k.json
     python tests/regression/scripts/eval.py baseline results/*.json \
         --out baselines/eval/gsm8k.json --report reports/eval/gsm8k.md
 
@@ -112,6 +112,9 @@ def collect(run_dir: Path, repeat: int, wall_s: float | None) -> dict:
 def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
     """Render the comparison table against the baseline. Returns (lines, regressed)."""
     base = baseline["results"]
+    # A baseline can widen a metric's tolerance, e.g. for an eval whose errors are rare
+    # infra events the five baseline repeats under-sample.
+    min_tol = baseline.get("tolerance", {})
     n = len(base)
     lines = [
         "| Metric | Tonight | Baseline mean ± std | Δ | Tolerance | Status |",
@@ -129,7 +132,12 @@ def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
         if m.higher_is_better is None:
             tol, status = None, "–"
         else:
-            tol = max(K_SIGMA * base_std * math.sqrt(1 + 1 / n), m.floor_abs, m.floor_rel * abs(base_mean))
+            tol = max(
+                K_SIGMA * base_std * math.sqrt(1 + 1 / n),
+                m.floor_abs,
+                m.floor_rel * abs(base_mean),
+                min_tol.get(m.key, 0.0),
+            )
             worse = -delta if m.higher_is_better else delta
             if worse > tol:
                 status, regressed = "❌", True
@@ -185,9 +193,11 @@ def per_repeat(results: list[dict]) -> list[str]:
     return lines
 
 
-def summarize(results: list[dict], expected: int | None, baseline: dict | None) -> tuple[str, bool]:
+def summarize(
+    results: list[dict], expected: int | None, baseline: dict | None, name: str | None = None
+) -> tuple[str, bool]:
     """Render the Markdown summary. Returns (markdown, regressed)."""
-    lines = ["## Eval regression", ""]
+    lines = [f"## Eval regression: {name}" if name else "## Eval regression", ""]
     if not results:
         lines.append("❌ No repeat finished. Check the job logs.")
         return "\n".join(lines) + "\n", True
@@ -217,7 +227,7 @@ def summarize(results: list[dict], expected: int | None, baseline: dict | None) 
             f"### {verdict}",
             "",
             f"Baseline: {len(baseline['results'])} repeats from [{baseline['date']}]({baseline['source']})."
-            f" Tolerance: max({K_SIGMA:g}σ of a single run, metric floor).",
+            f" Tolerance: max({K_SIGMA:g}σ of a single run, metric floor, baseline minimum).",
             "",
             *table,
             "",
@@ -275,6 +285,7 @@ def main() -> None:
     p_summarize.add_argument("results", type=Path, nargs="*")
     p_summarize.add_argument("--expected", type=int, default=None, help="Number of repeats launched.")
     p_summarize.add_argument("--baseline", type=Path, default=None, help="Baseline file to compare against.")
+    p_summarize.add_argument("--name", default=None, help="Config name for the heading.")
 
     p_baseline = sub.add_parser("baseline", help="Turn 2+ result JSONs into a baseline and its report.")
     p_baseline.add_argument("results", type=Path, nargs="+")
@@ -293,12 +304,14 @@ def main() -> None:
         if len(results) < 2:
             raise SystemExit(f"a baseline needs 2+ results to measure the spread, got {len(results)}")
         baseline = make_baseline(results)
+        if args.out.exists() and (tolerance := json.loads(args.out.read_text()).get("tolerance")):
+            baseline = {"tolerance": tolerance, **baseline}
         args.out.write_text(json.dumps(baseline, indent=2) + "\n")
         args.report.write_text(report(baseline))
         return
 
     baseline = json.loads(args.baseline.read_text()) if args.baseline and args.baseline.exists() else None
-    markdown, regressed = summarize(results, args.expected, baseline)
+    markdown, regressed = summarize(results, args.expected, baseline, args.name)
     sys.stdout.write(markdown)
     sys.exit(1 if regressed else 0)
 
