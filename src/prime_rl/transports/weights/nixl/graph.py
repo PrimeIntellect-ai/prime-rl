@@ -250,6 +250,23 @@ class LazyWeight(torch.Tensor):
         # live kernel storage or attempt a meta-to-device copy.
         return destination
 
+    def _record_setitem(self, destination: torch.Tensor, index: Any) -> None:
+        """Record ``destination[index] = self``, for loaders that assign into a slice."""
+        if isinstance(destination, LazyWeight):
+            raise UnsupportedOpError("__setitem__ between lazy graph tensors is not supported")
+        with torch._C.DisableTorchFunctionSubclass():
+            view = destination[index]
+        # Storage, not ``is_view_of``: ``_base`` points at the view chain's root, so a narrowed
+        # destination would fail that check. Advanced indexing allocates a fresh storage.
+        if view.untyped_storage().data_ptr() != destination.untyped_storage().data_ptr():
+            raise UnsupportedOpError(f"__setitem__ must index a view of the destination for {self._source_name!r}")
+        # ``_record_copy`` would report a ``copy_`` mismatch, which never happened here.
+        if tuple(view.shape) != tuple(self.shape):
+            raise UnsupportedOpError(
+                f"__setitem__ shape mismatch for {self._source_name!r}: {tuple(self.shape)} -> {tuple(view.shape)}"
+            )
+        self._record_copy(view)
+
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -258,6 +275,18 @@ class LazyWeight(torch.Tensor):
             source = args[1] if len(args) > 1 else kwargs.get("src")
             if isinstance(source, cls):
                 return source._record_copy(destination)
+
+        if func is torch.Tensor.__setitem__:
+            source = args[2]
+            if isinstance(source, cls):
+                return source._record_setitem(args[0], args[1])
+
+        if func is torch.Tensor.view_as:
+            source = args[0]
+            other = args[1] if len(args) > 1 else kwargs.get("other")
+            if isinstance(source, cls) and isinstance(other, torch.Tensor):
+                # Concrete shape: a tensor argument would stay live in the replay chain.
+                return cls._intercept(source, torch.Tensor.view, "view", (tuple(other.shape),), {})
 
         op_name = SUPPORTED_OPS.get(func)
         if op_name is not None and args and isinstance(args[0], cls):
