@@ -217,7 +217,7 @@ stream records, newest winning.
 wc -l {run_dir}/monitors/file/traces/stream.index.jsonl
 zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq '.traces[].rewards'
 zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq 'select(.ok | not) | {id, env: .env.id, errors}'
-jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orch.index.jsonl
+jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orchestrator.index.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).
@@ -238,8 +238,8 @@ All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 ```
 PRL::Launcher
 ├── PRL::Inference          (vLLM server, GPU 0)
-├── PRL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
-│   └── Verifiers::EnvWorker0..N
+├── PRL::EnvServer          (ZMQ broker; one per train/eval source)
+│   └── env workers         (spawned Python processes, 1..N per pool)
 ├── PRL::Orchestrator       (CPU-only; connects to each env server)
 ├── torchrun
 │   └── PRL::Trainer        (GPU 1+)

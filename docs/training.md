@@ -17,10 +17,11 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Important Metrics](#important-metrics-1)
+- [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
-  - [Pausing a Live Run](#pausing-a-live-run)
+  - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
@@ -39,6 +40,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 |---|---|---|
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
+| `uv run pretrain` | Pretraining from scratch on tokenized shards. | Launches torchrun internally; see [Pretraining](#pretraining). |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
@@ -298,6 +300,7 @@ Pulled from the console log and mirrored to W&B.
 - `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
 - For MoE: `expert_load/{cv,max_mean,cold_frac}/{mean,max}` — expert load per layer over the whole step, from token counts summed across all ranks, as the mean and max over MoE layers. `cv` is std/mean of the per-expert token counts, `max_mean` the busiest expert's count over the mean, and `cold_frac` the fraction of experts receiving under 0.1x the mean. A trainable router that drifts shows up as a rising `cv`/`cold_frac` (MiMo-V2.6 §5.4).
+- For MoE with EP: `ep_imbalance/rank/{mean,max}` — the busiest EP rank's routes over the mean rank's (padding included) in each layer and microstep, which sets the layer's expert time. It takes the max over DP groups at each layer and microstep, then the mean and max over the step's layers and microsteps; `ep_imbalance/rank_dp_mean/{mean,max}` takes the DP mean instead.
 
 **Performance:**
 
@@ -309,6 +312,61 @@ Pulled from the console log and mirrored to W&B.
 | `perf/peak_memory` | peak GPU memory from all sources, max over ranks (GiB) |
 | `perf/non_torch_memory` | GPU memory outside PyTorch's caching allocator (symmetric memory such as Mega MoE's buffers, NCCL, CUDA context), max over ranks (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
+
+## Pretraining
+
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+
+**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
+
+```python
+# Run with datatrove installed. Tokenize held-out documents into another folder for validation.
+from datatrove.executor import LocalPipelineExecutor
+from datatrove.pipeline.readers import ParquetReader
+from datatrove.pipeline.tokens import DocumentTokenizer
+
+LocalPipelineExecutor(
+    pipeline=[
+        ParquetReader("hf://datasets/HuggingFaceFW/fineweb-edu/sample/10BT"),
+        DocumentTokenizer(
+            output_folder="data/fineweb-edu",
+            tokenizer_name_or_path="Qwen/Qwen3-0.6B",
+            eos_token="<|endoftext|>",
+        ),
+    ],
+    tasks=16,
+).run()
+```
+
+**Configure.** Only `data.paths` is required:
+
+```toml
+max_steps = 1000
+
+[model]
+name = "Qwen/Qwen3-0.6B"   # only the architecture is read
+
+[data]
+paths = ["data/fineweb-edu"]
+seq_len = 2048
+batch_size = 256
+
+[val]                      # optional
+interval = 100
+num_samples = 512          # windows per validation; leave out to read the held-out shards once
+
+[val.data]
+paths = ["data/fineweb-edu-val"]
+seq_len = 2048
+```
+
+All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+
+**Launch.**
+
+```bash
+uv run pretrain @ pretrain.toml
+```
 
 ## Checkpointing
 
@@ -350,7 +408,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-### Pausing a Live Run
+### Pausing or Checkpointing a Live Run
 
 With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
 
@@ -366,6 +424,13 @@ curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{
 ```
 
 Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
+
+A `checkpoint` action takes the same two calls and saves step N without stopping the run. Since the trainer keeps going, the orchestrator has to receive its request before the trainer finishes N and requests N + 1; a later request gets a 409 because the orchestrator no longer has the state of N:
+
+```bash
+curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint"}'
+curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint", "step": 12}'
+```
 
 ### Updating the Config Live
 
@@ -491,7 +556,7 @@ Name the Prime run in TOML:
 name = "my-experiment"
 ```
 
-On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
 The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 

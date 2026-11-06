@@ -28,7 +28,7 @@ from prime_rl.utils.pathing import get_config_dir
 from prime_rl.utils.weights import convert_state_dict_to_hf, group_by_layer, resolve_wire_dtype
 
 logger = get_logger()
-RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
+RUN_CONFIG_NAMES = ("trainer.json", "sft.json", "pretrain.json")
 
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:

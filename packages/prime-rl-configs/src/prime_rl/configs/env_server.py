@@ -1,10 +1,49 @@
 from pathlib import Path
+from typing import Annotated, Literal
 
 import verifiers.v1 as vf
 from pydantic import Field, SerializeAsAny, model_validator
 
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
+
+
+class StaticPoolConfig(BaseConfig):
+    """Fixed env-server pool: pre-spawn `num_workers` workers up front."""
+
+    type: Literal["static"] = "static"
+    num_workers: int = Field(4, ge=1)
+    """Worker processes to pre-spawn."""
+
+
+class ElasticPoolConfig(BaseConfig):
+    """Elastic env-server pool: start at one worker and scale up on demand."""
+
+    type: Literal["elastic"] = "elastic"
+    max_workers: int | None = Field(None, ge=1)
+    """Upper bound on workers (None = unbounded)."""
+    multiplex: int = Field(128, ge=1)
+    """Episodes per worker for the scale-up trigger: add a worker once in-flight episodes
+    reach 90% of `workers * multiplex`."""
+
+
+# Discriminated on `type` so the CLI selects with `--serve.pool.type static|elastic`.
+PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")]
+
+
+class ServeConfig(BaseConfig):
+    """The `[serve]` block: the worker pool, the ZMQ address, and each worker's
+    episode bound."""
+
+    pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
+    """Worker-pool sizing. `elastic` (default) starts at one worker and scales up on
+    demand; `static` pre-spawns a fixed `num_workers`."""
+    address: str | None = None
+    """ZMQ address the ROUTER binds (and clients connect to). None binds an OS-assigned
+    loopback port and publishes it through the server's address file."""
+    max_concurrent: int | None = Field(None, ge=1)
+    """Episodes in flight per worker (None = unbounded). How many agent runs one episode
+    carries is the env's own (`--env.max-concurrent-agents`, one at a time by default)."""
 
 
 class EnvServerConfig(BaseConfig):
@@ -15,7 +54,7 @@ class EnvServerConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: vf.ServeConfig = vf.ServeConfig()
+    serve: ServeConfig = ServeConfig()
     """How it's served: the worker pool, the bind address, each worker's episode bound."""
 
     address_file: Path | None = None
