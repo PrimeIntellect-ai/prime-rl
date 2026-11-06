@@ -146,8 +146,8 @@ jobs:
         name: Eval / ${{ matrix.name }}
         needs: eval-plan
         runs-on: ubuntu-latest
-        # The GitHub-hosted maximum. Agent evals have no rollout timeout, so a slow endpoint
-        # stretches the run instead of failing tasks.
+        # The GitHub-hosted maximum. An agent eval caps the agent time of each rollout in its
+        # config, so that it ends before this limit.
         timeout-minutes: 360
         strategy:
             fail-fast: false
@@ -208,6 +208,26 @@ jobs:
                       outputs/${{ matrix.config }}-${{ matrix.repeat }}/monitors/file/traces/stream.index.jsonl
                   if-no-files-found: ignore
                   retention-days: 30
+            # Each config posts its own message when its eval ends, so a long eval does not delay
+            # the others. Only nightly and manual runs of one repeat post. Runs for a new baseline
+            # report in the summary only. always(), because a job that hits its timeout ends as
+            # cancelled, and that eval must still report.
+            - name: Post to Slack
+              if: ${{ always() && github.event_name != 'pull_request' && env.EVAL_REPEATS == '1' }}
+              env:
+                  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+                  CONFIG: ${{ matrix.config }}
+                  NAME: ${{ matrix.name }}
+              run: |
+                  if [ -z "$SLACK_WEBHOOK_URL" ]; then
+                      echo "SLACK_WEBHOOK_URL is not set. Skipped."
+                      exit 0
+                  fi
+                  python3 tests/regression/scripts/eval.py summarize --name "$NAME" \
+                      $(find results -path "results/$CONFIG/*.json" 2>/dev/null) \
+                      --expected 1 --baseline "tests/regression/baselines/eval/$CONFIG.json" \
+                      --slack slack.json > /dev/null || true
+                  curl -fsS -X POST -H "Content-Type: application/json" --data @slack.json "$SLACK_WEBHOOK_URL"
 
     eval-summary:
         name: Eval / Summary
