@@ -15,7 +15,7 @@ from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.monitors import PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.supervised import SupervisedTrainerConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
@@ -49,7 +49,10 @@ def _base_url() -> str | None:
 
 
 def register(
-    config: RLConfig | OrchestratorConfig | SFTConfig | None, name: str | None, mode: str, id: str | None = None
+    config: RLConfig | OrchestratorConfig | SupervisedTrainerConfig | None,
+    name: str | None,
+    mode: str,
+    id: str | None = None,
 ) -> pr.Run:
     """Attach to the platform run ``id``, or register ``config``'s training run with the
     whole config: an ``rl`` launch's covers the trainer and inference too."""
@@ -60,9 +63,9 @@ def register(
         # The RFT API requires a base model.
         init_kwargs = {"name": name, "model": "unknown"}
     else:
-        if isinstance(config, SFTConfig):
+        if isinstance(config, SupervisedTrainerConfig):
             model = config.model.name
-            # SFT trains on a dataset, not on environments, and has no rollouts.
+            # SFT and pretraining train on a dataset, not on environments, and have no rollouts.
             environments = []
             training = pr.TrainingSpec(
                 max_steps=config.max_steps or 0,
@@ -106,7 +109,7 @@ def register(
 
 
 @contextmanager
-def launch_run(config: RLConfig | SFTConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
+def launch_run(config: RLConfig | SupervisedTrainerConfig, prime: PrimeMonitorConfig | None) -> Iterator[None]:
     """Register the launch's Prime run around starting its components, which attach to
     it: its id becomes ``$PRL_RUN_ID`` and ``$RUN_ID``. A launch that fails marks the
     run failed, and one that ends cleanly finishes it once every component exited - the

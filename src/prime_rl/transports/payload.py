@@ -353,7 +353,7 @@ def _fields(arrays: BranchArrays) -> set[str]:
 
 
 class PayloadHook:
-    """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
+    """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's arrays."""
 
     def __init__(self, bind_address: str | None = None):
         self._hosts = payload_host(bind_address)

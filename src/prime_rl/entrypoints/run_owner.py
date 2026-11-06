@@ -4,18 +4,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.prime import launch_run
 
 
 def main() -> None:
-    """``python -m prime_rl.entrypoints.run_owner {rl,sft} <config> <command...>``: run a
+    """``python -m prime_rl.entrypoints.run_owner {rl,sft,pretrain} <config> <command...>``: run a
     multi-node SLURM job's step as the owner of its Prime run (``launch_run``). The step's
     clean exit finishes the run; its non-zero exit, or SLURM's SIGTERM on cancel or time
     limit, fails it."""
     kind, path, *command = sys.argv[1:]
-    config = (RLConfig if kind == "rl" else SFTConfig).model_validate_json(Path(path).read_text())
+    config_cls = {"rl": RLConfig, "sft": SFTConfig, "pretrain": PretrainConfig}[kind]
+    config = config_cls.model_validate_json(Path(path).read_text())
     prime = config.orchestrator.monitors.prime if isinstance(config, RLConfig) else config.monitors.prime
     step: subprocess.Popen | None = None
 

@@ -586,7 +586,8 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseTrainerConfig(BaseConfig):
-    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer
+    (``SupervisedTrainerConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
@@ -625,8 +626,8 @@ class BaseTrainerConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: ControlConfig | None = None
-    """Serve the run control API on the master rank (pause the run after the next
-    step). If None, the run takes no control requests."""
+    """Serve the run control API on the master rank (pause or checkpoint the run
+    after the next step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""

@@ -14,6 +14,7 @@ from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
 )
 from prime_rl.configs.diff import Frozen, Live
+from prime_rl.configs.env_server import ServeConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -95,7 +96,7 @@ class EnvConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: vf.ServeConfig = vf.ServeConfig()
+    serve: ServeConfig = ServeConfig()
     """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config; an unset ``address`` means the spawned server binds an OS-assigned port and publishes it for the orchestrator. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
 
     name: str | None = None
@@ -568,8 +569,8 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: OrchestratorControlConfig | None = None
-    """Serve the orchestrator's control API (pause at a step the trainer accepted, update the
-    config live). If None, it takes no control requests."""
+    """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
+    accepted, update the config live). If None, it takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

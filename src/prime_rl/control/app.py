@@ -9,7 +9,7 @@ from prime_rl.control.types import (
     ControlConflictError,
     InvalidActionError,
     InvalidConfigError,
-    PauseRequest,
+    StepActionRequest,
 )
 
 
@@ -26,7 +26,7 @@ def create_app(controller: Controller) -> FastAPI:
     @app.post("/v1/actions", status_code=status.HTTP_202_ACCEPTED)
     async def submit_action(request: ActionRequest) -> Action:
         try:
-            if isinstance(request, PauseRequest):
+            if isinstance(request, StepActionRequest):
                 return controller.submit(request.type, request.step)
             return controller.submit_config(request)
         except ControlConflictError as error:

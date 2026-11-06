@@ -238,8 +238,8 @@ All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 ```
 PRL::Launcher
 ├── PRL::Inference          (vLLM server, GPU 0)
-├── PRL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
-│   └── Verifiers::EnvWorker0..N
+├── PRL::EnvServer          (ZMQ broker; one per train/eval source)
+│   └── env workers         (spawned Python processes, 1..N per pool)
 ├── PRL::Orchestrator       (CPU-only; connects to each env server)
 ├── torchrun
 │   └── PRL::Trainer        (GPU 1+)
