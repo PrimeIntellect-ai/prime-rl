@@ -417,6 +417,8 @@ A resume can add, remove or change train and eval sources. The orchestrator matc
 - A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
 - Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
 
+Tasks match by `Task.key`. The default key hashes task data without the generated row index (`idx`), so moving a row preserves its state while changing its other data makes it a new task. Identical rows need distinct `TaskData.id` values or a custom `Task.key` to keep their sampling state separate.
+
 ### Pausing or Checkpointing a Live Run
 
 With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
