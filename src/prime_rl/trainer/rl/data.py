@@ -1,15 +1,18 @@
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import NotRequired, TypedDict
+from uuid import uuid4
 
+import msgspec
 import numpy as np
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -18,8 +21,16 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
-from prime_rl.transports.payload import delete_payloads, resolve_payloads
+from prime_rl.transports.batch.journal import BatchCheckpoint, BatchJournal
+from prime_rl.transports.batch.recovery import TrainerGroup
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, BranchArrays
+from prime_rl.transports.payload import (
+    SavedArrays,
+    batch_arrays,
+    delete_payloads,
+    load_payloads,
+    resolve_payloads,
+)
 from prime_rl.utils.logger import format_time, get_logger
 
 
@@ -73,6 +84,14 @@ class TensorMicroBatch(TypedDict):
 
 
 class FakeDataLoader:
+    last_batch_id: str | None = None
+
+    def wait_for_saved(self) -> None:
+        pass
+
+    def release_saved(self) -> None:
+        pass
+
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
         self.world = get_world()
         self.dp_world_size = dp_world_size
@@ -224,12 +243,15 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
 class DataLoader:
     """Receives packed micro batches from the orchestrator, one stream per DP rank."""
 
+    last_batch_id: str | None = None
+
     def __init__(
         self,
         output_dir: Path,
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        restored: BatchCheckpoint | None = None,
     ):
         self.world = get_world()
 
@@ -242,7 +264,19 @@ class DataLoader:
         """Micro batches of the last batch whose arrays could not be fetched on this rank."""
         self.payload_urls: list[str] = []
         """The last batch's fetched arrays, for `release_payloads`."""
+        self.journal = BatchJournal(output_dir)
+        self.arrays: list[BranchArrays] | None = None
+        """The last journaled batch's arrays, unless they were read from where a previous run saved them."""
+        self.saver = ThreadPoolExecutor(1, thread_name_prefix="batch-arrays")
+        self.saving: Future[None] | None = None
+        self.saved_urls: list[str] = []
+        """The arrays this rank saved last step, freed on the env servers once every rank saved its own."""
 
+        group = None
+        if config.type == "zmq":
+            attempt = [uuid4().hex if self.world.is_master else None]
+            torch.distributed.broadcast_object_list(attempt, src=0, group=get_dcp_group())
+            group = TrainerGroup(attempt[0], self.world.world_size, start_step, restored)
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
             data_rank=dp_rank,
@@ -250,6 +284,7 @@ class DataLoader:
             world_size=self.world.world_size,
             current_step=start_step,
             transport=config,
+            trainer_group=group,
         )
 
     def wait_for_batch(self) -> None:
@@ -257,18 +292,59 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        batch_ids = {mb.journal_batch_id for mb in micro_batches}
+        if len(batch_ids) != 1:
+            raise ValueError("Expected one journal batch identity across all micro batches")
+        self.last_batch_id = batch_ids.pop()
+        # Freeing the last batch's arrays after this step's collectives relies on every rank's save of them.
+        self.wait_for_saved()
         start = time.perf_counter()
-        self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+        saved = None if self.last_batch_id is None else self.journal.read_arrays(self.last_batch_id, self.dp_rank)
+        self.arrays = None
+        if saved is not None:
+            self.failed_micro_batches, self.payload_urls = load_payloads(micro_batches, saved)
+            get_logger().info(f"Read the training arrays of batch {self.last_batch_id} from disk")
+        else:
+            has_arrays = any(mb.payloads is not None for mb in micro_batches)
+            self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+            if self.last_batch_id is not None and has_arrays:
+                self.arrays = batch_arrays(micro_batches)
         get_logger().debug(
             f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
         )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
-    def release_payloads(self) -> None:
-        """Free the last batch's arrays on the env servers. Call once every rank that may
-        read them has fetched them."""
-        delete_payloads(self.payload_urls)
+    def release_payloads(self, dropped: list[int]) -> None:
+        """Free the last batch's arrays on the env servers. Call on one rank per data rank, once
+        every rank that may read them has fetched them.
+
+        A journaled batch is replayed until a checkpoint covers it, so this rank first saves its
+        data rank's arrays and ``dropped`` micro batches beside it, in the background, and frees
+        them a step later: every rank waits for its save before the next step's collectives."""
+        if self.last_batch_id is None:
+            delete_payloads(self.payload_urls)
+        else:
+            delete_payloads(self.saved_urls)
+            self.saved_urls = self.payload_urls
+            if self.arrays is not None:
+                self.saving = self.saver.submit(self._save_arrays, self.last_batch_id, self.arrays, dropped)
         self.payload_urls = []
+
+    def _save_arrays(self, batch_id: str, arrays: list[BranchArrays], dropped: list[int]) -> None:
+        self.journal.write_arrays(batch_id, self.dp_rank, msgspec.msgpack.encode(SavedArrays(arrays, dropped)))
+
+    def wait_for_saved(self) -> None:
+        """Block until this rank's save of the last batch's arrays finished (its checkpoint
+        releases them); raise its error."""
+        if self.saving is not None:
+            saving, self.saving = self.saving, None
+            saving.result()
+
+    def release_saved(self) -> None:
+        """Free the arrays saved last step once a checkpoint covers their batch: every rank waited
+        for its save before the checkpoint, and no replay reaches back past it."""
+        delete_payloads(self.saved_urls)
+        self.saved_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""

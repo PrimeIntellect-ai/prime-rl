@@ -8,7 +8,8 @@ sample, and each trainer rank fetches its micro batches' blobs before the step a
 them into the micro batch's array fields.
 
 Every kept blob is deleted exactly once, by whoever holds it last: the trainer deletes a
-step's blobs once every rank fetched them; the orchestrator deletes the blobs of samples
+step's blobs once every rank fetched them (with a batch journal, once every rank saved them
+beside the journaled batch, see `SavedArrays`); the orchestrator deletes the blobs of samples
 and traces it drops without shipping; the env server deletes the blobs of episodes it
 kept but did not deliver (`PayloadHook.discard`).
 
@@ -511,6 +512,37 @@ def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) 
     if failed:
         get_logger().warning(f"Could not fetch the payloads of {len(failed)} micro batches")
     return failed, sorted(urls)
+
+
+class SavedArrays(msgspec.Struct, array_like=True, gc=False):
+    """A data rank's arrays of one step as the trainer assembled them, and the micro batches it
+    dropped: a replay of the step reads them instead of fetching from the env servers."""
+
+    micro_batches: list[BranchArrays]
+    dropped: list[int]
+
+
+def batch_arrays(micro_batches: list[MicroBatch]) -> list[BranchArrays]:
+    """The resolved micro batches' arrays, for `SavedArrays`."""
+    return [BranchArrays(mb.routed_experts, mb.sampling_mask, mb.top_logprobs) for mb in micro_batches]
+
+
+def load_payloads(micro_batches: list[MicroBatch], saved: bytes) -> tuple[list[int], list[str]]:
+    """Like `resolve_payloads`, from encoded `SavedArrays` of the batch. Returns the micro
+    batches dropped when the step first ran and the URLs of the arrays, for `delete_payloads`."""
+    arrays = msgspec.msgpack.decode(saved, type=SavedArrays)
+    if len(arrays.micro_batches) != len(micro_batches):
+        raise ValueError(f"Saved arrays of {len(arrays.micro_batches)} micro batches for {len(micro_batches)}")
+    urls = {f"{s.url}/{s.id}" for mb in micro_batches for s in mb.payloads or [] if s is not None}
+    for mb, saved_arrays in zip(micro_batches, arrays.micro_batches):
+        mb.routed_experts, mb.sampling_mask, mb.top_logprobs = (
+            saved_arrays.routed_experts,
+            saved_arrays.sampling_mask,
+            saved_arrays.top_logprobs,
+        )
+        mb.payloads = None
+        _assert_aligned(mb, sum(mb.sequence_lengths))
+    return arrays.dropped, sorted(urls)
 
 
 def _assemble(mb: MicroBatch, fetched: dict[str, BranchArrays | None]) -> bool:

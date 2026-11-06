@@ -20,6 +20,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
+  - [Batch Journal](#batch-journal)
   - [Resuming a Run](#resuming-a-run)
   - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
@@ -388,6 +389,38 @@ uv run rl @ rl.toml --ckpt.interval 25                  # every 25 steps
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
+
+### Batch Journal
+
+RL can retain the exact per-data-rank training payloads until a trainer checkpoint covers them:
+
+```bash
+uv run rl @ rl.toml --orchestrator.batch-journal --ckpt.interval 25
+```
+
+Journaling is off by default. It requires a shared run directory accessible to the orchestrator and trainer, including when using ZMQ. Each batch has a producer-session UUID and step, with payloads and SHA-256 hashes under `<run_dir>/batch_journal/<session>/step_<n>/`. The writer syncs the files and atomically publishes the directory before delivering the batch. External multimodal inputs (`mm_refs`) are not supported.
+
+Encoding and persistence run in a worker thread. Training arrays retained by env servers (routing rows, sampling masks, top-k heads) stay there: the journaled batch keeps its references to them. Once every trainer rank has fetched a journaled batch, one rank per data rank saves that data rank's arrays, and the micro batches it dropped because their arrays could not be fetched, beside the batch as `arrays_rank_<k>.bin`. The save runs in the background and finishes before the next step's collectives and before a checkpoint; the env servers' copies are freed once every rank's save finished: at the next step, or at the checkpoint that covers the batch. A replay reads the saved arrays, so it does not depend on the env servers; arrays not saved yet are fetched again.
+
+The orchestrator awaits delivery before assembling another batch; the worker retains its input buffers until completion. Other event-loop tasks continue, and the dispatcher's existing result queue provides backpressure when `orchestrator.concurrency.max_inflight` is finite. Setting that ceiling to `None` leaves the result queue unbounded. The current encoder also retains serialized bytes alongside the input batch until handoff.
+
+After all trainer ranks complete their checkpoint writes, the trainer records the included batch ID and hashes in `trainer/batch.json`, then deletes journal entries, with their saved arrays, through that step in the same producer session. Failed checkpoint writes do not release journal entries. This boundary is checkpoint completion on the shared filesystem, not completion of an external backup. A new orchestrator session leaves earlier sessions' entries untouched.
+
+There is no journal disk-size cap. Without trainer checkpoints, entries accumulate; checkpoint frequency determines normal retention. Monitor `time/write_batch_journal` for encoding and persistence time and `dispatcher/queued/results` for result-queue occupancy. That time is excluded from `time/wait_for_policy`.
+
+The journal records delivered batches and their checkpoint boundary; it does not automatically replay them or restart the trainer.
+
+With ZMQ, trainer ranks first announce a shared attempt UUID, their rank and data rank, their starting step, and the batch record from the checkpoint they successfully restored. The orchestrator accepts a startup group only after all distinct ranks agree and its starting step matches the pending batch. Requests and responses carry the accepted attempt and step; a different connection cannot impersonate an accepted rank. Orchestrator and trainer must use the same protocol revision.
+
+A replacement group is not automatically accepted. When journaling is enabled, the orchestrator validates a replay plan from the restored checkpoint through the prepared batch awaiting delivery. This requires a matching producer session and checkpoint record, continuous retained batches, matching data-world size, and valid payload hashes. Hash verification runs in a worker thread and streams one file at a time. A replacement cannot change the active trainer world's size.
+
+Without explicit authorization, successful validation returns `recovery_required` with the ordered batch records; the trainer raises `RecoveryRequired`. Invalid recovery attempts receive a rejection. Neither response delivers the pending live batch or replaces the accepted trainer group. Checkpoints without `batch.json` still support coordinated restart at a matching step, but cannot establish a journal replay plan.
+
+The ZMQ sender exposes `authorize_recovery(previous_attempt, replacement_attempt)` for a recovery coordinator running on its event loop. The caller must first terminate the old trainer group, including its checkpoint writers. Authorization checks the expected active attempt and fences its batch requests immediately. Once all replacement ranks agree and the replay plan validates, the sender delivers the saved bytes from the restored checkpoint through the pending batch, then continues with new batches. It preserves the producer's session and batch IDs, rechecks payload hashes during delivery, and does not advance the orchestrator's batch position for replayed history. A second crash during replay can recover from the latest committed checkpoint in the same way.
+
+Only one replay batch is loaded at a time, alongside the pending live batch. Reads run in a worker thread. A disconnected destination during journaled delivery fences that attempt and leaves the sender waiting for an authorized replacement; other transport errors propagate. Logs identify the replacement and each replayed batch. Delivery is not an optimizer-step acknowledgement: a later crash still restores the checkpoint and replays its uncovered batches.
+
+This is a transport-level recovery API, not an automatic restart flag or control endpoint. Production trainer-only recovery also requires weight-channel reconnection, policy identity after rollback, and launcher supervision that preserves the orchestrator and inference. The trainer's startup weight broadcast still precedes its batch handshake. Ordinary `rl --resume` remains a coordinated restart.
 
 ### Resuming a Run
 

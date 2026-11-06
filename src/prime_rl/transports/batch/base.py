@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 
 import msgspec
 
+from prime_rl.transports.batch.journal import BatchJournal
+from prime_rl.transports.batch.recovery import HandshakeReply
 from prime_rl.transports.batch.types import MicroBatch, encode_array
 from prime_rl.utils.logger import get_logger
 
@@ -21,6 +25,29 @@ class BatchSender(ABC):
         self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
         self.output_dir = output_dir
         self.data_world_size = data_world_size
+        self.journal: BatchJournal | None = None
+        self.journal_session = uuid4().hex
+        self.journal_write_time = 0.0
+
+    def encode_batch(self, micro_batch_grid: list[list[MicroBatch]], step: int) -> list[bytes]:
+        if self.journal is None:
+            return [self.encode(micro_batches) for micro_batches in micro_batch_grid]
+        start = perf_counter()
+        batch_id = f"{self.journal_session}:{step}"
+        grid = []
+        for micro_batches in micro_batch_grid:
+            for micro_batch in micro_batches:
+                if micro_batch.mm_refs is not None:
+                    raise ValueError("Batch journaling does not yet retain external multimodal inputs")
+            grid.append([msgspec.structs.replace(mb, journal_batch_id=batch_id) for mb in micro_batches])
+        # Training arrays stay on the env servers: the trainer saves the ones it fetched beside the batch.
+        payloads = [self.encode(rank) for rank in grid]
+        self.journal.write(batch_id, payloads)
+        self.journal_write_time = perf_counter() - start
+        return payloads
+
+    def start(self) -> None:
+        """Begin serving trainers before the first batch. Override if needed."""
 
     @abstractmethod
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
@@ -61,6 +88,11 @@ class BatchReceiver(ABC):
         self.data_rank = data_rank
         self.rank = rank
         self.world_size = world_size
+
+    def connect(self) -> HandshakeReply | None:
+        """Join the orchestrator's producer session before the first request. Transports
+        without a handshake have nothing to agree on."""
+        return None
 
     @abstractmethod
     def wait(self) -> None:

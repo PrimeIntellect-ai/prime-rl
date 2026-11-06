@@ -9,16 +9,20 @@ from types import SimpleNamespace
 import msgspec
 import numpy as np
 import pytest
+import torch
 import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.types import SamplingMask, TopLogprobs, TurnTokens
 
+from prime_rl.configs.shared import FileSystemTransportConfig
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transports import payload
 from prime_rl.transports.batch import types as wire
+from prime_rl.transports.batch.filesystem import FileSystemBatchSender
+from prime_rl.transports.batch.journal import BatchJournal
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, MicroBatch, PayloadSlice, TrainingSample, encode_array
 from prime_rl.transports.payload import (
     PayloadHook,
@@ -29,6 +33,7 @@ from prime_rl.transports.payload import (
     resolve_payloads,
     wait_for_deletes,
 )
+from prime_rl.utils.pathing import get_batch_dir, get_step_path
 
 
 def _episode(
@@ -361,3 +366,100 @@ def test_discard_frees_what_keep_kept():
     assert hook.server.blobs
     hook.discard(episode)
     assert not hook.server.blobs
+
+
+@pytest.mark.parametrize("mode", ["plain", "journal", "disk_failure"])
+def test_journal_keeps_env_arrays_by_reference(tmp_path, mode):
+    rng = np.random.default_rng(7)
+    episodes = [_episode(rng, 4, 12), _episode(rng, 6, 10, masked=True)]
+    hook = PayloadHook()
+    sender = FileSystemBatchSender(tmp_path, data_world_size=2)
+    decoder = msgspec.msgpack.Decoder(list[MicroBatch])
+    try:
+        for episode in episodes:
+            hook.keep(episode, vf.SamplingConfig())
+        kept = dict(hook.server.blobs)
+        grid = prepare_batch(_samples(episodes), seq_len=32, num_train_workers=2, bin_cost=sum, pad_to_multiple_of=8)
+        assert any(mb.payloads is not None for rank in grid for mb in rank)
+        original = [sender.encode(rank) for rank in grid]
+        if mode != "plain":
+            sender.journal = BatchJournal(tmp_path)
+        batch_id = f"{sender.journal_session}:0"
+        if mode == "disk_failure":
+            sender.journal.path.write_text("blocks directory creation")
+            with pytest.raises(OSError):
+                sender.encode_batch(grid, 0)
+            assert not sender.journal.batch_path(batch_id).exists()
+        else:
+            delivered = sender.encode_batch(grid, 0)
+            if mode == "plain":
+                assert delivered == original
+            else:
+                assert sender.journal.read(batch_id) == delivered
+                for rank, payload in zip(grid, delivered, strict=True):
+                    journaled = decoder.decode(payload)
+                    assert [mb.payloads for mb in journaled] == [mb.payloads for mb in rank]
+                    assert {mb.journal_batch_id for mb in journaled} == {batch_id}
+        wait_for_deletes()
+        assert hook.server.blobs == kept
+        assert [sender.encode(rank) for rank in grid] == original
+    finally:
+        hook.server.http.shutdown()
+        hook.server.http.server_close()
+        sender.close()
+
+
+def test_trainer_saves_a_journaled_batchs_arrays_for_its_replay(tmp_path):
+    rng = np.random.default_rng(3)
+    hook = PayloadHook()
+    sender = FileSystemBatchSender(tmp_path, data_world_size=1)
+    sender.journal = BatchJournal(tmp_path)
+    loaders = []
+
+    def loader() -> DataLoader:
+        loaders.append(DataLoader(tmp_path, 0, 1, FileSystemTransportConfig()))
+        return loaders[-1]
+
+    try:
+        trainer, trained = loader(), []
+        for step in range(2):
+            before = set(hook.server.blobs)
+            episodes = [_episode(rng, 4, 12), _episode(rng, 6, 10, masked=True)]
+            for episode in episodes:
+                hook.keep(episode, vf.SamplingConfig())
+            kept = set(hook.server.blobs) - before
+            grid = prepare_batch(
+                _samples(episodes), seq_len=32, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=8
+            )
+            step_path = get_step_path(get_batch_dir(tmp_path), step)
+            step_path.mkdir(parents=True)
+            (step_path / "rank_0.bin").write_bytes(sender.encode_batch(grid, step)[0])
+            trained.append(trainer.get_batch())
+            trainer.release_payloads([0])
+            trainer.wait_for_saved()
+            wait_for_deletes()
+            assert trainer.journal.read_arrays(f"{sender.journal_session}:{step}", 0) is not None
+            # The env servers free a step's arrays only after the next step, once every rank saved them.
+            assert set(hook.server.blobs) == kept
+
+        # The checkpoint that covers the last step frees its arrays without a next step.
+        trainer.release_saved()
+        wait_for_deletes()
+        assert not hook.server.blobs
+        replay = loader()
+        for original in trained:
+            for replayed, micro_batch in zip(replay.get_batch(), original, strict=True):
+                assert replayed.keys() == micro_batch.keys()
+                for key, value in micro_batch.items():
+                    if isinstance(value, torch.Tensor):
+                        assert torch.equal(replayed[key], value), key
+                    else:
+                        assert replayed[key] == value, key
+            assert replay.failed_micro_batches == [0]
+    finally:
+        for dataloader in loaders:
+            dataloader.saver.shutdown()
+            dataloader.payload_pool.shutdown()
+        hook.server.http.shutdown()
+        hook.server.http.server_close()
+        sender.close()
