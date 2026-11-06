@@ -142,7 +142,6 @@ class Dispatcher:
         run_name: str | None,
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
-        on_calls: Callable[[int, int], None] | None = None,
         on_pause: Callable[[], None] | None = None,
         on_resume: Callable[[], None] | None = None,
     ) -> None:
@@ -160,8 +159,6 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
-        # Called with the ``(prefix, recompute)`` tokens of each live delta's model calls
-        self.on_calls = on_calls
         # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
         self.on_pause = on_pause
         self.on_resume = on_resume
@@ -558,9 +555,7 @@ class Dispatcher:
                 if (acp := call.get("acp")) is not None:
                     session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
-            prefix, recompute = live.apply(meta, delta)
-            if prefix and self.on_calls is not None:
-                self.on_calls(prefix, recompute)
+            live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)

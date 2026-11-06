@@ -126,7 +126,6 @@ class EvalRunner:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
-            on_calls=self.concurrency.record_calls,
             on_pause=self.concurrency.pause,
             on_resume=self.concurrency.resume,
         )
@@ -336,7 +335,7 @@ class EvalRunner:
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))
         body = (
             f"{progress_part}; {self.dispatcher.inflight_eval_count} inflight episodes "
-            f"(cap {self.dispatcher.max_inflight}, signal {self.concurrency.signal})"
+            f"(cap {self.dispatcher.max_inflight}, queued share {self.concurrency.queued_share:.2f})"
             + (f" - {stages}" if stages else "")
         )
         payload = {**disp_gauges, **disp_drain, **self.concurrency.gauges()}

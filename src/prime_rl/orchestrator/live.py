@@ -41,48 +41,19 @@ def dispatched_event(meta: InflightEpisode) -> dict[str, Any]:
     return {"dispatched": meta.dispatch_id}
 
 
-def apply(meta: InflightEpisode, delta: dict[str, Any]) -> tuple[int, int]:
-    """Fold one delta into the episode's phase/turn bookkeeping. Returns the
-    ``(prefix, recompute)`` tokens of the delta's model calls (see :func:`reuse`)."""
+def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:
+    """Fold one delta into the episode's phase/turn bookkeeping."""
     trace_id = delta["trace"]
     if delta.get("discard"):
         meta.live.pop(trace_id, None)
-        return 0, 0
+        return
     trace = meta.live.setdefault(trace_id, LiveTrace())
-    calls = delta.get("calls") or []
-    trace.turns += len(calls)
-    prefix = recompute = 0
-    for call in calls:
-        call_prefix, call_recompute = reuse(trace, call.get("usage"))
-        prefix += call_prefix
-        recompute += call_recompute
+    trace.turns += len(delta.get("calls") or [])
     changed = delta.get("set") or {}
     if delta.get("errors"):
         trace.stage = "error"
     elif "timing" in changed:
         trace.stage = stage({"timing": changed["timing"]})
-    return prefix, recompute
-
-
-def reuse(trace: LiveTrace, usage: dict[str, Any] | None) -> tuple[int, int]:
-    """``(prefix, recompute)`` tokens of one model call, given the trace's previous one.
-
-    The prefix is the previous call's input: the engine computed it then, so an
-    append-only history should hit the prefix cache on it now. Recompute is the part
-    of it the engine reported as uncached. The previous call's completion is left
-    out of the prefix, so chat templates that strip prior reasoning do not read as
-    recompute. A call whose input shrank (compaction, a forked branch) rewrote the
-    history and counts as neither; so does a call without reported cached tokens,
-    which also breaks the chain."""
-    if not usage or usage.get("cached_input_tokens") is None:
-        trace.prev_input = None
-        return 0, 0
-    cached = usage["cached_input_tokens"]
-    input_tokens = usage["prompt_tokens"] + cached
-    prev_input, trace.prev_input = trace.prev_input, input_tokens
-    if prev_input is None or input_tokens < prev_input:
-        return 0, 0
-    return prev_input, max(0, prev_input - cached)
 
 
 def stage_counts(inflight: list[InflightEpisode]) -> str:

@@ -360,7 +360,6 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
-            on_calls=self.concurrency.record_calls,
             on_pause=self.concurrency.pause,
             on_resume=self.concurrency.resume,
         )

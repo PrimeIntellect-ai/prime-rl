@@ -505,20 +505,9 @@ class InferenceMetricsCollector:
             role=sample.endpoint.role,
             kv_capacity_tokens=kv_capacity_tokens,
             max_model_len=self.max_model_len_by_endpoint.get(sample.endpoint.key),
-            kv_usage=sample.snapshot.gauges.get("kv_cache_usage_perc", 0.0),
             running=int(sample.snapshot.gauges.get("num_requests_running", 0.0)),
             waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
-            waiting_capacity=(
-                int(capacity_waiting)
-                if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None
-                else None
-            ),
-            preemptions_delta=counter_delta(sample, previous, ("num_preemptions", "num_preemptions_total")),
             finished_delta=counter_delta(sample, previous, ("request_success", "request_success_total")),
-            expired_kv_delta=counter_delta(
-                sample, previous, ("nixl_num_kv_expired_reqs", "nixl_num_kv_expired_reqs_total")
-            ),
-            host_kv_usage=sample.snapshot.gauges.get("hisparse_host_cache_usage_perc"),
             generation_tokens_delta=counter_delta(sample, previous, ("generation_tokens", "generation_tokens_total")),
             latency_delta=histogram_sum_delta(sample, previous, "e2e_request_latency_seconds"),
         )

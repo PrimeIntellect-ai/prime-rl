@@ -92,9 +92,6 @@ class TaskRequest:
 class LiveTrace:
     stage: str = "pending"
     turns: int = 0
-    prev_input: int | None = None
-    """Input tokens of the trace's last model call that reported cached tokens; None
-    before the first one or after a call that did not report them."""
 
 
 @dataclass
