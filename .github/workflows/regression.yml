@@ -146,8 +146,8 @@ jobs:
         name: Eval / ${{ matrix.name }}
         needs: eval-plan
         runs-on: ubuntu-latest
-        # The GitHub-hosted maximum. Agent evals have no rollout timeout, so a slow endpoint
-        # stretches the run instead of failing tasks.
+        # The GitHub-hosted maximum. An agent eval caps the agent time of each rollout in its
+        # config, so that it ends before this limit.
         timeout-minutes: 360
         strategy:
             fail-fast: false
@@ -210,9 +210,10 @@ jobs:
                   retention-days: 30
             # Each config posts its own message when its eval ends, so a long eval does not delay
             # the others. Only nightly and manual runs of one repeat post. Runs for a new baseline
-            # report in the summary only.
+            # report in the summary only. always(), because a job that hits its timeout ends as
+            # cancelled, and that eval must still report.
             - name: Post to Slack
-              if: ${{ !cancelled() && github.event_name != 'pull_request' && env.EVAL_REPEATS == '1' }}
+              if: ${{ always() && github.event_name != 'pull_request' && env.EVAL_REPEATS == '1' }}
               env:
                   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
                   CONFIG: ${{ matrix.config }}
