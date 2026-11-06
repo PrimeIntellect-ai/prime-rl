@@ -380,6 +380,7 @@ class Orchestrator:
             progress=self.progress,
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -718,6 +719,7 @@ class Orchestrator:
         send_start_time = time.perf_counter()
         send_batch_time = await self.sender.send(micro_batch_grid)
         wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
