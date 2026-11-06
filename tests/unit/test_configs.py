@@ -816,7 +816,7 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
 
 def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
     """[trainer_recovery] keeps the restart budget in the launcher; the orchestrator admits replacements,
-    journals batches and NCCL becomes recoverable."""
+    journals batches, NCCL becomes recoverable and NIXL is accepted."""
     import json
 
     base = {
@@ -836,6 +836,9 @@ def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
         RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "weight_broadcast": {"type": "modelexpress"}})
     with pytest.raises(ValueError, match="batch_journal"):
         RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "orchestrator": {"batch_journal": False}})
+    nixl = RLConfig.model_validate({**base, "ckpt": {"interval": 5}, "weight_broadcast": {"type": "nixl"}})
+    assert nixl.orchestrator.admit_replacement_trainers
+    assert nixl.orchestrator.weight_broadcast.type == "nixl"
 
     config = RLConfig.model_validate({**base, "ckpt": {"interval": 5}})
     assert config.trainer_recovery.max_restarts == 2

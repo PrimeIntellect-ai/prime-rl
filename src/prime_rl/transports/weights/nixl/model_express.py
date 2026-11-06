@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import grpc
+import msgspec
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
+
+from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 
 Role = Literal["trainer", "inference", "orchestrator"]
 
@@ -95,3 +98,38 @@ class ModelExpressSession:
         if not response.found:
             raise LookupError(f"ModelExpress worker {ref.worker_id!r} disappeared")
         return response.worker
+
+    def trainer_tables(self) -> list[TrainerTensorTable]:
+        """Trainer tables ModelExpress holds now. An entry that is gone or unreadable by the time it is
+        fetched is left out: no trainer transfers from it, and failing here would stop a recovery."""
+        tables = []
+        for ref in self.list_sources("trainer"):
+            try:
+                tables.append(TrainerTensorTable.decode(self.fetch(ref).nixl_metadata))
+            except (LookupError, msgspec.DecodeError):
+                continue
+        return tables
+
+    def wait_for_trainer_table(
+        self,
+        *,
+        exclude: Collection[str],
+        timeout: float,
+        poll_interval: float = 0.5,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> TrainerTensorTable:
+        """Wait for a trainer table whose instance is not in ``exclude``. A replacement trainer
+        overwrites the entry of the trainer it replaces, so the old table stays readable until then."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancelled is not None and cancelled():
+                raise RuntimeError(f"cancelled waiting for the trainer table in session {self.session_id!r}")
+            for table in self.trainer_tables():
+                if table.instance_id not in exclude:
+                    return table
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"timed out waiting for a trainer table in session {self.session_id!r} "
+                    f"(replaced instances: {sorted(exclude)})"
+                )
+            time.sleep(poll_interval)

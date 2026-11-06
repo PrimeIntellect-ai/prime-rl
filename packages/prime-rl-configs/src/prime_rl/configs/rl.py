@@ -458,7 +458,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_trainer_recovery(self):
         """Recovery replays journaled batches from the latest committed checkpoint, so it needs
-        periodic checkpoints, and NCCL transfers that surviving inference workers can escape."""
+        periodic checkpoints, and NCCL transfers that surviving inference workers can escape. NIXL
+        pulls are cancellable as they are."""
         if self.trainer_recovery is None:
             return self
         if self.trainer.ckpt is None or not self.trainer.ckpt.interval:
@@ -467,8 +468,6 @@ class RLConfig(BaseConfig):
                 "replays every journaled batch since the last committed checkpoint"
             )
         broadcast = self.weight_broadcast
-        if broadcast.type == "nixl":
-            raise ValueError("trainer_recovery does not support NIXL weight broadcast yet")
         if broadcast.type == "modelexpress":
             raise ValueError("trainer_recovery does not support ModelExpress weight broadcast yet")
         if broadcast.type == "nccl":

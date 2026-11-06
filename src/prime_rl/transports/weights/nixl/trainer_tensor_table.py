@@ -48,6 +48,9 @@ class TrainerGroup(msgspec.Struct):
 
 
 class TrainerTensorTable(msgspec.Struct):
+    instance_id: str
+    """Identifies the trainer processes that staged these buffers. A replacement trainer publishes
+    its table under the same ModelExpress entry; consumers skip instances known to be replaced."""
     agents: list[TrainerAgent]
     staging_buffer_count: int
     groups: list[TrainerGroup]

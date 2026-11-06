@@ -387,6 +387,9 @@ class DynamoAdminPlane(AdminPlane):
             self._nccl_initialization_state = "ready"
             get_logger().info(f"Applied NCCL weights for policy v{step} to the Dynamo worker")
 
+    async def reset_weight_transfer(self, stale_trainer_instances: list[str]) -> None:
+        raise ValueError("Dynamo inference does not support trainer recovery with NIXL weight transfer")
+
     async def initialize_nccl(
         self,
         *,
