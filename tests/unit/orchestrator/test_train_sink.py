@@ -90,7 +90,7 @@ def sink(*, constant=True, admitted=True, batch_size=100, closed=None):
         progress=Progress(),
         batch_size=batch_size,
         on_result=lambda group: admitted,
-        close_groups=closed.extend if closed is not None else None,
+        on_groups_closed=closed.extend if closed is not None else None,
     )
 
 
@@ -325,7 +325,19 @@ def test_shipped_groups_close_when_the_consumer_ships_them():
         batch = await s.add(episode([trace(), trace(advantage=0), trace()], group="partial"))
         assert len(batch.samples) == 1 and len(s.pending_batch) == 1
         assert {episode_group_id(episode) for episode in batch.cohort.episodes} == {"partial"}
+        # Taking the batch does not close it: a batch that never ships re-runs on resume.
         assert closed == []
+        s.shipped(batch)
+        assert closed == ["partial"]
+
+    asyncio.run(run())
+
+
+def test_unshipped_groups_stay_open_at_shutdown():
+    async def run():
+        closed = []
+        s = sink(constant=False, batch_size=2, closed=closed)
+        await s.add(episode([trace(), trace(advantage=0), trace()], group="partial"))
         s.discard_queued()
         assert closed == []
 

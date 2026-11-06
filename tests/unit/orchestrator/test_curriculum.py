@@ -1,4 +1,5 @@
 import itertools
+import random
 import uuid
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -339,6 +340,7 @@ def test_train_source_matches_envs_by_name() -> None:
     source = TrainSource([make_env(name, env_tasks) for name, env_tasks in tasks.items()])
     for name in tasks:
         next(source.curricula[name].sampler)
+    source.rng.random()  # the restored rng must differ from a fresh one
 
     added = [make_task(i) for i in range(20, 23)]
     restored = TrainSource([make_env("b", tasks["b"]), make_env("c", added)])
@@ -347,7 +349,7 @@ def test_train_source_matches_envs_by_name() -> None:
     assert set(restored.curricula) == {"b", "c"}
     assert next(restored.curricula["b"].sampler).key == tasks["b"][1].key
     assert next(restored.curricula["c"].sampler).key == added[0].key
-    assert restored.rng.getstate() == source.rng.getstate()
+    assert restored.rng.getstate() == source.rng.getstate() != random.Random(42).getstate()
 
 
 def test_train_source_reopens_open_groups_in_order_without_recounting() -> None:

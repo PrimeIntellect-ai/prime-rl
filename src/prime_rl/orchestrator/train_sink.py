@@ -134,17 +134,17 @@ class TrainSink(Reconfigurable):
         progress: Progress,
         batch_size: int,
         on_result: Callable[[list[vf.Episode]], bool] | None = None,
-        close_groups: Callable[[Iterable[str]], None] | None = None,
+        on_groups_closed: Callable[[Iterable[str]], None] | None = None,
     ) -> None:
-        """``close_groups`` receives the ids of groups that finalized without anything
-        to ship; the consumer closes the groups whose samples it ships."""
+        """``on_groups_closed`` receives the ids of every group that closes: a group
+        that finalized without anything to ship, or one whose batch shipped (`shipped`)."""
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
         self.progress = progress
         self.batch_size = batch_size
         self.on_result = on_result
-        self.close_groups = close_groups
+        self.on_groups_closed = on_groups_closed
 
         self.rollout_window = RolloutWindow()
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
@@ -450,9 +450,13 @@ class TrainSink(Reconfigurable):
         self.pending_batch.clear()
         self.episode_by_trace.clear()
 
+    def shipped(self, batch: TrainBatch) -> None:
+        """Close the groups of a batch that the consumer shipped to the trainer."""
+        self._close(episode_group_id(episode) for episode in batch.cohort.episodes)
+
     def _close(self, group_ids: Iterable[str]) -> None:
-        if self.close_groups is not None:
-            self.close_groups(group_ids)
+        if self.on_groups_closed is not None:
+            self.on_groups_closed(group_ids)
 
     def _close_unqueued(self, group_ids: set[str]) -> None:
         """Close the groups left with no queued trace, which can no longer ship."""

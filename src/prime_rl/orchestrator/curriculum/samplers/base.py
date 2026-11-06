@@ -22,7 +22,9 @@ class TaskSampler(Iterator[vf.Task], ABC):
         return None
 
     def observe(self, group: list[vf.Episode]) -> None:
-        """Update sampling state from a finalized group."""
+        """Update sampling state from a finalized group. A resume re-runs the groups
+        that had not shipped, so a group observed before the checkpoint can come back
+        once more, with new rollouts."""
 
     def state_dict(self) -> dict[str, Any]:
         """Return checkpoint state owned by this sampler."""
