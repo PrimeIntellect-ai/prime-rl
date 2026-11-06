@@ -77,8 +77,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 | Knob | What it does |
 |---|---|
-| `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
-| `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
+| `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. The orchestrator's env servers and its [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) logs use the same level. |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
 | `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime](#prime). |
 
@@ -521,7 +520,7 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 └── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
 ```
 
-Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/latest/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
+Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.level`. For multi-rank trainer debugging, drop into `logs/latest/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
