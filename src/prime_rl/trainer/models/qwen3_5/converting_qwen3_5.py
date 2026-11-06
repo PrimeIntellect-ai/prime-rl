@@ -4,11 +4,22 @@ from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitCo
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeTextConfig
 
 
+def is_fp8_state_dict(state_dict: dict[str, Tensor]) -> bool:
+    """A raw `-FP8` release: each quantized `*.weight` has a `*.weight_scale_inv` sibling."""
+    return any(name.endswith(".weight_scale_inv") for name in state_dict)
+
+
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return any(name == "mtp.fc.weight" or name.endswith("mlp.experts.gate_up_proj") for name in state_dict)
+    return is_fp8_state_dict(state_dict) or any(
+        name == "mtp.fc.weight" or name.endswith("mlp.experts.gate_up_proj") for name in state_dict
+    )
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
+    # Dense HF and PrimeRL names coincide, so a dense release passes as both and the loader skips the
+    # HF->PrimeRL conversion. An fp8 release must not: that conversion is what dequantizes it.
+    if is_fp8_state_dict(state_dict):
+        return False
     if any(name.endswith("mlp.experts.gate_proj") for name in state_dict):
         return True
     has_qwen_layers = any(name.endswith("linear_attn.A_log") for name in state_dict)
