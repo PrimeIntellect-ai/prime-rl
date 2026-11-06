@@ -157,6 +157,13 @@ def cleanup_processes(processes: list[Popen]):
         get_logger().debug(f"Cleaned up process {process.pid}")
 
 
+def kill_session(pid: int) -> None:
+    """SIGKILL every process left in the session ``pid`` leads, e.g. a GPU worker orphaned when its
+    parent was killed, which would hold the GPU a restarted process needs."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL)
+
+
 def monitor_process(process: Popen, stop_event: Event, error_queue: list, process_name: str):
     """Monitor a subprocess and signal errors via shared queue."""
     process.wait()
@@ -180,6 +187,10 @@ class ProcessGroup:
         self.monitor_threads: list[Thread] = []
         self.error_queue: list[Exception] = []
         self.stop_events: dict[str, Event] = {}
+        self.stopping = Event()
+        """Set once the group shuts down, so failed processes are no longer restarted."""
+        self.sessions: list[int] = []
+        """Sessions of restartable processes, killed whole at cleanup."""
 
     def __enter__(self) -> "ProcessGroup":
         signal.signal(signal.SIGTERM, self._sigterm_handler)
@@ -201,21 +212,61 @@ class ProcessGroup:
         sys.exit(1)
 
     def cleanup(self) -> None:
+        self.stopping.set()
         cleanup_threads(self.monitor_threads)
         cleanup_processes(self.processes)
+        for session in self.sessions:
+            kill_session(session)
 
-    def start(self, name: str, cmd: list[str], env: dict[str, str], log_path: Path) -> None:
+    def start(self, name: str, cmd: list[str], env: dict[str, str], log_path: Path, restarts: int = 0) -> None:
+        """Start ``cmd``. With ``restarts``, the process is a server that never exits on its own: when
+        it exits it is started again, in a fresh session after the old one's leftovers were killed,
+        up to ``restarts`` times before its failure stops the group; restarts append to the same log."""
         get_logger().debug(f"{name[:1].upper() + name[1:]} command: {' '.join(cmd)}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # If we don't log stdout, the inference server hangs
         with open(log_path, "w") as log_file:
-            process = Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+            process = Popen(cmd, env=env, stdout=log_file, stderr=log_file, start_new_session=bool(restarts))
         self.processes.append(process)
+        if restarts:
+            self.sessions.append(process.pid)
         stop_event = Event()
         self.stop_events[name] = stop_event
-        monitor_thread = Thread(target=monitor_process, args=(process, stop_event, self.error_queue, name), daemon=True)
+        if restarts:
+            target, args = self._supervise, (process, cmd, env, log_path, restarts, stop_event, name)
+        else:
+            target, args = monitor_process, (process, stop_event, self.error_queue, name)
+        monitor_thread = Thread(target=target, args=args, daemon=True)
         monitor_thread.start()
         self.monitor_threads.append(monitor_thread)
+
+    def _supervise(
+        self,
+        process: Popen,
+        cmd: list[str],
+        env: dict[str, str],
+        log_path: Path,
+        restarts: int,
+        stop_event: Event,
+        name: str,
+    ) -> None:
+        for restart in range(1, restarts + 1):
+            process.wait()
+            kill_session(process.pid)
+            if self.stopping.is_set():
+                break
+            delay = min(5.0 * restart, 30.0)
+            get_logger().warning(
+                f"{name[:1].upper() + name[1:]} failed with exit code {process.returncode}; "
+                f"restarting it in {delay:.0f}s ({restart}/{restarts})"
+            )
+            if self.stopping.wait(delay):
+                break
+            with open(log_path, "a") as log_file:
+                process = Popen(cmd, env=env, stdout=log_file, stderr=log_file, start_new_session=True)
+            self.processes.append(process)
+            self.sessions.append(process.pid)
+        monitor_process(process, stop_event, self.error_queue, name)
 
     def wait(self, *names: str) -> None:
         """Block until the named processes exit; exit with code 1 as soon as any started process fails."""

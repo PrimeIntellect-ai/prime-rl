@@ -1,3 +1,4 @@
+import copy
 import os
 from pathlib import Path
 from typing import Annotated, Literal, get_args
@@ -27,6 +28,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
@@ -847,6 +849,37 @@ def test_trainer_recovery_resolves_and_roundtrips(tmp_path):
     path = tmp_path / "rl.json"
     path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
     assert cli(RLConfig, args=["@", str(path)]) == config
+
+
+def test_inference_recovery_resolves():
+    """[inference_recovery] turns on the orchestrator's inference monitor, gates servers on their first update and makes
+    NCCL recoverable and elastic; transports it cannot handle are rejected."""
+    base = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {},
+        "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        "inference_recovery": {"max_restarts": 2},
+    }
+
+    def resolve(**overrides) -> RLConfig:
+        return RLConfig.model_validate(copy.deepcopy({**base, **overrides}))
+
+    config = resolve(**{"weight_broadcast": {"type": "nccl"}})
+    assert config.inference_recovery.max_restarts == 2 and config.orchestrator.inference_monitor is not None
+    assert config.inference.server.await_policy
+    for broadcast in (config.trainer.weight_broadcast, config.orchestrator.weight_broadcast):
+        assert broadcast.recoverable and broadcast.elastic
+    assert resolve(**{"weight_broadcast": {"type": "filesystem"}}).orchestrator.weight_broadcast.type == "filesystem"
+    with pytest.raises(ValueError, match="elastic"):
+        resolve(**{"weight_broadcast": {"type": "nccl", "elastic": False}})
+    with pytest.raises(ValueError, match="nixl"):
+        resolve(**{"weight_broadcast": {"type": "nixl"}})
+    spanning = {"enable_expert_parallel": True, "data_parallel_size": 4, "data_parallel_size_local": 2}
+    with pytest.raises(ValueError, match="expert-parallel"):
+        resolve(**{"inference": {"vllm": spanning}})
+    with pytest.raises(ValueError, match="recoverable"):
+        NCCLWeightBroadcastConfig(elastic=True)
 
 
 def test_multi_node_auto_inference_parallelism():

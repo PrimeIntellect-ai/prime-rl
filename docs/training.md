@@ -23,6 +23,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Batch Journal](#batch-journal)
   - [Recoverable NCCL Weight Transfers](#recoverable-nccl-weight-transfers)
   - [Trainer Recovery](#trainer-recovery)
+  - [Inference Recovery](#inference-recovery)
   - [Resuming a Run](#resuming-a-run)
   - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
@@ -452,7 +453,26 @@ Before admitting the replacement, the orchestrator reconciles the weight channel
 
 Replayed steps log again under their original step numbers. A second failure during replay recovers the same way from the latest committed checkpoint. Training continues from the restored checkpoint on the same batches, so replayed steps reproduce the original ones up to kernel nondeterminism (which RL can amplify over a few steps); rollouts generated during the outage keep their policy versions and are subject to `orchestrator.max_staleness` as usual. If an update leaves inference with incomplete weights and no trainer publishes a complete policy within `weight_broadcast.timeout`, the orchestrator fails the run.
 
-With NCCL, a trainer failure after it joined the orchestrator's session but before its first transfer group formed is not recovered: the orchestrator waits in the initial rendezvous until `weight_broadcast.timeout` and then ends the run. A failure of the orchestrator or an inference server also ends the run, as does trainer recovery with NIXL on Dynamo inference.
+With NCCL, a trainer failure after it joined the orchestrator's session but before its first transfer group formed is not recovered: the orchestrator waits in the initial rendezvous until `weight_broadcast.timeout` and then ends the run. A failure of the orchestrator also ends the run, as does trainer recovery with NIXL on Dynamo inference. An inference server failure ends it unless [inference recovery](#inference-recovery) is on.
+
+### Inference Recovery
+
+An inference server failure need not end the run either. With inference recovery the orchestrator, the trainer and the other servers keep running, and the failed server rejoins once it is back:
+
+```toml
+[inference_recovery]
+max_restarts = 3
+```
+
+`[inference_recovery]` turns on the orchestrator's inference monitor (`[orchestrator.inference_monitor]`); `max_restarts` is only the launcher's restart budget. The monitor probes every server's `/ready` (`probe_interval`, default 2 seconds). A server that misses `lost_after` probes in a row (default 5), or reports a dead engine, is lost: it is left out of weight updates, and its admin calls in flight are cancelled. The rollouts it was serving fail and are dropped like any failed rollout; the router stops sending it requests. While no server takes requests, the dispatcher schedules nothing.
+
+When a lost server answers again, it rejoins: it takes part in the next weight update, and with filesystem weights it catches up at once from the version on disk. Servers report `/ready` only once a weight update succeeded on them, and the router health-checks `/ready`, so a replacement process (a new instance ID) takes requests only once it holds the current policy. A server never serves a stale policy either: every probe carries the policy inference serves and a lease, so a server that fell behind while the monitor could not reach it stops taking requests until its next update, and one the monitor has not reached for as long as it takes to count it lost stops until the monitor reaches it again.
+
+With NCCL, the transfer group becomes elastic: the orchestrator forms it per update around the servers taking part, and sends its size and session with the acknowledgement of each offer. The trainer keeps one store for its lifetime and forms a new group whenever the session changes. When a server is lost during a transfer, the orchestrator stops it for everyone through the abort marker, the other servers keep their engines paused, and the trainer offers the same version again, which is sent to the remaining servers. The trainer waits for the orchestrator to confirm each delivery (`.received`) before it moves on. If every server is lost, no batch can be produced, so the orchestrator asks the trainer, through the ZMQ batch channel, to publish the version it holds again once a server rejoins.
+
+The `rl` launcher restarts a failed server up to `max_restarts` times, each time in a fresh session after killing whatever the previous one left behind (a vLLM engine core outlives a killed API server and holds its GPUs). Multi-node SLURM runs restart each per-rank server on its node. Another supervisor can restart a server instead; it must start it at the same address.
+
+`[inference_recovery]` requires the vLLM router or a single server, the filesystem or NCCL weight transport, and with NCCL the ZMQ rollout transport. Disaggregated (P/D) inference, NIXL, ModelExpress and Dynamo are not supported yet. A server of an expert-parallel group spanning several servers cannot rejoin its group alone.
 
 ### Resuming a Run
 

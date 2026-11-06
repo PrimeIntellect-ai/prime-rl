@@ -31,9 +31,29 @@ launch_inference_rank() {
         printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
         cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
     fi
-    if [ -n "$nixl" ]; then
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
-    else
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
+    local -a envs=(CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase")
+    [ -n "$nixl" ] && envs+=(VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl")
+    if [ "${INFERENCE_MAX_RESTARTS:-0}" -eq 0 ]; then
+        env "${envs[@]}" "${cmd[@]}" 2>&1 | tee -a "$log" &
+        return
     fi
+    # With inference recovery, a failed server is restarted in place (same port and GPUs) up to
+    # INFERENCE_MAX_RESTARTS times; the orchestrator lets it rejoin at the next weight update.
+    # Each attempt runs in its own session, killed whole after it exits: a vLLM engine core whose
+    # API server was killed outlives it and would hold the GPUs the next attempt needs. The session
+    # is outside the job step's process group, so the loop also kills it when the step is torn down.
+    (
+        server=
+        trap '[ -n "$server" ] && kill -KILL -- "-$server" 2>/dev/null; exit 143' TERM INT HUP
+        for ((restart = 0; ; restart++)); do
+            setsid env "${envs[@]}" "${cmd[@]}" > >(tee -a "$log") 2>&1 &
+            server=$!
+            wait "$server"
+            code=$?
+            kill -KILL -- "-$server" 2>/dev/null
+            [ "$restart" -ge "$INFERENCE_MAX_RESTARTS" ] && exit "$code"
+            echo "Inference server on port $port exited with code $code; restarting it ($((restart + 1))/$INFERENCE_MAX_RESTARTS)" | tee -a "$log"
+            sleep 5
+        done
+    ) &
 }

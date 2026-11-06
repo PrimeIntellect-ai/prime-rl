@@ -14,6 +14,7 @@ from prime_rl.configs.shared import (
     BaseSingleNodeDeploymentConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    InferenceRecoveryConfig,
     NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
@@ -209,6 +210,9 @@ class RLConfig(BaseConfig):
 
     trainer_recovery: TrainerRecoveryConfig | None = None
     """Replace a failed trainer group without restarting the orchestrator, inference or environments. Journals batches until trainer checkpoints commit (``orchestrator.batch_journal``), restarts the trainer up to ``max_restarts`` times, and makes NCCL weight transfers recoverable. Requires ``[ckpt]`` with an interval and the ZMQ rollout transport. The launcher owns ``max_restarts``; the orchestrator gets ``admit_replacement_trainers``."""
+
+    inference_recovery: InferenceRecoveryConfig | None = None
+    """Keep training when a policy inference server fails. The orchestrator leaves a lost server out of weight updates and lets it rejoin at the next update once it answers again; servers take requests only after their first update; the launcher restarts a failed server up to ``max_restarts`` times. Makes NCCL weight transfers recoverable and elastic. The launcher owns ``max_restarts``; the orchestrator gets ``inference_monitor``, which holds the probe settings."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
@@ -475,6 +479,42 @@ class RLConfig(BaseConfig):
                 raise ValueError("trainer_recovery requires weight_broadcast.recoverable = true with NCCL")
             for config in (broadcast, self.trainer.weight_broadcast, self.orchestrator.weight_broadcast):
                 config.recoverable = True
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_inference_recovery(self):
+        """A replacement server must not take requests before it holds the policy, and an NCCL group
+        must form around the servers that are there, so servers wait for their first update and
+        NCCL transfers become recoverable and elastic."""
+        if self.inference_recovery is None:
+            return self
+        broadcast = self.weight_broadcast
+        if broadcast.type not in ("filesystem", "nccl"):
+            raise ValueError(f"inference_recovery does not support {broadcast.type} weight broadcast yet")
+        if broadcast.type == "nccl":
+            if self.orchestrator.rollout_transport.type != "zmq":
+                # Once every server is lost, the trainer is asked through it to send its policy again.
+                raise ValueError("inference_recovery requires the ZMQ rollout transport with NCCL")
+            for field in ("recoverable", "elastic"):
+                if field in broadcast.model_fields_set and not getattr(broadcast, field):
+                    raise ValueError(f"inference_recovery requires weight_broadcast.{field} = true with NCCL")
+            for config in (broadcast, self.trainer.weight_broadcast, self.orchestrator.weight_broadcast):
+                config.recoverable = True
+                config.elastic = True
+        if self.inference is not None:
+            if self.inference.deployment.type == "disaggregated":
+                raise ValueError("inference_recovery does not support disaggregated inference yet")
+            if self.inference.router is not None and self.inference.router.type != "vllm-router":
+                raise ValueError("inference_recovery requires the vllm-router, which health-checks /ready")
+            vllm = self.inference.vllm
+            if vllm.enable_expert_parallel and vllm.data_parallel_size > (
+                vllm.data_parallel_size_local or vllm.data_parallel_size
+            ):
+                # A server could not rejoin an expert-parallel group the other servers still form.
+                raise ValueError(
+                    "inference_recovery does not support expert-parallel groups spanning several servers yet"
+                )
+            self.inference.server.await_policy = True
         return self
 
     @model_validator(mode="after")

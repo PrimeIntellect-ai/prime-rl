@@ -127,6 +127,10 @@ def propagate_shared_fields(data: Any) -> Any:
         fill("orchestrator.admit_replacement_trainers", True)
         fill("orchestrator.batch_journal", True)
 
+    # [inference_recovery] configures the launcher's restarts; the orchestrator monitors the servers.
+    if get("inference_recovery") is not None:
+        fill("orchestrator.inference_monitor", {})
+
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
     propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")
 

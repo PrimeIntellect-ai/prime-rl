@@ -36,6 +36,7 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
 export ROUTER_PORT={{ router_port }}
 export INFERENCE_TP={{ inference_tp }}
+export INFERENCE_MAX_RESTARTS={{ inference_max_restarts | default(0) }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
 {% if is_disaggregated -%}

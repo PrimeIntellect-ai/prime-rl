@@ -523,3 +523,86 @@ def test_recovery_authorization_checks_identity_and_fences_old_requests(tmp_path
     finally:
         for transport in [sender, *receivers]:
             transport.close()
+
+
+def test_zmq_trainer_is_asked_to_publish_its_policy_again(tmp_path):
+    """With every rank waiting and no batch pending, the orchestrator asks for the policy the trainer
+    holds; a request for any other version is dropped and the batch follows as usual."""
+    transport = ZMQTransportConfig(host="127.0.0.1", port=_free_port())
+    sender = ZMQBatchSender(tmp_path, data_world_size=2, current_step=3, transport=transport)
+    group = TrainerGroup(uuid4().hex, len(RANK_TO_DATA_RANK), 3)
+    receivers = [
+        ZMQBatchReceiver(
+            tmp_path, data_rank, rank, len(RANK_TO_DATA_RANK), current_step=3, transport=transport, trainer_group=group
+        )
+        for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
+    ]
+
+    async def run() -> tuple[list[int | None], list[int | None]]:
+        sender.start()
+        waits = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in receivers]
+        await asyncio.sleep(0.5)
+        sender.request_republish(2)
+        await asyncio.wait_for(asyncio.gather(*waits), timeout=10)
+        asked = [receiver.republish_requested() for receiver in receivers]
+
+        waits = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in receivers]
+        await asyncio.sleep(0.5)
+        sender.request_republish(7)  # not the trainer's policy (v2): dropped
+        await asyncio.sleep(0.5)
+        assert not any(wait.done() for wait in waits)
+        await asyncio.wait_for(asyncio.gather(sender.send(MICRO_BATCH_GRID), *waits), timeout=10)
+        return asked, [receiver.republish_requested() for receiver in receivers]
+
+    asked, after_batch = asyncio.run(run())
+    assert asked == [2, 2, 2, 2]
+    assert after_batch == [None] * 4
+    assert all(len(receiver.receive()) == 1 for receiver in receivers)
+    for transport_end in [sender, *receivers]:
+        transport_end.close()
+
+
+@pytest.mark.parametrize("journal", [True, False], ids=["journal", "no-journal"])
+def test_a_rank_lost_before_a_republish_fences_the_attempt(tmp_path, monkeypatch, journal):
+    """As for a batch, a republish request that cannot reach every rank fences the attempt: the
+    orchestrator waits for a replacement instead of a policy only some ranks were asked for. Without a
+    journal no replacement can continue, and the failure ends the serve loop, which fails the run."""
+    transport = ZMQTransportConfig(host="127.0.0.1", port=_free_port())
+    sender = ZMQBatchSender(tmp_path, data_world_size=2, current_step=3, transport=transport)
+    if journal:
+        sender.journal = BatchJournal(tmp_path)
+    group = TrainerGroup(uuid4().hex, len(RANK_TO_DATA_RANK), 3)
+    receivers = [
+        ZMQBatchReceiver(
+            tmp_path, data_rank, rank, len(RANK_TO_DATA_RANK), current_step=3, transport=transport, trainer_group=group
+        )
+        for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
+    ]
+    for receiver in receivers:
+        receiver.socket.setsockopt(zmq.RCVTIMEO, 3000)
+
+    async def run() -> None:
+        sender.start()
+        waits = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in receivers]
+        await asyncio.sleep(0.5)
+        lost = sender.handshake.members[1][0]
+        reply = sender._reply
+
+        async def unreachable(identity: bytes, frames: list[bytes]) -> bool:
+            return False if identity == lost else await reply(identity, frames)
+
+        monkeypatch.setattr(sender, "_reply", unreachable)
+        sender.request_republish(2)
+        await asyncio.gather(*waits, return_exceptions=True)
+        if journal:
+            assert sender.failed_attempt == group.attempt_id and not sender.requests
+            assert not sender.serve_task.done()
+        else:
+            await asyncio.wait_for(asyncio.wait({sender.serve_task}), 5)
+            assert isinstance(sender.serve_task.exception(), ConnectionError)
+
+    try:
+        asyncio.run(run())
+    finally:
+        for transport_end in [sender, *receivers]:
+            transport_end.close()

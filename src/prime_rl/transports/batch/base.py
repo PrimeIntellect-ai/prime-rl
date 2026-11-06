@@ -99,6 +99,11 @@ class BatchReceiver(ABC):
         """Request the current step from the orchestrator and block until it is available."""
         pass
 
+    def republish_requested(self) -> int | None:
+        """After ``wait``: the policy version the orchestrator asked to be published again instead of
+        sending the batch (inference lost every server), else None. Call ``wait`` again after."""
+        return None
+
     @abstractmethod
     def receive(self) -> list[MicroBatch]:
         """Receive the micro batches ``wait`` requested."""

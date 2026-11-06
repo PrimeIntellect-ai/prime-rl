@@ -23,6 +23,7 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     GCConfig,
     HeartbeatConfig,
+    InferenceMonitorConfig,
     LogConfig,
     PolicyClientConfig,
     ResumeConfig,
@@ -535,6 +536,9 @@ class OrchestratorConfig(BaseConfig):
     admit_replacement_trainers: bool = False
     """Keep running when the trainer fails: admit a replacement trainer group once every rank of the failed one has disconnected, replay the journaled batches it has not checkpointed, and reconcile inference's policy with it. Requires ``batch_journal`` and the ZMQ rollout transport."""
 
+    inference_monitor: InferenceMonitorConfig | None = None
+    """Keep running when a policy inference server fails: probe every server, leave a lost one out of weight updates and let it rejoin at the next update once it answers again. Requires the filesystem or elastic NCCL weight transport."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
@@ -590,6 +594,23 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(
                 "orchestrator.admit_replacement_trainers requires weight_broadcast.recoverable = true with NCCL"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_inference_monitor(self):
+        if self.inference_monitor is None:
+            return self
+        if self.weight_broadcast.type not in ("filesystem", "nccl"):
+            raise ValueError(
+                f"orchestrator.inference_monitor does not support {self.weight_broadcast.type} weight broadcast yet"
+            )
+        if self.weight_broadcast.type == "nccl" and not self.weight_broadcast.elastic:
+            raise ValueError("orchestrator.inference_monitor requires weight_broadcast.elastic = true with NCCL")
+        if self.weight_broadcast.type == "nccl" and self.rollout_transport.type != "zmq":
+            # Once every server is lost, the trainer is asked through it to send its policy again.
+            raise ValueError("orchestrator.inference_monitor requires the ZMQ rollout transport with NCCL")
+        if self.model.client.dynamo is not None:
+            raise ValueError("orchestrator.inference_monitor does not support Dynamo inference")
         return self
 
     @model_validator(mode="after")

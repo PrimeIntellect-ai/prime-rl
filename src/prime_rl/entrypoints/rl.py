@@ -251,6 +251,7 @@ def rl_local(config: RLConfig):
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
                 },
                 log_path=log_dir / "inference.log",
+                restarts=config.inference_recovery.max_restarts if config.inference_recovery else 0,
             )
         else:
             logger.warning(
@@ -454,6 +455,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             trainer_max_restarts=config.trainer_recovery.max_restarts if config.trainer_recovery else 0,
+            inference_max_restarts=config.inference_recovery.max_restarts if config.inference_recovery else 0,
+            inference_await_policy=config.inference is not None and config.inference.server.await_policy,
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
@@ -494,6 +497,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             trainer_max_restarts=config.trainer_recovery.max_restarts if config.trainer_recovery else 0,
+            inference_max_restarts=config.inference_recovery.max_restarts if config.inference_recovery else 0,
+            inference_await_policy=config.inference is not None and config.inference.server.await_policy,
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,

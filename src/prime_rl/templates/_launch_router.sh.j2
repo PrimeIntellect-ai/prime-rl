@@ -76,6 +76,11 @@ LLMD_EOF
         --request-timeout-secs {{ router.request_timeout_secs }}
         --prometheus-port "$((port + 21000))"
         --worker-startup-timeout-secs 4200 --log-level debug)
+{%- if inference_await_policy %}
+    # Inference recovery: route only to servers that took the current policy (/ready).
+    cmd+=(--health-check-endpoint /ready --health-check-interval-secs 2
+        --health-failure-threshold 2 --health-success-threshold 1)
+{%- endif %}
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else

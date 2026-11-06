@@ -23,6 +23,9 @@ class ServerConfig(BaseConfig):
     liveness_timeout_seconds: float = Field(30.0, gt=0)
     """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. Health checks polling this endpoint should use a timeout at least this high."""
 
+    await_policy: bool = False
+    """Answer ``/ready`` with 503 until a weight update succeeds. Set by ``[inference_recovery]``: a router that health-checks ``/ready`` then sends no requests to a replacement server before the orchestrator gave it the current policy."""
+
 
 # Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
 # tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
@@ -653,6 +656,7 @@ class InferenceConfig(BaseConfig):
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            await_policy=self.server.await_policy,
         )
 
         extra_fields = self.vllm.model_extra or {}

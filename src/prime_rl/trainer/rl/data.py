@@ -109,6 +109,9 @@ class FakeDataLoader:
     def wait_for_batch(self) -> None:
         return
 
+    def republish_requested(self) -> int | None:
+        return None
+
     def get_batch(self) -> list[TensorMicroBatch]:
         if not self.generate_samples:
             get_micro_batch_fn = self._get_micro_batch
@@ -299,6 +302,11 @@ class DataLoader:
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
+
+    def republish_requested(self) -> int | None:
+        """The policy version the orchestrator asked to be published again instead of sending the
+        batch, else None; ``wait_for_batch`` again after publishing it."""
+        return self.receiver.republish_requested()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()

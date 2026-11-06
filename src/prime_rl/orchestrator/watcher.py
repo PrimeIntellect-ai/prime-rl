@@ -29,6 +29,7 @@ class WeightWatcher:
         ckpt_step: int = 0,
         poll_interval: float = 0.1,
         trainer_recovery: bool = False,
+        request_republish: Callable[[int | None], None] | None = None,
     ) -> None:
         self.receiver = receiver
         self.policy = policy
@@ -38,12 +39,16 @@ class WeightWatcher:
         # With trainer recovery, a failed update waits for a replacement trainer instead of
         # failing the run.
         self.trainer_recovery = trainer_recovery
+        self.request_republish = request_republish
+        """Asks the trainer to publish a version again (through the batch channel)."""
         self.weights_valid = False
         """Inference holds the complete policy ``policy.version``. False until the startup sync
         and after an interrupted in-place update, which may have changed only some weights."""
         self.invalid_since: float | None = None
         """When an update failed and left inference without a complete policy, awaiting a
         replacement trainer; bounded by the receiver's transfer timeout."""
+        self.catch_up_failed_since: float | None = None
+        """Since when rejoined servers fail to catch up while no server takes requests."""
         self.reconnecting: asyncio.Task | None = None
 
         self.last_update_weights_time: float = 0.0
@@ -124,6 +129,7 @@ class WeightWatcher:
                 next_step = self.receiver.next_version(self.ckpt_step)
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
+                await self.catch_up()
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             return
@@ -204,6 +210,71 @@ class WeightWatcher:
             )
 
             await self._notify_update(next_step)
+
+    async def catch_up(self) -> None:
+        """Give inference servers that rejoined the policy the others serve, if the transport can
+        without the trainer; otherwise they take part in the next update."""
+        if not any(engine.status == "joining" for engine in self.receiver.admin_plane.engines):
+            self.catch_up_failed_since = None
+            return
+        async with self.update_lock:
+            joining = [engine for engine in self.receiver.admin_plane.engines if engine.status == "joining"]
+            version = self.policy.version
+            if not joining or not self.weights_valid:
+                return
+            if self.receiver.can_catch_up(version):
+                get_logger().info(f"Catching up {len(joining)} rejoined inference server(s) to policy v{version}")
+                try:
+                    await self.receiver.catch_up(version, joining)
+                except Exception as error:
+                    get_logger().warning(f"Catching up rejoined inference servers to v{version} failed: {error!r}")
+                    self._catch_up_failed(version, error)
+                else:
+                    self.catch_up_failed_since = None
+                return
+            # Without a server taking requests no batch can be produced, so the trainer publishes
+            # nothing newer: it has to send the version it holds again.
+            if (
+                self.request_republish is None
+                or self.receiver.admin_plane.available
+                or self.ckpt_step != version
+                or self.receiver.next_version(version) != version
+            ):
+                return
+            attempt = self.receiver.offered_attempt(version)
+            get_logger().warning(f"No inference server holds policy v{version}; asking the trainer to send it again")
+            self.request_republish(version)
+            try:
+                # A replacement trainer's reconciliation aborts the wait as well as the transfer.
+                if not await self.receiver.wait_for_new_offer(
+                    version, attempt, newer=lambda: self.receiver.next_version(version) > version
+                ):
+                    return
+                await self.receiver.receive(version)
+            except Exception as error:
+                if not self.trainer_recovery:
+                    raise
+                await self._abandon_update(version, error)
+            finally:
+                # Unanswered, the request would make the trainer (or its replacement) send the policy
+                # the next time it waits for a batch, while nothing receives it.
+                self.request_republish(None)
+
+    def _catch_up_failed(self, version: int, error: Exception) -> None:
+        """A failed catch-up is retried on the next poll. Without a server taking requests, though,
+        training waits for it: give up once it failed for the transfer timeout, like on incomplete
+        weights."""
+        if self.receiver.admin_plane.available:
+            self.catch_up_failed_since = None
+            return
+        now = time.monotonic()
+        if self.catch_up_failed_since is None:
+            self.catch_up_failed_since = now
+        elif now - self.catch_up_failed_since > self.receiver.config.timeout:
+            raise RuntimeError(
+                f"No inference server takes requests, and catching up the rejoined ones to v{version} "
+                f"failed for {self.receiver.config.timeout}s"
+            ) from error
 
     async def _rejoin(self) -> None:
         """Wait until inference joined the replacement's transfer session. A newer replacement's abort
@@ -292,6 +363,7 @@ class WeightWatcher:
             **{
                 f"watcher/{phase}/{stat}": value
                 for phase, times in self.receiver.admin_plane.update_times.items()
+                if times  # empty when no server took part in the last update
                 for stat, value in (("min", min(times)), ("mean", sum(times) / len(times)), ("max", max(times)))
             },
         }

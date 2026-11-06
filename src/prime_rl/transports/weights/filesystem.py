@@ -5,7 +5,7 @@ from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
 from prime_rl.configs.trainer import LoRAConfig
-from prime_rl.orchestrator.clients import load_lora_adapter
+from prime_rl.orchestrator.clients import Engine, load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.utils.weights import (
@@ -71,3 +71,14 @@ class FileSystemWeightReceiver(WeightReceiver):
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
             await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+
+    def can_catch_up(self, step: int) -> bool:
+        # The trainer keeps the last two versions on disk.
+        return (self.step_dir(step) / FINISHED_MARKER).exists()
+
+    async def catch_up(self, step: int, engines: list[Engine]) -> None:
+        weights_dir = self.step_dir(step)
+        if (weights_dir / "adapter_config.json").exists():
+            await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step, engines=engines)
+        else:
+            await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step, engines=engines)
