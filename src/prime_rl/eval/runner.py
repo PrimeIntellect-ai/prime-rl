@@ -89,7 +89,7 @@ class EvalRunner:
 
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.client, model_name=config.model)
-        self.admin_plane = AdminPlane(config.client)
+        self.admin_plane = AdminPlane(config.client, roles=config.inference_metrics_roles)
 
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
@@ -140,6 +140,7 @@ class EvalRunner:
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
+            roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints

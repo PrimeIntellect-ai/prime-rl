@@ -39,6 +39,8 @@ Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<fi
 
 Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurrency]` to dynamically adjust the number of concurrent episodes for maximum throughput. An external API exposes no vLLM `/metrics` to adapt to, so pin the concurrency there (`-c N`, i.e. `min_inflight = max_inflight`).
 
+Against a disaggregated prefill/decode deployment, list the engines in `client.admin_base_url` and give each one's role in `inference_metrics_roles` (same order, `"prefill"` or `"decode"`), so the controller reads prefill and decode engines apart.
+
 ## Configuration
 
 Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `[select]`, `group_size` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
