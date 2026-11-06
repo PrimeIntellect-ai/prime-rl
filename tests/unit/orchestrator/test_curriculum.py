@@ -263,10 +263,6 @@ def test_standard_sampler_converts_a_legacy_cursor() -> None:
     assert restored.state_dict() == {"counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)}}
     assert sample_keys(restored, 6) == keys(list(itertools.islice(itertools.cycle(tasks), 7, 13)))
 
-    restored.load_state_dict({"counts": {task.hash: 2 if i < 2 else 1 for i, task in enumerate(tasks)}})
-    assert restored.state_dict() == {"counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)}}
-    assert sample_keys(restored, 6) == keys(list(itertools.islice(itertools.cycle(tasks), 7, 13)))
-
 
 def test_curriculum_resumes_a_legacy_checkpoint() -> None:
     tasks = [make_task(i) for i in range(3)]
@@ -332,12 +328,6 @@ def test_difficulty_pool_sampler_drops_rewards_of_removed_tasks() -> None:
     assert restored.sampler.task_rewards == {tasks[0].key: 0.5, tasks[2].key: 0.5}
     assert restored.metrics()["sampler/pool/unseen"] == 1.0
 
-    legacy = curriculum.state_dict()
-    legacy["sampler"]["task_rewards"] = {task.hash: 0.5 for task in tasks}
-    unchanged = Curriculum(config, reload_tasks(list(range(3))))
-    unchanged.load_state_dict(legacy)
-    assert unchanged.sampler.task_rewards == {task.key: 0.5 for task in tasks}
-
 
 def make_env(name: str, tasks: list[vf.Task]) -> SimpleNamespace:
     config = SimpleNamespace(ratio=1.0, curriculum=None)
@@ -380,13 +370,6 @@ def test_train_source_reopens_open_groups_in_order_without_recounting() -> None:
     assert restored.curricula["a"].sampler.counts == counts and restored.rng.getstate() == rng
     assert len(restored.open_groups) == 2 and next(iter(restored.open_groups)) == first.group_id
     assert restored.next_task(step=2).task.key == tasks[3].key
-
-    legacy = source.state_dict()
-    legacy["open_groups"] = [("a", requests[i].task.hash) for i in (0, 2)]
-    legacy["envs"]["a"]["sampler"] = {"counts": {task.hash: int(i < 3) for i, task in enumerate(tasks)}}
-    unchanged = TrainSource([make_env("a", reload_tasks(list(range(4))))])
-    unchanged.load_state_dict(legacy)
-    assert [unchanged.next_task(step=2).task.key for _ in range(2)] == [requests[i].task.key for i in (0, 2)]
 
 
 def test_train_source_drops_open_groups_it_cannot_reopen() -> None:

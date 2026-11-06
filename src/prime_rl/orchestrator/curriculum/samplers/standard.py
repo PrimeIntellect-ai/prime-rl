@@ -42,7 +42,6 @@ class StandardSampler(TaskSampler):
             if duplicates:
                 raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
             self.tasks_by_key = dict(zip(self.keys, self.tasks))
-            self.tasks_by_hash = {task.hash: task for task in self.tasks if type(task).key is vf.Task.key}
             self.counts = dict.fromkeys(self.keys, 0)
             self.start_pass()
         else:
@@ -66,9 +65,7 @@ class StandardSampler(TaskSampler):
         return self.tasks[index]
 
     def find_task(self, key: str) -> vf.Task | None:
-        if self.tasks is None:
-            return None
-        return self.tasks_by_key.get(key) or self.tasks_by_hash.get(key)
+        return None if self.tasks is None else self.tasks_by_key.get(key)
 
     def state_dict(self) -> dict[str, Any]:
         if self.tasks is None:
@@ -99,9 +96,7 @@ class StandardSampler(TaskSampler):
                 "the taskset is unchanged since the checkpoint: if tasks were added, removed or reordered, "
                 "the resumed order is approximate"
             )
-        # Older default keys included idx, like Task.hash; match those when the row
-        # has not moved. Custom Task.key overrides keep their own identity contract.
-        surviving = {task.key: count for key, count in counts.items() if (task := self.find_task(key)) is not None}
+        surviving = {key: counts[key] for key in self.keys if key in counts}
         start = min(surviving.values(), default=0)
         self.counts = {key: surviving.get(key, start) for key in self.keys}
         added, removed = len(self.keys) - len(surviving), len(counts) - len(surviving)

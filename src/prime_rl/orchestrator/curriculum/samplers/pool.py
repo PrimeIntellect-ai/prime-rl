@@ -39,7 +39,6 @@ class DifficultyPoolSampler(TaskSampler):
         if duplicates:
             raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
         self.tasks_by_key = dict(zip(keys, self.tasks))
-        self.tasks_by_hash = {task.hash: task for task in self.tasks if type(task).key is vf.Task.key}
         self.rng = random.Random(config.seed)
         self.pools = config.pools
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
@@ -66,7 +65,7 @@ class DifficultyPoolSampler(TaskSampler):
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
     def find_task(self, key: str) -> vf.Task | None:
-        return self.tasks_by_key.get(key) or self.tasks_by_hash.get(key)
+        return self.tasks_by_key.get(key)
 
     def observe(self, group: list[vf.Episode]) -> None:
         rewards = [
@@ -92,9 +91,7 @@ class DifficultyPoolSampler(TaskSampler):
         """Restore rewards of tasks still in the taskset; new tasks start unseen."""
         self.rng.setstate(state_dict["rng"])
         task_rewards = state_dict["task_rewards"]
-        self.task_rewards = {
-            task.key: reward for key, reward in task_rewards.items() if (task := self.find_task(key)) is not None
-        }
+        self.task_rewards = {key: reward for key, reward in task_rewards.items() if key in self.tasks_by_key}
         if removed := len(task_rewards) - len(self.task_rewards):
             get_logger().info(f"Dropped the rewards of {removed} task(s) no longer in the taskset")
 
