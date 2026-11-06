@@ -30,7 +30,7 @@ def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
     if not head_only:
         loss = loss + out["logprobs"].sum()
     actual = torch.autograd.grad(loss, (hidden, lm.weight))
-    logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
+    logits = (hidden.float() @ lm.weight.float().t()) / temperature.unsqueeze(-1)
     head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
     reference = (head * coefficient).sum()
     if not head_only:

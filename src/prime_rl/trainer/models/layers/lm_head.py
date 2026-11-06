@@ -150,6 +150,13 @@ def _sampling_mask_local_indices(
     return local, in_range
 
 
+def _fp32_logits(hidden: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    with torch.autocast(device_type=hidden.device.type, enabled=False):
+        if hidden.is_cuda and hidden.dtype == weight.dtype and hidden.dtype in (torch.float16, torch.bfloat16):
+            return torch.mm(hidden, weight.t(), out_dtype=torch.float32)
+        return F.linear(hidden.float(), weight.float())
+
+
 class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
     @staticmethod
     def forward(  # type: ignore[override]
@@ -219,8 +226,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32)
+                scaled_logits = _fp32_logits(hidden_chunk, weight_chunk)
                 if softcap is not None:
                     scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
                 scaled_logits = scaled_logits * inv_t_chunk
@@ -299,8 +305,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32)
+                scaled_logits = _fp32_logits(hidden_chunk, weight_chunk)
                 if softcap is not None:
                     tanh_logits = torch.tanh(scaled_logits / softcap)
                     scaled_logits = softcap * tanh_logits
