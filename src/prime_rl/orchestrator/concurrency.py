@@ -29,9 +29,14 @@ pace. It has three rules:
 
 - **Climb**. From the start the cap grows by up to ``GROWTH_MAX`` per turnover
   while it binds, tapered to zero as the queued share reaches ``QUEUE_TARGET``,
-  and each window is compared with the previous one. The first window whose
-  growth did not pay ends the fast climb at the two windows' geometric
-  midpoint. From there the cap moves in steps from a measured level: a step is
+  and each window is compared with the previous one. A turnover lasts an
+  episode, so model calls pace the climb too: from the contexts of the units'
+  calls the controller projects the pool's steady load (a Kaplan-Meier estimate
+  over call numbers; units still running are assumed to grow to the engines'
+  max context), and calls grow the cap by up to ``CALL_GROWTH_MAX`` per call
+  turnover while admitting only as many young units as keep the pool carrying
+  ``MATURITY_MIN`` of that load. The first window whose growth did not pay ends
+  the fast climb at the two windows' geometric midpoint. From there the cap moves in steps from a measured level: a step is
   measured once it settled, kept when it was worth its units, and the next
   step grows by how clearly it paid; a rejected step returns to the level and
   shrinks, down to ``STEP_MIN``.
@@ -85,6 +90,20 @@ staleness: the cap settles where one more unit buys 30 % of its proportional sha
 
 GROWTH_MAX = 3.0
 """Fast climb: cap growth per pool turnover with empty queues."""
+
+CALL_GROWTH_MAX = 1.25
+"""Fast climb: cap growth per call turnover (every unit in flight made one model call) with empty queues."""
+
+MATURITY_MIN = 0.8
+"""Fast climb: model calls grow the cap only while the pool's load is at least this share of its projected steady
+load."""
+
+WINDOW_CALLS = 4.0
+"""Fast climb: a window of a mature pool lasts at least this call turnover (instead of ``DWELL_TURNOVERS``). Such
+windows are short, so they are compared once the pool grew by ``STEP_MAX`` (``STEP_MIN`` otherwise)."""
+
+PROJECTION_UNITS = 512
+"""The load projection counts about this many recent units: its counts halve whenever more units started."""
 
 STEP_MAX = 1.5
 """Largest step. After a kept step the next one scales with how far the measured elasticity cleared
@@ -196,6 +215,9 @@ class Window:
     intervals stretch under load, so throughput is per second of the poll loop's own clock."""
 
     start_turnover: float = 0.0
+    # Fast-climb windows: the call clock at the start, and whether the load projection held growth back
+    start_calls: float = 0.0
+    held: bool = False
     tokens: float = 0.0
     seconds: float = 0.0
     unit_seconds: float = 0.0
@@ -287,6 +309,21 @@ class ConcurrencyController(Reconfigurable):
         self.climbing = True
         self.climb_window: Window | None = None
         self.climb_reference: Window | None = None
+        self.climb_previous: Window | None = None
+        # Call clock: each model call advances it by 1/inflight. Per-poll (context, calls) of the model calls
+        self.call_turnover = 0.0
+        self.pending_context = 0
+        self.pending_calls = 0
+        self.call_polls: deque[tuple[int, int]] = deque(maxlen=LOAD_WINDOW_POLLS)
+        # Load projection, per call number n of a unit: units that made call n, their summed context, and units that
+        # ended after n calls. The projected steady context per call, a first call's, and the pool's share of it.
+        self.reached: dict[int, float] = {}
+        self.context: dict[int, float] = {}
+        self.ended: dict[int, float] = {}
+        self.first_call = math.inf
+        self.steady_context = 1.0
+        self.young_context = 0.0
+        self.maturity: float | None = None
         # Steps: the level being measured, the last kept level, the next step and its direction
         self.level: Level | None = None
         self.base: Level | None = None
@@ -322,14 +359,30 @@ class ConcurrencyController(Reconfigurable):
 
     # ── inbound hooks ────────────────────────────────────────────────────────
 
-    def record_episode(self, tokens: int) -> None:
-        """One completed unit (from the dispatcher). Advances the turnover clock by ``1/inflight``."""
+    def record_episode(self, tokens: int, calls: int) -> None:
+        """One completed unit (from the dispatcher) after ``calls`` model calls. Advances the turnover clock by
+        ``1/inflight``."""
         # The dispatcher releases the permit before this hook fires, so the completing unit is already off the count
         inflight = (self.get_inflight() if self.get_inflight is not None else 0) + 1
         self.turnover += 1 / inflight
         # Error markers consumed no engine capacity: growing on them floods the engines once the environment recovers
         if tokens > 0:
             self.pending_turnover += 1 / inflight
+            self.ended[calls] = self.ended.get(calls, 0.0) + 1
+
+    def record_call(self, context: int, call: int) -> None:
+        """The context a model call carried on from its trace's history, the ``call``-th of its unit (from the
+        dispatcher's live deltas), folded into the call clock and the load projection at the next poll."""
+        self.pending_context += context
+        self.pending_calls += 1
+        self.reached[call] = self.reached.get(call, 0.0) + 1
+        self.context[call] = self.context.get(call, 0.0) + context
+        # Keep about the last PROJECTION_UNITS units: workloads drift
+        self.first_call = min(self.first_call, call)
+        if call == self.first_call and self.reached[call] > 2 * PROJECTION_UNITS:
+            for counts in (self.reached, self.context, self.ended):
+                for n in counts:
+                    counts[n] /= 2
 
     def pause(self) -> None:
         """The engines are about to pause for a weight update: freeze. Requests arriving meanwhile wait in the
@@ -360,6 +413,12 @@ class ConcurrencyController(Reconfigurable):
         loads = role_loads(samples)
         poll = Poll(loads, inflight, seconds, router_queued)
         growth, self.pending_turnover = self.pending_turnover, 0.0
+        calls = self.pending_calls
+        self.call_polls.append((self.pending_context, calls))
+        self.pending_context = self.pending_calls = 0
+        if inflight > 0:
+            self.call_turnover += calls / inflight
+        self.project()
         # After a weight update the queue is the pause's backlog, not load
         if self.resume_skip > 0:
             self.resume_skip -= 1
@@ -400,7 +459,7 @@ class ConcurrencyController(Reconfigurable):
         if inflight <= 0 or self.throughput_drop(inflight) or self.queue_trim(inflight):
             return
         if self.climbing:
-            self.climb(poll, growth)
+            self.climb(poll, growth, calls)
         else:
             self.measure(poll)
 
@@ -428,42 +487,115 @@ class ConcurrencyController(Reconfigurable):
     # ── climb ────────────────────────────────────────────────────────────────
 
     @property
+    def steady(self) -> bool:
+        """The pool carries its steady load: it turned over since the start or the last cancel, or its calls carry
+        ``MATURITY_MIN`` of the projected load. A younger pool runs shorter contexts, so its throughput overstates
+        what the same units sustain."""
+        mature = self.maturity is not None and self.maturity >= MATURITY_MIN
+        return self.turnover - self.fresh_turnover >= 1.0 or mature
+
+    @property
     def headroom(self) -> float:
         """Queue headroom for growth: 1 with empty queues, 0 at the target (and 1 while growth pays)."""
         return 1.0 if self.paying else max(0.0, 1.0 - self.queued_share / QUEUE_TARGET)
 
-    def climb(self, poll: Poll, growth: float) -> None:
-        """Grow by up to ``GROWTH_MAX`` per turnover while the cap binds, and check every window that the growth
-        still pays. The fast climb ends at the first window that did not pay, or that did not grow the pool by a
-        smallest step (the queue holds it)."""
+    def climb(self, poll: Poll, growth: float, calls: int) -> None:
+        """Grow by up to ``GROWTH_MAX`` per turnover, or ``CALL_GROWTH_MAX`` per call turnover while the pool carries
+        ``MATURITY_MIN`` of its projected load, while the cap binds, tapered by the queue, and check every window
+        that the growth still pays. The fast climb ends at the first window that did not pay, or that did not grow
+        the pool by a smallest step although the projection did not hold it (the queue holds it)."""
         if self.climb_window is None:
-            self.climb_window = Window(start_turnover=self.turnover)
+            self.climb_window = Window(start_turnover=self.turnover, start_calls=self.call_turnover)
         window = self.climb_window
         window.add(poll)
-        if window.lasted(self.turnover):
+        mature = self.maturity is not None and self.maturity >= MATURITY_MIN
+        turned = self.turnover - window.start_turnover >= DWELL_TURNOVERS
+        called = mature and self.call_turnover - window.start_calls >= WINDOW_CALLS
+        if window.seconds >= DWELL_SECONDS and window.unit_seconds > 0 and (turned or called):
             self.climb_window = None
             self.log_growth()
-            reference = self.climb_reference
-            if self.turnover - self.fresh_turnover >= 1.0:
-                if reference is None or window.inflight >= STEP_MIN * reference.inflight:
+            reference, previous = self.climb_reference, self.climb_previous
+            if self.steady:
+                self.climb_previous = window
+                if reference is None:
                     self.climb_reference = window
-                    if reference is not None:
-                        self.elasticity = elasticity(window, reference)
-                        if self.elasticity < ELASTICITY:
-                            # The knee lies between the two windows: step down from their geometric midpoint
-                            midpoint = math.sqrt(window.inflight * reference.inflight)
-                            self.end_climb(f"elasticity {self.elasticity:.2f}", int(self.clamp(midpoint)))
-                            return
-                elif reference is not None:
+                elif window.inflight >= (STEP_MIN if turned else STEP_MAX) * reference.inflight:
+                    self.climb_reference = window
+                    self.elasticity = elasticity(window, reference)
+                    if self.elasticity < ELASTICITY:
+                        # The knee lies between the two windows: step down from their geometric midpoint
+                        midpoint = math.sqrt(window.inflight * reference.inflight)
+                        self.end_climb(f"elasticity {self.elasticity:.2f}", int(midpoint))
+                        return
+                elif previous is not None and window.inflight < STEP_MIN * previous.inflight and not window.held:
                     # The queue holds the pool where it is: the knee by the queue, approached from above
                     self.end_climb("held by the queue", self.max_inflight)
                     return
-        if poll.inflight >= BINDING_FRACTION * self.max_inflight:
-            self.cap = self.clamp(self.cap * (1.0 + (GROWTH_MAX - 1.0) * self.headroom) ** growth)
-            self.apply_limit(int(self.cap), reason="climb", gradual=True)
+        if poll.inflight < BINDING_FRACTION * self.max_inflight or self.headroom == 0.0:
+            return
+        multiplier = 1.0 + (GROWTH_MAX - 1.0) * self.headroom
+        cap = self.cap * multiplier**growth
+        if self.maturity is not None and calls > 0:
+            # No faster than GROWTH_MAX per two windows: each window must see the units the last one added
+            by_calls = self.cap * min(
+                (1.0 + (CALL_GROWTH_MAX - 1.0) * self.headroom) ** (calls / poll.inflight),
+                multiplier ** (poll.seconds / (2 * DWELL_SECONDS)),
+            )
+            # Young units carry little load yet: admit only as many as keep the pool's load at MATURITY_MIN of its
+            # projection. The maturity was measured on the units in flight over the load window; later ones count as
+            # young.
+            young = self.young_context / self.steady_context
+            if young < MATURITY_MIN:
+                shown = min(poll.inflight for poll in self.polls)
+                room = shown * (self.maturity - young) / (MATURITY_MIN - young)
+                if room < by_calls:
+                    window.held = True
+                    by_calls = room
+            cap = max(cap, by_calls)
+        self.cap = self.clamp(max(self.cap, cap))
+        self.apply_limit(int(self.cap), reason="climb", gradual=True)
+
+    def project(self) -> None:
+        """Project the pool's steady load from its calls' contexts: a unit's context grows call by call, so a young
+        pool carries less load than it will. In steady state the mean context per call weighs the mean context of
+        each unit's n-th call by the share of units that make it, which a Kaplan-Meier estimate gives from the units
+        that made call n and ended after it: units still running count to the calls they made, and the share still
+        running at the last call number seen is assumed to grow at the mean rate to the engines' max context.
+        Maturity is the load window's context per call over that projection."""
+        calls = sum(c for _, c in self.call_polls)
+        first = self.first_call
+        if calls == 0 or first not in self.reached:
+            self.maturity = None
+            return
+        survival, weight, total = 1.0, 0.0, 0.0
+        n = first
+        while self.reached.get(n, 0.0) >= 0.5:
+            mean = self.context[n] / self.reached[n]
+            weight += survival
+            total += survival * mean
+            survival *= max(0.0, 1.0 - self.ended.get(n, 0.0) / self.reached[n])
+            n += 1
+        last = n - 1
+        young = self.context[first] / self.reached[first]
+        growth = (mean - young) / (last - first) if last > first else 0.0
+        if survival > 0 and growth > 0 and self.engine_max_len is not None and self.engine_max_len > mean:
+            tail = (self.engine_max_len - mean) / growth
+            weight += survival * tail
+            total += survival * tail * (mean + self.engine_max_len) / 2
+        current = sum(c for c, _ in self.call_polls) / calls
+        self.young_context = young
+        self.steady_context = max(total / weight, current, 1.0)
+        self.maturity = current / self.steady_context
+
+    def projected(self, units: float) -> float:
+        """During the fast climb, the units that carry as much load as ``units`` will once the pool matured."""
+        if self.climbing and self.maturity is not None:
+            return units * self.maturity
+        return units
 
     def end_climb(self, reason: str, cap: int) -> None:
         """Hand over to the steps, which measure ``cap`` first and then step down. A lower cap cancels nothing."""
+        cap = int(self.clamp(self.projected(cap)))
         self.climbing = False
         get_logger().info(f"Concurrency fast climb ended at {self.max_inflight} ({reason})")
         self.cap = float(cap)
@@ -581,7 +713,7 @@ class ConcurrencyController(Reconfigurable):
         if window.seconds < DWELL_SECONDS or window.unit_seconds <= 0:
             return False
         self.window = Window(start_turnover=self.turnover)
-        if self.turnover - self.fresh_turnover < 1.0:
+        if not self.steady:
             return False
         best = self.best
         if best is None or window.throughput > best.throughput:
@@ -630,7 +762,7 @@ class ConcurrencyController(Reconfigurable):
         if not cancel and (self.paying or self.turnover - self.trim_turnover < 1.0):
             return False
         self.trim(
-            int(self.clamp(inflight * (1.0 - share + QUEUE_TARGET))),
+            int(self.clamp(self.projected(inflight * (1.0 - share + QUEUE_TARGET)))),
             inflight,
             cancel=cancel,
             reason=f"{'queue overload' if cancel else 'queue'} {share:.2f}",
@@ -712,7 +844,11 @@ class ConcurrencyController(Reconfigurable):
             "concurrency/step": self.step**self.direction,
             "concurrency/paying": float(self.paying),
             "concurrency/paused": float(self.paused),
+            "concurrency/call_turnover": self.call_turnover,
         }
+        if self.maturity is not None:
+            gauges["concurrency/maturity"] = self.maturity
+            gauges["concurrency/steady_context"] = self.steady_context
         if self.polls:
             gauges["concurrency/queued_share"] = self.queued_share
             for role, share in self.queued_share_by_role.items():

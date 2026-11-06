@@ -92,6 +92,9 @@ class TaskRequest:
 class LiveTrace:
     stage: str = "pending"
     turns: int = 0
+    prev_input: int | None = None
+    """Input tokens of the trace's last model call that reported cached tokens; None
+    before the first one or after a call that did not report them."""
 
 
 @dataclass
@@ -112,6 +115,8 @@ class InflightEpisode:
     live: dict[str, LiveTrace] = field(default_factory=dict)
     """The episode's in-flight traces by id, as far as the env server's stream has
     told: which phase each is in and how many turns it has committed."""
+    calls: int = 0
+    """Model calls the episode's traces streamed so far."""
 
 
 @dataclass

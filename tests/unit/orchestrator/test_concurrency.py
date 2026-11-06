@@ -12,6 +12,8 @@ from prime_rl.orchestrator.concurrency import (
     RoleLoad,
     Window,
 )
+from prime_rl.orchestrator.live import context
+from prime_rl.orchestrator.types import LiveTrace
 
 POLL_SECONDS = 5.0
 DROP_WINDOW_POLLS = int(DWELL_SECONDS / POLL_SECONDS)
@@ -75,7 +77,7 @@ def controller(inflight: int = 100) -> tuple[ConcurrencyController, Pool]:
 def turnover(ctl: ConcurrencyController, pool: Pool) -> None:
     """Every unit in flight completes (and is replaced) a little over once."""
     for _ in range(pool.inflight + 1):
-        ctl.record_episode(10_000)
+        ctl.record_episode(10_000, 16)
 
 
 def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int, queued=lambda inflight: 0) -> None:
@@ -84,7 +86,7 @@ def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int, queued=l
     for _ in range(polls):
         pool.inflight = ctl.max_inflight
         for _ in range(max(1, pool.inflight // 50)):
-            ctl.record_episode(10_000)
+            ctl.record_episode(10_000, 16)
         sample = engine(
             finished=10, generated=int(throughput(pool.inflight) * POLL_SECONDS), waiting=queued(pool.inflight)
         )
@@ -239,3 +241,36 @@ def test_throughput_drop_without_the_latency_metric_cancels_on_a_standing_queue(
         if pool.cancelled:
             break
     assert pool.cancelled
+
+
+def test_projection_counts_running_units_to_the_max_context():
+    ctl, pool = controller(inflight=10)
+    # Ten units made calls 2..10, their context growing 1000 tokens per call
+    for call in range(2, 11):
+        for _ in range(10):
+            ctl.record_call(1000 * call, call)
+    ctl.observe([engine()])
+    # Still running: projected to grow on to the 32k max context, so the pool carries a third of its load
+    assert ctl.steady_context == pytest.approx(17_026, rel=0.01)
+    assert ctl.maturity == pytest.approx(6000 / 17_026, rel=0.01)
+
+    # All ended after their 10th call: the pool already carries its steady load
+    for _ in range(10):
+        ctl.record_episode(10_000, 10)
+    ctl.observe([engine()])
+    assert ctl.steady_context == pytest.approx(6000)
+    assert ctl.maturity == pytest.approx(1.0)
+
+
+def test_call_context_is_the_history_it_extends():
+    def usage(prompt: int, cached: int | None) -> dict:
+        return {"prompt_tokens": prompt, "completion_tokens": 50, "cached_input_tokens": cached}
+
+    trace = LiveTrace()
+    assert context(trace, usage(1000, 0)) == 0  # first call: no history yet
+    assert context(trace, usage(600, 1008)) == 1000
+    assert context(trace, usage(2200, 400)) == 1608  # evicted or not, the history is the same
+    assert context(trace, usage(100, 0)) == 0  # history shrank: rewritten
+    assert context(trace, usage(300, None)) == 0  # no cache usage reported: input unknown
+    assert trace.prev_input is None
+    assert context(trace, usage(500, 0)) == 0  # chain restarts
