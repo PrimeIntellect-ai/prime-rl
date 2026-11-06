@@ -141,6 +141,7 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         policy_weights_change: bool = True,
+        turn_priority: Literal["off", "oldest", "shortest"] = "off",
         on_episode_complete: Callable[[int], None] | None = None,
         on_calls: Callable[[int, int], None] | None = None,
         on_pause: Callable[[], None] | None = None,
@@ -148,6 +149,8 @@ class Dispatcher:
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
+        self.turn_priority = turn_priority
+        self.episodes_admitted = 0
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -535,6 +538,12 @@ class Dispatcher:
 
         # A group samples with the settings of the step it was opened at, also across a live update.
         sampling = env.sampling_at(group.step)
+        if self.turn_priority == "oldest":
+            sampling = sampling.model_copy(update={"priority": self.episodes_admitted})
+        elif self.turn_priority == "shortest":
+            # The env server's client resolves "context" to each call's prompt length.
+            sampling = sampling.model_copy(update={"priority": "context"})
+        self.episodes_admitted += 1
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1

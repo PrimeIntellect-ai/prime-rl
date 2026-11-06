@@ -452,6 +452,9 @@ class ConcurrencyConfig(BaseConfig):
     max_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
     """Maximum number of in-flight episodes. None (the default) leaves the cap to the controller. Set it to bound other external resources the episodes hold (e.g. sandboxes)."""
 
+    turn_priority: Literal["off", "oldest", "shortest"] = "off"
+    """Per-request vLLM priority for model calls (lower is served first, and preempted last). ``oldest`` ranks calls by their episode's admission order; ``shortest`` by the call's context length. Requires ``--scheduling-policy priority`` on every engine (``inference.vllm.scheduling_policy = "priority"``)."""
+
     @model_validator(mode="after")
     def validate_bounds(self):
         if self.max_inflight is not None:
