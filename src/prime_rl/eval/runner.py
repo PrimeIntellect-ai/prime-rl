@@ -28,7 +28,7 @@ from prime_rl.control.server import serve
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_router_metrics_client
+from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -140,7 +140,6 @@ class EvalRunner:
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
-            router_client=setup_router_metrics_client(config.client),
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints

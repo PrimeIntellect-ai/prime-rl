@@ -14,9 +14,8 @@ change in throughput per relative change in units in flight. A move up is kept
 when it reaches ``ELASTICITY``, a move down when it does not.
 
 The fast signal is the **queued share**: requests waiting in the engines'
-queues (for capacity, or deferred on a KV load), plus those waiting in the
-router's own queue when it reports one, over the units in flight, averaged
-over polls. By Little's law it is the share of the units' time spent parked in
+queues (for capacity, or deferred on a KV load) over the units in flight,
+averaged over polls. By Little's law it is the share of the units' time spent parked in
 an engine queue, so it means the same in every topology: in P/D the prefill
 queue and decode's pending KV pulls add up, a slow KV load or a preempted
 request counts by how long it waits, and units idle between turns (tool calls)
@@ -197,12 +196,10 @@ class Poll:
     roles: dict[str, RoleLoad]
     inflight: int
     seconds: float = 0.0
-    # Requests waiting in the router before reaching any engine (None without a router measurement)
-    router_queued: int | None = None
 
     @property
     def queued(self) -> int:
-        return sum(load.queued for load in self.roles.values()) + (self.router_queued or 0)
+        return sum(load.queued for load in self.roles.values())
 
     @property
     def generated(self) -> int:
@@ -394,9 +391,8 @@ class ConcurrencyController(Reconfigurable):
         self.paused = False
         self.resume_skip = RESUME_SKIP_POLLS
 
-    def observe(self, samples: list[EngineLoadSample], router_queued: int | None = None) -> None:
-        """Per-poll engine load push from the metrics collector: measure, then trim or climb. A router's own queue
-        counts once toward the queued share, next to the engines' queues."""
+    def observe(self, samples: list[EngineLoadSample]) -> None:
+        """Per-poll engine load push from the metrics collector: measure, then trim or climb."""
         now = time.monotonic()
         seconds = now - self.last_poll_time if self.last_poll_time is not None else 0.0
         self.last_poll_time = now
@@ -411,7 +407,7 @@ class ConcurrencyController(Reconfigurable):
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
         loads = role_loads(samples)
-        poll = Poll(loads, inflight, seconds, router_queued)
+        poll = Poll(loads, inflight, seconds)
         growth, self.pending_turnover = self.pending_turnover, 0.0
         calls = self.pending_calls
         self.call_polls.append((self.pending_context, calls))
@@ -429,8 +425,6 @@ class ConcurrencyController(Reconfigurable):
         self.queued_share_by_role = {
             role: sum(poll.roles[role].queued for poll in self.polls if role in poll.roles) / units for role in loads
         }
-        if router_queued is not None:
-            self.queued_share_by_role["router"] = sum(poll.router_queued or 0 for poll in self.polls) / units
 
         if self.draining and inflight <= self.max_inflight:
             self.draining = False

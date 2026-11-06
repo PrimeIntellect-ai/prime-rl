@@ -368,13 +368,6 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     return [_setup_admin_client(base_url) for base_url in urls]
 
 
-def setup_router_metrics_client(client_config: ClientConfig) -> AsyncClient | None:
-    """Client of the client-facing router for its ``/engine_metrics``, when ``metrics_source = "router"``."""
-    if client_config.metrics_source != "router":
-        return None
-    return setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))[0]
-
-
 async def maybe_check_has_model(
     admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
 ) -> None:
