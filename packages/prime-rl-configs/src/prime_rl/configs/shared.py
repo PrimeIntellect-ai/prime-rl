@@ -66,6 +66,11 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
 
+    recoverable: bool = False
+    """Use nonblocking NCCL with bounded error polling so surviving inference workers can
+    reconnect after a failed transfer. This does not automatically restart trainers or
+    reconcile policy versions. Both publisher and receiver must use the same setting."""
+
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"

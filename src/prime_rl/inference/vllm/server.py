@@ -1,6 +1,10 @@
 import asyncio
 import gc
+import os
+import tempfile
+import uuid
 from argparse import Namespace
+from pathlib import Path
 
 import uvloop
 from fastapi import APIRouter, Request
@@ -33,6 +37,16 @@ def models(request: Request) -> OpenAIServingModels:
 
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
+# A failed weight update and a later /resume can reach different API server processes of one
+# server, so the marker of an incomplete update is a file they share, named after the server
+# instance whose ID they inherit through the environment.
+INSTANCE_ID_ENV = "PRIME_RL_INFERENCE_INSTANCE_ID"
+
+
+def server_file(instance_id: str, kind: str) -> Path:
+    return Path("/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()) / f"prime-rl-{instance_id}.{kind}"
+
+
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
@@ -50,7 +64,10 @@ async def pause(request: Request):
 
 @router.post("/resume")
 async def resume(request: Request):
-    await engine_client(request).resume_generation()
+    async with request.app.state.weight_update_lock:
+        if request.app.state.invalid_file.exists():
+            return JSONResponse({"error": "A complete weight update is required before resuming"}, status_code=409)
+        await engine_client(request).resume_generation()
     return {"status": "resumed"}
 
 
@@ -58,9 +75,12 @@ async def resume(request: Request):
 async def update_weights(request: Request):
     data = await request.json()
     client = engine_client(request)
-    await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
-    await client.update_weight_version(str(data["weight_version"]))
+    async with request.app.state.weight_update_lock:
+        request.app.state.invalid_file.touch()
+        await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+        # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
+        await client.update_weight_version(str(data["weight_version"]))
+        request.app.state.invalid_file.unlink(missing_ok=True)
     return {"status": "ok"}
 
 
@@ -131,7 +151,12 @@ async def init_broadcaster(request: Request):
     args = (host, port, rank_offset, inference_world_size, timeout, session_id)
     if "staging_buffer_bytes" in data:
         args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
-    await engine_client(request).collective_rpc("init_broadcaster", args=args)
+    async with request.app.state.weight_update_lock:
+        await engine_client(request).collective_rpc(
+            "init_broadcaster",
+            args=args,
+            kwargs={"recoverable": data["recoverable"]} if "recoverable" in data else {},
+        )
     return {"status": "ok"}
 
 
@@ -152,6 +177,9 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.weight_update_lock = asyncio.Lock()
+    state.instance_id = os.environ.setdefault(INSTANCE_ID_ENV, uuid.uuid4().hex)
+    state.invalid_file = server_file(state.instance_id, "invalid")
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -206,7 +234,7 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig):
-    import os
+    import atexit
 
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.launchers.api_server.entry import run_server
@@ -226,6 +254,9 @@ def server(config: InferenceConfig):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+
+    instance_id = os.environ[INSTANCE_ID_ENV] = uuid.uuid4().hex
+    atexit.register(server_file(instance_id, "invalid").unlink, missing_ok=True)
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)
