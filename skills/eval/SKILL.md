@@ -24,7 +24,7 @@ uv run eval @ eval.toml --no-monitors.prime                         # keep the r
 - Config: `EvalConfig` (`packages/prime-rl-configs/src/prime_rl/configs/eval.py`); `uv run eval -h` lists the fields.
 - Entrypoint: `src/prime_rl/entrypoints/eval.py`; implementation `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`.
 - Shorthands (single-source runs): `<taskset-id>`, `--env.<field> <value>`, `-n` `select.limit`, `-s` `select.shuffle`, `-r` `group_size`, `-m` `model`, `-c N` pins `concurrency.min_inflight = max_inflight = N`. They cannot be combined with a TOML that defines `[[source]]` blocks.
-- Concurrency: an API exposes no vLLM `/metrics`, so run pinned there; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to KV usage.
+- Concurrency: an API exposes no vLLM `/metrics`, so run pinned there; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to the engines' load (queued share and measured throughput; `docs/inference.md`).
 - Env servers: spawned per source on OS-assigned ports (published to `configs/attempt_N/resolved/envs/eval/<name>.address`) unless the source sets `serve.address`.
 - Ready-made configs: `configs/debug/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
 

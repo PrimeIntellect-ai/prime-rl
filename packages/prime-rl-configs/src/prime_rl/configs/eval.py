@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
@@ -29,6 +30,10 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
+    """P/D role of each ``client.admin_base_url`` entry, in the same order: labels inference
+    metrics and lets the concurrency controller read prefill and decode engines apart."""
+
     dispatch_per_minute: int | None = Field(None, ge=1)
     """Rate limit on episode dispatch: at most this many episodes start per minute. Each
     episode counts once, so a group of ``group_size`` episodes counts ``group_size``
@@ -46,6 +51,17 @@ class ServedEvalConfig(EvalSourcesConfig):
     ``heartbeat.min_interval`` seconds. When episodes stop landing, the pings stop
     and the heartbeat goes stale on Better Stack after its grace period. Size that
     period + grace above the longest legitimate gap between episodes."""
+
+    @model_validator(mode="after")
+    def validate_inference_metrics_roles(self):
+        if self.inference_metrics_roles is not None:
+            admin_urls = self.client.admin_base_url or []
+            if len(self.inference_metrics_roles) != len(admin_urls):
+                raise ValueError(
+                    f"inference_metrics_roles has {len(self.inference_metrics_roles)} role(s) but "
+                    f"client.admin_base_url has {len(admin_urls)} URL(s): give one role per admin URL"
+                )
+        return self
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
@@ -80,7 +96,7 @@ class EvalConfig(ServedEvalConfig):
     concurrency: ConcurrencyConfig = ConcurrencyConfig(min_inflight=128, max_inflight=128)
     """In-flight episodes, pinned at 128 (``-c N`` repins). External APIs expose no vLLM
     ``/metrics`` to adapt to; against a vLLM server set ``min_inflight < max_inflight`` to
-    let the band adapt to KV usage like the orchestrator's."""
+    let the band adapt to the engines' load like the orchestrator's."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
     """Default rollouts per example. Can be overridden per env."""
