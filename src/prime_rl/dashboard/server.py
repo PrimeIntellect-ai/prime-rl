@@ -838,16 +838,6 @@ def timeline_status(trace: dict) -> str:
     return "completed"
 
 
-def timeline_reward(trace: dict) -> float | None:
-    rewards = [reward for reward in (trace.get("rewards") or {}).values() if isinstance(reward, dict)]
-    if not rewards:
-        return None
-    return sum(
-        (reward.get("score") or 0) * (reward.get("weight") if reward.get("weight") is not None else 1)
-        for reward in rewards
-    )
-
-
 def annotation_streams(run_dir: Path) -> list[Path]:
     """The annotation streams, one chunk directory per producer, each indexed beside it."""
     directory = get_annotations_dir(run_dir)
@@ -1066,7 +1056,7 @@ def timeline_lane(
         "ended_at": ended,
         "status": status,
         "outcome": status if branch else (trace.get("stop_condition") or status),
-        "reward": timeline_reward(trace),
+        "reward": trace.get("reward") if trace.get("rewards") else None,
         "usage": {
             "model_calls": len(activities),
             "input_tokens": input_tokens,

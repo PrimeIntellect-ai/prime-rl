@@ -1207,7 +1207,7 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   // the timeout rate reads yellow as soon as any episode timed out
   if (all.length) {
     const errored = all.filter((i) => series.ok?.[i] === false).length;
-    const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
+    const truncated = all.filter((i) => series.truncated?.[i] === true).length;
     const timedOut = all.filter((i) => series.timeout?.[i] === true).length;
     for (const [label, n, what, cls] of [
       ["error rate", errored, "errored", rateClass],
@@ -3841,12 +3841,6 @@ function currentPath(trace, branches) {
   return branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
 }
 
-function traceReward(trace) {
-  return Object.values(trace.rewards || {}).reduce(
-    (acc, r) => acc + ((r?.score ?? 0) * (r?.weight ?? 1)), 0
-  );
-}
-
 function messageText(message) {
   const content = message?.content;
   if (typeof content === "string") return content;
@@ -4567,23 +4561,13 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"]);
-
-/* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
-   length-finished final response */
-function traceTruncated(trace) {
-  if (TRUNCATING_STOPS.has(trace.stop_condition)) return true;
-  const last = [...(trace.calls || [])].reverse().find((c) => !c.error);
-  return !!(last && last.finish_reason === "length");
-}
-
 function renderMeta(ep, trace, branches) {
   const parts = [];
   const headline = (label, value) =>
     `<div class="meta-row"><span class="k">${label}</span>` +
     `<span class="tm-reward-big${value != null && value < 0 ? " neg" : ""}${value == null ? " na" : ""}" style="margin-left:auto">` +
     `${value != null ? fmtReward(value) : "n/a"}</span></div>`;
-  const rewardValue = trace && Object.keys(trace.rewards || {}).length ? traceReward(trace) : null;
+  const rewardValue = trace && Object.keys(trace.rewards || {}).length ? trace.reward ?? null : null;
   parts.push(headline("reward", rewardValue));
   parts.push(headline("advantage", trace?.info?.advantage ?? null));
 
@@ -4611,22 +4595,11 @@ function renderMeta(ep, trace, branches) {
     const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
     if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
 
-    const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
-    const addUsage = (field, value) => {
-      if (value != null) usage[field] = (usage[field] ?? 0) + value;
-    };
-    for (const call of trace.calls || []) {
-      const current = normalizedCallUsage(call.usage);
-      addUsage("input", current.input);
-      addUsage("cached", current.cached);
-      addUsage("output", current.output);
-      addUsage("reasoning", current.reasoning);
-      addUsage("cost", current.cost);
-      if (current.input != null) {
-        const context = current.input + (current.cached ?? 0);
-        usage.maxContext = Math.max(usage.maxContext ?? 0, context);
-      }
-    }
+    const contexts = (trace.calls || [])
+      .map((call) => normalizedCallUsage(call.usage))
+      .filter((current) => current.input != null)
+      .map((current) => current.input + (current.cached ?? 0));
+    const usage = { ...normalizedCallUsage(trace.usage ?? {}), maxContext: contexts.length ? Math.max(...contexts) : null };
     const totalInput = usage.input == null ? null : usage.input + (usage.cached ?? 0);
     const totalTokens = totalInput == null || usage.output == null ? null : totalInput + usage.output;
     const hasUsage = usage.input != null || usage.cached != null || usage.output != null;
@@ -4645,19 +4618,18 @@ function renderMeta(ep, trace, branches) {
     parts.push(`<div class="meta-sec">state</div>`);
     parts.push(metaRow("stop_condition", trace.stop_condition));
     parts.push(metaRow("is_completed", trace.is_completed));
-    parts.push(metaRow("is_truncated", traceTruncated(trace)));
+    parts.push(metaRow("is_truncated", !!trace.is_truncated));
     parts.push(metaRow("is_timeout", !!trace.is_timeout));
     parts.push(metaRow("ok", trace.ok));
 
     const durations = [];
     (function walkTiming(obj, prefix) {
       if (!obj || typeof obj !== "object") return;
-      if (typeof obj.duration === "number") durations.push([prefix, obj.duration]);
-      else if (typeof obj.start === "number" && obj.start > 0) {
-        // an open span (no end yet) of a live trace shows its elapsed time
-        if (obj.end) durations.push([prefix, obj.end - obj.start]);
-        else if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start]);
-      }
+      const started = !("start" in obj) || obj.start > 0;
+      // an open span (no end yet) of a live trace shows its elapsed time
+      if (started && "start" in obj && !obj.end) {
+        if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start]);
+      } else if (started && typeof obj.duration === "number") durations.push([prefix, obj.duration]);
       for (const [k, v] of Object.entries(obj)) if (typeof v === "object") walkTiming(v, prefix ? `${prefix}/${k}` : k);
     })(trace.timing, "");
     if (durations.length) {
