@@ -125,7 +125,7 @@ class EnvClient:
                 request_id = request_id_frame.bytes.decode()
                 kind = kind_frame.bytes
             except Exception:  # keep receiving for the other requests
-                get_logger().opt(exception=True).warning("Dropping a malformed env-server frame")
+                get_logger().opt(exception=True).warning("Dropped malformed env server frame")
                 continue
             if kind != b"delta":
                 routed.append((request_id, data_frame, None))
@@ -145,7 +145,7 @@ class EnvClient:
                 continue
             delta = next(decoded)
             if isinstance(delta, Exception):
-                get_logger().opt(exception=delta).warning("Dropping a malformed env-server frame")
+                get_logger().opt(exception=delta).warning("Dropped malformed env server frame")
                 continue
             # Cancellation may remove the handler while the worker decodes.
             if self._deltas.get(request_id) is not on_delta:
@@ -153,7 +153,7 @@ class EnvClient:
             try:
                 on_delta(delta)
             except Exception:  # keep receiving for the other requests
-                get_logger().opt(exception=True).warning("Dropping a malformed env-server frame")
+                get_logger().opt(exception=True).warning("Dropped malformed env server frame")
 
     async def _request(
         self,
