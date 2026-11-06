@@ -24,6 +24,14 @@ def make_task(idx: int) -> vf.Task:
     return vf.Task(vf.TaskData(idx=idx, prompt=f"task {idx}"))
 
 
+def reload_tasks(indices: list[int]) -> list[vf.Task]:
+    class Taskset(vf.Taskset[vf.Task]):
+        def load(self):
+            return [make_task(i) for i in indices]
+
+    return list(Taskset(vf.TasksetConfig()))
+
+
 def make_rollout(
     task: vf.Task,
     *,
@@ -213,11 +221,12 @@ def test_standard_sampler_matches_cycle_order() -> None:
 
 
 def test_standard_sampler_new_tasks_join_the_current_pass() -> None:
-    tasks = [make_task(i) for i in range(5)]
+    tasks = reload_tasks(list(range(5)))
     sampler = StandardSampler(tasks)
     sample_keys(sampler, 7)
-    first, last = make_task(10), make_task(11)
-    restored = StandardSampler([first, *tasks, last])
+    reloaded = reload_tasks([10, *range(5), 11])
+    first, last = reloaded[0], reloaded[-1]
+    restored = StandardSampler(reloaded)
     restored.load_state_dict(sampler.state_dict())
 
     current_pass = [first, *tasks[2:], last]
@@ -225,10 +234,10 @@ def test_standard_sampler_new_tasks_join_the_current_pass() -> None:
 
 
 def test_standard_sampler_drops_removed_tasks() -> None:
-    tasks = [make_task(i) for i in range(5)]
+    tasks = reload_tasks(list(range(5)))
     sampler = StandardSampler(tasks)
     sample_keys(sampler, 7)
-    kept = [tasks[1], tasks[3], tasks[4]]
+    kept = reload_tasks([1, 3, 4])
     restored = StandardSampler(kept)
     restored.load_state_dict(sampler.state_dict())
 
@@ -251,6 +260,10 @@ def test_standard_sampler_converts_a_legacy_cursor() -> None:
     restored = StandardSampler(tasks)
     restored.load_state_dict({"cursor": 7})
 
+    assert restored.state_dict() == {"counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)}}
+    assert sample_keys(restored, 6) == keys(list(itertools.islice(itertools.cycle(tasks), 7, 13)))
+
+    restored.load_state_dict({"counts": {task.hash: 2 if i < 2 else 1 for i, task in enumerate(tasks)}})
     assert restored.state_dict() == {"counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)}}
     assert sample_keys(restored, 6) == keys(list(itertools.islice(itertools.cycle(tasks), 7, 13)))
 
@@ -307,17 +320,23 @@ def test_curriculum_matches_gates_by_name() -> None:
 
 
 def test_difficulty_pool_sampler_drops_rewards_of_removed_tasks() -> None:
-    tasks = [make_task(i) for i in range(3)]
+    tasks = reload_tasks(list(range(3)))
     config = CurriculumConfig(sampler=DifficultyPoolSamplerConfig())
     curriculum = Curriculum(config, tasks)
     for task in tasks:
         curriculum.on_result(make_rollout(task, reward=0.5))
-    added = make_task(10)
-    restored = Curriculum(config, [tasks[0], tasks[2], added])
+    reloaded = reload_tasks([2, 0, 10])
+    restored = Curriculum(config, reloaded)
     restored.load_state_dict(curriculum.state_dict())
 
     assert restored.sampler.task_rewards == {tasks[0].key: 0.5, tasks[2].key: 0.5}
     assert restored.metrics()["sampler/pool/unseen"] == 1.0
+
+    legacy = curriculum.state_dict()
+    legacy["sampler"]["task_rewards"] = {task.hash: 0.5 for task in tasks}
+    unchanged = Curriculum(config, reload_tasks(list(range(3))))
+    unchanged.load_state_dict(legacy)
+    assert unchanged.sampler.task_rewards == {task.key: 0.5 for task in tasks}
 
 
 def make_env(name: str, tasks: list[vf.Task]) -> SimpleNamespace:
@@ -342,14 +361,14 @@ def test_train_source_matches_envs_by_name() -> None:
 
 
 def test_train_source_reopens_open_groups_in_order_without_recounting() -> None:
-    tasks = [make_task(i) for i in range(4)]
+    tasks = reload_tasks(list(range(4)))
     source = TrainSource([make_env("a", tasks)])
     requests = [source.next_task(step=1) for _ in range(3)]
     source.close_groups([requests[1].group_id])
     state = source.state_dict()
     assert state["open_groups"] == [("a", requests[0].task.key), ("a", requests[2].task.key)]
 
-    restored = TrainSource([make_env("a", tasks)])
+    restored = TrainSource([make_env("a", reload_tasks([3, 2, 0, 1]))])
     restored.load_state_dict(state)
     counts, rng = dict(restored.curricula["a"].sampler.counts), restored.rng.getstate()
     first = restored.next_task(step=2)
@@ -361,6 +380,13 @@ def test_train_source_reopens_open_groups_in_order_without_recounting() -> None:
     assert restored.curricula["a"].sampler.counts == counts and restored.rng.getstate() == rng
     assert len(restored.open_groups) == 2 and next(iter(restored.open_groups)) == first.group_id
     assert restored.next_task(step=2).task.key == tasks[3].key
+
+    legacy = source.state_dict()
+    legacy["open_groups"] = [("a", requests[i].task.hash) for i in (0, 2)]
+    legacy["envs"]["a"]["sampler"] = {"counts": {task.hash: int(i < 3) for i, task in enumerate(tasks)}}
+    unchanged = TrainSource([make_env("a", reload_tasks(list(range(4))))])
+    unchanged.load_state_dict(legacy)
+    assert [unchanged.next_task(step=2).task.key for _ in range(2)] == [requests[i].task.key for i in (0, 2)]
 
 
 def test_train_source_drops_open_groups_it_cannot_reopen() -> None:
