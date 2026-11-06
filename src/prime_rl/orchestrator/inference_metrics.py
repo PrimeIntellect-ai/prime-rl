@@ -119,6 +119,48 @@ def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
     return engines
 
 
+@dataclass(frozen=True)
+class RouterWorker:
+    """One worker of the router's ``/engine_metrics``: an engine process and its engines' snapshots."""
+
+    url: str
+    role: str | None
+    max_model_len: int | None
+    engines: dict[str, EngineSnapshot]
+    error: str | None
+
+
+def parse_engine_metrics(payload: dict) -> tuple[int, list[RouterWorker]]:
+    """Parse the router's ``/engine_metrics`` into its queue depth and per-worker engine snapshots. The router
+    parses each worker's ``/metrics`` exactly like ``parse_prometheus_text``."""
+    workers = [
+        RouterWorker(
+            url=worker["url"],
+            role=worker["role"] if worker["role"] in PD_ROLES else None,
+            max_model_len=worker.get("max_model_len"),
+            engines={
+                engine_label: EngineSnapshot(
+                    gauges=engine["gauges"],
+                    counters=engine["counters"],
+                    histograms={
+                        name: HistogramSnapshot(
+                            sum=histogram["sum"],
+                            count=histogram["count"],
+                            buckets={float(le): count for le, count in histogram["buckets"].items()},
+                        )
+                        for name, histogram in engine["histograms"].items()
+                    },
+                    cache_config=engine["cache_config"],
+                )
+                for engine_label, engine in worker["engines"].items()
+            },
+            error=worker.get("error"),
+        )
+        for worker in payload["workers"]
+    ]
+    return payload["router_queued"], workers
+
+
 def build_metrics_endpoints(
     admin_clients: list[AsyncClient], roles: list[str | None] | None = None
 ) -> list[MetricsEndpoint]:
@@ -298,20 +340,29 @@ class InferenceMetricsCollector:
         self,
         admin_clients: list[AsyncClient],
         roles: list[str | None] | None = None,
-        on_load: Callable[[list[EngineLoadSample]], None] | None = None,
+        router_client: AsyncClient | None = None,
+        on_load: Callable[[list[EngineLoadSample], int | None], None] | None = None,
         log_metrics: bool = True,
     ):
-        self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
+        self.router_client = router_client
+        # With a router, the engines and their roles are discovered from its ``/engine_metrics``
+        self.endpoints = build_metrics_endpoints(admin_clients, roles=roles) if router_client is None else []
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.max_model_len_by_endpoint: dict[str, int] = {}
         self.task: asyncio.Task | None = None
-        self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
         self.log_metrics = log_metrics
-        get_logger().info(
-            "Collecting inference metrics from "
-            + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
-        )
+        if router_client is not None:
+            get_logger().info(f"Collecting inference metrics from router {router_client.base_url}")
+        else:
+            get_logger().info(
+                "Collecting inference metrics from "
+                + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
+            )
+
+    @property
+    def has_pd_roles(self) -> bool:
+        return {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
 
     async def start(self):
         async def poll_loop():
@@ -342,6 +393,31 @@ class InferenceMetricsCollector:
 
     async def collect_and_log(self):
         now = time.monotonic()
+        if self.router_client is None:
+            samples, router_queued = await self.scrape_engines(now), None
+        else:
+            samples, router_queued = await self.scrape_router(now)
+        if not samples:
+            return
+
+        metrics = self.build_metrics(samples) if self.log_metrics else {}
+        if metrics and router_queued is not None:
+            metrics["inference/router/queued"] = router_queued
+        load_samples = [self.build_load_sample(sample) for sample in samples]
+        for sample in samples:
+            self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
+
+        if self.on_load is not None:
+            self.on_load(load_samples, router_queued)
+
+        if metrics:
+            # Time-keyed rows (step=None): inference metrics are sampled on wall
+            # time, not the training step. Fans out to every registered monitor;
+            # each monitor stamps its own timestamp.
+            await monitors.log(metrics, step=None)
+
+    async def scrape_engines(self, now: float) -> list[EngineSample]:
+        """Scrape each admin endpoint's ``/metrics``; an endpoint that fails is skipped this poll."""
 
         async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
@@ -359,23 +435,40 @@ class InferenceMetricsCollector:
             if text is not None
             for engine_label, snapshot in sorted(parse_prometheus_text(text).items())
         ]
-        if not samples:
-            return
+        if samples:
+            await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
+        return samples
 
-        await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
-        metrics = self.build_metrics(samples) if self.log_metrics else {}
-        load_samples = [self.build_load_sample(sample) for sample in samples]
-        for sample in samples:
-            self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
+    async def scrape_router(self, now: float) -> tuple[list[EngineSample], int]:
+        """One router ``/engine_metrics`` call: every engine behind the router with its role, and the number of
+        requests queued in the router itself."""
+        response = await self.router_client.get("/engine_metrics", timeout=FETCH_TIMEOUT)
+        response.raise_for_status()
+        router_queued, workers = parse_engine_metrics(response.json())
+        samples: list[EngineSample] = []
+        for worker in workers:
+            if worker.error is not None:
+                get_logger().debug(f"Router failed to fetch metrics from {worker.url}: {worker.error}")
+                continue
+            endpoint = self.router_endpoint(worker.url, worker.role)
+            if worker.max_model_len is not None:
+                self.max_model_len_by_endpoint[endpoint.key] = worker.max_model_len
+            samples.extend(
+                EngineSample(endpoint=endpoint, engine_label=engine_label, timestamp=now, snapshot=snapshot)
+                for engine_label, snapshot in sorted(worker.engines.items())
+            )
+        return samples, router_queued
 
-        if self.on_load is not None:
-            self.on_load(load_samples)
-
-        if metrics:
-            # Time-keyed rows (step=None): inference metrics are sampled on wall
-            # time, not the training step. Fans out to every registered monitor;
-            # each monitor stamps its own timestamp.
-            await monitors.log(metrics, step=None)
+    def router_endpoint(self, url: str, role: str | None) -> MetricsEndpoint:
+        """The endpoint of one router worker, named on first sight so engine ids stay stable across polls."""
+        for endpoint in self.endpoints:
+            if endpoint.key == url:
+                return endpoint
+        prefix = role or "server"
+        index = sum((endpoint.role or "server") == prefix for endpoint in self.endpoints)
+        endpoint = MetricsEndpoint(client=self.router_client, role=role, key=url, name=f"{prefix}{index}")
+        self.endpoints.append(endpoint)
+        return endpoint
 
     async def fetch_max_model_len(self, endpoint: MetricsEndpoint) -> None:
         """Cache the engine's max context length from ``/v1/models`` (set
@@ -474,3 +567,5 @@ class InferenceMetricsCollector:
             except asyncio.CancelledError:
                 pass
             self.task = None
+        if self.router_client is not None:
+            await self.router_client.aclose()

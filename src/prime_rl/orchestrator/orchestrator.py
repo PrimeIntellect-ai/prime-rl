@@ -48,7 +48,12 @@ from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
-from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
+from prime_rl.orchestrator.clients import (
+    AdminPlane,
+    InferenceClient,
+    setup_admin_plane,
+    setup_router_metrics_client,
+)
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -369,6 +374,7 @@ class Orchestrator:
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
             roles=config.inference_metrics_roles,
+            router_client=setup_router_metrics_client(config.model.client),
             on_load=self.concurrency.observe,
             log_metrics=config.collect_inference_metrics,
         )

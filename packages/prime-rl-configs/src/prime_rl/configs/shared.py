@@ -264,6 +264,9 @@ class ClientConfig(BaseClientConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    metrics_source: Literal["engines", "router"] = "engines"
+    """Where engine load (inference metrics and the adaptive concurrency signal) is read. ``engines`` scrapes each admin endpoint's ``/metrics``; ``router`` reads the vllm-router's ``/engine_metrics`` at ``base_url``, which reports every engine behind it with its P/D role and the requests queued in the router itself."""
+
 
 class VLLMClientConfig(ClientConfig):
     """Client defaults for the live inference deployment managed by training."""

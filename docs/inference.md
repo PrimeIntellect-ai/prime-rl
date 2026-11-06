@@ -190,6 +190,10 @@ Both backends support the 2 most important things:
 - Request routing - KV cache re-use and balanced routing
 - P/D disaggregation - handling the prefill and decode stages separately
 
+### Engine metrics
+
+The orchestrator polls engine load every few seconds — it feeds the adaptive concurrency controller and the `inference/*` metrics. By default it scrapes each engine's `/metrics` through `client.admin_base_url`, taking P/D roles from `orchestrator.inference_metrics_roles`. With `vllm-router`, set `client.metrics_source = "router"` to read one endpoint instead: the router's `GET /engine_metrics` scrapes every worker it routes to and reports each with its role (`regular`, `prefill`, `decode`), its parsed `vllm:*` samples per engine, its `max_model_len`, and the router's in-flight count, plus `router_queued` — requests waiting in the router's own queue. The controller counts `router_queued` toward its queued share once (gauge `concurrency/queued_share/router`).
+
 ### Routing policies
 The policies you might want to configure are:
 - `sticky_least_loaded` - the default policy. A new `X-Session-ID` is assigned to the least-loaded replica, then every later turn in that rollout remains on the same replica for KV cache reuse. The orchestrator releases sessions when rollouts complete, fail, or are cancelled, including traces discarded during retries. Failed release requests are logged without disabling future cleanup.

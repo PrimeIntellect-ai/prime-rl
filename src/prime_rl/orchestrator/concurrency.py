@@ -14,7 +14,8 @@ in throughput per relative change in units in flight. A step up is kept when it
 reaches ``PROBE_ELASTICITY``, a step down when it does not.
 
 The fast safety signal is the **queued share**: requests waiting in the
-engines' queues (for capacity, or deferred on a KV load) over the units in
+engines' queues (for capacity, or deferred on a KV load), plus those waiting in
+the router's own queue when it reports one, over the units in
 flight, averaged over polls. By Little's law it is the share of the units' time
 spent parked in an engine queue, so it means the same in every topology: in P/D
 the prefill queue and decode's pending KV pulls add up, a slow KV load counts
@@ -267,10 +268,12 @@ class Poll:
     roles: dict[str, RoleLoad]
     inflight: int
     seconds: float = 0.0
+    # Requests waiting in the router before reaching any engine (None without a router measurement)
+    router_queued: int | None = None
 
     @property
     def queued(self) -> int:
-        return sum(load.queued for load in self.roles.values())
+        return sum(load.queued for load in self.roles.values()) + (self.router_queued or 0)
 
     @property
     def generated(self) -> int:
@@ -429,8 +432,9 @@ class ConcurrencyController(Reconfigurable):
         self.paused = False
         self.resume_skip = RESUME_SKIP_POLLS
 
-    def observe(self, samples: list[EngineLoadSample]) -> None:
-        """Per-poll engine load push from the metrics collector: measure, then trim, cut or probe."""
+    def observe(self, samples: list[EngineLoadSample], router_queued: int | None = None) -> None:
+        """Per-poll engine load push from the metrics collector: measure, then trim, cut or probe. A router's
+        own queue counts once toward the queued share, next to the engines' queues."""
         now = time.monotonic()
         seconds = now - self.last_poll_time if self.last_poll_time is not None else 0.0
         self.last_poll_time = now
@@ -450,7 +454,7 @@ class ConcurrencyController(Reconfigurable):
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
         loads = role_loads(samples)
-        poll = Poll(loads, inflight, seconds)
+        poll = Poll(loads, inflight, seconds, router_queued)
         # After a weight update the queue is the pause's backlog, not load
         backlog = self.resume_skip > 0
         self.resume_skip = max(0, self.resume_skip - 1)
@@ -464,6 +468,10 @@ class ConcurrencyController(Reconfigurable):
             / max(sum(poll.inflight for poll in self.polls), 1)
             for role in loads
         }
+        if router_queued is not None:
+            self.queued_share_by_role["router"] = sum(poll.router_queued or 0 for poll in self.polls) / max(
+                sum(poll.inflight for poll in self.polls), 1
+            )
         # Preemption and the KV gauge concern the running set, which lives on decode (or colocated) engines. A
         # preempted prefill re-queues, which the queued share sees; prefill KV holds transfers awaiting decode.
         running_set = [role for role in loads if role != "prefill"]
