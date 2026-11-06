@@ -67,6 +67,14 @@ SCALAR_FIELDS = (
     "num_input_tokens",
     "num_output_tokens",
     "num_total_tokens",
+    "reward",
+    "usage",
+    "is_truncated",
+    "num_turns",
+    "num_branches",
+    "last_reply",
+    "has_error",
+    "is_format_violation",
 )
 """Re-sent whole whenever their dumped value changes."""
 
