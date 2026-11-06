@@ -1,4 +1,6 @@
+import os
 import pickle
+from functools import partial
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -145,8 +147,9 @@ class NCCLWeightUpdateWorker(Worker):
         """No-op RPC used by the API server liveness endpoint."""
         return None
 
-    def update_weights_from_path(self, weight_dir: str) -> None:
-        """Update weights with the nccl communicator."""
+    def update_weights_from_path(self, weight_dir: str, abort_path: str | None = None) -> None:
+        """Update weights with the nccl communicator. A recoverable transfer stops waiting once
+        ``abort_path`` exists: the coordinator replaced its publisher."""
         model_runner = self.model_runner
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
@@ -154,10 +157,17 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        load_weights_checkpoint_layerwise(
-            model,
-            state_iter,
-            self.model_runner.model_config,
-            self.vllm_config,
-        )
+        communicator = self.nccl_broadcast_receiver.communicator
+        if abort_path is not None and isinstance(communicator, WeightBroadcastCommunicator):
+            communicator.cancelled = partial(os.path.exists, abort_path)
+        try:
+            state_iter = self.nccl_broadcast_receiver.receive_state_dict()
+            load_weights_checkpoint_layerwise(
+                model,
+                state_iter,
+                self.model_runner.model_config,
+                self.vllm_config,
+            )
+        finally:
+            if isinstance(communicator, WeightBroadcastCommunicator):
+                communicator.cancelled = None

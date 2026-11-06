@@ -40,7 +40,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch.journal import BatchCheckpoint, BatchJournal
 from prime_rl.transports.batch.recovery import validate_checkpoint
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_run_start_path, get_step_path
 
 
 @dataclass
@@ -187,6 +187,7 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.batch_journal = BatchJournal(batch_output_dir or output_dir)
+        self.run_start_path = get_run_start_path(batch_output_dir or output_dir)
         self.restored_batch: BatchCheckpoint | None = None
 
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
@@ -198,6 +199,45 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
+
+    def committed_batch(self, step: int) -> str | None:
+        """The batch ID in the checkpoint of ``step`` if every rank finished saving it. A step
+        directory alone may hold an interrupted save or only the orchestrator's state."""
+        try:
+            return msgspec.json.decode(
+                (self.get_ckpt_path(step) / "batch.json").read_bytes(), type=BatchCheckpoint
+            ).batch.batch_id
+        except FileNotFoundError:
+            return None
+
+    def run_started(self) -> bool:
+        """Whether a trainer already started this run: the launcher clears the record when a run starts."""
+        return self.run_start_path.exists()
+
+    def latest_committed_step(self, this_run: bool = False) -> int | None:
+        """Newest committed checkpoint. With ``this_run``, skip the ones ``record_run_start`` found
+        beyond the run's start, unless this run committed that step again."""
+        stale = {}
+        if this_run and self.run_start_path.exists():
+            stale = {int(step): batch for step, batch in json.loads(self.run_start_path.read_text())["stale"].items()}
+        committed = {step: self.committed_batch(step) for step in get_all_ckpt_steps(self.ckpt_dir)}
+        return max(
+            (step for step, batch in committed.items() if batch is not None and stale.get(step) != batch), default=None
+        )
+
+    def record_run_start(self, step: int | None) -> None:
+        """Record the committed checkpoints newer than the one this run starts from (all of them on a
+        fresh start). They belong to an abandoned timeline, e.g. after resuming from an earlier step,
+        and a replacement trainer must not restore one."""
+        stale = {
+            str(other): batch
+            for other in get_all_ckpt_steps(self.ckpt_dir)
+            if (step is None or other > step) and (batch := self.committed_batch(other)) is not None
+        }
+        self.run_start_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.run_start_path.with_name(f".{self.run_start_path.name}.tmp")
+        temporary.write_text(json.dumps({"start": step, "stale": stale}))
+        temporary.replace(self.run_start_path)
 
     def save_to_path(
         self,

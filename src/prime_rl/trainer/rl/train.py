@@ -147,13 +147,34 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
 
+    resume_dir = None
     if config.resume is not None:
         if config.resume.dir is not None:
             checkpoint_step = config.resume.dir_step
+            resume_dir = config.resume.dir
         else:
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    # Every start decides from disk, so whatever restarts the trainer runs the same command. A start
+    # that finds the run's start record replaces a failed trainer within the run: it continues from
+    # the newest checkpoint every rank of this run finished (a newer step directory may hold an
+    # interrupted save). A first start records which committed checkpoints predate the run: one of
+    # another timeline would fail the orchestrator's validation on every replacement. A bare resume
+    # also starts from the newest committed checkpoint. Rank 0 decides for every rank.
+    decision = [None]
+    if world.is_master:
+        replacement = ckpt_manager.run_started()
+        decision = [(replacement, ckpt_manager.latest_committed_step(this_run=replacement))]
+    dist.broadcast_object_list(decision, src=0)
+    replacement, committed = decision[0]
+    resume_latest = config.resume is not None and config.resume.step is None and config.resume.dir is None
+    if committed is not None and (replacement or resume_latest):
+        checkpoint_step, resume_dir = committed, None
+    if replacement:
+        logger.warning(f"Replacing a failed trainer: resuming from checkpoint step {checkpoint_step}")
+    elif world.is_master:
+        ckpt_manager.record_run_start(checkpoint_step if resume_dir is None else None)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
@@ -193,22 +214,6 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing scheduler ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
-    # Set up weight broadcast (skip when using fake data since there's no inference server)
-    if config.data.fake:
-        weight_sender = None
-        logger.info("Skipping weight broadcast setup (fake data mode)")
-    else:
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        t0 = time.perf_counter()
-        weight_sender = setup_weight_sender(
-            config.output_dir,
-            config.weight_broadcast,
-            parallel_dims,
-            config.model.lora,
-            model_name=config.model.name,
-        )
-        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
-
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
 
@@ -224,7 +229,6 @@ def train(config: TrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        resume_dir = config.resume.dir if config.resume else None
         ckpt_manager.load(
             checkpoint_step,
             model,
@@ -256,6 +260,33 @@ def train(config: TrainerConfig):
             restored=ckpt_manager.restored_batch,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
+
+    # When this attempt replaced a failed trainer, the policies inference already serves are
+    # recomputed from replayed batches without publishing them again.
+    policy = dataloader.policy
+    if policy is not None:
+        logger.info(
+            f"Inference needs policy v{policy.version}; "
+            + ("publishing it complete once recomputed" if policy.reload else "skipping publication through it")
+        )
+
+    # Set up weight broadcast after joining the orchestrator's session, so a replacement's
+    # transfer group forms once the orchestrator reconnects inference to it (skip when using
+    # fake data since there's no inference server)
+    if config.data.fake:
+        weight_sender = None
+        logger.info("Skipping weight broadcast setup (fake data mode)")
+    else:
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        t0 = time.perf_counter()
+        weight_sender = setup_weight_sender(
+            config.output_dir,
+            config.weight_broadcast,
+            parallel_dims,
+            config.model.lora,
+            model_name=config.model.name,
+        )
+        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
     annotation_writer = AnnotationWriter(
         parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
@@ -291,7 +322,11 @@ def train(config: TrainerConfig):
         # rollouts so the trainer and inference pool join the same update lifecycle,
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
-        if progress.step == start_step and weight_sender is not None:
+        if (
+            progress.step == start_step
+            and weight_sender is not None
+            and (policy is None or policy.publishes(progress.step - 1))
+        ):
             startup_version = progress.step - 1
             if world.is_master:
                 prune_broadcasts_beyond(config.output_dir, startup_version)
@@ -674,6 +709,11 @@ def train(config: TrainerConfig):
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.
         if weight_sender is None:
+            broadcast_weights_time = 0
+        elif policy is not None and not policy.publishes(progress.step):
+            logger.debug(
+                f"Skipping publication of recomputed policy v{progress.step} (inference serves v{policy.version})"
+            )
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()

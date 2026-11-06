@@ -532,6 +532,9 @@ class OrchestratorConfig(BaseConfig):
     batch_journal: bool = False
     """Persist exact text training batches before delivery; release them after a trainer checkpoint commits. Requires a shared output directory. There is no disk-size cap; without checkpoints, batches remain retained."""
 
+    admit_replacement_trainers: bool = False
+    """Keep running when the trainer fails: admit a replacement trainer group once every rank of the failed one has disconnected, replay the journaled batches it has not checkpointed, and reconcile inference's policy with it. Requires ``batch_journal`` and the ZMQ rollout transport."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
@@ -574,6 +577,22 @@ class OrchestratorConfig(BaseConfig):
     control: OrchestratorControlConfig | None = None
     """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
     accepted, update the config live). If None, it takes no control requests."""
+
+    @model_validator(mode="after")
+    def validate_admit_replacement_trainers(self):
+        if not self.admit_replacement_trainers:
+            return self
+        if not self.batch_journal:
+            raise ValueError("orchestrator.admit_replacement_trainers requires orchestrator.batch_journal = true")
+        if self.rollout_transport.type != "zmq":
+            raise ValueError("orchestrator.admit_replacement_trainers requires the ZMQ rollout transport")
+        if self.weight_broadcast.type == "nixl":
+            raise ValueError("orchestrator.admit_replacement_trainers does not support NIXL weight broadcast yet")
+        if self.weight_broadcast.type == "nccl" and not self.weight_broadcast.recoverable:
+            raise ValueError(
+                "orchestrator.admit_replacement_trainers requires weight_broadcast.recoverable = true with NCCL"
+            )
+        return self
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

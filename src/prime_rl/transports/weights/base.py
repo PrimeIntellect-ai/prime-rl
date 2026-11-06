@@ -24,6 +24,12 @@ SENDER_READY_MARKER = ".sender_ready"
 RECEIVER_READY_MARKER = ".receiver_ready"
 STARTED_MARKER = ".started"
 FINISHED_MARKER = ".finished"
+# Raised by the consumer when it replaces a failed publisher: in-flight transfers of that step stop.
+ABORTED_MARKER = ".aborted"
+
+
+class BroadcastAborted(Exception):
+    """A receiver stopped waiting on a publisher that was replaced. Inference was not touched."""
 
 
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
@@ -129,9 +135,57 @@ class WeightReceiver(ABC):
         self.config = config
         self.admin_plane = admin_plane
         self.model_name = model_name
+        self.aborted = asyncio.Event()
+        self.awaited_step: int | None = None
+        """The offer this receiver last waited for, found by name rather than by listing the directory."""
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""
+
+    reconnect_retryable = True
+    """A failed ``reconnect`` can run again. False for a one-shot rendezvous with the publisher."""
+
+    async def reconnect(self) -> None:
+        """Join a replacement publisher's transfer group. Only transports whose inference
+        workers hold a session with the publisher reconnect."""
+
+    def abort(self) -> None:
+        """Stop waiting on the current publisher (it was replaced): waits for its markers raise
+        ``BroadcastAborted`` until ``clear_abort``, and in-flight recoverable NCCL transfers stop
+        at their next poll. A load from complete files is not interrupted."""
+        self.aborted.set()
+        for step in self._offered_steps():
+            if self.step_dir(step).exists():
+                (self.step_dir(step) / ABORTED_MARKER).touch()
+
+    def clear_abort(self) -> None:
+        self.aborted.clear()
+
+    def clear_offers(self, after: int | None = None, through: int | None = None) -> None:
+        """Drop every offered version: a replaced publisher's offers can never complete. Steps in
+        (``after``, ``through``] are dropped by name too: the listing can still hide the step directory
+        the publisher created last, which would surface as an offer nobody completes."""
+        steps = self._offered_steps()
+        if after is not None and through is not None:
+            steps.update(range(after + 1, through + 1))
+        for step in steps:
+            shutil.rmtree(self.step_dir(step), ignore_errors=True)
+
+    def _offered_steps(self) -> set[int]:
+        """Steps in the broadcast directory, including the one this receiver last waited for: a listing
+        of a shared filesystem can lag behind a step directory found by name."""
+        steps = set(get_all_ckpt_steps(self.broadcast_dir))
+        if self.awaited_step is not None:
+            steps.add(self.awaited_step)
+        return steps
+
+    async def _wait_for(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
+        while not path.exists():
+            if self.aborted.is_set():
+                raise BroadcastAborted(f"Stopped waiting for {path}")
+            if cancelled is not None and cancelled():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.1)
 
     def step_dir(self, step: int) -> Path:
         return get_step_path(self.broadcast_dir, step)
@@ -149,11 +203,8 @@ class WeightReceiver(ABC):
         """Block until the trainer offers v{step}. Runs before the orchestrator
         advances ``policy.version`` — the version must never move ahead of a
         confirmed offer."""
-        sender_ready = self.step_dir(step) / SENDER_READY_MARKER
-        while not sender_ready.exists():
-            if cancelled is not None and cancelled():
-                raise asyncio.CancelledError
-            await asyncio.sleep(0.1)
+        self.awaited_step = step
+        await self._wait_for(self.step_dir(step) / SENDER_READY_MARKER, cancelled)
 
     def _ack(self, step: int) -> None:
         """Acknowledge the offered version — unblocks the waiting trainer."""

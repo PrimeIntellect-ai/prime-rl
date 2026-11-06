@@ -15,7 +15,7 @@ from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.vlm import get_layer_prefix
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.base import ABORTED_MARKER, WeightReceiver, WeightSender
 from prime_rl.transports.weights.nccl_communicator import WeightBroadcastCommunicator
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
@@ -265,10 +265,19 @@ class NCCLWeightReceiver(WeightReceiver):
             recoverable=self.config.recoverable,
         )
 
+    # The trainer sends its group's NCCL ID once: joining again would abort the communicators of
+    # workers that already joined.
+    reconnect_retryable = False
+
+    async def reconnect(self) -> None:
+        # Each worker aborts its communicator with the replaced trainer and joins a fresh one.
+        await self.initialize()
+
     async def receive(self, step: int) -> None:
         await self.admin_plane.update_weights(
             self.step_dir(step),
             transport="nccl",
             step=step,
             on_paused=lambda: self._ack(step),
+            abort_path=self.step_dir(step) / ABORTED_MARKER,
         )
