@@ -159,6 +159,11 @@ placement/rate. Share the dashboard URL returned by the CLI.
 
 ## Monitor and finish
 
+For metric comparisons, plots, or post-restart performance, read
+[analyzing runs](../training/monitor-run/references/analyze-runs.md). Separate
+pipeline warmup from steady-state metrics and establish trainer progress before
+combining histories across attempts.
+
 ```bash
 prime train get "$RUN_ID" --plain -o json
 prime train components "$RUN_ID" --plain
