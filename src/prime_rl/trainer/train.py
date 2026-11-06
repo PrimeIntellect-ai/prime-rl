@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401
 
 import math
+import os
 import time
 import asyncio
 from contextlib import nullcontext
@@ -13,7 +14,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -70,6 +71,9 @@ import torch.distributed as dist
 def train(config: SFTConfig | PretrainConfig):
     # Setup world and logger
     world = get_world()
+    # A launcher pins the attempt and saves the full config itself; a trainer started on its own saves it here.
+    if world.is_master and "PRL_ATTEMPT_CONFIG_DIR" not in os.environ:
+        write_resolved_config(config.run_dir, config, "pretrain" if isinstance(config, PretrainConfig) else "sft")
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,

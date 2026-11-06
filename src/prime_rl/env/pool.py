@@ -24,6 +24,7 @@ import contextlib
 import multiprocessing as mp
 import os
 import signal
+import sys
 import tempfile
 import threading
 import time
@@ -48,15 +49,17 @@ def _arm_teardown(death_pipe=None) -> None:
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
     asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
 
-    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
+    - SIGTERM and SIGINT -> KeyboardInterrupt(signum) so the event loop runs its finallys and
+      serve_env exits with the signal's code;
     - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
       child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
 
-    def on_sigterm(*_) -> None:
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        raise KeyboardInterrupt
+    def on_signal(signum: int, _) -> None:
+        signal.signal(signum, signal.SIG_IGN)
+        raise KeyboardInterrupt(signum)
 
-    signal.signal(signal.SIGTERM, on_sigterm)
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
     if death_pipe is None:
         return
 
@@ -265,8 +268,6 @@ class EnvServerPool:
                                         ),
                                     ]
                                 )
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
         finally:
             self._shutdown()
 
@@ -332,8 +333,8 @@ def serve_env(
 
     `worker_setup` (a picklable callable) runs in this process and every spawned worker —
     without it a spawned server inherits no log handlers and its logs are silently dropped."""
-    # Graceful SIGTERM (run asyncio teardown). The re-raised KeyboardInterrupt is swallowed
-    # below for a clean exit (no spurious traceback).
+    # Graceful SIGTERM and SIGINT (run asyncio teardown), then exit 128 + signum: a server never
+    # finishes on its own, so a supervisor must not see a stop as success.
     _arm_teardown()
     if worker_setup is not None:
         worker_setup()
@@ -342,8 +343,8 @@ def serve_env(
         if address_queue is not None:
             address_queue.put(server.address)
         asyncio.run(server.run())
-    except KeyboardInterrupt:
-        pass
+    except KeyboardInterrupt as e:
+        sys.exit(128 + e.args[0])
     except Exception:
         get_logger().opt(exception=True).error("Env server failed")
         raise

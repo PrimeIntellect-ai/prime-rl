@@ -250,10 +250,16 @@ def inference_local(config: InferenceConfig):
 
     try:
         server(config)
+    except SystemExit as e:
+        if e.code:
+            raise
     finally:
         if router_process is not None:
             router_stopping.set()
             cleanup_processes([router_process])
+    # vLLM handles SIGTERM and SIGINT itself and returns as if done. A server never finishes on its
+    # own, so a supervisor must not see a stop as success.
+    sys.exit(1)
 
 
 def inference(config: InferenceConfig):
