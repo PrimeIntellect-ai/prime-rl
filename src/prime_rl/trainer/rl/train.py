@@ -382,6 +382,7 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensor_stats = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
+        step_loss = torch.zeros((), dtype=torch.float64, device="cuda")
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
@@ -596,9 +597,10 @@ def train(config: TrainerConfig):
 
             mm_kwargs = None
 
-            # Every CP rank computes the whole sequence's loss, and the global normalizers count each
-            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensor_stats.add("loss", loss * cp_size)
+            # Each micro batch's loss is already divided by the global normalizers, so the step's loss is
+            # the sum over micro batches and dp_cp ranks. Every CP rank computes the whole sequence's loss,
+            # but the normalizers count each sequence once per CP rank, so the sum still counts it once.
+            step_loss += loss.detach()
 
             tensor_stats.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
 
@@ -720,6 +722,8 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
+        dist.all_reduce(step_loss, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        tensor_metrics["loss/mean"] = step_loss.item()
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
