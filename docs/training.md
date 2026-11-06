@@ -16,6 +16,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Dataset Format](#dataset-format)
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
+  - [Custom Loss](#custom-loss)
   - [Important Metrics](#important-metrics-1)
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
@@ -324,6 +325,54 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
+### Custom Loss
+
+`[loss]` selects the SFT trainer's loss: token cross-entropy (`type = "ce"`, the default) or, with `type = "custom"`, a loss function of yours in its place. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: the function returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss), a function called as `my_loss(inputs, **kwargs)` with the config's `kwargs`, except that it returns a summed loss with its count, and its metrics are summed and divided by the global count rather than averaged per sequence.
+
+```python
+# my_module.py
+from prime_rl.trainer.models.layers.lm_head import token_logprobs
+from prime_rl.trainer.sft.loss import LossInputs, LossOutputs
+
+def focal_loss(inputs: LossInputs, gamma: float = 2.0) -> LossOutputs:
+    """Token cross-entropy, down-weighting tokens the model already predicts well: -(1 - p)^gamma * log p."""
+    batch = inputs.batch
+    # one LM-head call for the whole micro-batch: each token's log-probability of its target
+    logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
+    mask = batch["loss_mask"]
+    focal = -((1 - logprobs.exp()) ** gamma) * logprobs
+    return LossOutputs(
+        loss=(focal * mask).sum(), count=mask.sum(), metrics={"ce": -(logprobs * mask).sum().detach()}
+    )
+```
+
+Wire it up:
+
+```toml
+[loss]
+type = "custom"
+import_path = "my_module.focal_loss"
+kwargs = { gamma = 2.0 }
+```
+
+The dataclasses:
+
+```python
+@dataclass
+class LossInputs:
+    model: nn.Module
+    hidden_states: Float[Tensor, "batch seq hidden"]  # post-norm, no vocabulary projection
+    batch: Batch                                       # on the device: input_ids, position_ids, target_ids, loss_mask, seq_lens
+
+@dataclass
+class LossOutputs:
+    loss: Float[Tensor, ""]                   # summed; divided by the global `count`
+    count: int | Tensor                       # e.g. samples or tokens in this micro-batch
+    metrics: dict[str, Tensor] = {}           # summed; divided like the loss, same names on every call
+```
+
+The loss runs inside the model's forward pass, where stock SFT computes its cross-entropy, so it can call any module of the model, such as the LM head through `token_logprobs` above (one call per micro-batch: with a trainable LM head, each call of the fused head's summed cross-entropy keeps a weight-sized gradient buffer until backward, and on an untied model each further call re-gathers the head in backward; keep further calls independent of each other's outputs). Call modules rather than reading their weights: FSDP gathers a unit's parameters while its modules run, so a weight read directly can be a shard (a decoder layer's or, on an untied model, the embedding's). A trainable module belongs to the model, since the optimizer, rank sync and checkpoints see only the model's parameters. `count` is an integer; metrics are scalar tensors with the same names on every call; with a global count of 0 the step's gradients are zeroed (the optimizer still applies weight decay and momentum). Not supported with context parallelism, VLM training or `model.offload = "full"`.
+
 ### Important Metrics
 
 Pulled from the console log and mirrored to W&B.
@@ -332,6 +381,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- With a custom loss: `loss/<name>` and `val/<name>` for each metric the loss function returns, averaged like the loss; the perplexities are not logged, since the loss need not be a cross-entropy.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
