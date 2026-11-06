@@ -262,9 +262,9 @@ def rl_local(config: RLConfig):
 
         frozen_endpoints: list[str] = []
         for env in config.orchestrator.train.source:
-            for ref in (env.algo.sampling.source, getattr(env.algo, "teacher", None)):
-                if isinstance(ref, FrozenModelConfig):
-                    frozen_endpoints.append(f"{ref.name} ({ref.base_url})")
+            ref = getattr(env.algo, "teacher", None)
+            if isinstance(ref, FrozenModelConfig):
+                frozen_endpoints.append(f"{ref.name} ({ref.base_url})")
         if frozen_endpoints:
             endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(

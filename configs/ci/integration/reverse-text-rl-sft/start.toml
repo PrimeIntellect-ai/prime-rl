@@ -32,8 +32,8 @@ max_inflight = 128
 [orchestrator.train.algo]
 type = "sft"
 
-# sft's teacher IS the model it samples from.
-[orchestrator.train.algo.sampling.source]
+# sft samples its train rollouts from the teacher.
+[orchestrator.train.algo.teacher]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = "http://localhost:8001/v1"
 
