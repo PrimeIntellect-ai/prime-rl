@@ -1,7 +1,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
 from verifiers.v1.configs.client import BaseClientConfig
@@ -36,6 +36,16 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
+
+
+class CallableConfig(BaseConfig):
+    """A callable of the user's own, imported from ``import_path`` at startup and called with ``kwargs``."""
+
+    import_path: str
+    """Import path to the callable (e.g. ``my_module.my_fn``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the callable."""
 
 
 class BaseWeightBroadcastConfig(BaseConfig):

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import lru_cache
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import torch
 import torch.nn as nn
@@ -194,6 +195,15 @@ def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
     return F.cross_entropy(
         logits.view(-1, logits.shape[-1]).float(), labels.reshape(-1), ignore_index=IGNORE_INDEX, reduction="sum"
     )
+
+
+def token_logprobs(lm_head: nn.Module, hidden_states: Tensor, labels: Tensor) -> Tensor:
+    """Per-token log-probabilities of ``labels`` (token ids, ``[batch, seq]``) through either LM head, in one call: the
+    fused head never builds full logits, and unlike its summed cross-entropy it keeps no weight-sized buffer per call."""
+    output = lm_head(hidden_states, labels, temperature=torch.ones(labels.shape, device=labels.device))
+    if output.get("logprobs") is not None:
+        return output["logprobs"].float()
+    return output["logits"].float().log_softmax(-1).gather(-1, labels.unsqueeze(-1)).squeeze(-1)
 
 
 def _online_logsumexp_and_weighted_update(
@@ -671,8 +681,9 @@ def _patch_model_forward(model: nn.Module) -> None:
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         support: TokenSupport | None = None,
+        hidden_states_fn: Callable[[Tensor], Any] | None = None,
         **kwargs: object,
-    ) -> PrimeLmOutput:
+    ) -> PrimeLmOutput | Any:
         if position_ids is None:
             reference_tensor = input_ids if input_ids is not None else inputs_embeds
             position_ids = torch.arange(reference_tensor.shape[1], device=reference_tensor.device).unsqueeze(0)
@@ -681,6 +692,10 @@ def _patch_model_forward(model: nn.Module) -> None:
             model_kwargs["inputs_embeds"] = inputs_embeds
         outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
+        if hidden_states_fn is not None:
+            # A loss of the caller's own on the backbone's final (post-norm) states, inside the forward pass like the
+            # LM head's, so FSDP keeps the root unit gathered for it and tracks the modules it calls.
+            return hidden_states_fn(hidden_states)
 
         # Slice hidden states for logits_to_keep
         slice_indices = (
