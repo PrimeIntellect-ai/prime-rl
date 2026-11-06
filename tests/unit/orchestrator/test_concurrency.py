@@ -77,14 +77,14 @@ def controller(inflight: int = 100, measured: bool = True) -> tuple[ConcurrencyC
     pool = Pool(inflight)
     ctl.bind(set_limit=pool.limits.append, get_inflight=lambda: pool.inflight, on_overload=pool.cancelled.append)
     if measured:
-        ctl.record_calls(1_000_000, 0)
+        ctl.record_calls(1_000_000, 0, 2)
     return ctl, pool
 
 
 def turnover(ctl: ConcurrencyController, pool: Pool) -> None:
     """Every unit in flight completes (and is replaced) a little over once."""
     for _ in range(pool.inflight + 1):
-        ctl.record_episode(10_000)
+        ctl.record_episode(10_000, 16)
 
 
 def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int) -> None:
@@ -93,8 +93,8 @@ def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int) -> None:
     for _ in range(polls):
         pool.inflight = ctl.max_inflight
         for _ in range(max(1, pool.inflight // 50)):
-            ctl.record_episode(10_000)
-        ctl.record_calls(1_000_000, 0)
+            ctl.record_episode(10_000, 16)
+        ctl.record_calls(1_000_000, 0, 2)
         ctl.observe([engine(finished=10, generated=int(throughput(pool.inflight) * POLL_SECONDS))])
 
 
@@ -262,3 +262,22 @@ def test_throughput_cliff_without_the_latency_metric_cuts_on_a_standing_queue():
         if pool.cancelled:
             break
     assert pool.cancelled  # the turnover never comes past a cliff; the cut does not wait for it
+
+
+def test_projection_counts_running_units_to_the_max_context():
+    ctl, pool = controller(inflight=10, measured=False)
+    # Ten units made calls 2..10, their context growing 1000 tokens per call
+    for call in range(2, 11):
+        for _ in range(10):
+            ctl.record_calls(1000 * call, 0, call)
+    ctl.observe([engine()])
+    # Still running: projected to grow on to the 32k max context, so the pool carries a third of its load
+    assert ctl.steady_context == pytest.approx(17_026, rel=0.01)
+    assert ctl.maturity == pytest.approx(6000 / 17_026, rel=0.01)
+
+    # All ended after their 10th call: the pool already carries its steady load
+    for _ in range(10):
+        ctl.record_episode(10_000, 10)
+    ctl.observe([engine()])
+    assert ctl.steady_context == pytest.approx(6000)
+    assert ctl.maturity == pytest.approx(1.0)

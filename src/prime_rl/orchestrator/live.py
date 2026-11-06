@@ -41,27 +41,27 @@ def dispatched_event(meta: InflightEpisode) -> dict[str, Any]:
     return {"dispatched": meta.dispatch_id}
 
 
-def apply(meta: InflightEpisode, delta: dict[str, Any]) -> tuple[int, int]:
+def apply(meta: InflightEpisode, delta: dict[str, Any]) -> list[tuple[int, int, int]]:
     """Fold one delta into the episode's phase/turn bookkeeping. Returns the
-    ``(prefix, recompute)`` tokens of the delta's model calls (see :func:`reuse`)."""
+    ``(prefix, recompute)`` tokens of each of the delta's model calls (see :func:`reuse`)
+    with the call's number within the episode."""
     trace_id = delta["trace"]
     if delta.get("discard"):
         meta.live.pop(trace_id, None)
-        return 0, 0
+        return []
     trace = meta.live.setdefault(trace_id, LiveTrace())
     calls = delta.get("calls") or []
     trace.turns += len(calls)
-    prefix = recompute = 0
+    reuses = []
     for call in calls:
-        call_prefix, call_recompute = reuse(trace, call.get("usage"))
-        prefix += call_prefix
-        recompute += call_recompute
+        meta.calls += 1
+        reuses.append((*reuse(trace, call.get("usage")), meta.calls))
     changed = delta.get("set") or {}
     if delta.get("errors"):
         trace.stage = "error"
     elif "timing" in changed:
         trace.stage = stage({"timing": changed["timing"]})
-    return prefix, recompute
+    return reuses
 
 
 def reuse(trace: LiveTrace, usage: dict[str, Any] | None) -> tuple[int, int]:

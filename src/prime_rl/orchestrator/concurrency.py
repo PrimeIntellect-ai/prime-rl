@@ -37,9 +37,16 @@ and acts:
 - **Ramp** at startup: grow the cap per pool turnover (each completed unit
   advances it by ``1/inflight``) by up to ``GROWTH_MAX``, tapered to zero as the
   queued share approaches ``QUEUE_TARGET`` (and, without a recompute ratio, KV
-  usage ``KV_USAGE_SOFT_CAP``). Every window the ramp checks that growth still
-  pays (``RAMP_ELASTICITY``); it hands over to the search once it does not, or
-  once the queue holds the pool in place.
+  usage ``KV_USAGE_SOFT_CAP``). A turnover lasts an episode, so model calls pace
+  growth too: a unit's load grows with its context call by call, and the
+  controller projects the pool's steady load from the contexts of its units'
+  calls (a Kaplan-Meier estimate over call numbers; units still running are
+  assumed to grow to the engines' max context). Growth by calls admits only as
+  many young units as keep the pool carrying ``MATURITY_MIN`` of its projected
+  load, and trims and the ramp's end during the ramp scale by that maturity.
+  Every window the ramp checks that growth still pays (``RAMP_ELASTICITY``); it
+  hands over to the search once it does not, or once the queue holds the pool
+  in place.
 - **Search**: step the cap up or down from a measured level and keep the step
   when it was worth its units. Steps grow after a kept step by how clearly it
   paid, shrink after a rejected one, and the cap holds once both directions were
@@ -93,6 +100,11 @@ GROWTH_MAX = 3.0
 
 RAMP_ELASTICITY = 0.4
 """Ramp: it ends once a window's throughput grew by less than this share of the growth in units in flight."""
+
+RAMP_COMPARE_STEP = 1.5
+"""Ramp: a window that ended on calls rather than turnover is compared with the reference once it holds this many
+times its units (``PROBE_STEP_MIN`` otherwise): such windows are short, and smaller steps move throughput less than
+their noise."""
 
 RAMP_WINDOW_TURNOVERS = 0.5
 """Ramp: throughput is compared over windows of at least ``DWELL_SECONDS`` and this much pool turnover, once the
@@ -211,6 +223,18 @@ a cliff."""
 RECOMPUTE_MIN_PREFIX_TOKENS = 100_000
 """Prefix tokens the window needs before its recompute ratio counts as measured."""
 
+MATURITY_MIN = 0.8
+"""Ramp: model calls grow the cap only while the pool's load is at least this share of its projected steady load."""
+
+CALL_GROWTH_MAX = 1.25
+"""Ramp: cap growth per call turnover (every unit in flight made one model call) with empty queues."""
+
+PROJECTION_UNITS = 512
+"""The load projection counts about this many recent units: its counts halve whenever more units started."""
+
+RAMP_WINDOW_CALLS = 4.0
+"""Ramp: a window of a mature pool lasts at least this call turnover (instead of ``RAMP_WINDOW_TURNOVERS``)."""
+
 COLOCATED = "colocated"
 """Role of engines that both prefill and decode (no P/D role)."""
 
@@ -297,6 +321,9 @@ class Dwell:
     tokens: float = 0.0
     seconds: float = 0.0
     unit_seconds: float = 0.0
+    # Ramp windows: the call clock at the start, and whether the load projection held growth back
+    start_calls: float = 0.0
+    held: bool = False
 
     def add(self, poll: Poll) -> None:
         # A poll without an interval (the first) cannot be timed
@@ -330,6 +357,8 @@ class ConcurrencyController(Reconfigurable):
         self.capacity_by_engine: dict[str, int] = {}
 
         self.turnover = 0.0
+        # Call clock: each model call advances it by 1/inflight
+        self.call_turnover = 0.0
         self.trim_turnover = -math.inf
         self.signal: Signal = "clear"
         # After a trim, no further trim until inflight has drained below the new cap and a window was measured
@@ -348,11 +377,21 @@ class ConcurrencyController(Reconfigurable):
         self.preemption_rate = 0.0
         self.expired_lease_rate = 0.0
         self.kv_usage = 0.0
-        # Per-poll (prefix, recompute) call tokens, and the ratio over the window
-        self.recompute_polls: deque[tuple[int, int]] = deque(maxlen=LOAD_WINDOW_POLLS)
+        # Per-poll (prefix, recompute) call tokens and calls, and the ratio over the window
+        self.recompute_polls: deque[tuple[int, int, int]] = deque(maxlen=LOAD_WINDOW_POLLS)
         self.pending_prefix = 0
         self.pending_recompute = 0
+        self.pending_calls = 0
         self.recompute_ratio: float | None = None
+        # Load projection, per call number n of a unit: units that made call n, their summed prefix tokens, and
+        # units that ended after n calls. The projected steady context per call, and the pool's over it.
+        self.reached: dict[int, float] = {}
+        self.context: dict[int, float] = {}
+        self.ended: dict[int, float] = {}
+        self.first_call = math.inf
+        self.steady_context = 1.0
+        self.young_context = 0.0
+        self.maturity: float | None = None
         # The cap at the last preemption trim or cliff cut: steps up past it stay small
         self.ceiling: float | None = None
         # Polls of the throughput window (not cleared by trims), and the best window: generated tokens per second,
@@ -372,6 +411,7 @@ class ConcurrencyController(Reconfigurable):
         self.growth_multiplier = 1.0
         self.ramp_window: Dwell | None = None
         self.ramp_reference: Dwell | None = None
+        self.ramp_previous: Dwell | None = None
         # Marginal-gain search: the level being measured, the last kept level, the next step and its direction,
         # the directions rejected at the smallest step, and the dwells left to hold
         self.dwell: Dwell | None = None
@@ -405,22 +445,32 @@ class ConcurrencyController(Reconfigurable):
 
     # ── inbound hooks ────────────────────────────────────────────────────────
 
-    def record_episode(self, tokens: int) -> None:
-        """One completed unit (from the dispatcher). Advances the turnover clock by ``1/inflight``: a unit's load
-        has fully shown on the engines only once it completes (its context grows call by call), so the ramp, dwells
-        and trims are paced by turnovers of the pool."""
+    def record_episode(self, tokens: int, calls: int) -> None:
+        """One completed unit (from the dispatcher) after ``calls`` model calls. Advances the turnover clock by
+        ``1/inflight``: a unit's load has fully shown on the engines only once it completes (its context grows call
+        by call), so dwells and trims are paced by turnovers of the pool."""
         # The dispatcher releases the permit before this hook fires, so the completing unit is already off the count
         inflight = (self.get_inflight() if self.get_inflight is not None else 0) + 1
         self.turnover += 1 / inflight
         # Error markers consumed no engine capacity: growing on them floods the engines once the environment recovers
         if tokens > 0:
             self.pending_turnover += 1 / inflight
+            self.ended[calls] = self.ended.get(calls, 0.0) + 1
 
-    def record_calls(self, prefix: int, recompute: int) -> None:
-        """Prefix and recompute tokens of a finished model call (from the dispatcher's
-        live deltas), folded into the recompute ratio at the next poll."""
+    def record_calls(self, prefix: int, recompute: int, call: int) -> None:
+        """Prefix and recompute tokens of a finished model call, the ``call``-th of its unit (from the dispatcher's
+        live deltas), folded into the recompute ratio, the call clock and the load projection at the next poll."""
         self.pending_prefix += prefix
         self.pending_recompute += recompute
+        self.pending_calls += 1
+        self.reached[call] = self.reached.get(call, 0.0) + 1
+        self.context[call] = self.context.get(call, 0.0) + prefix
+        # Keep about the last PROJECTION_UNITS units: workloads drift
+        self.first_call = min(self.first_call, call)
+        if call == self.first_call and self.reached[call] > 2 * PROJECTION_UNITS:
+            for counts in (self.reached, self.context, self.ended):
+                for n in counts:
+                    counts[n] /= 2
 
     def pause(self) -> None:
         """The engines are about to pause for a weight update: freeze probes, trims and cuts. Requests arriving
@@ -440,8 +490,9 @@ class ConcurrencyController(Reconfigurable):
         self.last_poll_time = now
         if self.paused:
             return
-        self.recompute_polls.append((self.pending_prefix, self.pending_recompute))
-        self.pending_prefix = self.pending_recompute = 0
+        self.recompute_polls.append((self.pending_prefix, self.pending_recompute, self.pending_calls))
+        calls = self.pending_calls
+        self.pending_prefix = self.pending_recompute = self.pending_calls = 0
         self.recompute_ratio = recompute_ratio(self.recompute_polls)
         if not samples:
             return
@@ -453,6 +504,9 @@ class ConcurrencyController(Reconfigurable):
                 self.engine_max_len = max(self.engine_max_len or 0, sample.max_model_len)
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
+        if inflight > 0:
+            self.call_turnover += calls / inflight
+        self.project()
         loads = role_loads(samples)
         poll = Poll(loads, inflight, seconds, router_queued)
         # After a weight update the queue is the pause's backlog, not load
@@ -608,7 +662,7 @@ class ConcurrencyController(Reconfigurable):
                 self.queue_trimmed = False
             else:
                 # The surplus units are the queued share above the target
-                target = int(self.clamp(inflight * (1.0 - share + QUEUE_TARGET)))
+                target = int(self.clamp(self.projected(inflight * (1.0 - share + QUEUE_TARGET))))
                 # A queue still overloaded once the last queue trim drained and turned over: the engines collapsed
                 overload = self.queue_trimmed and share > QUEUE_OVERLOAD
                 # A queue trim is the ramp's brake; the search measures the trimmed level next
@@ -625,7 +679,7 @@ class ConcurrencyController(Reconfigurable):
         if backlog:
             return
         if self.ramping:
-            self.ramp(poll, growth, headroom)
+            self.ramp(poll, growth, calls, headroom)
         else:
             self.measure(poll, probe_up)
 
@@ -652,42 +706,113 @@ class ConcurrencyController(Reconfigurable):
 
     # ── startup ramp ─────────────────────────────────────────────────────────
 
-    def ramp(self, poll: Poll, growth: float, headroom: float) -> None:
-        """Grow by up to ``GROWTH_MAX`` per pool turnover while the cap binds, tapered by the queue, and check every
+    def ramp(self, poll: Poll, growth: float, calls: int, headroom: float) -> None:
+        """Grow by up to ``GROWTH_MAX`` per pool turnover, or ``CALL_GROWTH_MAX`` per call turnover while the pool
+        carries ``MATURITY_MIN`` of its projected load, while the cap binds, tapered by the queue, and check every
         window that the growth still buys throughput. The ramp hands over to the search once the gain falls below
         ``RAMP_ELASTICITY``, or once a window grew the pool by less than ``PROBE_STEP_MIN`` (the queue holds it)."""
         window = self.ramp_window
         if window is None:
-            window = self.ramp_window = Dwell(cap=self.max_inflight, probe=False, start_turnover=self.turnover)
+            window = self.ramp_window = Dwell(
+                cap=self.max_inflight, probe=False, start_turnover=self.turnover, start_calls=self.call_turnover
+            )
         window.add(poll)
-        if window.seconds >= DWELL_SECONDS and self.turnover - window.start_turnover >= RAMP_WINDOW_TURNOVERS:
+        mature = self.maturity is not None and self.maturity >= MATURITY_MIN
+        turned = self.turnover - window.start_turnover >= RAMP_WINDOW_TURNOVERS
+        called = mature and self.call_turnover - window.start_calls >= RAMP_WINDOW_CALLS
+        if window.seconds >= DWELL_SECONDS and (turned or called):
             self.ramp_window = None
             if window.unit_seconds > 0:
                 self.record_level(window)
-            reference = self.ramp_reference
-            matured = self.turnover >= 1.0 and window.unit_seconds > 0
-            if matured and (
-                reference is None or math.log(window.inflight / reference.inflight) >= math.log(PROBE_STEP_MIN)
+            reference, previous = self.ramp_reference, self.ramp_previous
+            matured = (self.turnover >= 1.0 or mature) and window.unit_seconds > 0
+            if matured:
+                self.ramp_previous = window
+            if matured and reference is None:
+                self.ramp_reference = window
+            elif matured and math.log(window.inflight / reference.inflight) >= math.log(
+                PROBE_STEP_MIN if turned else RAMP_COMPARE_STEP
             ):
                 self.ramp_reference = window
-                if reference is not None:
-                    self.elasticity = elasticity(window, reference)
-                    if self.elasticity < RAMP_ELASTICITY:
-                        # The knee lies between the two windows: search down from their geometric midpoint
-                        midpoint = math.sqrt(window.inflight * reference.inflight)
-                        self.end_ramp(f"elasticity {self.elasticity:.2f}", cap=int(self.clamp(midpoint)), direction=-1)
-                        return
-            elif matured and reference is not None:
+                self.elasticity = elasticity(window, reference)
+                if self.elasticity < RAMP_ELASTICITY:
+                    # The knee lies between the two windows: search down from their geometric midpoint
+                    midpoint = math.sqrt(window.inflight * reference.inflight)
+                    self.end_ramp(f"elasticity {self.elasticity:.2f}", cap=int(self.clamp(midpoint)), direction=-1)
+                    return
+            elif (
+                matured
+                and previous is not None
+                and math.log(window.inflight / previous.inflight) < math.log(PROBE_STEP_MIN)
+                and not window.held
+            ):
                 # The queue holds the pool where it is: the knee by the queue, approached from above
                 self.end_ramp("stalled at the queue target", cap=self.max_inflight, direction=-1)
                 return
         if poll.inflight >= BINDING_FRACTION * self.max_inflight and headroom > 0.0:
-            self.cap = self.clamp(self.cap * self.growth_multiplier**growth)
+            cap = self.cap * self.growth_multiplier**growth
+            if self.maturity is not None and calls > 0:
+                rate = 1.0 + (CALL_GROWTH_MAX - 1.0) * headroom
+                # No faster than GROWTH_MAX per two ramp windows: each window must see the units the last one added
+                by_calls = self.cap * min(
+                    rate ** (calls / poll.inflight), self.growth_multiplier ** (poll.seconds / (2 * DWELL_SECONDS))
+                )
+                # Young units carry little load yet: admit only as many as keep the pool's load at MATURITY_MIN of
+                # its projection. The maturity was measured on the units in flight since the window began; later
+                # ones count as young.
+                young = self.young_context / self.steady_context
+                if young < MATURITY_MIN:
+                    shown = min(p.inflight for p in self.polls) if self.polls else poll.inflight
+                    room = shown * (self.maturity - young) / (MATURITY_MIN - young)
+                    if room < by_calls:
+                        window.held = True
+                        by_calls = room
+                cap = max(cap, by_calls)
+            self.cap = self.clamp(max(self.cap, cap))
             self.apply_limit(int(self.cap), reason=None)
+
+    def project(self) -> None:
+        """Project the pool's steady load from its calls' contexts: a unit's context grows call by call, so a young
+        pool carries less load than it will. In steady state the mean context per call weighs the mean context of
+        each unit's n-th call by the share of units that make it, which a Kaplan-Meier estimate gives from the units
+        that made call n and ended after it: units still running count to the calls they made, and the share still
+        running at the last call number seen is assumed to grow at the mean rate to the engines' max context. Maturity
+        is the window's context per call over that projection."""
+        calls = sum(c for _, _, c in self.recompute_polls)
+        first = self.first_call
+        if calls == 0 or first not in self.reached:
+            self.maturity = None
+            return
+        survival, weight, total = 1.0, 0.0, 0.0
+        n = first
+        while self.reached.get(n, 0.0) >= 0.5:
+            mean = self.context[n] / self.reached[n]
+            weight += survival
+            total += survival * mean
+            survival *= max(0.0, 1.0 - self.ended.get(n, 0.0) / self.reached[n])
+            n += 1
+        last = n - 1
+        young = self.context[first] / self.reached[first]
+        growth = (mean - young) / (last - first) if last > first else 0.0
+        if survival > 0 and growth > 0 and self.engine_max_len is not None and self.engine_max_len > mean:
+            tail = (self.engine_max_len - mean) / growth
+            weight += survival * tail
+            total += survival * tail * (mean + self.engine_max_len) / 2
+        current = sum(p for p, _, _ in self.recompute_polls) / calls
+        self.young_context = young
+        self.steady_context = max(total / weight, current, 1.0)
+        self.maturity = current / self.steady_context
+
+    def projected(self, units: float) -> float:
+        """During the ramp, the units that carry as much load as ``units`` will once the pool matured."""
+        if self.ramping and self.maturity is not None:
+            return units * self.maturity
+        return units
 
     def end_ramp(self, reason: str, *, cap: int, direction: int = 1) -> None:
         """Hand over to the search, which measures ``cap`` first and then probes in ``direction``. A lower cap
         cancels nothing."""
+        cap = int(self.clamp(self.projected(cap)))
         self.ramping = False
         get_logger().info(f"Concurrency ramp ended at {self.max_inflight} ({reason})")
         self.cap = float(cap)
@@ -897,6 +1022,7 @@ class ConcurrencyController(Reconfigurable):
         gauges = {
             "concurrency/max_inflight": float(self.max_inflight),
             "concurrency/turnover": self.turnover,
+            "concurrency/call_turnover": self.call_turnover,
             "concurrency/capacity": float(self.capacity or 0),
             "concurrency/signal": float(SEVERITY[self.signal]),
             "concurrency/ramping": float(self.ramping),
@@ -924,6 +1050,9 @@ class ConcurrencyController(Reconfigurable):
             gauges["concurrency/ceiling"] = self.ceiling
         if self.recompute_ratio is not None:
             gauges["concurrency/recompute_ratio"] = self.recompute_ratio
+        if self.maturity is not None:
+            gauges["concurrency/maturity"] = self.maturity
+            gauges["concurrency/steady_context"] = self.steady_context
         return gauges
 
 
@@ -998,10 +1127,10 @@ def quantile(values: list[float], q: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
-def recompute_ratio(polls: deque[tuple[int, int]]) -> float | None:
+def recompute_ratio(polls: deque[tuple[int, int, int]]) -> float | None:
     """Recompute tokens over prefix tokens across the window; None until the window
     holds enough prefix tokens to be measured."""
-    prefix = sum(p for p, _ in polls)
+    prefix = sum(p for p, _, _ in polls)
     if prefix < RECOMPUTE_MIN_PREFIX_TOKENS:
         return None
-    return sum(r for _, r in polls) / prefix
+    return sum(r for _, r, _ in polls) / prefix

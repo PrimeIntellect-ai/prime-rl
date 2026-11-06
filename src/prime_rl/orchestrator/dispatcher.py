@@ -141,8 +141,8 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         policy_weights_change: bool = True,
-        on_episode_complete: Callable[[int], None] | None = None,
-        on_calls: Callable[[int, int], None] | None = None,
+        on_episode_complete: Callable[[int, int], None] | None = None,
+        on_calls: Callable[[int, int, int], None] | None = None,
         on_pause: Callable[[], None] | None = None,
         on_resume: Callable[[], None] | None = None,
     ) -> None:
@@ -158,9 +158,9 @@ class Dispatcher:
         self.eval_source = eval_source
         self.run_id = run_id
         self.run_name = run_name
-        # Called with ``total_tokens`` per completed episode
+        # Called with ``total_tokens`` and the model calls per completed episode
         self.on_episode_complete = on_episode_complete
-        # Called with the ``(prefix, recompute)`` tokens of each live delta's model calls
+        # Called with the ``(prefix, recompute)`` tokens of each live model call and its number within the episode
         self.on_calls = on_calls
         # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
         self.on_pause = on_pause
@@ -558,9 +558,9 @@ class Dispatcher:
                 if (acp := call.get("acp")) is not None:
                     session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
-            prefix, recompute = live.apply(meta, delta)
-            if prefix and self.on_calls is not None:
-                self.on_calls(prefix, recompute)
+            for prefix, recompute, call in live.apply(meta, delta):
+                if prefix and self.on_calls is not None:
+                    self.on_calls(prefix, recompute, call)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)
@@ -689,7 +689,7 @@ class Dispatcher:
                 + (f" — {error.type}: {error.message}" if error is not None else "")
             )
         if self.on_episode_complete is not None and meta.started_at > 0:
-            self.on_episode_complete(episode.num_total_tokens)
+            self.on_episode_complete(episode.num_total_tokens, meta.calls)
         await self.emit_episode(meta, group, episode)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
