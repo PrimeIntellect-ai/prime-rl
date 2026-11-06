@@ -9,26 +9,27 @@ from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
 from convert_dcp_to_bf16 import (
     open_checkpoint,
     publish_export,
+    resolve_output_dir,
     save_model_assets,
     write_weights,
 )
 
 from prime_rl.utils.logger import get_logger, setup_logger
 
-logger = get_logger()
 
-
-def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, workers: int = 1) -> Path:
-    """Export blockwise-FP8 weights with CPU streaming only."""
+def convert(
+    ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, workers: int = 1, device: str = "cpu"
+) -> Path:
+    """Stream weights on CPU and quantize them on the selected device."""
+    logger = get_logger()
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     checkpoint = open_checkpoint(ckpt_dir)
-    output_dir = Path(output_dir) if output_dir is not None else checkpoint.dcp_dir.parent / "weights-FP8"
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = resolve_output_dir(checkpoint, output_dir, "weights-FP8")
     modules_to_not_convert: list[str] = []
 
     def quantize(shard):
-        quantized, kept_in_bf16 = quantize_state_dict(shard, block_size, "cpu")
+        quantized, kept_in_bf16 = quantize_state_dict(shard, block_size, device)
         modules_to_not_convert.extend(kept_in_bf16)
         return quantized
 
@@ -36,7 +37,7 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
         staging_dir = Path(directory)
         logger.info(f"Saving model assets to {staging_dir}")
         save_model_assets(checkpoint.model, checkpoint.model_config, checkpoint.tokenizer_config, staging_dir)
-        logger.info(f"Reading and quantizing model tensors from {checkpoint.dcp_dir} on CPU")
+        logger.info(f"Reading model tensors from {checkpoint.dcp_dir} on CPU and quantizing on {device}")
         weight_map = write_weights(checkpoint, staging_dir, workers, transform=quantize)
         num_scales = sum(name.endswith("_scale_inv") for name in weight_map)
         if num_scales == 0:
@@ -59,9 +60,12 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights-FP8")
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument("--workers", type=int, default=1, help="decoder layers loaded and written at once (default: 1)")
+    parser.add_argument(
+        "--device", choices=("cpu", "cuda"), default="cpu", help="FP8 quantization device (default: cpu)"
+    )
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, args.block_size, workers=args.workers)
+    convert(args.ckpt_dir, args.output_dir, args.block_size, workers=args.workers, device=args.device)
 
 
 if __name__ == "__main__":

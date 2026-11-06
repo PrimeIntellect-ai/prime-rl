@@ -14,7 +14,10 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 from torch import Tensor, nn
-from torch.distributed.checkpoint import FileSystemReader, Metadata
+from torch.distributed.checkpoint import DefaultLoadPlanner, FileSystemReader, Metadata
+from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex
+from torch.distributed.checkpoint.planner import LoadPlan
+from torch.distributed.checkpoint.planner_helpers import create_read_items_for_chunk_list
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from transformers import PretrainedConfig
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
@@ -22,12 +25,17 @@ from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import get_model, setup_tokenizer
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
 from prime_rl.trainer.vlm import setup_processor
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
-from prime_rl.utils.weights import convert_state_dict_to_hf, group_by_layer, resolve_wire_dtype
+from prime_rl.utils.weights import (
+    convert_state_dict_to_hf,
+    get_chunked_conversion_ops,
+    group_by_layer,
+    resolve_wire_dtype,
+)
 
-logger = get_logger()
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json", "pretrain.json")
 
 
@@ -39,6 +47,7 @@ def resolve_dcp_dir(ckpt_dir: Path) -> Path:
 
 
 def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
+    logger = get_logger()
     config_dir = get_config_dir(step_dir.parent.parent)
     for name in RUN_CONFIG_NAMES:
         path = config_dir / name
@@ -79,7 +88,27 @@ class MetadataReader(FileSystemReader):
         return self.metadata
 
 
+class RowSlicePlanner(DefaultLoadPlanner):
+    """Read a row interval directly into a shard-sized CPU tensor."""
+
+    def __init__(self, start: int):
+        super().__init__(flatten_state_dict=False)
+        self.start = start
+
+    def create_local_plan(self) -> LoadPlan:
+        assert self.metadata is not None
+        items = []
+        for key, tensor in self.state_dict.items():
+            chunk = ChunkStorageMetadata(torch.Size([self.start, *([0] * (tensor.ndim - 1))]), tensor.size())
+            items.extend(create_read_items_for_chunk_list(key, self.metadata.state_dict_metadata[key], [chunk]))
+        return LoadPlan(items)
+
+    def lookup_tensor(self, index: MetadataIndex) -> Tensor:
+        return self.state_dict[index.fqn]
+
+
 def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
+    logger = get_logger()
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         raise ValueError("CPU export requires one process; use --workers instead of torchrun")
     dcp_dir = resolve_dcp_dir(ckpt_dir)
@@ -95,27 +124,31 @@ def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
 
 
 def get_layers(model: nn.Module) -> list[list[str]]:
-    """The model's state-dict keys grouped by decoder layer, without the tied LM head."""
+    """Group ordinary weights by decoder layer, excluding tied heads and chunked tables."""
     text_config = getattr(model.config, "text_config", model.config)
-    keys = list(model.state_dict())
+    state = model.state_dict()
+    chunked = get_chunked_conversion_ops(model, state)
+    keys = [key for key in state if key not in chunked]
     if getattr(text_config, "tie_word_embeddings", False):
         tied_keys = set(getattr(model, "_tied_weights_keys", None) or ()) | {"lm_head.weight"}
         keys = [key for key in keys if key not in tied_keys]
     return list(group_by_layer(keys).values())
 
 
+def export_dtype(checkpoint: Checkpoint, key: str) -> torch.dtype:
+    stored_dtype = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"].properties.dtype
+    if not stored_dtype.is_floating_point or key.endswith("mlp.router.selection_bias"):
+        return stored_dtype
+    model = checkpoint.model
+    keep_in_fp32 = model.keep_in_fp32_for_weight_transfer if isinstance(model, PreTrainedModelPrimeRL) else None
+    return resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16)
+
+
 def load_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
     """Load one decoder layer from the checkpoint on CPU and convert it to HF format."""
     model = checkpoint.model
-    keep_in_fp32 = model.keep_in_fp32_for_weight_transfer if isinstance(model, PreTrainedModelPrimeRL) else None
     skeleton = model.state_dict()
-    state_dict = {}
-    for key in keys:
-        stored_dtype = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"].properties.dtype
-        dtype = resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16)
-        if not stored_dtype.is_floating_point or key.endswith("mlp.router.selection_bias"):
-            dtype = stored_dtype
-        state_dict[key] = torch.empty(skeleton[key].shape, dtype=dtype)
+    state_dict = {key: torch.empty(skeleton[key].shape, dtype=export_dtype(checkpoint, key)) for key in keys}
     dcp_load(
         {"app": {"model": state_dict}},
         storage_reader=MetadataReader(checkpoint.dcp_dir, checkpoint.metadata),
@@ -124,29 +157,63 @@ def load_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
     return convert_state_dict_to_hf(model, state_dict)
 
 
+def load_rows(checkpoint: Checkpoint, key: str, start: int, stop: int) -> Tensor:
+    metadata = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"]
+    tensor = torch.empty((stop - start, *metadata.size[1:]), dtype=export_dtype(checkpoint, key))
+    dcp_load(
+        {f"app.model.{key}": tensor},
+        storage_reader=MetadataReader(checkpoint.dcp_dir, checkpoint.metadata),
+        planner=RowSlicePlanner(start),
+        no_dist=True,
+    )
+    return tensor
+
+
 def write_weights(
     checkpoint: Checkpoint,
     output_dir: Path,
     workers: int,
     transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] = lambda shard: shard,
 ) -> dict[str, str]:
-    """Write layer shards in parallel, then return their completed index."""
+    """Write decoder layers and streamed table shards, then return their completed index."""
     output_dir.mkdir(parents=True, exist_ok=True)
     layers = get_layers(checkpoint.model)
-    names = [f"model-{index:05d}-of-{len(layers):05d}.safetensors" for index in range(1, len(layers) + 1)]
+    skeleton = checkpoint.model.state_dict()
+    chunked = get_chunked_conversion_ops(checkpoint.model, skeleton)
+    num_shards = len(layers) + sum(op.shard_count for op in chunked.values())
 
-    def write_layer(name: str, keys: list[str]) -> dict[str, int]:
-        shard = transform(load_layer(checkpoint, keys))
+    def write_shard(index: int, shard: dict[str, Tensor]) -> tuple[str, dict[str, int]]:
+        name = f"model-{index:05d}-of-{num_shards:05d}.safetensors"
+        shard = transform(shard)
         save_file(
             {key: tensor.contiguous() for key, tensor in shard.items()}, output_dir / name, metadata={"format": "pt"}
         )
-        return {key: tensor.nbytes for key, tensor in shard.items()}
+        return name, {key: tensor.nbytes for key, tensor in shard.items()}
+
+    def write_layer(index: int, keys: list[str]) -> tuple[str, dict[str, int]]:
+        return write_shard(index, load_layer(checkpoint, keys))
+
+    def write_table(key: str, op: ChunkedConvOp, index: int) -> list[tuple[str, dict[str, int]]]:
+        def resolve_rows(weight: Tensor, start: int, stop: int) -> Tensor:
+            return load_rows(checkpoint, key, start, stop)
+
+        return [
+            write_shard(index + offset, packet)
+            for offset, packet in enumerate(op.iter_prime_to_hf(skeleton[key], resolve_rows))
+        ]
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        key_to_size_per_shard = list(pool.map(write_layer, names, layers))
+        shards = list(pool.map(write_layer, range(1, len(layers) + 1), layers))
+        table_indices = []
+        next_index = len(layers) + 1
+        for op in chunked.values():
+            table_indices.append(next_index)
+            next_index += op.shard_count
+        for table_shards in pool.map(write_table, chunked, chunked.values(), table_indices):
+            shards.extend(table_shards)
 
-    weight_map = {key: name for name, sizes in zip(names, key_to_size_per_shard) for key in sizes}
-    total_size = sum(sum(sizes.values()) for sizes in key_to_size_per_shard)
+    weight_map = {key: name for name, sizes in shards for key in sizes}
+    total_size = sum(sum(sizes.values()) for _, sizes in shards)
     index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
     (output_dir / SAFE_WEIGHTS_INDEX_NAME).write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     return weight_map
@@ -184,27 +251,40 @@ def save_model_assets(
 
 
 def publish_export(staging_dir: Path, output_dir: Path) -> None:
-    """Publish atomically to a new directory, or overwrite matching files in an existing one."""
+    """Replace a complete export, restoring the old directory if publication fails."""
+    umask = os.umask(0)
+    os.umask(umask)
+    mode = output_dir.stat().st_mode & 0o777 if output_dir.exists() else 0o777 & ~umask
+    staging_dir.chmod(mode)
     if not output_dir.exists():
         staging_dir.rename(output_dir)
         return
-    output_dir.mkdir(parents=True, exist_ok=True)
-    staged_names = {path.name for path in staging_dir.iterdir()}
-    for path in [output_dir / "model.safetensors", *output_dir.glob("model-*.safetensors")]:
-        if path.name not in staged_names:
-            path.unlink(missing_ok=True)
-    if "model.safetensors.index.json" not in staged_names:
-        (output_dir / "model.safetensors.index.json").unlink(missing_ok=True)
-    for path in staging_dir.iterdir():
-        path.replace(output_dir / path.name)
-    staging_dir.rmdir()
+    backup_parent = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-backup-", dir=output_dir.parent))
+    backup_dir = backup_parent / "export"
+    output_dir.rename(backup_dir)
+    try:
+        staging_dir.rename(output_dir)
+    except OSError:
+        backup_dir.rename(output_dir)
+        backup_parent.rmdir()
+        raise
+    shutil.rmtree(backup_parent)
+
+
+def resolve_output_dir(checkpoint: Checkpoint, output_dir: Path | None, name: str) -> Path:
+    output_dir = Path(output_dir) if output_dir is not None else checkpoint.dcp_dir.parent / name
+    source = checkpoint.dcp_dir.resolve()
+    if output_dir.resolve() == source or output_dir.resolve() in source.parents:
+        raise ValueError("The export directory must not contain the source checkpoint")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 def convert(ckpt_dir: Path, output_dir: Path | None = None, *, workers: int = 1) -> Path:
     """Export a full trainer checkpoint with CPU streaming only."""
+    logger = get_logger()
     checkpoint = open_checkpoint(ckpt_dir)
-    output_dir = Path(output_dir) if output_dir is not None else checkpoint.dcp_dir.parent / "weights"
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = resolve_output_dir(checkpoint, output_dir, "weights")
     with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as directory:
         staging_dir = Path(directory)
         logger.info(f"Saving model assets to {staging_dir}")
