@@ -1207,7 +1207,7 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   // the timeout rate reads yellow as soon as any episode timed out
   if (all.length) {
     const errored = all.filter((i) => series.ok?.[i] === false).length;
-    const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
+    const truncated = all.filter((i) => series.truncated?.[i] === true).length;
     const timedOut = all.filter((i) => series.timeout?.[i] === true).length;
     for (const [label, n, what, cls] of [
       ["error rate", errored, "errored", rateClass],
@@ -2654,7 +2654,7 @@ const BASE_LOG_PANES = [
   { comp: "envs", title: "all envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
 
-/* the panes this run can show: the fixed components plus one pane per env server
+/* the panes this run can show: the fixed components plus one pane per env worker pool
    (`env:<name>`), so a single env's log can be read on its own; "all envs" merges
    them all and is the default, the per-env panes are opted into */
 function logPanes() {
@@ -3309,7 +3309,7 @@ function episodeRowHtml(ep) {
       </tr>`;
 }
 
-/* a live rollout, streamed by its env server: the same columns, a pulsing dot for
+/* a live rollout, streamed by its env worker pool: the same columns, a pulsing dot for
    its number, no arrival yet, counts that grow with every turn, no reward yet */
 function liveRowHtml(r) {
   return `<tr class="live stage-${esc(r.stage)}${r.landedAt ? " landing" : ""}" ${r.trace && !r.landedAt ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
@@ -3356,7 +3356,7 @@ function renderEpisodeRows(reset = false) {
     episodeRowH = 0;
   }
   if (!rows.length) {
-    if (!state.filter.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env servers stream them");
+    if (!state.filter.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env worker pools stream them");
     else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
     else showTraceEmpty("no traces yet");
     return;
@@ -3378,7 +3378,7 @@ async function initTraces() {
 
 /* ------------------------------------------------------------ live traces */
 
-/* the env servers stream every live rollout turn by turn; the run's file
+/* the env worker pools stream every live rollout turn by turn; the run's file
    monitor keeps one file of deltas per live trace and drops it when the episode
    lands in the stream, so this table is exactly what is running right now */
 let liveInflight = false;
@@ -3841,12 +3841,6 @@ function traceBranches(trace) {
 function currentPath(trace, branches) {
   if (currentBranchIdx === -1) return (trace.nodes || []).map((_, i) => i);
   return branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
-}
-
-function traceReward(trace) {
-  return Object.values(trace.rewards || {}).reduce(
-    (acc, r) => acc + ((r?.score ?? 0) * (r?.weight ?? 1)), 0
-  );
 }
 
 function messageText(message) {
@@ -4569,16 +4563,6 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"]);
-
-/* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
-   length-finished final response */
-function traceTruncated(trace) {
-  if (TRUNCATING_STOPS.has(trace.stop_condition)) return true;
-  const last = [...(trace.calls || [])].reverse().find((c) => !c.error);
-  return !!(last && last.finish_reason === "length");
-}
-
 /* mirrors verifiers Branch token counts: each call on the path adds its prompt beyond
    the previous call's final sequence (clamped at zero) plus its output */
 function branchTokens(trace, path) {
@@ -4604,7 +4588,7 @@ function renderMeta(ep, trace, branches) {
     `<div class="meta-row"><span class="k">${label}</span>` +
     `<span class="tm-reward-big${value != null && value < 0 ? " neg" : ""}${value == null ? " na" : ""}" style="margin-left:auto">` +
     `${value != null ? fmtReward(value) : "n/a"}</span></div>`;
-  const rewardValue = trace && Object.keys(trace.rewards || {}).length ? traceReward(trace) : null;
+  const rewardValue = trace && Object.keys(trace.rewards || {}).length ? trace.reward ?? null : null;
   parts.push(headline("reward", rewardValue));
   parts.push(headline("advantage", trace?.info?.advantage ?? null));
 
@@ -4650,24 +4634,8 @@ function renderMeta(ep, trace, branches) {
     const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
     if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
     tokenRows(trace.num_input_tokens, trace.num_output_tokens, trace.num_total_tokens);
-    const usage = { cached: null, reasoning: null, maxContext: null, cost: null };
-    const addUsage = (field, value) => {
-      if (value != null) usage[field] = (usage[field] ?? 0) + value;
-    };
-    for (const call of trace.calls || []) {
-      const current = normalizedCallUsage(call.usage);
-      addUsage("cached", current.cached);
-      addUsage("reasoning", current.reasoning);
-      addUsage("cost", current.cost);
-      if (current.input != null) {
-        const context = current.input + (current.cached ?? 0);
-        usage.maxContext = Math.max(usage.maxContext ?? 0, context);
-      }
-    }
-    if (usage.cached != null) parts.push(metaRow("cached input", fmtCompact(usage.cached)));
-    if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
-    if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
-    if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
+    const cost = trace.usage?.cost;
+    if (cost != null) parts.push(metaRow("cost", fmtCost(cost)));
 
     if (branches.length > 1 && currentBranchIdx !== -1) {
       const branchIdx = Math.min(currentBranchIdx, branches.length - 1);
@@ -4681,19 +4649,18 @@ function renderMeta(ep, trace, branches) {
     parts.push(`<div class="meta-sec">state</div>`);
     parts.push(metaRow("stop_condition", trace.stop_condition));
     parts.push(metaRow("is_completed", trace.is_completed));
-    parts.push(metaRow("is_truncated", traceTruncated(trace)));
+    parts.push(metaRow("is_truncated", !!trace.is_truncated));
     parts.push(metaRow("is_timeout", !!trace.is_timeout));
     parts.push(metaRow("ok", trace.ok));
 
     const durations = [];
     (function walkTiming(obj, prefix) {
       if (!obj || typeof obj !== "object") return;
-      if (typeof obj.duration === "number") durations.push([prefix, obj.duration]);
-      else if (typeof obj.start === "number" && obj.start > 0) {
-        // an open span (no end yet) of a live trace shows its elapsed time
-        if (obj.end) durations.push([prefix, obj.end - obj.start]);
-        else if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start]);
-      }
+      const started = !("start" in obj) || obj.start > 0;
+      // an open span (no end yet) of a live trace shows its elapsed time
+      if (started && "start" in obj && !obj.end) {
+        if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start]);
+      } else if (started && typeof obj.duration === "number") durations.push([prefix, obj.duration]);
       for (const [k, v] of Object.entries(obj)) if (typeof v === "object") walkTiming(v, prefix ? `${prefix}/${k}` : k);
     })(trace.timing, "");
     if (durations.length) {
@@ -4734,9 +4701,6 @@ function appendTimelineUsage(rows, usage, aggregate = false) {
   if (usage.input_tokens != null) rows.push(["input tokens", fmtCompact(usage.input_tokens)]);
   if (usage.output_tokens != null) rows.push(["output tokens", fmtCompact(usage.output_tokens)]);
   if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
-  if (usage.cached_tokens != null) rows.push(["cached input", fmtCompact(usage.cached_tokens)]);
-  if (usage.reasoning_tokens != null) rows.push(["reasoning tokens", fmtCompact(usage.reasoning_tokens)]);
-  if (usage.max_context_tokens != null) rows.push(["max context length", fmtCompact(usage.max_context_tokens)]);
   if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
 }
 
@@ -4747,8 +4711,6 @@ function callTimelineUsage(span) {
     input_tokens: input,
     output_tokens: span.output_tokens,
     total_tokens: input == null || span.output_tokens == null ? null : input + span.output_tokens,
-    cached_tokens: span.cached_tokens,
-    reasoning_tokens: span.reasoning_tokens,
     cost: span.cost,
   };
 }
@@ -4757,9 +4719,7 @@ function aggregateTimelineUsage(items) {
   const summedFields = [
     "model_calls",
     "input_tokens",
-    "cached_tokens",
     "output_tokens",
-    "reasoning_tokens",
     "total_tokens",
     "cost",
   ];
@@ -4794,8 +4754,6 @@ function semanticCumulativeUsageRows(usage, compact = true) {
   if (usage?.input_tokens != null) rows.push(["input", tokens(usage.input_tokens)]);
   if (usage?.output_tokens != null) rows.push(["output", tokens(usage.output_tokens)]);
   if (usage?.total_tokens != null) rows.push(["total", tokens(usage.total_tokens)]);
-  if (usage?.cached_tokens != null) rows.push(["cached input", tokens(usage.cached_tokens)]);
-  if (usage?.reasoning_tokens != null) rows.push(["reasoning", tokens(usage.reasoning_tokens)]);
   if (usage?.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
   return rows;
 }

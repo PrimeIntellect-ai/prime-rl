@@ -1,4 +1,4 @@
-"""Episodes decoded from the env-server wire hold per-token streams as numpy arrays (read-only
+"""Episodes decoded from the env-worker-pool wire hold per-token streams as numpy arrays (read-only
 views into the received bytes). Every record written to disk or uploaded must still carry
 plain JSON lists."""
 
