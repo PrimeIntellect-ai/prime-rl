@@ -4,7 +4,7 @@ from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, DatatroveDataConfig, SupervisedTrainerConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -112,8 +112,21 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+ValDataConfig: TypeAlias = Annotated[SFTDataConfig | DatatroveDataConfig, Field(discriminator="type")]
+
+
 class SFTValConfig(BaseValConfig):
-    data: SFTDataConfig
+    data: ValDataConfig
+    """An SFT dataset, or held-out datatrove token shards (``type = "datatrove"``) to track the loss on
+    pretraining-style text."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_data_type(cls, data):
+        """A ``[val.data]`` without a ``type`` is an SFT dataset."""
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = {**data, "data": {"type": "sft", **data["data"]}}
+        return data
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
@@ -131,7 +144,7 @@ class SFTConfig(SupervisedTrainerConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
+        if self.data.type == "fake" and (self.val is None or self.val.data.type == "datatrove"):
             return self
 
         model_id = self.tokenizer.name or self.model.name

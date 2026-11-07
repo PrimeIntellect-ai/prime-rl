@@ -1,14 +1,23 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from pydantic_config import ConfigFileError
 
 import prime_rl.trainer.pretrain.data as pretrain_data
-from prime_rl.configs.pretrain import DatatroveDataConfig
+from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.supervised import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, warn_if_no_document_separator
+from prime_rl.trainer.pretrain.data import (
+    TokenDataset,
+    TokenShards,
+    setup_token_dataset,
+    warn_if_no_document_separator,
+)
 from prime_rl.trainer.world import reset_world
+from prime_rl.utils.config import cli
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
 DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
@@ -101,6 +110,22 @@ def test_validation_stops_every_rank_at_the_same_window(
     reset_world()
     assert [samples_by_rank[w % 2][w // 2] for w in range(expected)] == sequence
     assert sum(map(len, samples_by_rank)) == expected
+
+
+def test_sft_validates_on_held_out_shards(folders: list[Path], tmp_path: Path):
+    """`uv run sft` takes held-out token shards as validation data, capped at val.num_samples windows. val.data
+    without a type is an SFT dataset, and val needs data."""
+    args = ["--output-dir", str(tmp_path), "--val.num-samples", "5"]
+    with pytest.raises(ConfigFileError, match="val.data"):
+        cli(SFTConfig, args=args)
+    args += ["--val.data.seq-len", "8"]
+    assert cli(SFTConfig, args=args).val.data.type == "sft"
+
+    paths = json.dumps([folder.as_posix() for folder in folders])
+    config = cli(SFTConfig, args=[*args, "--val.data.type", "datatrove", "--val.data.paths", paths])
+    assert config.val.data.paths == folders
+    dataset = setup_token_dataset(config.val.data, max_epochs=1, num_samples=config.val.num_samples)
+    assert len(list(dataset)) == 5
 
 
 def first_tokens(batch: dict, seq_len: int) -> list[int]:

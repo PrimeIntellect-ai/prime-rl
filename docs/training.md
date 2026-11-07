@@ -278,8 +278,21 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
-| `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
+| `val.interval` | Run validation every N steps on `val.data`: an SFT dataset like `data`, or token shards (below) |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
+
+**Validation.** `[val]` logs the loss on held-out data as `val/loss`. Besides an SFT dataset, `val.data` takes held-out token shards in the [pretraining](#pretraining) format (`type = "datatrove"`), to track the loss on pretraining-style text while fine-tuning. `val.num_samples` caps the samples per validation, and every validation reads the same ones; without it, a validation reads all of `val.data` once.
+
+```toml
+[val]
+interval = 50
+num_samples = 512
+
+[val.data]
+type = "datatrove"
+paths = ["data/fineweb-edu-val"]
+seq_len = 2048
+```
 
 ### Important Metrics
 
