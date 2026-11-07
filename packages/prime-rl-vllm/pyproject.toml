@@ -1,0 +1,25 @@
+[project]
+name = "prime-rl-vllm"
+version = "0.1.0"
+description = "prime-rl's vLLM plugin: patches, API server routes and weight-update worker extensions for a stock vLLM install."
+readme = "README.md"
+requires-python = "~=3.12.0"
+# vLLM itself is provided by the image or environment this installs into.
+dependencies = [
+    "numpy",
+    "pybase64",
+    "nvidia-ml-py",
+]
+
+[project.optional-dependencies]
+modelexpress = ["modelexpress"]
+
+[project.entry-points."vllm.general_plugins"]
+prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prime_rl"]

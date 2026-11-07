@@ -48,3 +48,46 @@ def setup_vllm_env(config: InferenceConfig):
         os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
         os.environ["VLLM_LOGGING_CONFIG_PATH"] = str(config_path)
         logging.config.dictConfig(build_dict_config(config.log.level))
+
+
+WORKER_EXTENSION_CLS = {
+    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
+    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
+}
+
+
+# Adapted from vllm/entrypoints/cli/serve.py: translates the config into vLLM's parsed args. Everything
+# prime-rl adds to the server comes from the prime-rl-vllm plugin, which vLLM loads on its own.
+def server(config: InferenceConfig):
+    import uvloop
+    from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
+    from vllm.entrypoints.launchers.api_server.entry import run_server
+    from vllm.entrypoints.launchers.cli_args import make_arg_parser, validate_parsed_serve_args
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+    from prime_rl.inference.vllm.api_server import LIVENESS_TIMEOUT_ENV
+
+    # Signal worker processes to disable LoRA on MoE layers when LoRA targets don't include experts
+    lora_target_modules = config.vllm.lora_target_modules
+    if lora_target_modules and not any("expert" in m for m in lora_target_modules):
+        os.environ["PRIME_NO_MOE_LORA"] = "1"
+    os.environ[LIVENESS_TIMEOUT_ENV] = str(config.server.liveness_timeout_seconds)
+
+    namespace = config.to_namespace()
+
+    parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
+    parser = make_arg_parser(parser)
+    args = parser.parse_args(args=[], namespace=namespace)
+    assert args is not None
+    validate_parsed_serve_args(args)
+
+    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+
+    if args.headless or args.api_server_count < 1:
+        run_headless(args)
+    elif args.api_server_count > 1:
+        run_multi_api_server(args)
+    else:
+        uvloop.run(run_server(args))

@@ -246,7 +246,7 @@ def inference_local(config: InferenceConfig):
     else:
         logger.info(f"Starting inference on http://{host}:{port}/v1\n")
 
-    from prime_rl.inference.vllm.server import server  # pyright: ignore
+    from prime_rl.inference.server import server
 
     try:
         server(config)

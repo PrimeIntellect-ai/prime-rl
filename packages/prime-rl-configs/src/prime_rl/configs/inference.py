@@ -649,11 +649,7 @@ class InferenceConfig(BaseConfig):
 
     def to_namespace(self) -> Namespace:
         """Dump the server + vllm sections into a vLLM-compatible Namespace."""
-        namespace = Namespace(
-            host=self.server.host,
-            port=self.server.port,
-            liveness_timeout_seconds=self.server.liveness_timeout_seconds,
-        )
+        namespace = Namespace(host=self.server.host, port=self.server.port)
 
         extra_fields = self.vllm.model_extra or {}
         for key in (*type(self.vllm).model_fields, *extra_fields):

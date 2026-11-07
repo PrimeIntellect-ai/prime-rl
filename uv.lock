@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -5211,6 +5211,7 @@ dependencies = [
     { name = "orjson" },
     { name = "prime-pydantic-config" },
     { name = "prime-rl-configs" },
+    { name = "prime-rl-vllm" },
     { name = "prime-runs", extra = ["train"] },
     { name = "prometheus-client" },
     { name = "psutil" },
@@ -5400,6 +5401,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
+    { name = "prime-rl-vllm", editable = "packages/prime-rl-vllm" },
     { name = "prime-runs", extras = ["train"], specifier = ">=0.1.6" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
@@ -5471,6 +5473,25 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "verifiers", specifier = ">=0.4.1" },
 ]
+
+[[package]]
+name = "prime-rl-vllm"
+version = "0.1.0"
+source = { editable = "packages/prime-rl-vllm" }
+dependencies = [
+    { name = "numpy" },
+    { name = "nvidia-ml-py" },
+    { name = "pybase64" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "modelexpress", marker = "extra == 'modelexpress'" },
+    { name = "numpy" },
+    { name = "nvidia-ml-py" },
+    { name = "pybase64" },
+]
+provides-extras = ["modelexpress"]
 
 [[package]]
 name = "prime-runs"
