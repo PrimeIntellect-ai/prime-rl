@@ -290,7 +290,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
 
 
 def _has_routing(sample: MicroBatch) -> bool:
-    """Whether the sample's arrays, kept by an env server, include routing rows."""
+    """Whether the sample's arrays, kept by an env worker, include routing rows."""
     return any(payload is not None and "routed_experts" in payload.fields for payload in sample.payloads or [])
 
 

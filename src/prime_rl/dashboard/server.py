@@ -1786,7 +1786,7 @@ _live_folds = LiveFolds()
 
 @app.get("/api/runs/{run}/live")
 def live_traces(run: str, etag: str | None = None) -> dict:
-    """The run's in-flight traces, folded from the env servers' streamed deltas
+    """The run's in-flight traces, folded from the env worker pools' streamed deltas
     (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
     phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
     gone has finished and sits in the stream. ``etag`` is the fingerprint the client

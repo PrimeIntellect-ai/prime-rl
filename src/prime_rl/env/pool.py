@@ -1,12 +1,11 @@
-"""Env-server worker pool: a ROUTER broker over N worker processes.
+"""Env worker pool: a ROUTER broker over N worker processes.
 
-A lone `EnvServer` runs every rollout as an `asyncio.Task` on one event loop, so
+A lone `EnvWorker` runs every rollout as an `asyncio.Task` on one event loop, so
 CPU-bound work (renderer tokenization, scoring) competes for that loop; the pool
 spreads that work across processes.
 
-A broker binds the client-facing ROUTER (the *same* wire protocol as an `EnvServer`,
-so `EnvClient` speaks to either), starts one worker process and scales up to
-`max_workers` on demand — each an ordinary `EnvServer` bound to its own ipc address —
+A broker binds the client-facing ROUTER, starts one worker process and scales up to
+`max_workers` on demand — each an ordinary `EnvWorker` bound to its own ipc address —
 load-balancing requests to the least-busy worker over a `DEALER` per worker. The
 worker's `client_id` (its reply identity) is the broker's DEALER identity; the broker
 holds the real client identity in `pending` and routes the reply back by `request_id`.
@@ -34,23 +33,24 @@ import zmq
 import zmq.asyncio
 from verifiers.v1.utils.loaders import resolve_env_config
 
-from prime_rl.configs.env_server import ElasticPoolConfig, PoolConfig, StaticPoolConfig
-from prime_rl.env.server import LATE_CANCEL_SECONDS, EnvServer
+from prime_rl.configs.env_worker_pool import ElasticPoolConfig, PoolConfig, StaticPoolConfig
 from prime_rl.env.types import CancelResponse, HealthResponse
+from prime_rl.env.worker import LATE_CANCEL_SECONDS, EnvWorker
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.process import set_proc_title
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
 
 
 def _arm_teardown(death_pipe=None) -> None:
-    """Arm a process (the serve_env broker, or a pool worker) for clean
+    """Arm a broker or worker process for clean
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
     asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
 
-    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
-    - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
-      child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
+    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (run_env_worker_pool swallows it);
+    - with `death_pipe`, a worker self-SIGTERMs when the broker dies (pipe EOF, even on
+      SIGKILL) so the worker is not orphaned."""
 
     def on_sigterm(*_) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -68,8 +68,8 @@ def _arm_teardown(death_pipe=None) -> None:
     threading.Thread(target=_watch, daemon=True).start()
 
 
-class EnvServerPool:
-    """ROUTER broker that elastically scales worker processes (least-busy dispatch).
+class EnvWorkerPool:
+    """One source's pool replica: a ROUTER broker with least-busy worker dispatch.
 
     An elastic pool starts with a single worker and spawns another whenever in-flight
     requests reach 90% of current capacity (`workers * multiplex`), up to `max_workers`.
@@ -112,7 +112,7 @@ class EnvServerPool:
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
-            target=serve_worker,
+            target=run_env_worker,
             kwargs=dict(
                 address=address,
                 config_data=self.config_data,
@@ -150,7 +150,7 @@ class EnvServerPool:
         if in_flight >= 0.9 * len(self.workers) * self.pool.multiplex:
             self._spawn_worker()
             get_logger().info(
-                f"Grew env server pool to {len(self.workers)} worker(s) max_workers={self._cap_str} in_flight={in_flight}"
+                f"Grew env worker pool to {len(self.workers)} worker(s) max_workers={self._cap_str} in_flight={in_flight}"
             )
 
     @property
@@ -174,7 +174,7 @@ class EnvServerPool:
             else f"num_workers={self.max_workers}"
         )
         get_logger().info(
-            f"Started env server pool address={self.address} pool={self.pool.type} workers={len(self.workers)} {sizing}"
+            f"Started env worker pool address={self.address} pool={self.pool.type} workers={len(self.workers)} {sizing}"
         )
         try:
             in_flight = 0
@@ -295,10 +295,10 @@ class EnvServerPool:
             os.rmdir(self._ipc_dir)
         self.frontend.close()
         self.ctx.term()
-        get_logger().info(f"Stopped env server pool address={self.address}")
+        get_logger().info(f"Stopped env worker pool address={self.address}")
 
 
-def serve_worker(
+def run_env_worker(
     *,
     address: str,
     config_data: dict,
@@ -306,21 +306,22 @@ def serve_worker(
     death_pipe,
     worker_setup: Callable[[], None] | None,
 ) -> None:
-    """A pool worker process: one `EnvServer` on its ipc address. It self-terminates if
+    """A pool worker process: one `EnvWorker` on its ipc address. It self-terminates if
     the broker dies — see `_arm_teardown`."""
+    set_proc_title("EnvWorker")
     _arm_teardown(death_pipe)
     if worker_setup is not None:
         worker_setup()
     try:
-        asyncio.run(EnvServer(resolve_env_config(config_data), address, max_concurrent).run())
+        asyncio.run(EnvWorker(resolve_env_config(config_data), address, max_concurrent).run())
     except KeyboardInterrupt:
         pass
     except Exception:
-        get_logger().opt(exception=True).error("Failed to run env server worker")
+        get_logger().opt(exception=True).error("Failed to run env worker")
         raise
 
 
-def serve_env(
+def run_env_worker_pool(
     *,
     pool: PoolConfig,
     address: str,
@@ -329,26 +330,27 @@ def serve_env(
     address_queue=None,
     worker_setup: Callable[[], None] | None = None,
 ) -> None:
-    """Serve one env over ZMQ: an `EnvServerPool` broker over worker processes. Reports
+    """Run one source's pool replica: a ZMQ broker over env worker processes. Reports
     the bound address on `address_queue` (for a spawner that passed an OS-assigned `:0`).
 
     `config_data` is the env config as plain data (`model_dump(mode="json")`), since a
     dynamically-narrowed config type can't be pickled into spawned workers.
 
     `worker_setup` (a picklable callable) runs in this process and every spawned worker —
-    without it a spawned server inherits no log handlers and its logs are silently dropped."""
+    without it a spawned worker inherits no log handlers and its logs are silently dropped."""
     # Graceful SIGTERM (run asyncio teardown). The re-raised KeyboardInterrupt is swallowed
     # below for a clean exit (no spurious traceback).
+    set_proc_title("EnvBroker")
     _arm_teardown()
     if worker_setup is not None:
         worker_setup()
     try:
-        server = EnvServerPool(pool, address, config_data, max_concurrent, worker_setup)
+        broker = EnvWorkerPool(pool, address, config_data, max_concurrent, worker_setup)
         if address_queue is not None:
-            address_queue.put(server.address)
-        asyncio.run(server.run())
+            address_queue.put(broker.address)
+        asyncio.run(broker.run())
     except KeyboardInterrupt:
         pass
     except Exception:
-        get_logger().opt(exception=True).error("Failed to run env server pool")
+        get_logger().opt(exception=True).error("Failed to run env worker pool")
         raise
