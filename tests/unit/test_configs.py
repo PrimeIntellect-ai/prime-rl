@@ -30,6 +30,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -1452,3 +1453,8 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert config.inference.vllm.max_logprobs >= top_k + 2
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_weight_pull_rejects_in_place_trainer_staging():
+    with pytest.raises(ValidationError, match="staging_mode"):
+        ModelExpressWeightBroadcastConfig(mode="pull", staging_buffer_bytes=1, staging_mode="IN_PLACE")
