@@ -1,21 +1,27 @@
+"""prime-rl's additions to vLLM's OpenAI API server: admin routes and the ``/inference/v1/generate`` handler.
+
+``install_api_server_hooks`` runs from the vLLM general plugin, which vLLM loads in every API server process
+before it builds the app, so a stock ``vllm serve`` picks these up.
+"""
+
 import asyncio
 import gc
+import os
 from argparse import Namespace
 
-import uvloop
+import vllm.entrypoints.launchers.api_server.entry as api_server_entry
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.common.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
+from vllm.entrypoints.launchers.app import build_app
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
-from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-from prime_rl.configs.inference import InferenceConfig
+LIVENESS_TIMEOUT_ENV = "PRIME_RL_LIVENESS_TIMEOUT_S"
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -32,13 +38,6 @@ def models(request: Request) -> OpenAIServingModels:
 
 
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
-
-WORKER_EXTENSION_CLS = {
-    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
-    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
-    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
-    "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
-}
 
 
 @router.post("/pause")
@@ -141,7 +140,7 @@ async def custom_init_app_state(
     """
     await init_app_state(engine_client, state, args, supported_tasks)
 
-    state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.liveness_timeout_seconds = float(os.environ.get(LIVENESS_TIMEOUT_ENV, "30"))
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -162,66 +161,13 @@ async def custom_init_app_state(
     gc.set_threshold(*API_SERVER_GC_THRESHOLDS)
 
 
-import vllm.entrypoints.launchers.api_server.entry
-import vllm.v1.utils
-from vllm.entrypoints.launchers.app import build_app as _original_build_app
-from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
-
-
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
-    """
-    Wrap build_app to include our custom router.
-    """
-    app = _original_build_app(args, supported_tasks, model_config)
+    """Wrap build_app to include our custom router."""
+    app = build_app(args, supported_tasks, model_config)
     app.include_router(router)
     return app
 
 
-def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
-    """
-    Re-import our module in child processes so monkey patches (custom routes,
-    custom init_app_state) are applied in multi-API-server mode.
-    """
-    import prime_rl.inference.vllm.server  # noqa: F401
-
-    _original_run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
-
-
-vllm.entrypoints.launchers.api_server.entry.init_app_state = custom_init_app_state
-vllm.entrypoints.launchers.api_server.entry.build_app = custom_build_app
-vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
-
-
-# Adapted from vllm/entrypoints/cli/serve.py
-# Only difference we do some config translation (i.e. pass populated namespace
-# to `parse_args`) and additional arg validation
-def server(config: InferenceConfig):
-    import os
-
-    from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
-    from vllm.entrypoints.launchers.api_server.entry import run_server
-
-    # Signal worker processes to disable LoRA on MoE layers when LoRA targets don't include experts
-    lora_target_modules = config.vllm.lora_target_modules
-    if lora_target_modules and not any("expert" in m for m in lora_target_modules):
-        os.environ["PRIME_NO_MOE_LORA"] = "1"
-
-    namespace = config.to_namespace()
-
-    parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
-    parser = make_arg_parser(parser)
-    args = parser.parse_args(args=[], namespace=namespace)
-    assert args is not None
-    validate_parsed_serve_args(args)
-
-    # Set the worker extension class based on the broadcast backend
-    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
-
-    if args.headless or args.api_server_count < 1:
-        run_headless(args)
-    else:
-        if args.api_server_count > 1:
-            run_multi_api_server(args)
-        else:
-            # Single API server (this process).
-            uvloop.run(run_server(args))
+def install_api_server_hooks() -> None:
+    api_server_entry.init_app_state = custom_init_app_state
+    api_server_entry.build_app = custom_build_app
