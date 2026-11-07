@@ -30,7 +30,9 @@ RUN test -n "$PRIME_KERNELS_WHEEL" \
 # ModelExpress client for the modelexpress weight-update worker and pull mode.
 ARG MODELEXPRESS_SPEC="modelexpress==0.8.0.dev20261022"
 COPY packages/prime-rl-vllm /tmp/prime-rl-vllm
-# Hold the image's torch and vLLM where they are while resolving the plugin's dependencies.
-RUN python3 -c "import torch, vllm; print(f'torch=={torch.__version__}'); print(f'vllm=={vllm.__version__}')" > /tmp/keep.txt \
+# Hold the image's torch and vLLM where they are while resolving the plugin's dependencies. git: for a
+# git-pinned ModelExpress.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+    && python3 -c "import torch, vllm; print(f'torch=={torch.__version__}'); print(f'vllm=={vllm.__version__}')" > /tmp/keep.txt \
     && uv pip install --system -c /tmp/keep.txt "$MODELEXPRESS_SPEC" /tmp/prime-rl-vllm \
     && rm -rf /tmp/prime-rl-vllm /tmp/keep.txt
