@@ -153,6 +153,11 @@ async def custom_init_app_state(
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
+    if args.weight_pull is not None:
+        from prime_rl.inference.vllm.weight_pull import follow_published_versions
+
+        state.weight_pull = await follow_published_versions(engine_client, **args.weight_pull)
+
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
     # used by prime-RL's renderer / router-replay paths — keep working.
@@ -226,6 +231,18 @@ def server(config: InferenceConfig):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+
+    if config.weight_broadcast.pull is not None:
+        # One engine at a time reads a version from the trainer and each engine feeds one peer at a time, so a
+        # version spreads through the fleet instead of every engine sharing the trainer's network. The caps count
+        # workers, so one engine is its tensor-parallel size. Set before vLLM starts its workers.
+        os.environ.setdefault("MX_MAX_TRAINER_READERS", str(config.vllm.tensor_parallel_size))
+        os.environ.setdefault("MX_MAX_TENSOR_READERS", "1")
+        # An engine serves the versions it installs to its peers only when ModelExpress loaded its weights.
+        if args.load_format == "auto":
+            args.load_format = "modelexpress"
+            os.environ.setdefault("MX_LOAD_STRATEGY_CHAIN", "RL")
+            os.environ.setdefault("MX_SERVER_ADDRESS", config.weight_broadcast.pull.server)
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

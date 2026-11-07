@@ -185,9 +185,32 @@ class VllmConfig(BaseConfig):
         return self
 
 
+class WeightPullConfig(BaseConfig):
+    server: str
+    """ModelExpress ``host:port`` the trainer publishes policy versions to."""
+
+    staging_buffer_bytes: int = Field(gt=0)
+    """Bytes per buffer that a copy from the trainer streams through into the live weights. Copies from peer
+    engines go straight into the live weights."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of streaming buffers. Two overlap the next read with installation."""
+
+
 class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "nixl", "modelexpress"] = "filesystem"
     """Weight broadcast transport."""
+
+    pull: WeightPullConfig | None = None
+    """The engine pulls each published policy version on its own, from the trainer or a peer engine, so no trainer
+    or orchestrator waits for it. Only with ``type = "modelexpress"``; ``rl`` sets it when
+    ``weight_broadcast.mode = "pull"``."""
+
+    @model_validator(mode="after")
+    def validate_pull(self):
+        if self.pull is not None and self.type != "modelexpress":
+            raise ValueError(f"weight_broadcast.pull requires type 'modelexpress', got '{self.type}'")
+        return self
 
 
 class CPUOffloadTier(BaseConfig):
@@ -653,6 +676,7 @@ class InferenceConfig(BaseConfig):
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            weight_pull=self.weight_broadcast.pull.model_dump() if self.weight_broadcast.pull else None,
         )
 
         extra_fields = self.vllm.model_extra or {}

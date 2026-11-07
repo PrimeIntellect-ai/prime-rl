@@ -42,7 +42,11 @@ class WeightSender(ABC):
     offered (``.sender_ready``), acknowledged by the consumer
     (``.receiver_ready``), transferred (``.started``), and committed
     (``.finished``). The trainer therefore runs in lockstep with its consumer
-    on every transport — a broadcast nobody receives blocks and then fails."""
+    on every transport — a broadcast nobody receives blocks and then fails.
+    A transport whose consumers fetch versions on their own sets
+    ``waits_for_receiver`` to False and skips the acknowledgement."""
+
+    waits_for_receiver: bool = True
 
     def __init__(self, output_dir: Path, timeout: int):
         self.logger = get_logger()
@@ -61,7 +65,8 @@ class WeightSender(ABC):
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
             (step_dir / SENDER_READY_MARKER).touch()
-            self._wait_for_receiver_ready(step_dir)
+            if self.waits_for_receiver:
+                self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
         wait_for_master(f"weight_broadcast/{step}", self.timeout)
         self._broadcast(model, step, step_dir)

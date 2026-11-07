@@ -4,7 +4,7 @@
 
 ## Setup
 
-The GPU extra pins the MX client (`modelexpress==0.8.0.dev20261022`). Build the matching server and its Redis backend once on the shared filesystem:
+The GPU extra pins the MX client. Build the matching server and its Redis backend once on the shared filesystem:
 
 ```bash
 bash scripts/install_modelexpress.sh
@@ -29,6 +29,14 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - The first update is slower while MX plans the transfer; later updates reuse the plan.
 - Inference is paused only after the trainer has published the version. A failed update leaves inference paused; restart the trainer and inference together, since there is no rollback.
 - Trainer rank 0 and the orchestrator must share the broadcast directory, which holds only rendezvous markers, not weights.
+
+## Pull
+
+With `mode = "pull"`, each inference server keeps itself on the newest published version instead of the orchestrator pushing every update. The trainer publishes a version and continues, keeping the two newest and retiring older ones once no engine still reads them. An inference server installs the newest version before it answers its first request and then follows every newer one, so a starting or restarting engine catches up on its own. Every token records the version that sampled it, so the orchestrator enforces `max_staleness` per token instead of waiting for engines.
+
+Every engine runs the same configuration. A new version reaches the fleet in waves: one engine at a time reads it from the trainer, and every other engine copies it from a peer that already installed it, each peer feeding one engine at a time. A peer copy goes straight into the live weights, so only that engine pauses while the rest keep serving, and peers already hold the converted inference layout. The inference server sets `MX_MAX_TRAINER_READERS` to the tensor-parallel size and `MX_MAX_TENSOR_READERS` to 1 to get this, and loads weights through ModelExpress so each engine can serve its peers; override any of them in the inference environment or with `vllm.load_format`.
+
+Pull needs `staging_buffer_bytes`: a copy from the trainer streams through those buffers into the live weights, so no engine sets aside memory for a second copy and `gpu_memory_utilization` can stay high. A standalone inference server sets `weight_broadcast.pull.server = "host:port"` and the staging fields itself.
 
 ## Limitations
 

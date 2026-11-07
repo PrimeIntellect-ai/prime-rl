@@ -8,7 +8,6 @@ from modelexpress_rl import (
     ModelExpressGeneratorClient,
     ModelExpressGeneratorConfig,
     VllmGeneratorContext,
-    WeightSource,
     WeightVersionRef,
 )
 from torch import nn
@@ -20,6 +19,8 @@ else:
 
 
 class ModelExpressWeightUpdateWorker(Worker):
+    _staged = None
+
     def liveness_probe(self) -> None:
         return None
 
@@ -54,7 +55,6 @@ class ModelExpressWeightUpdateWorker(Worker):
                 ),
                 model_name=self.model_runner.model_config.model,
                 server_url=f"{host}:{port}",
-                source_order=(WeightSource.TRAINER,),
                 worker_id=worker_id,
                 staging_buffer_bytes=staging_buffer_bytes,
                 staging_buffers_count=staging_buffers_count,
@@ -62,12 +62,34 @@ class ModelExpressWeightUpdateWorker(Worker):
         )
         atexit.register(self._generator.close)
 
+    def stage_weights_from_modelexpress(self, version_uid: str) -> str | None:
+        """Prepare a version without touching the live weights, so every rank can stage before any applies.
+        Returns why it could not, holding nothing; a source that is busy or does not have the version yet
+        is expected, and the caller stages again later."""
+        self.discard_staged_modelexpress()
+        try:
+            self._staged = self._generator.stage_weight(version=WeightVersionRef(version_uid))
+        except Exception as error:
+            return str(error)
+        return None
+
+    def discard_staged_modelexpress(self) -> None:
+        """Release a staged version, freeing its version lease and the source read it holds."""
+        if self._staged is not None:
+            self._staged.release()
+            self._staged = None
+
     @torch.no_grad()
     def update_weights_from_modelexpress(self, version_uid: str) -> None:
+        """Install a version: the one staged for it, else stage it now."""
         if not version_uid:
             raise ValueError("modelexpress requires version_uid")
-        version = WeightVersionRef(version_uid)
-        staged = self._generator.stage_weight(version=version)
+        staged = self._staged
+        self._staged = None
+        if staged is None or staged.version_id != version_uid:
+            if staged is not None:
+                staged.release()
+            staged = self._generator.stage_weight(version=WeightVersionRef(version_uid))
         try:
             self._generator.apply_weight(staged)
         finally:
