@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -68,8 +69,7 @@ class ModelExpressWeightSender(WeightSender):
             self._mesh_id = mesh.mesh_id
             atexit.register(self._control.delete_trainer_mesh, self._mesh_id)
 
-    @torch.no_grad()
-    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
+    def _publish(self, model: nn.Module, step: int, step_dir: Path) -> WeightVersionRef:
         if self._trainer is None:
             self._initialize(model)
         assert self._trainer is not None
@@ -91,6 +91,12 @@ class ModelExpressWeightSender(WeightSender):
         dist.broadcast_object_list(offered, src=0)
         version = WeightVersionRef(offered[0])
         self._trainer.publish_version(version=version)
+        return version
+
+    @torch.no_grad()
+    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
+        version = self._publish(model, step, step_dir)
+        assert self._trainer is not None
 
         # Installation acknowledgment is a PrimeRL outcome, not MX retirement.
         installation_failed = [False]
@@ -117,6 +123,54 @@ class ModelExpressWeightSender(WeightSender):
             raise RuntimeError("Inference weight installation failed on trainer rank zero")
         self._trainer.release_version(version=version)
         dist.barrier()
+
+
+class ModelExpressPullWeightSender(ModelExpressWeightSender):
+    """Publishes each version and moves on. Engines pull the newest one on their own
+    (``prime_rl.inference.vllm.weight_pull``), so the trainer never waits for inference."""
+
+    waits_for_receiver = False
+
+    def __init__(self, output_dir: Path, config: ModelExpressWeightBroadcastConfig, *, model_name: str):
+        super().__init__(output_dir, config, model_name=model_name)
+        self._published: list[WeightVersionRef] = []
+
+    def _initialize(self, model: nn.Module) -> None:
+        super()._initialize(model)
+        if not self.world.is_master:
+            return
+        assert self._control is not None
+        # Versions a previous trainer left READY died with its memory; engines must not chase them.
+        for version in self._control.list_weight_versions(model_name=self.model_name):
+            if version.state is WeightVersionState.READY and version.trainer_mesh_id != self._mesh_id:
+                self._control.delete_weight_version(version.version_id)
+                self.logger.info(f"Deleted version {version.version_number} of a previous trainer")
+
+    @torch.no_grad()
+    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
+        self._published.append(self._publish(model, step, step_dir))
+        # Engines are still copying the previous version when this one appears, so the two newest
+        # stay. An older one an engine still leases is retried on the next publish.
+        older, newest = self._published[:-2], self._published[-2:]
+        self._published = [version for version in older if not self._retire(version)] + newest
+        dist.barrier()
+
+    def _retire(self, version: WeightVersionRef) -> bool:
+        """Release and delete a superseded version; False while an engine still leases it."""
+        assert self._trainer is not None
+        try:
+            self._trainer.release_version(version=version)
+        except Exception as error:
+            # modelexpress_rl has no typed error for a leased version; its own release loop matches the
+            # server's message the same way (modelexpress_rl/train/methods/full_tensor.py).
+            details = getattr(error, "details", None)
+            if not callable(details) or details() != "weight version has an active lease":
+                raise
+            return False
+        if self.world.is_master:
+            assert self._control is not None
+            self._control.delete_weight_version(version.version_id)
+        return True
 
 
 class ModelExpressWeightReceiver(WeightReceiver):
@@ -153,3 +207,35 @@ class ModelExpressWeightReceiver(WeightReceiver):
         pending = installed.with_suffix(".pending")
         pending.write_text(uid)
         pending.replace(installed)
+
+
+class ModelExpressPullWeightReceiver(ModelExpressWeightReceiver):
+    """Follows published versions without moving bytes: engines install them on their own and
+    every token records the version that sampled it."""
+
+    async def initialize(self) -> None:
+        self._control = ModelExpressControlClient.connect(server_url=f"{self.config.host}:{self.config.port}")
+        atexit.register(self._control.close)
+
+    def is_published(self, step: int) -> bool:
+        newest = self._newest_published()
+        return newest is not None and newest >= step
+
+    def next_version(self, current: int) -> int:
+        return max(self._newest_published() or current, current)
+
+    async def receive(self, step: int) -> None:
+        return None
+
+    async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
+        while not await asyncio.to_thread(self.is_published, step):
+            if cancelled is not None and cancelled():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.1)
+
+    def _newest_published(self) -> int | None:
+        """The trainer keeps its newest version READY until a newer one is."""
+        versions = self._control.list_weight_versions(model_name=self.model_name)
+        return max(
+            (version.version_number for version in versions if version.state is WeightVersionState.READY), default=None
+        )
