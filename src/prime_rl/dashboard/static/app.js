@@ -3781,7 +3781,9 @@ async function openEpisode(line, target = {}) {
   episode._hasTokens = withTokens;
   episode._hasRendered = withRendered;
   currentEpisode = episode;
-  currentTraceIdx = target.traceId ? episode.traces.findIndex((trace) => trace.id === target.traceId) : target.trace ?? 0;
+  currentTraceIdx = target.traceId
+    ? episode.traces.findIndex((trace) => trace.id === target.traceId)
+    : target.trace ?? traceOrder(episode.traces)[0] ?? 0;
   currentBranchIdx = target.branch ?? 0;
   currentEvidenceView = target.evidence ?? null;
   traceView = currentEvidenceView == null ? preferredTraceView : "transcript";
@@ -5851,11 +5853,17 @@ async function setTraceView(view, { persist = true } = {}) {
   savePrefs();
 }
 
+/* trace indices in the order their agents started */
+function traceOrder(traces) {
+  const start = (trace) => trace.timing?.start ?? Infinity;
+  return traces.map((_, i) => i).sort((a, b) => start(traces[a]) - start(traces[b]));
+}
+
 function renderEpisode() {
   const ep = currentEpisode;
   if (!ep) return;
   const traces = ep.traces || [];
-  if (currentTraceIdx >= traces.length) currentTraceIdx = 0;
+  if (currentTraceIdx >= traces.length) currentTraceIdx = traceOrder(traces)[0] ?? 0;
   const trace = traces[currentTraceIdx];
   updateHash();
   const branches = trace ? traceBranches(trace) : [];
@@ -5869,8 +5877,9 @@ function renderEpisode() {
   traceTabs.hidden = traces.length <= 1;
   traceTabs.innerHTML =
     traces.length > 1
-      ? traces
-          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.is_timeout ? " timeout" : trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
+      ? traceOrder(traces)
+          .map((i) => [traces[i], i])
+          .map(([trace, i]) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.is_timeout ? " timeout" : trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
