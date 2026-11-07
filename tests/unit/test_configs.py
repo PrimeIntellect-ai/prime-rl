@@ -1,4 +1,6 @@
+import importlib
 import os
+import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
 
@@ -29,7 +31,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
+from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -172,6 +174,46 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert muon.optim.lr == 1e-3
     warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_launch_runs_the_entrypoint_of_the_mode(tmp_path, monkeypatch, mode: str):
+    """`uv run launch` reads `mode` from the config files and runs that entrypoint with the same arguments."""
+    from prime_rl.entrypoints import launch
+
+    calls = []
+    monkeypatch.setattr(importlib.import_module(f"prime_rl.entrypoints.{mode}"), "main", lambda: calls.append(mode))
+    write_toml(tmp_path / "config.toml", {"mode": mode})
+    monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
+    launch.main()
+    assert calls == [mode]
+
+
+def test_launch_needs_a_mode(tmp_path, monkeypatch):
+    from prime_rl.entrypoints import launch
+
+    write_toml(tmp_path / "config.toml", {"max_steps": 1})
+    monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
+    with pytest.raises(SystemExit, match="set `mode` in the config files"):
+        launch.main()
+
+
+def test_mode_must_match_the_entrypoint(tmp_path):
+    """A mode entrypoint runs only its own mode, and an internal entrypoint none."""
+    write_toml(tmp_path / "pretrain.toml", {"mode": "pretrain"})
+    args = ["@", str(tmp_path / "pretrain.toml")]
+    check_mode("pretrain", args)
+    with pytest.raises(SystemExit, match="run `uv run pretrain` or `uv run launch`"):
+        check_mode("sft", args)
+    with pytest.raises(SystemExit, match="did you mean `uv run launch`"):
+        check_mode("trainer", args)
+
+
+def test_config_files_with_different_modes_conflict(tmp_path):
+    write_toml(tmp_path / "base.toml", {"mode": "rl"})
+    write_toml(tmp_path / "override.toml", {"mode": "sft"})
+    with pytest.raises(SystemExit, match="conflicting modes: .*base.toml: rl, .*override.toml: sft"):
+        check_mode("rl", ["@", str(tmp_path / "base.toml"), "@", str(tmp_path / "override.toml")])
 
 
 def test_toml_partial_nested_override(tmp_path):
