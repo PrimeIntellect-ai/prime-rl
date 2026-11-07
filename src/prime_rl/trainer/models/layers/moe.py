@@ -55,10 +55,13 @@ def _record_moe_routing_statistics_fake(
 
 
 def routing_agreement(selected: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
-    """Agreement of two ``(num_tokens, top_k)`` expert selections, as ``[sum, count]`` over tokens of
-    ``|selected ∩ reference| / top_k``. ``selected`` must hold distinct experts per token."""
-    overlap = (selected.unsqueeze(-1) == reference.unsqueeze(-2)).any(dim=-1).float().mean(dim=-1)
-    return torch.stack((overlap.sum(), torch.ones_like(overlap).sum()))
+    """Agreement of two ``(num_tokens, top_k)`` expert selections, as ``[overlap, exact matches, tokens]``: the sum
+    over tokens of ``|selected ∩ reference| / top_k``, the number of tokens whose two expert sets are equal, and the
+    number of tokens. Both selections must hold distinct experts per token."""
+    selected_in_reference = (selected.unsqueeze(-1) == reference.unsqueeze(-2)).any(dim=-1)
+    overlap = selected_in_reference.float().mean(dim=-1)
+    exact_match = selected_in_reference.all(dim=-1).float()
+    return torch.stack((overlap.sum(), exact_match.sum(), torch.ones_like(overlap).sum()))
 
 
 @dataclass
@@ -213,7 +216,7 @@ class TokenChoiceTopKRouter(nn.Module):
                 - routing_confidence_sum (torch.Tensor):
                     Sum over tokens of the selected-expert probability mass before route normalization/scaling.
                 - router_agreement (torch.Tensor):
-                    ``routing_agreement`` of the router's own selection with ``routed_experts``, shape ``(2,)``;
+                    ``routing_agreement`` of the router's own selection with ``routed_experts``, shape ``(3,)``;
                     zeros without ``routed_experts`` or a learned selection.
         """
         # scores shape (bs*slen, num_experts)
@@ -241,7 +244,7 @@ class TokenChoiceTopKRouter(nn.Module):
             with torch.no_grad():
                 router_agreement = routing_agreement(self.select_experts(scores), routed_experts)
         else:
-            router_agreement = scores.new_zeros(2)
+            router_agreement = scores.new_zeros(3)
 
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)
@@ -369,8 +372,8 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
-        # [sum, count] over tokens of the router's own top-k agreement with replayed experts.
-        self.register_buffer("router_agreement", torch.zeros(2, dtype=torch.float32), persistent=False)
+        # `routing_agreement` of the router's own top-k with replayed experts, summed over forward passes.
+        self.register_buffer("router_agreement", torch.zeros(3, dtype=torch.float32), persistent=False)
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -456,6 +459,6 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
-            self.router_agreement = torch.zeros(2, dtype=torch.float32)
+            self.router_agreement = torch.zeros(3, dtype=torch.float32)
             if self.router.selection_bias is not None:
                 self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

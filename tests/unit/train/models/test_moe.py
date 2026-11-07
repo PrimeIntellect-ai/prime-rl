@@ -313,4 +313,4 @@ def test_routing_agreement():
     # Token 0 matches fully (in another order), token 1 shares one of two experts, token 2 shares none.
     selected = torch.tensor([[0, 1], [2, 3], [4, 5]])
     replayed = torch.tensor([[1, 0], [3, 6], [6, 7]], dtype=torch.int32)
-    assert routing_agreement(selected, replayed).tolist() == [1.5, 3.0]
+    assert routing_agreement(selected, replayed).tolist() == [1.5, 1.0, 3.0]
