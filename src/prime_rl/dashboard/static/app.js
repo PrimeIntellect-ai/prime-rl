@@ -4577,6 +4577,25 @@ function traceTruncated(trace) {
   return !!(last && last.finish_reason === "length");
 }
 
+/* mirrors verifiers Branch token counts: each call on the path adds its prompt beyond
+   the previous call's final sequence (clamped at zero) plus its output */
+function branchTokens(trace, path) {
+  const onPath = new Set(path);
+  let input = null;
+  let output = null;
+  let previous = 0;
+  for (const call of trace.calls || []) {
+    if (!onPath.has(call.node) || !call.usage) continue;
+    const usage = normalizedCallUsage(call.usage);
+    if (usage.input == null) continue;
+    const prompt = usage.input + (usage.cached ?? 0);
+    input = (input ?? 0) + Math.max(0, prompt - previous);
+    output = (output ?? 0) + (usage.output ?? 0);
+    previous = prompt + (usage.output ?? 0);
+  }
+  return { input, output, total: input == null ? null : input + output };
+}
+
 function renderMeta(ep, trace, branches) {
   const parts = [];
   const headline = (label, value) =>
@@ -4602,24 +4621,40 @@ function renderMeta(ep, trace, branches) {
   }
 
   if (trace) {
-    const nodes = currentPath(trace, branches).map((i) => trace.nodes[i]);
-    parts.push(`<div class="meta-sec">activity</div>`);
-    parts.push(metaRow("messages", nodes.filter((n) => n.message).length));
-    parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
+    const tokenRows = (input, output, total) => {
+      if (input != null) parts.push(metaRow("input tokens", fmtCompact(input)));
+      if (output != null) parts.push(metaRow("output tokens", fmtCompact(output)));
+      if (total != null) parts.push(metaRow("total tokens", fmtCompact(total)));
+    };
+    const activityRows = (nodes) => {
+      parts.push(metaRow("messages", nodes.filter((n) => n.message).length));
+      parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
+      parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
+    };
+
+    const traces = ep.traces || [];
+    if (traces.length > 1) {
+      // Episode.num_*_tokens are these sums; live episodes only carry them per trace
+      const episodeSum = (field) =>
+        traces.every((t) => t[field] != null) ? traces.reduce((acc, t) => acc + t[field], 0) : null;
+      parts.push(`<div class="meta-sec">episode</div>`);
+      parts.push(metaRow("traces", traces.length));
+      tokenRows(episodeSum("num_input_tokens"), episodeSum("num_output_tokens"), episodeSum("num_total_tokens"));
+    }
+
+    parts.push(`<div class="meta-sec">trace</div>`);
+    activityRows(trace.nodes || []);
     parts.push(metaRow("branches", branches.length));
-    parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
     const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
     if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
-
-    const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
+    tokenRows(trace.num_input_tokens, trace.num_output_tokens, trace.num_total_tokens);
+    const usage = { cached: null, reasoning: null, maxContext: null, cost: null };
     const addUsage = (field, value) => {
       if (value != null) usage[field] = (usage[field] ?? 0) + value;
     };
     for (const call of trace.calls || []) {
       const current = normalizedCallUsage(call.usage);
-      addUsage("input", current.input);
       addUsage("cached", current.cached);
-      addUsage("output", current.output);
       addUsage("reasoning", current.reasoning);
       addUsage("cost", current.cost);
       if (current.input != null) {
@@ -4627,19 +4662,18 @@ function renderMeta(ep, trace, branches) {
         usage.maxContext = Math.max(usage.maxContext ?? 0, context);
       }
     }
-    const totalInput = usage.input == null ? null : usage.input + (usage.cached ?? 0);
-    const totalTokens = totalInput == null || usage.output == null ? null : totalInput + usage.output;
-    const hasUsage = usage.input != null || usage.cached != null || usage.output != null;
-    if (hasUsage) {
-      parts.push(`<div class="meta-sec">usage</div>`);
-      if (usage.input != null) parts.push(metaRow("input tokens", fmtCompact(usage.input)));
-      if (usage.cached != null) parts.push(metaRow("cached input", fmtCompact(usage.cached)));
-      if (totalInput != null) parts.push(metaRow("total input", fmtCompact(totalInput)));
-      if (usage.output != null) parts.push(metaRow("output tokens", fmtCompact(usage.output)));
-      if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
-      if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
-      if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
-      if (totalTokens != null) parts.push(metaRow("total tokens", fmtCompact(totalTokens)));
+    if (usage.cached != null) parts.push(metaRow("cached input", fmtCompact(usage.cached)));
+    if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
+    if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
+    if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
+
+    if (branches.length > 1 && currentBranchIdx !== -1) {
+      const branchIdx = Math.min(currentBranchIdx, branches.length - 1);
+      const path = branches[branchIdx] || [];
+      const tokens = branchTokens(trace, path);
+      parts.push(`<div class="meta-sec">branch ${branchIdx}</div>`);
+      activityRows(path.map((i) => trace.nodes[i]));
+      tokenRows(tokens.input, tokens.output, tokens.total);
     }
 
     parts.push(`<div class="meta-sec">state</div>`);
@@ -4696,13 +4730,25 @@ function appendTimelineUsage(rows, usage, aggregate = false) {
   if (!usage) return;
   if (aggregate && usage.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
   if (usage.input_tokens != null) rows.push(["input tokens", fmtCompact(usage.input_tokens)]);
-  if (usage.cached_tokens != null) rows.push(["cached input", fmtCompact(usage.cached_tokens)]);
-  if (usage.total_input_tokens != null) rows.push(["total input", fmtCompact(usage.total_input_tokens)]);
   if (usage.output_tokens != null) rows.push(["output tokens", fmtCompact(usage.output_tokens)]);
+  if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
+  if (usage.cached_tokens != null) rows.push(["cached input", fmtCompact(usage.cached_tokens)]);
   if (usage.reasoning_tokens != null) rows.push(["reasoning tokens", fmtCompact(usage.reasoning_tokens)]);
   if (usage.max_context_tokens != null) rows.push(["max context length", fmtCompact(usage.max_context_tokens)]);
-  if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
   if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+}
+
+// One call's input is its whole prompt, cached part included.
+function callTimelineUsage(span) {
+  const input = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+  return {
+    input_tokens: input,
+    output_tokens: span.output_tokens,
+    total_tokens: input == null || span.output_tokens == null ? null : input + span.output_tokens,
+    cached_tokens: span.cached_tokens,
+    reasoning_tokens: span.reasoning_tokens,
+    cost: span.cost,
+  };
 }
 
 function aggregateTimelineUsage(items) {
@@ -4710,7 +4756,6 @@ function aggregateTimelineUsage(items) {
     "model_calls",
     "input_tokens",
     "cached_tokens",
-    "total_input_tokens",
     "output_tokens",
     "reasoning_tokens",
     "total_tokens",
@@ -4744,10 +4789,10 @@ function semanticCumulativeUsageRows(usage, compact = true) {
   const tokens = (value) => compact ? fmtCompact(value) : Math.round(value).toLocaleString();
   const rows = [];
   if (usage?.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
-  if (usage?.total_tokens != null) rows.push(["cumulative processed", tokens(usage.total_tokens)]);
-  if (usage?.input_tokens != null) rows.push(["uncached input", tokens(usage.input_tokens)]);
-  if (usage?.cached_tokens != null) rows.push(["cached input", tokens(usage.cached_tokens)]);
+  if (usage?.input_tokens != null) rows.push(["input", tokens(usage.input_tokens)]);
   if (usage?.output_tokens != null) rows.push(["output", tokens(usage.output_tokens)]);
+  if (usage?.total_tokens != null) rows.push(["total", tokens(usage.total_tokens)]);
+  if (usage?.cached_tokens != null) rows.push(["cached input", tokens(usage.cached_tokens)]);
   if (usage?.reasoning_tokens != null) rows.push(["reasoning", tokens(usage.reasoning_tokens)]);
   if (usage?.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
   return rows;
@@ -4768,17 +4813,7 @@ function timelineSpanHtml(lane, span, start, total) {
   ];
   if (span.track === "activity") {
     if (span.shared) rows.push(["branch role", "shared prefix"]);
-    const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
-    appendTimelineUsage(rows, {
-      input_tokens: span.input_tokens,
-      cached_tokens: span.cached_tokens,
-      total_input_tokens: totalInput,
-      output_tokens: span.output_tokens,
-      reasoning_tokens: span.reasoning_tokens,
-      max_context_tokens: totalInput,
-      total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
-      cost: span.cost,
-    });
+    appendTimelineUsage(rows, callTimelineUsage(span));
   } else {
     appendTimelineUsage(rows, lane.usage, true);
   }
@@ -4885,7 +4920,6 @@ function semanticNodeKey(traceIndex, nodeIndex) {
 
 function semanticNodeTip(event) {
   const span = event.span;
-  const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
   const rows = [
     ["agent", event.agent.label],
     ["context", String(event.contextIndex)],
@@ -4899,16 +4933,7 @@ function semanticNodeTip(event) {
       ["training branch", event.compactionAttempt.accepted ? "included" : "excluded"]
     );
   }
-  appendTimelineUsage(rows, {
-    input_tokens: span.input_tokens,
-    cached_tokens: span.cached_tokens,
-    total_input_tokens: totalInput,
-    output_tokens: span.output_tokens,
-    reasoning_tokens: span.reasoning_tokens,
-    max_context_tokens: totalInput,
-    total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
-    cost: span.cost,
-  });
+  appendTimelineUsage(rows, callTimelineUsage(span));
   return timelineTipAttr({
     kind: event.compactionAttempt ? "compaction attempt" : "model call",
     title: event.compactionAttempt
@@ -5538,7 +5563,7 @@ function semanticInspectorRows(rows) {
 function openSemanticCallInspector(event) {
   semanticSelection = { ...event, kind: "call" };
   const span = event.span;
-  const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+  const usage = callTimelineUsage(span);
   const rows = [
     ["agent", event.agent.label],
     ["context", event.contextIndex],
@@ -5546,8 +5571,9 @@ function openSemanticCallInspector(event) {
     ["call", event.callIndex],
     ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
     ["duration", span.started_at == null || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
-    ["input", totalInput == null ? "n/a" : fmtCompact(totalInput)],
-    ["output", span.output_tokens == null ? "n/a" : fmtCompact(span.output_tokens)],
+    ["input", usage.input_tokens == null ? "n/a" : fmtCompact(usage.input_tokens)],
+    ["output", usage.output_tokens == null ? "n/a" : fmtCompact(usage.output_tokens)],
+    ["total", usage.total_tokens == null ? "n/a" : fmtCompact(usage.total_tokens)],
     ["cost", span.cost == null ? "n/a" : fmtCost(span.cost)],
   ];
   if (event.inferredContinuation) rows.splice(2, 0, ["lineage", "recovered from physical tool flow"]);

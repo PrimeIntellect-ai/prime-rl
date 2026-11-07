@@ -1008,6 +1008,20 @@ def lifecycle_spans(trace: dict) -> list[dict]:
     return spans
 
 
+def new_input_tokens(activities: list[dict]) -> int | None:
+    """Fed-in tokens of one call chain, counted once: each call's prompt beyond the
+    previous call's final sequence, clamped at zero (verifiers' `min_new_input_tokens`)."""
+    total = None
+    previous = 0
+    for span in sorted(activities, key=lambda span: span["call_index"]):
+        if span.get("input_tokens") is None:
+            continue
+        prompt = span["input_tokens"] + (span.get("cached_tokens") or 0)
+        total = (total or 0) + max(0, prompt - previous)
+        previous = prompt + (span.get("output_tokens") or 0)
+    return total
+
+
 def timeline_lane(
     trace: dict,
     trace_index: int,
@@ -1044,14 +1058,17 @@ def timeline_lane(
         values = [span[field] for span in activities if isinstance(span.get(field), (int, float))]
         return sum(values) if values else None
 
-    input_tokens = total("input_tokens")
     cached_tokens = total("cached_tokens")
     output_tokens = total("output_tokens")
     reasoning_tokens = total("reasoning_tokens")
-    total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
-    total_tokens = (
-        total_input_tokens + output_tokens if total_input_tokens is not None and output_tokens is not None else None
-    )
+    if branch:
+        input_tokens = new_input_tokens(activities)
+    else:
+        # the trace counts input on shared branch prefixes once; its call list
+        # interleaves branches, so the lane's spans cannot reproduce that
+        input_tokens = trace.get("num_input_tokens")
+        output_tokens = trace.get("num_output_tokens", output_tokens)
+    total_tokens = input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None
     context_lengths = [
         (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
         for span in activities
@@ -1071,7 +1088,6 @@ def timeline_lane(
             "model_calls": len(activities),
             "input_tokens": input_tokens,
             "cached_tokens": cached_tokens,
-            "total_input_tokens": total_input_tokens,
             "output_tokens": output_tokens,
             "reasoning_tokens": reasoning_tokens,
             "latest_context_tokens": context_lengths[-1] if context_lengths else None,
