@@ -176,9 +176,43 @@ def test_mask_stale_tokens_keeps_fresher_tokens():
     ]
     [sample] = trace_to_samples(t, env_name="test")
     sample.ref_kl_weights = np.ones(4, dtype=np.float32)
-    assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2) == 1
+    assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2, max_version=3) == 1
     assert sample.mask.tolist() == [False, False, False, True]
     assert sample.ref_kl_weights.tolist() == [1.0, 1.0, 0.0, 1.0]
+
+
+def test_tokens_newer_than_the_trainer_are_masked():
+    async def run():
+        s = sink(batch_size=1)
+        s.progress.step = 4
+        t = trace()
+        # v5 can only come from an engine that outlived a trainer restarted from v3.
+        t.nodes[2].weight_versions = [
+            WeightVersionSpan(version="3", start=0, end=1),
+            WeightVersionSpan(version="5", start=1, end=2),
+        ]
+        batch = await s.add(episode([t], version=3))
+        assert batch.samples[0].mask.tolist() == [False, False, True, False]
+        assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
+
+    asyncio.run(run())
+
+
+def test_queued_tokens_older_than_their_dispatch_version_go_stale():
+    async def run():
+        s = sink(batch_size=2)
+        s.progress.step = 2
+        t = trace()
+        # Dispatched under v1, sampled by an engine still installing it.
+        t.nodes[2].weight_versions = [WeightVersionSpan(version="0", start=0, end=2)]
+        await s.add(episode([t], version=1))
+        assert s.pending_batch
+
+        s.progress.step = 3
+        await s.take_batch()
+        assert not s.pending_batch
+
+    asyncio.run(run())
 
 
 def test_partially_stale_trace_ships_fresh_tokens():

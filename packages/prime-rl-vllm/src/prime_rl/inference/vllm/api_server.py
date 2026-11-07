@@ -22,6 +22,10 @@ from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
 
 LIVENESS_TIMEOUT_ENV = "PRIME_RL_LIVENESS_TIMEOUT_S"
+# ModelExpress pull mode: the engine follows the versions its trainer publishes to this server.
+WEIGHT_PULL_SERVER_ENV = "PRIME_RL_WEIGHT_PULL_SERVER"
+WEIGHT_PULL_STAGING_BUFFER_BYTES_ENV = "PRIME_RL_WEIGHT_PULL_STAGING_BUFFER_BYTES"
+WEIGHT_PULL_STAGING_BUFFERS_COUNT_ENV = "PRIME_RL_WEIGHT_PULL_STAGING_BUFFERS_COUNT"
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -141,6 +145,16 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = float(os.environ.get(LIVENESS_TIMEOUT_ENV, "30"))
+
+    if weight_pull_server := os.environ.get(WEIGHT_PULL_SERVER_ENV):
+        from prime_rl.inference.vllm.weight_pull import follow_published_versions
+
+        state.weight_pull = await follow_published_versions(
+            engine_client,
+            server=weight_pull_server,
+            staging_buffer_bytes=int(os.environ[WEIGHT_PULL_STAGING_BUFFER_BYTES_ENV]),
+            staging_buffers_count=int(os.environ.get(WEIGHT_PULL_STAGING_BUFFERS_COUNT_ENV, "1")),
+        )
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both

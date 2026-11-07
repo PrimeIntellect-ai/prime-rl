@@ -189,7 +189,9 @@ class AdminPlane:
             check_health(self.clients, timeout=self._wait_for_ready_timeout, quiet=bool(self._router_clients)),
             check_health(self._router_clients, timeout=self._wait_for_ready_timeout),
         )
-        await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
+        await maybe_check_has_model(
+            self.clients, model_name, skip_model_check=self._skip_model_check, timeout=self._wait_for_ready_timeout
+        )
 
     async def initialize_nccl(
         self,
@@ -424,13 +426,15 @@ def setup_admin_clients(
 
 
 async def maybe_check_has_model(
-    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False, timeout: int = 0
 ) -> None:
+    """Check that every client serves ``model_name``, waiting up to ``timeout`` seconds while a client answers
+    503: a router answers /health before any engine behind it is ready. Any other failure raises at once."""
     if skip_model_check:
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+    results = await asyncio.gather(*[_list_models(admin_client, timeout) for admin_client in admin_clients])
     for admin_client, result in zip(admin_clients, results):
         body = result.json() if result.headers.get("content-type", "").startswith("application/json") else {}
         if result.status_code != 200 or "data" not in body:
@@ -444,6 +448,16 @@ async def maybe_check_has_model(
         if not any(model_name in (model["id"], model.get("root")) for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
+
+
+async def _list_models(admin_client: AsyncClient, timeout: int, interval: int = 1) -> httpx.Response:
+    waited = 0
+    while True:
+        response = await admin_client.get("/v1/models")
+        if response.status_code != 503 or waited >= timeout:
+            return response
+        await asyncio.sleep(interval)
+        waited += interval
 
 
 async def check_health(
