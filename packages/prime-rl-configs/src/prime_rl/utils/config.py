@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tomllib
@@ -93,14 +94,15 @@ def config_files(args: list[str]) -> list[Path]:
 
 
 def config_mode(args: list[str]) -> str | None:
-    """The ``mode`` that the root TOML config files in ``args`` set, or None. Files that set different modes are an
+    """The ``mode`` that the root config files in ``args`` set, or None. Files that set different modes are an
     error."""
     modes = {}
     for path in config_files(args):
-        if path.suffix != ".toml" or not path.is_file():
+        # Hand-written configs are TOML; resolved configs that the launchers write and re-run are JSON.
+        if path.suffix not in (".toml", ".json") or not path.is_file():
             continue
         with path.open("rb") as f:
-            mode = tomllib.load(f).get("mode")
+            mode = (tomllib.load(f) if path.suffix == ".toml" else json.load(f)).get("mode")
         if mode is not None:
             modes[path] = mode
     if len(set(modes.values())) > 1:

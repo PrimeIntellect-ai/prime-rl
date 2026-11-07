@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -199,13 +200,16 @@ def test_launch_needs_a_mode(tmp_path, monkeypatch):
 
 
 def test_mode_must_match_the_entrypoint(tmp_path):
-    """A mode entrypoint runs only its own mode, and an internal entrypoint none."""
+    """A mode entrypoint runs only its own mode, and an internal entrypoint none, from a TOML or a resolved JSON
+    config."""
     write_toml(tmp_path / "pretrain.toml", {"mode": "pretrain"})
-    args = ["@", str(tmp_path / "pretrain.toml")]
-    check_mode("pretrain", args)
-    for entrypoint in ("sft", "trainer"):
-        with pytest.raises(SystemExit):
-            check_mode(entrypoint, args)
+    (tmp_path / "pretrain.json").write_text(json.dumps({"mode": "pretrain"}))
+    for file in ("pretrain.toml", "pretrain.json"):
+        args = ["@", str(tmp_path / file)]
+        check_mode("pretrain", args)
+        for entrypoint in ("sft", "trainer"):
+            with pytest.raises(SystemExit):
+                check_mode(entrypoint, args)
 
 
 def test_config_files_with_different_modes_conflict(tmp_path):

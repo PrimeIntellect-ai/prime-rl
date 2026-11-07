@@ -3,7 +3,7 @@
 import importlib
 import sys
 
-from prime_rl.utils.config import MODES, config_mode
+from prime_rl.utils.config import MODES, config_files, config_mode
 
 USAGE = f"""\
 usage: uv run launch @ config.toml [@ more.toml ...] [overrides]
@@ -15,6 +15,9 @@ With a config, --help shows that entrypoint's help.
 
 def main():
     args = sys.argv[1:]
+    for path in config_files(args):
+        if not path.is_file():
+            raise SystemExit(f"config file not found: {path}")
     mode = config_mode(args)
     if mode is None:
         if "-h" in args or "--help" in args:
