@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cyberstrike-rl"
+version = "0.1.2"
+description = "Native CyberStrike RL environment with host-side Prime Inference grader routing."
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers>=0.4.1.dev55",
+    "sft-gen-kernel-harbor @ git+https://github.com/PrimeIntellect-ai/sft-gen.git@7b1ee4e#subdirectory=packages/kernel-harbor",
+    "prime-flow @ git+https://github.com/PrimeIntellect-ai/flow.git@c479f55",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+only-include = ["cyberstrike_rl.py"]
