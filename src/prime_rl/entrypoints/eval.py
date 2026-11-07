@@ -17,7 +17,7 @@ from subprocess import Popen
 from typing import Any
 
 from prime_rl.configs.eval import EvalConfig
-from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.utils.config import check_mode, cli, config_files, dump_resolved_config
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes, set_proc_title
 
 USAGE = """\
@@ -59,7 +59,7 @@ def expand_shorthands(argv: list[str]) -> list[str]:
     source: dict[str, Any] = {}
     rest = list(argv)
     positional = bool(rest) and not rest[0].startswith(("-", "@"))
-    sources_in_toml = any(toml_defines_source(path) for path in root_config_files(argv))
+    sources_in_toml = any(toml_defines_source(path) for path in config_files(argv))
     shared_env = sources_in_toml and not positional
     if positional:
         set_nested(source, ["env", "taskset", "id"], rest.pop(0))
@@ -91,15 +91,6 @@ def expand_shorthands(argv: list[str]) -> list[str]:
     return out
 
 
-def root_config_files(argv: list[str]) -> list[Path]:
-    """Root ``@ file`` references (a ``--flag @ file`` is a nested reference)."""
-    return [
-        Path(argv[i + 1])
-        for i, arg in enumerate(argv[:-1])
-        if arg == "@" and (i == 0 or not argv[i - 1].startswith("--"))
-    ]
-
-
 def toml_defines_source(path: Path) -> bool:
     if path.suffix != ".toml" or not path.is_file():
         return False
@@ -110,6 +101,7 @@ def toml_defines_source(path: Path) -> bool:
 def main():
     set_proc_title("Eval")
     argv = sys.argv[1:]
+    check_mode("eval", argv)
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]

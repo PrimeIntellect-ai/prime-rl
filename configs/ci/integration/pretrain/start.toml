@@ -1,5 +1,6 @@
 # Qwen3-0.6B trained from scratch on Reverse-Text-SFT as token shards. The test writes the shards and passes their
 # folder as --data.paths and --val.data.paths.
+mode = "pretrain"
 max_steps = 20
 
 [ckpt]
