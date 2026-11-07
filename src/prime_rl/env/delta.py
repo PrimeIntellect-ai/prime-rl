@@ -168,7 +168,7 @@ class DeltaStreamer:
                 try:
                     await self.send(delta)
                 except Exception:  # the cursor stays put: the next flush diffs it again
-                    get_logger().opt(exception=True).warning(f"Failed to send delta for {trace_id}")
+                    get_logger().opt(exception=True).warning(f"Failed to send trace delta trace={trace_id}")
                     continue
                 if cursor is None:
                     self.cursors.pop(trace_id, None)

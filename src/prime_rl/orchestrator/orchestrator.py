@@ -149,9 +149,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         write_resolved_config(config.output_dir, config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Route the in-process v1 library logging through our handler. The
-        # env server runs in a child process, so its logging is separate.
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        # Route the in-process v1 library logging through our handler. The env
+        # server runs in a child process and sets up its own at the same level.
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
         get_logger().info("Starting orchestrator")
 
         self.progress = Progress()
