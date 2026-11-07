@@ -150,7 +150,7 @@ class EnvServerPool:
         if in_flight >= 0.9 * len(self.workers) * self.pool.multiplex:
             self._spawn_worker()
             get_logger().info(
-                f"EnvServerPool scaled up to {len(self.workers)}/{self._cap_str} workers (in_flight={in_flight})"
+                f"Grew env server pool to {len(self.workers)} worker(s) max_workers={self._cap_str} in_flight={in_flight}"
             )
 
     @property
@@ -168,8 +168,13 @@ class EnvServerPool:
         # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
+        sizing = (
+            f"max_workers={self._cap_str} multiplex={self.pool.multiplex}"
+            if self.elastic
+            else f"num_workers={self.max_workers}"
+        )
         get_logger().info(
-            f"EnvServerPool up (address={self.address}, workers={len(self.workers)}/{self._cap_str}, pool={self.pool!r})"
+            f"Started env server pool address={self.address} pool={self.pool.type} workers={len(self.workers)} {sizing}"
         )
         try:
             in_flight = 0
@@ -179,7 +184,7 @@ class EnvServerPool:
                     frames = await self.frontend.recv_multipart()
                     # Drop malformed requests without skipping ready worker replies.
                     if len(frames) != 4:
-                        get_logger().warning(f"Dropping a malformed request ({len(frames)} frames, expected 4)")
+                        get_logger().warning(f"Dropped malformed request frames={len(frames)} expected=4")
                     else:
                         client_id, request_id, method, payload = frames
                         if method == b"health":
@@ -290,7 +295,7 @@ class EnvServerPool:
             os.rmdir(self._ipc_dir)
         self.frontend.close()
         self.ctx.term()
-        get_logger().info("EnvServerPool down")
+        get_logger().info(f"Stopped env server pool address={self.address}")
 
 
 def serve_worker(
@@ -311,7 +316,7 @@ def serve_worker(
     except KeyboardInterrupt:
         pass
     except Exception:
-        get_logger().opt(exception=True).error("Env server worker failed")
+        get_logger().opt(exception=True).error("Failed to run env server worker")
         raise
 
 
@@ -345,5 +350,5 @@ def serve_env(
     except KeyboardInterrupt:
         pass
     except Exception:
-        get_logger().opt(exception=True).error("Env server failed")
+        get_logger().opt(exception=True).error("Failed to run env server pool")
         raise

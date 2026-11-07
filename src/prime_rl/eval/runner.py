@@ -56,7 +56,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
