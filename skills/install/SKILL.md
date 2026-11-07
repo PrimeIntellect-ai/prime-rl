@@ -72,8 +72,8 @@ The `disagg` extra installs the prebuilt DeepEP wheel pinned in `[tool.uv.source
 uv sync --extra disagg
 ```
 
-The prime-kernels repository owns source builds for DeepEP, DeepGEMM, and TorchAO. Use
-its scripts when a local rebuild is required:
+The prime-kernels repository owns source builds for DeepEP and TorchAO (DeepGEMM ships with
+vLLM as `vllm.third_party.deep_gemm`). Use its scripts when a local rebuild is required:
 
 ```bash
 git submodule update --init deps/prime-kernels
