@@ -92,13 +92,13 @@ class OffloadActivations(saved_tensors_hooks):
         return tensor_id
 
     def param_storages(self) -> set[int]:
+        # Runs on every offloaded save, so read the local shard directly: to_local() dispatches a view op per param.
         storages = set()
-        with torch.no_grad():
-            for module, name in self.param_slots:
-                param = module._parameters[name]
-                if param is not None:
-                    local = param.to_local() if isinstance(param, DTensor) else param
-                    storages.add(local.untyped_storage()._cdata)
+        for module, name in self.param_slots:
+            param = module._parameters[name]
+            if param is not None:
+                local = param._local_tensor if isinstance(param, DTensor) else param
+                storages.add(local.untyped_storage()._cdata)
         return storages
 
     def unpack(self, tensor_id: int) -> torch.Tensor:
