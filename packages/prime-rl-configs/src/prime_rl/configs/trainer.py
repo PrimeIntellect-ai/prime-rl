@@ -643,6 +643,12 @@ class BaseTrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def async_save_requires_optimizer_offload(self):
+        if self.ckpt is not None and self.ckpt.async_save and self.model.offload == "none":
+            raise ValueError('ckpt.async_save requires CPU optimizer offload (model.offload = "optimizer" or "full")')
+        return self
+
+    @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")

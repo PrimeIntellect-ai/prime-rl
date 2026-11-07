@@ -40,7 +40,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_optimizer_state,
 )
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
-from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.trainer.utils import DCP_TIMEOUT, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
@@ -283,7 +283,8 @@ class CheckpointManager:
         offload_optimizers = [optimizer for optimizer in optimizers if isinstance(optimizer, OffloadOptimizer)]
         if self.config.async_save and offload_optimizers:
             if self._async_save_group is None:
-                self._async_save_group = get_dcp_group()
+                # Not get_dcp_group(): that cached group also serves the main thread's barriers and loads
+                self._async_save_group = torch.distributed.new_group(backend="gloo", timeout=DCP_TIMEOUT)
             state_dict = {"app": app_state.cpu_state_dict()}
             write_start_time = time.perf_counter()
             future = dcp_async_save(

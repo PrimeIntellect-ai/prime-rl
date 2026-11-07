@@ -6,6 +6,7 @@ from prime_rl.utils.pathing import (
     get_batch_dir,
     get_broadcast_dir,
     get_step_path,
+    resolve_latest_ckpt_step,
     validate_run_dir,
 )
 
@@ -117,3 +118,17 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+def test_resolve_latest_ckpt_step_skips_incomplete_trainer_checkpoint(tmp_path):
+    for step in (1, 2, 3):
+        get_step_path(tmp_path, step).mkdir()
+    # Step 1 has only an orchestrator checkpoint, step 2 a finished trainer checkpoint, step 3 one cut off mid-write
+    (get_step_path(tmp_path, 1) / "orchestrator").mkdir()
+    (get_step_path(tmp_path, 2) / "trainer").mkdir()
+    (get_step_path(tmp_path, 2) / "trainer" / ".metadata").touch()
+    (get_step_path(tmp_path, 3) / "trainer").mkdir()
+
+    assert resolve_latest_ckpt_step(tmp_path) == 2
+    (get_step_path(tmp_path, 3) / "trainer" / ".metadata").touch()
+    assert resolve_latest_ckpt_step(tmp_path) == 3
