@@ -12,11 +12,12 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-class GptOssRMSNorm(nn.Module):
+class GptOssRMSNorm(Norm):
     def __init__(self, hidden_size: int, eps: float) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))

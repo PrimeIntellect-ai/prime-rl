@@ -20,6 +20,10 @@ def get_quack_rmsnorm():
         return None
 
 
+class Norm(nn.Module):
+    """Base class of prime-rl's normalization layers."""
+
+
 @dataclass
 class RMSNormConfig:
     hidden_size: int
@@ -27,7 +31,7 @@ class RMSNormConfig:
 
 
 @use_kernel_forward_from_hub("RMSNorm")
-class RMSNorm(nn.Module):
+class RMSNorm(Norm):
     def __init__(self, config: RMSNormConfig) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.ones(config.hidden_size))
@@ -47,7 +51,7 @@ class RMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
-class ZeroCenteredRMSNorm(nn.Module):
+class ZeroCenteredRMSNorm(Norm):
     """Qwen's zero-centered RMSNorm, whose effective scale is ``1 + weight``."""
 
     def __init__(self, hidden_size: int, eps: float) -> None:
@@ -67,7 +71,7 @@ class ZeroCenteredRMSNorm(nn.Module):
         return ((1.0 + self.weight.float()) * hidden_states).to(input_dtype)
 
 
-class LayerNorm(nn.Module):
+class LayerNorm(Norm):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.dim = dim

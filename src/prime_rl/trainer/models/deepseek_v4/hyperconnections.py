@@ -7,7 +7,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_p
 from prime_rl.trainer.models.layers import norms
 
 
-class DeepseekV4UnweightedRMSNorm(nn.Module):
+class DeepseekV4UnweightedRMSNorm(norms.Norm):
     """RMS normalization without a learnable gain, computed in fp32."""
 
     def __init__(self, eps: float = 1e-6, out_dtype: torch.dtype | None = None):

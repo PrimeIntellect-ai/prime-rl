@@ -59,6 +59,10 @@ class KimiDeltaAttention(nn.Module):
 
         self.cp_context = CPContext()
 
+    def muon_head_partitions(self, heads_per_block: int, split_values: bool) -> dict[nn.Parameter, None]:
+        # Linear attention is not split by head (like Qwen3.5's gated delta net)
+        return {p: None for p in self.parameters()}
+
     def _depthwise_conv(self) -> nn.Conv1d:
         return nn.Conv1d(
             self.projection_size,
