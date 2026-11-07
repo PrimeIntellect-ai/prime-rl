@@ -1075,7 +1075,7 @@ def timeline_lane(
             "latest_context_tokens": context_lengths[-1] if context_lengths else None,
             "max_context_tokens": max(context_lengths, default=None),
             "total_tokens": total_tokens,
-            "cost": total("cost"),
+            "cost": total("cost") if branch else (trace.get("usage") or {}).get("cost"),
         },
         "spans": spans,
     }

@@ -4612,25 +4612,22 @@ function renderMeta(ep, trace, branches) {
       if (output != null) parts.push(metaRow("output tokens", fmtCompact(output)));
       if (total != null) parts.push(metaRow("total tokens", fmtCompact(total)));
     };
-    const activityRows = (nodes) => {
+    const activityRows = (nodes, turns) => {
       parts.push(metaRow("messages", nodes.filter((n) => n.message).length));
-      parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
+      parts.push(metaRow("turns", turns));
       parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
     };
 
     const traces = ep.traces || [];
     if (traces.length > 1) {
-      // Episode.num_*_tokens are these sums; live episodes only carry them per trace
-      const episodeSum = (field) =>
-        traces.every((t) => t[field] != null) ? traces.reduce((acc, t) => acc + t[field], 0) : null;
       parts.push(`<div class="meta-sec">episode</div>`);
       parts.push(metaRow("traces", traces.length));
-      tokenRows(episodeSum("num_input_tokens"), episodeSum("num_output_tokens"), episodeSum("num_total_tokens"));
+      tokenRows(ep.num_input_tokens, ep.num_output_tokens, ep.num_total_tokens);
     }
 
     parts.push(`<div class="meta-sec">trace</div>`);
-    activityRows(trace.nodes || []);
-    parts.push(metaRow("branches", branches.length));
+    activityRows(trace.nodes || [], trace.num_turns);
+    parts.push(metaRow("branches", trace.num_branches));
     const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
     if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
     tokenRows(trace.num_input_tokens, trace.num_output_tokens, trace.num_total_tokens);
@@ -4642,7 +4639,8 @@ function renderMeta(ep, trace, branches) {
       const path = branches[branchIdx] || [];
       const tokens = branchTokens(trace, path);
       parts.push(`<div class="meta-sec">branch ${branchIdx}</div>`);
-      activityRows(path.map((i) => trace.nodes[i]));
+      const nodes = path.map((i) => trace.nodes[i]);
+      activityRows(nodes, nodes.filter((n) => n.sampled).length);
       tokenRows(tokens.input, tokens.output, tokens.total);
     }
 

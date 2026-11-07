@@ -53,19 +53,15 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     rewards, advantages = [], []
     input_tokens = rec.get("num_input_tokens")
     output_tokens = rec.get("num_output_tokens")
-    turns = branches = 0
+    branches = 0
     stop_condition = None
     truncated = False
     timeout = bool(rec.get("is_timeout"))
     reward_parts: dict[str, list[float]] = {}
     metric_parts: dict[str, list[float]] = {}
     timing: dict[str, float] = {}
-    costs: list[float] = []
     for trace in rec.get("traces") or []:
-        if isinstance(cost := (trace.get("usage") or {}).get("cost"), (int, float)):
-            costs.append(cost)
         branches += trace.get("num_branches") or 0
-        turns += trace.get("num_turns") or 0
         # skip reward-less seats (e.g. a judge) in the episode mean
         if trace.get("rewards") and isinstance(trace.get("reward"), (int, float)):
             rewards.append(trace["reward"])
@@ -88,7 +84,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
         "metrics": {name: sum(v) / len(v) for name, v in metric_parts.items()},
         "timing": timing,
-        "cost": sum(costs) if costs else None,
+        "cost": (rec.get("usage") or {}).get("cost"),
         "line": line,
         "offset": offset,
         "id": rec.get("id"),
@@ -104,7 +100,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "advantage": sum(advantages) / len(advantages) if advantages else None,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "turns": turns,
+        "turns": rec.get("num_turns"),
         "branches": branches,
         "stop_condition": stop_condition,
         "truncated": truncated,
