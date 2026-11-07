@@ -45,7 +45,7 @@ inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
 eval = "prime_rl.entrypoints.eval:main"
-env-server = "prime_rl.entrypoints.env_server:main"
+env-worker-pool = "prime_rl.entrypoints.env_worker_pool:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
 
 [project.entry-points."vllm.general_plugins"]

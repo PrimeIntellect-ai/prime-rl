@@ -1,7 +1,7 @@
 """Dispatcher: schedules rollouts under a shared permit counter.
 
 - Capacity (``max_inflight``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server. The cap is dynamic —
+  one episode: one ``run`` request against an env worker pool. The cap is dynamic —
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
@@ -583,7 +583,7 @@ class Dispatcher:
         return True
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
-        """Delete the training arrays env servers kept for episodes no sink will see."""
+        """Delete the training arrays env workers kept for episodes no sink will see."""
         delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
 
     async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:

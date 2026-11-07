@@ -280,7 +280,7 @@ class EpisodeAssembly:
 
     def finish(self, head: dict, summaries: list[TraceSummary]) -> dict:
         """The full episode record: `head` (the episode without its traces) joined with
-        the assembled traces in the server's order. A count mismatch means a delta was
+        the assembled traces in the worker's order. A count mismatch means a delta was
         lost, which the wire never does in a live connection — fail loudly."""
         traces = []
         for summary in summaries:
@@ -291,7 +291,7 @@ class EpisodeAssembly:
             if len(trace["nodes"]) != summary.nodes or len(trace["calls"]) != summary.calls:
                 raise RuntimeError(
                     f"served trace {summary.id} assembled {len(trace['nodes'])} nodes / "
-                    f"{len(trace['calls'])} calls, server reports {summary.nodes} / {summary.calls}"
+                    f"{len(trace['calls'])} calls, worker reports {summary.nodes} / {summary.calls}"
                 )
             traces.append(trace)
         return {**head, "traces": traces}

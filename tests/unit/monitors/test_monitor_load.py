@@ -62,7 +62,7 @@ pytestmark = pytest.mark.slow
 
 
 def _trace(rng: np.random.Generator, turns: int) -> vf.Trace:
-    """A multi-turn trace with per-token streams as the env-server wire delivers them."""
+    """A multi-turn trace with per-token streams as the env-worker-pool wire delivers them."""
     n = TOKENS_PER_MESSAGE
     nodes = []
     for _ in range(turns):

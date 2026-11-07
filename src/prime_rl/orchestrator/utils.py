@@ -116,11 +116,11 @@ def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix
     vf_logger.propagate = False
 
 
-def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None:
-    """Configure logging for an env-server process: prime-rl's logger + routing v1's stdlib
-    logs through it. Passed to ``serve_env`` so it runs in the broker and in every spawned
+def setup_env_worker_pool_logging(log_level: str, json_logging: bool = False) -> None:
+    """Configure logging for an env-worker-pool process: prime-rl's logger + routing v1's stdlib
+    logs through it. Passed to ``run_env_worker_pool`` so it runs in the broker and in every spawned
     worker — fresh ``spawn`` processes that otherwise have no handlers and would drop their
-    per-rollout logs. The launcher redirects an env server's stdout to its log file, so
+    per-rollout logs. The launcher redirects an env worker pool's stdout to its log file, so
     the console sink colorizes only on a terminal."""
     setup_logger(log_level, json_logging=json_logging, colorize=sys.stdout.isatty())
     intercept_vf_logging(logger="verifiers.v1", level=log_level)

@@ -5,7 +5,7 @@ description: Launch and monitor prime-rl evals — the `uv run eval` entrypoint,
 
 # Eval
 
-`uv run eval` evaluates a model in one or more environments and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, a concurrency band, every episode through the monitors, and a trace stream that `--resume` continues from. Online evals of training runs are the `training` skill.
+`uv run eval` evaluates a model in one or more environments and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env worker pool per source, a concurrency band, every episode through the monitors, and a trace stream that `--resume` continues from. Online evals of training runs are the `training` skill.
 
 ## Start an eval
 
@@ -25,7 +25,7 @@ uv run eval @ eval.toml --no-monitors.prime                         # keep the r
 - Entrypoint: `src/prime_rl/entrypoints/eval.py`; implementation `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`.
 - Shorthands (single-source runs): `<taskset-id>`, `--env.<field> <value>`, `-n` `select.limit`, `-s` `select.shuffle`, `-r` `group_size`, `-m` `model`, `-c N` pins `concurrency.min_inflight = max_inflight = N`. They cannot be combined with a TOML that defines `[[source]]` blocks.
 - Concurrency: an API exposes no vLLM `/metrics`, so run pinned there; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to KV usage.
-- Env servers: spawned per source on OS-assigned ports (published to `configs/attempt_N/resolved/envs/eval/<name>.address`) unless the source sets `serve.address`.
+- Env worker pools: spawned per source on OS-assigned ports (published to `configs/attempt_N/resolved/envs/eval/<name>.address`) unless the source sets `serve.address`.
 - Ready-made configs: `configs/debug/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
 
 Minimal multi-source TOML (the eval block is flattened to the top level; per-source `select`, `group_size`, `sampling` override the top level):
@@ -91,7 +91,7 @@ Run dir: `output_dir / run.name` (auto `<envs>--<model>--<short-id>`; `ls -t out
 ├── configs/latest/            # command.txt, the launch TOML, resolved/eval.json
 ├── logs/latest/
 │   ├── eval.log               # the eval process
-│   └── envs/eval/{name}.log   # one log per env server
+│   └── envs/eval/{name}.log   # one log per env worker pool
 └── monitors/file/             # metrics.jsonl, the trace stream, traces/live/ (one file per live trace), plan.json
 ```
 
@@ -106,4 +106,4 @@ The progress line in `eval.log` counts live rollouts by phase (`- boot 1 · runn
 
 Metrics live under `eval/<env>/all/<agent>/…` (`reward/mean`, `is_truncated/mean` — raise `sampling.max_completion_tokens` when high, or score cut-off runs as 0 with `env.agent.scoring.skip_on_truncated` / `skip_on_timeout` (`env.agent.max_turn_tokens` caps each response and stops the run once one hits it, even in harnesses like RLM that continue past a capped turn), `has_error/mean`, the taskset's own metrics). Validate a result by reading a few traces in the dashboard rather than trusting the mean alone.
 
-Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed. Any config may be overridden on resume (`select`/`group_size` change what is owed); keep the model, sampling and env config the same to keep the landed episodes comparable. Env servers are children of the eval process and exit with it.
+Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed. Any config may be overridden on resume (`select`/`group_size` change what is owed); keep the model, sampling and env config the same to keep the landed episodes comparable. Env worker pools are children of the eval process and exit with it.

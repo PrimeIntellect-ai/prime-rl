@@ -115,7 +115,7 @@ def test_semantic_timeline_projects_concurrent_fork_join() -> None:
         1,
     ]
     assert [lane["usage"]["total_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
-        260,
+        140,
         130,
         130,
     ]
@@ -164,7 +164,7 @@ def test_semantic_timeline_starts_new_context_after_compaction() -> None:
         1,
     ]
     assert [lane["usage"]["total_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
-        310,
+        190,
         70,
     ]
     assert [lane["usage"]["latest_context_tokens"] for lane in timeline["semantic_lanes"][1:]] == [

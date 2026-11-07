@@ -297,7 +297,7 @@ class PolicyClientConfig(VLLMClientConfig):
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
-    """Log level for the process and the verifiers library it runs, env servers included.
+    """Log level for the process and the verifiers library it runs, env worker pools included.
     Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
     json_logging: bool = False

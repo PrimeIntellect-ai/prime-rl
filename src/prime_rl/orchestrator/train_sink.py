@@ -37,13 +37,13 @@ from prime_rl.utils.logger import get_logger
 
 
 def _kept(sample: TrainingSample, field: str) -> bool:
-    """Whether an env server keeps this array of the sample (see `prime_rl.transports.payload`)."""
+    """Whether an env worker keeps this array of the sample (see `prime_rl.transports.payload`)."""
     return sample.payload is not None and field in sample.payload.fields
 
 
-# Training arrays reach the trainer only through env servers that keep them.
+# Training arrays reach the trainer only through env workers that keep them.
 _KEEP_ARRAYS_HINT = (
-    "Serve the env with prime-rl's `env-server` entrypoint, which keeps them for the trainer, "
+    "Serve the env with prime-rl's `env-worker-pool` entrypoint, which keeps them for the trainer, "
     "and check its log for arrays it could not keep."
 )
 
@@ -168,12 +168,12 @@ class TrainSink(Reconfigurable):
         self._swept_step = 0
 
     def _release(self, urls: Iterable[str]) -> None:
-        """Env servers keep the arrays of delivered traces; the sink deletes those of every
+        """Env workers keep the arrays of delivered traces; the sink deletes those of every
         sample and trace it drops without shipping."""
         delete_payloads(urls)
 
     def release_samples(self, samples: Iterable[TrainingSample]) -> None:
-        """Delete the env-server arrays of samples that will never ship."""
+        """Delete the env workers' arrays of samples that will never ship."""
         self._release(sample_payload_urls(samples))
 
     def group_size_for(self, env_name: str) -> int:
