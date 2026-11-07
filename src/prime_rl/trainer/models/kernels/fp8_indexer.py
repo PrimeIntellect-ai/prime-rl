@@ -23,7 +23,9 @@ KEY_ALIGNMENT = 256
 LOGITS_CHUNK_BYTES = 1 << 30
 MIN_CHUNK_ROWS = 512
 DEEP_SELECT_MAX_TOPK = 4096
-# Per-row cost: scored keys + TOPK_COST_PER_KEY * (causal top-k end + clean_logits row), fitted on H200.
+# Four packed UE8M0 bytes encoding 1.0.
+UNIT_UE8M0_X4 = 0x7F7F7F7F
+# Per-row cost: scored keys + TOPK_COST_PER_KEY * (causal top-k end + -inf fill of the row), fitted on H200.
 TOPK_COST_PER_KEY = 0.13
 
 
@@ -152,7 +154,7 @@ def fp8_indexer(
     amax_floor: float = FP8_EPS,
     cp_group_name: str | None = None,
 ) -> torch.Tensor:
-    """FP8 indexer: UE8M0 quantization + DeepGEMM `fp8_mqa_logits` scoring + topk.
+    """FP8 indexer: UE8M0 quantization + DeepGEMM `fp8_fp4_mqa_logits` scoring + topk.
 
     Args:
         q: [S_q, H, D] bf16 query vectors per head
@@ -270,14 +272,32 @@ def _trailing_chunks_to_send(chunk_costs: list[int], partner_cost: int) -> int:
 
 
 def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
+    q_scales = None
+    if torch.cuda.get_device_capability(q_fp8.device)[0] == 10:
+        # SM100 takes MX inputs only: each key's UE8M0 scale repeated over its four 32-wide blocks, unit query
+        # scales (they are folded into w) and bf16 weights. The cast is exact: w is bf16 times powers of two.
+        k_scales = (k_scales.view(torch.int32) >> 23).to(torch.uint8)[:, None].expand(-1, 4).contiguous()
+        k_scales = k_scales.view(torch.int32).squeeze(-1)
+        q_scales = torch.full(q_fp8.shape[:-1], UNIT_UE8M0_X4, dtype=torch.int32, device=q_fp8.device)
+        w = w.to(torch.bfloat16)
+    lengths = (ke - ks).clamp_min(0)
     for start in range(0, q_fp8.shape[0], chunk_rows):
         end = min(start + chunk_rows, q_fp8.shape[0])
-        logits = deep_gemm.fp8_mqa_logits(
-            q_fp8[start:end], (k_fp8, k_scales), w[start:end], ks[start:end], ke[start:end], clean_logits=True
-        )
-        chunk_indices = select_topk(logits, ke[start:end], indices.shape[1], S_k)
+        # Row i holds the logits of keys [ks[i], ke[i]) from column 0; columns past ke[i] - ks[i] are not cleaned.
+        logits = deep_gemm.fp8_fp4_mqa_logits(
+            (q_fp8[start:end], None if q_scales is None else q_scales[start:end]),
+            (k_fp8, k_scales),
+            w[start:end],
+            ks[start:end],
+            ke[start:end],
+            k_fp8.shape[0],
+        ).float()
+        row_lengths = lengths[start:end]
+        columns = torch.arange(logits.shape[1], device=logits.device)
+        logits.masked_fill_(columns >= row_lengths[:, None], float("-inf"))
+        chunk_indices = select_topk(logits, row_lengths, indices.shape[1], S_k) + ks[start:end, None]
         del logits
         # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
         out_of_range = (chunk_indices < ks[start:end, None]) | (chunk_indices >= ke[start:end, None])

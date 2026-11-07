@@ -13,7 +13,7 @@ dependencies = [
     "loguru>=0.7.3",
     "numpy>=2.2.6",
     "sympy>=1.13.3",
-    "transformers==5.19.0",
+    "transformers==5.20.2",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime-runs[train]>=0.1.6",
@@ -53,30 +53,27 @@ prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 gpu = [
-    "torch>=2.13.0 ; sys_platform == 'linux'",
+    "torch>=2.14.0 ; sys_platform == 'linux'",
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.32.0 ; sys_platform == 'linux'",
+    "vllm>=0.33.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     # DSA sparse MLA backward kernel (CuTe DSL); >=1.29 matches the pinned CUTLASS DSL 4.7.
-    "nvidia-cudnn-frontend>=1.30.0 ; sys_platform == 'linux'",
-    # DSA sparse MLA forward for the default `model.dsa_backend = "cudnn_flashmla"` (sm_90a + sm_100f).
-    # FlashMLA is not on PyPI and only an x86_64 wheel is published.
-    "flash-mla ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cudnn-frontend>=1.31.0 ; sys_platform == 'linux'",
     "deep-select ; sys_platform == 'linux'",
     "flash-linear-attention>=0.6.0 ; sys_platform == 'linux'",
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
-    "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
+    "nixl-cu13==1.5.0 ; sys_platform == 'linux'",
     # Precompiled FlashInfer kernels for vLLM's flashinfer-python pin. Without them every fresh node
     # downloads the trtllm-gen cubins and JIT-builds its modules into its node-local cache at startup.
-    "flashinfer-cubin==0.7.0.post1 ; sys_platform == 'linux'",
-    "flashinfer-jit-cache==0.7.0.post1+cu130 ; sys_platform == 'linux'",
+    "flashinfer-cubin==0.7.2.post1 ; sys_platform == 'linux'",
+    "flashinfer-jit-cache==0.7.2.post1+cu130 ; sys_platform == 'linux'",
     "modelexpress==0.8.0.dev20261022 ; sys_platform == 'linux'",
 ]
 dashboard = [
@@ -84,13 +81,13 @@ dashboard = [
     "uvicorn>=0.30",
 ]
 dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
-# Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.13 / cp312 build and carry
+# Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.14 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
 # sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
 # trainer/model.py).
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_aarch64.whl ; platform_machine == 'aarch64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.0/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.1/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_aarch64.whl ; platform_machine == 'aarch64'",
 ]
 flash-attn-3 = ["flash_attn_3 ; sys_platform == 'linux'"]
 
@@ -99,8 +96,7 @@ flash-attn-cute = [
 ]
 disagg = [
     "deep-ep ; sys_platform == 'linux'",
-    "deep-gemm ; sys_platform == 'linux'",
-    "nixl ; sys_platform == 'linux'",
+    "nixl==1.5.0 ; sys_platform == 'linux'",
     "vllm-router ; sys_platform == 'linux'",
 ]
 quack = [
@@ -154,10 +150,11 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # vLLM 0.32.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
+    # vLLM 0.33.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.8.0",
-    "torch>=2.13.0",
+    # vLLM 0.33.0 is compiled against and pins exactly torch 2.14.0.
+    "torch==2.14.0",
     "openenv-core",
 ]
 
@@ -180,8 +177,8 @@ members = [
 ]
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
 # Apex pins a verifiers git revision instead of the editable workspace member.
-# ALE CLI requires numpy>=2.4.4, while vLLM 0.32.0 (via mistral-common) requires numpy<2.4.
-# IFBench requires setuptools<78, while vLLM 0.32.0 requires setuptools>=78.1.1.
+# ALE CLI requires numpy>=2.4.4, while vLLM 0.33.0 (via mistral-common) requires numpy<2.4.
+# IFBench requires setuptools<78, while vLLM 0.33.0 requires setuptools>=78.1.1.
 # A workspace shares one lock, so these packages need separate environments.
 exclude = [
     "deps/prime-envs/environments/if/ifbench",
@@ -205,8 +202,8 @@ requires-dist = [
 # caller requests its CUDA 13 extra. Use the requested CUDA 13 package only.
 [[tool.uv.dependency-metadata]]
 name = "nixl"
-version = "0.10.1"
-requires-dist = ["nixl-cu13==0.10.1"]
+version = "1.5.0"
+requires-dist = ["nixl-cu13==1.5.0"]
 
 # CUTLASS DSL has the same CUDA 12 default. vLLM requests its CUDA 13 extra,
 # so resolve that variant without installing both runtime packages.
@@ -227,9 +224,9 @@ harbor = "2026-10-08T00:00:00Z"
 # CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
 certifi = false
 tokenspeed-mla = false
-# vLLM 0.32.0 pins flashinfer-python 0.7.0.post1, published inside the rolling window
+# vLLM 0.33.0 pins flashinfer-python 0.7.2.post1, published inside the rolling window
 flashinfer-python = false
-# vLLM 0.32.0 pins these, published inside the rolling window
+# vLLM 0.33.0 pins these, published inside the rolling window
 instanttensor = false
 humming-kernels = false
 fastokens = false
@@ -249,11 +246,9 @@ prime-pydantic-config = false
 vllm-router = false
 dion = false
 deep-ep = false
-deep-gemm = false
 nixl-cu13 = false
 torchao = false
 prime-kernels = false
-flash-mla = false
 deep-select = false
 
 [tool.uv.sources]
@@ -280,41 +275,35 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
-]
-deep-gemm = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 prime-kernels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-select = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/deep_select-1.0.0+bfa4507.20261026.121630-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b52bd9d/deep_select-1.0.0+bfa4507.20261026.121543-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_select-1.0.0+bfa4507.20261102.200747-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_select-1.0.0+bfa4507.20261102.200624-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-# FlashMLA nv_dev @ b7643bd built against torch 2.13.0+cu130 (see the release notes for the recipe).
-flash-mla = { url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 mamba-ssm = { git = "https://github.com/state-spaces/mamba", rev = "f577286" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
 flashinfer-cubin = { index = "flashinfer" }
 # Per-platform wheels: the aarch64 build also requires sm110a/sm121a wheels that x86_64 lacks.
 flashinfer-jit-cache = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
-mamba-ssm = ["torch>=2.13.0"]
+mamba-ssm = ["torch>=2.14.0"]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
