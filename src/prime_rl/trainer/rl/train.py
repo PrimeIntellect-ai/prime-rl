@@ -658,6 +658,9 @@ def train(config: TrainerConfig):
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
+        # An async checkpoint must finish copying the state before the optimizer step mutates it
+        ckpt_manager.wait_for_staging()
+
         # Update the model parameters
         optimizer.step()
         optimizer.zero_grad()
@@ -701,9 +704,11 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
+                # The action commits once the checkpoint is on storage
+                ckpt_manager.wait()
                 controller.mark_saved(progress.step)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
         else:
@@ -822,6 +827,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
