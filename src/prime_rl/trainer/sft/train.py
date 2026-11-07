@@ -43,6 +43,7 @@ from prime_rl.trainer.sft.data import (
     get_dataset_progress,
     get_dataset_state,
     load_sft_dataset,
+    load_val_subsets,
     setup_dataloader,
     setup_dataset,
 )
@@ -194,10 +195,14 @@ def train(config: SFTConfig):
     )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
-    val_raw_dataset = None
+    # The validation sets, by name: one entry named None, or one per subset with [val] per_subset.
+    val_raw_datasets = {}
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        if config.val.per_subset:
+            val_raw_datasets = load_val_subsets(config.val.data)
+        else:
+            val_raw_datasets = {None: load_sft_dataset(config.val.data)}
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -326,23 +331,34 @@ def train(config: SFTConfig):
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        return mean_loss, nan_count.item(), total_loss_sum.item(), total_token_count.item()
 
     def run_validation(step: int) -> float:
-        val_dataset = setup_dataset(
-            tokenizer,
-            config.val.data,
-            config.model.cp,
-            max_epochs=1,
-            raw_dataset=val_raw_dataset,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
+        subset_metrics = {}
+        nan_count, pooled_loss_sum, pooled_tokens = 0, 0.0, 0
+        for name, raw_dataset in val_raw_datasets.items():
+            val_dataset = setup_dataset(
+                tokenizer,
+                config.val.data,
+                config.model.cp,
+                max_epochs=1,
+                raw_dataset=raw_dataset,
+                renderer_config=config.renderer,
+                processor=processor,
+                multimodal=multimodal,
+            )
+            val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+            # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+            mean_loss, set_nan_count, loss_sum, token_count = run_eval_loop(val_dataloader)
+            nan_count += set_nan_count
+            if name is not None:
+                subset_metrics[f"val/{name}/loss"] = mean_loss
+                subset_metrics[f"val/{name}/num_loss_tokens"] = token_count
+                logger.success(f"Validation | Step {step} | {name} | Loss {mean_loss:.4f} | {token_count} tokens")
+                pooled_loss_sum, pooled_tokens = pooled_loss_sum + loss_sum, pooled_tokens + token_count
+        if subset_metrics:
+            mean_loss = pooled_loss_sum / pooled_tokens if pooled_tokens > 0 else float("nan")
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             get_load_balance_stats(model)
@@ -354,7 +370,8 @@ def train(config: SFTConfig):
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         asyncio.run(
             monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), **subset_metrics, "step": step},
+                step=step,
             )
         )
         return mean_loss
