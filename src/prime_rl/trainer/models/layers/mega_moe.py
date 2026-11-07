@@ -500,7 +500,7 @@ class MegaMoEExpertCompute:
             kernels = " and ".join(f"`{name}`" for name in _REQUIRED_KERNELS[precision])
             raise RuntimeError(
                 f"Mega MoE `{precision}` requires an SM{_MIN_CAPABILITY[precision][0]}0+ GPU and the "
-                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed over the public one; "
+                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed as the top-level `deep_gemm` package; "
                 f"this build does not expose {kernels}."
             )
         self.num_experts = num_experts

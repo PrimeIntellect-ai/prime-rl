@@ -254,7 +254,7 @@ def _uses_deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor) -> bool:
 def _deep_gemm_projection(x: torch.Tensor, fn: torch.Tensor, num_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
     """`x @ fn.T` and the per-token sum of squares, split over K into 1, 4 or 16 parts like vLLM, so short rows
     still fill the GPU and DeepGEMM JIT-compiles at most three variants."""
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     k = fn.shape[1]
     token_blocks = triton.cdiv(num_tokens, 64)

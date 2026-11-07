@@ -252,7 +252,7 @@ COPY --from=builder --chown=appuser:appuser \
     --exclude=lib/python3.12/site-packages/flash_attn \
     --exclude=lib/python3.12/site-packages/flash_attn_2_cuda*.so \
     /app/.venv /app/.venv
-RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
+RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"

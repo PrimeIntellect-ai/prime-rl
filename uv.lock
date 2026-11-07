@@ -19,7 +19,6 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 certifi = false
 deep-ep = false
-deep-gemm = false
 deep-select = false
 dion = false
 fastokens = false
@@ -1362,28 +1361,6 @@ resolution-markers = [
 ]
 wheels = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", hash = "sha256:6559aaf2f00177c894664e15f4989c031d3d6eaa692db0ecd657a87b90385253" },
-]
-
-[[package]]
-name = "deep-gemm"
-version = "2.5.0+local"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_aarch64.whl" }
-resolution-markers = [
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
-wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_aarch64.whl", hash = "sha256:e1da2fda91d184eb342d94fb8c6c4768869ec3f2fa508ebbfee7333e4e554210" },
-]
-
-[[package]]
-name = "deep-gemm"
-version = "2.5.0+local"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_x86_64.whl" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-]
-wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_x86_64.whl", hash = "sha256:f4e3a901c0eb22767d100f0e918710552dbe84300067a48d16145bae7dd44ee7" },
 ]
 
 [[package]]
@@ -5297,8 +5274,6 @@ dependencies = [
 all = [
     { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+local", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+local", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-select", version = "1.0.0+bfa4507.20261102.200624", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_select-1.0.0+bfa4507.20261102.200624-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-select", version = "1.0.0+bfa4507.20261102.200747", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_select-1.0.0+bfa4507.20261102.200747-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "dion", marker = "sys_platform == 'linux'" },
@@ -5340,8 +5315,6 @@ dashboard = [
 disagg = [
     { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+local", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+local", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.4", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.4", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -5416,9 +5389,6 @@ requires-dist = [
     { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-ep", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
-    { name = "deep-gemm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_aarch64.whl" },
-    { name = "deep-gemm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
-    { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-select", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_select-1.0.0+bfa4507.20261102.200624-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-select", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'" },
     { name = "deep-select", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_select-1.0.0+bfa4507.20261102.200747-cp312-cp312-linux_x86_64.whl" },

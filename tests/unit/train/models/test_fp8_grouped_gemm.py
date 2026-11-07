@@ -65,7 +65,7 @@ EXPERTS_RTOL = 0.1
 
 @pytest.fixture(autouse=True)
 def _require_deep_gemm():
-    pytest.importorskip("deep_gemm")
+    pytest.importorskip("vllm.third_party.deep_gemm")
 
 
 def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:

@@ -42,7 +42,7 @@ def _compute_grad_weight(
     aligned_ms: list[int],
     grad_weight_transposed: bool,
 ) -> torch.Tensor:
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     is_sm100 = torch.cuda.get_device_capability(x.device)[0] >= 10
     if is_sm100:
@@ -113,7 +113,7 @@ def _compute_grad_weight(
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
 def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     (
         grouped_layout,
@@ -197,7 +197,7 @@ def _grouped_fp8_gemm_backward(
         grad_weight = _empty_grad_weight(weight, grad_weight_transposed)
 
     if needs_grad_x:
-        import deep_gemm
+        from vllm.third_party import deep_gemm
 
         use_ue8m0 = ue8m0_for_device(grad_output.device)
         dy_fp8 = grouped_per_token_cast_to_fp8_triton(

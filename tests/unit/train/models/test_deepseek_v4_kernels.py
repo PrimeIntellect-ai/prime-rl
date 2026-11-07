@@ -783,7 +783,7 @@ def test_fp8_o_a_proj_quantizes_and_multiplies_like_vllm_wo_a(monkeypatch):
     vLLM fuses the inverse RoPE into the input cast. Position 0 makes that rotation the identity, so
     its kernel quantizes exactly the tensor the trainer does.
     """
-    deep_gemm = pytest.importorskip("deep_gemm")
+    deep_gemm = pytest.importorskip("vllm.third_party.deep_gemm")
     pytest.importorskip("vllm")
     from vllm.models.deepseek_v4.common.ops.fused_inv_rope_fp8_quant import fused_inv_rope_fp8_quant
     from vllm.utils.deep_gemm import per_block_cast_to_fp8

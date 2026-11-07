@@ -56,8 +56,8 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             return SonicMoEExpertCompute()
         return BF16ExpertCompute()
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
-        if importlib.util.find_spec("deep_gemm") is None:
-            raise RuntimeError("DeepGEMM FP8 expert compute requires the deep-gemm package.")
+        if importlib.util.find_spec("vllm.third_party.deep_gemm") is None:
+            raise RuntimeError("DeepGEMM FP8 expert compute requires the DeepGEMM bundled with vLLM.")
         capability = torch.cuda.get_device_capability()
         if capability[0] not in (9, 10):
             raise RuntimeError(

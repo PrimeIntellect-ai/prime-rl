@@ -20,7 +20,7 @@ from prime_rl.utils.logger import get_logger
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
 def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) -> torch.Tensor:
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(x.device)
@@ -46,7 +46,7 @@ def _fp8_blockwise_mm_backward(
     needs_grad_x: bool,
     needs_grad_weight: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     grad_output_2d = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
@@ -125,7 +125,7 @@ _fp8_blockwise_mm.register_autograd(
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_bmm", mutates_args=())
 def _fp8_blockwise_bmm(x: torch.Tensor, weight: torch.Tensor, n_groups: int, block_size: int) -> torch.Tensor:
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     in_features = x.shape[-1]
     out_features_per_group = weight.size(0) // n_groups
@@ -172,7 +172,7 @@ def _fp8_blockwise_bmm_backward(
     needs_grad_x: bool,
     needs_grad_weight: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    import deep_gemm
+    from vllm.third_party import deep_gemm
 
     in_features = x.shape[-1]
     out_features_per_group = weight.size(0) // n_groups

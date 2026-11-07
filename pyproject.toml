@@ -96,7 +96,6 @@ flash-attn-cute = [
 ]
 disagg = [
     "deep-ep ; sys_platform == 'linux'",
-    "deep-gemm ; sys_platform == 'linux'",
     "nixl==1.5.0 ; sys_platform == 'linux'",
     "vllm-router ; sys_platform == 'linux'",
 ]
@@ -247,7 +246,6 @@ prime-pydantic-config = false
 vllm-router = false
 dion = false
 deep-ep = false
-deep-gemm = false
 nixl-cu13 = false
 torchao = false
 prime-kernels = false
@@ -283,10 +281,6 @@ vllm = [
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
-]
-deep-gemm = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/deep_gemm-2.5.0+local-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 prime-kernels = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
