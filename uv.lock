@@ -5222,7 +5222,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "pyzstd", specifier = ">=0.16.2" },
     { name = "quack-kernels", marker = "sys_platform == 'linux' and extra == 'quack'", git = "https://github.com/S1ro1/quack?rev=f62009f" },
-    { name = "renderers", extras = ["multimodal"], editable = "deps/renderers" },
+    { name = "renderers", extras = ["multimodal"], specifier = "==0.1.13.dev17" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "sonic-moe", marker = "sys_platform == 'linux' and extra == 'sonic-moe'", git = "https://github.com/S1ro1/sonic-moe?rev=0bf06ac" },
@@ -6149,7 +6149,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-source = { editable = "deps/renderers" }
+version = "0.1.13.dev17"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -6158,38 +6159,15 @@ dependencies = [
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/12/31/a908c3560b710ffa537fd40021ae200f7d83b1537f7afa3a72d5d0f947ef/renderers-0.1.13.dev17.tar.gz", hash = "sha256:787152ddde094d409ca56983683bdaf33414d4940267176d290824cac858346c", size = 465146, upload-time = "2026-10-24T12:59:56.576Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/a6/60b5d1ee44f20720ab1e6e59d7bd7fd807e2cdf8f035013866e93e6ac84d/renderers-0.1.13.dev17-py3-none-any.whl", hash = "sha256:dfdbeb085e1ede9d7d49d2b39eb3f1ee5eada7dcb58115c2579d477943ca9a14", size = 266437, upload-time = "2026-10-24T12:59:54.569Z" },
+]
 
 [package.optional-dependencies]
 multimodal = [
     { name = "pillow" },
     { name = "transformers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "jinja2" },
-    { name = "numpy" },
-    { name = "openai", specifier = ">=1.108.1" },
-    { name = "openai-harmony", specifier = ">=0.0.4" },
-    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2.0" },
-    { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
-    { name = "tiktoken" },
-    { name = "transformers", marker = "extra == 'multimodal'", specifier = ">=4.50.0" },
-    { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.50.0" },
-]
-provides-extras = ["multimodal", "transformers"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pillow", specifier = ">=12.2.0" },
-    { name = "pre-commit" },
-    { name = "pytest", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "ruff" },
-    { name = "torch", specifier = ">=2.11.0" },
-    { name = "torchvision", specifier = ">=0.26.0" },
-    { name = "transformers", specifier = ">=4.50.0" },
-    { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 
 [[package]]
@@ -7773,7 +7751,7 @@ requires-dist = [
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.13.dev16" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.13.dev17" },
     { name = "rich", specifier = ">=11.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },

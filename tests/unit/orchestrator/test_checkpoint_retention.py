@@ -689,3 +689,43 @@ def test_scalar_journal_migrates_only_continuous_and_preserves_generation_and_pl
     resumed.configure_eval({"heldout": "changed-plan"})
     assert resumed.best_steps == {"training_reward": None, "continuous_reward": None}
     assert resumed.valid_eval_envs(80) == set()
+
+
+def test_native_reward_best_retains_selected_checkpoint_and_exports_role(tmp_path, monkeypatch):
+    from prime_rl.configs.rl import RLConfig
+    from prime_rl.orchestrator import hf_export
+
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"interval": 20, "keep_last": 1, "export": True, "best_metrics": ["reward"]},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.ckpt.best_metrics == config.orchestrator.ckpt.best_metrics == ("reward",)
+    ckpt_dir = tmp_path / "checkpoints"
+    for step in (20, 40, 60):
+        _joint(ckpt_dir, step)
+    retention = CheckpointRetention(ckpt_dir, eval_envs=["cyberstrike-all-tasks"], metrics=config.ckpt.best_metrics)
+    retention.configure_eval({"cyberstrike-all-tasks": "all-tasks-plan"})
+    for step, value in ((20, 0.75), (40, 0.5)):
+        batch = _batch(step=step, episodes=[_episode(task, step, value, reward_key="reward") for task in ("a", "b")])
+        batch.env_name = "cyberstrike-all-tasks"
+        score = eval_epoch_score(batch, expected_tasks=2, group_size=1, reward_key="reward")
+        assert score == value
+        assert eval_epoch_score(batch, expected_tasks=2, group_size=1, reward_key="training_reward") is None
+        retention.complete_eval_epoch(batch, scores={"reward": score})
+    assert retention.best_steps == {"reward": 20}
+    assert retention.valid_eval_envs(20) == {"cyberstrike-all-tasks"}
+    assert prune_joint_ckpts(ckpt_dir, generation="g1", keep_last=1, keep_interval=None) == [40]
+    assert get_joint_ckpt_steps(ckpt_dir) == [20, 60]
+
+    exported = []
+
+    def capture_export(**kwargs):
+        exported.append(kwargs["roles"])
+        return True
+
+    monkeypatch.setattr(hf_export, "_export_locked", capture_export)
+    assert hf_export.export_checkpoints(output_dir=tmp_path, roles={"best_reward": 20, "latest": 60})
+    assert exported == [{"best_reward": 20, "latest": 60}]

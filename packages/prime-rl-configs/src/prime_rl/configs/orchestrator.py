@@ -439,7 +439,7 @@ class CheckpointConfig(BaseConfig):
     export: bool = False
     """Opt into final validated HF exports for the selected BEST metrics and LATEST."""
 
-    best_metrics: tuple[Literal["training_reward", "continuous_reward"], ...] = Field(
+    best_metrics: tuple[Literal["reward", "training_reward", "continuous_reward"], ...] = Field(
         ("continuous_reward",), min_length=1
     )
     """Task-macro held-out scores whose BEST checkpoints are retained and exported."""

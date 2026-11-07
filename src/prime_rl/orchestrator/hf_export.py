@@ -44,7 +44,7 @@ _SOURCE_ASSET_SUFFIXES = {".json", ".jinja", ".txt", ".py", ".model", ".tiktoken
 _UTF8_ASSET_SUFFIXES = {".json", ".jinja", ".txt", ".py", ".tiktoken"}
 # These PrimeRL implementations explicitly use the standard HF state-dict layout.
 _DIRECT_HF_MODEL_TYPES = {"llama", "qwen3"}
-_EXPORT_ROLES = ("best", "best_training_reward", "best_continuous_reward", "latest")
+_EXPORT_ROLES = ("best", "best_reward", "best_training_reward", "best_continuous_reward", "latest")
 
 
 def export_best_and_latest(*, output_dir: Path, best_step: int | None, latest_step: int) -> bool:
