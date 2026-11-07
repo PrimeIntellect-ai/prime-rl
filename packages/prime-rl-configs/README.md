@@ -1,8 +1,8 @@
 # prime-rl-configs
 
-Slim config schema for [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl), with no GPU or ML deps.
+Config schema for [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl).
 
-`pip install prime-rl-configs` gives you `prime_rl.configs.*` (RL/SFT/inference/orchestrator/trainer/env-server schemas) without pulling in `torch`, `vllm`, `transformers`, `wandb`, etc. The full training stack lives in `prime-rl`, which depends on this package.
+On this CyberStrike run branch, `prime-rl-configs` also installs the pinned CyberStrike environment, Flow relay, and kernel-aware Harbor taskset before schema validation. Their CPU-side dependencies include Harbor, Transformers, and tokenizers; `torch` and `vllm` are not required. Every schema consumer of this source revision receives these plugins. The full GPU training stack remains in `prime-rl`.
 
 ## Install
 
