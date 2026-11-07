@@ -60,7 +60,7 @@ uv run launch @ pretrain.toml          # same as: uv run pretrain @ pretrain.tom
 uv run launch @ pretrain.toml --help   # pretrain's help
 ```
 
-The other entrypoints work without a `mode`, but stop on one that names another entrypoint, so `uv run sft @ pretrain.toml` errors instead of failing SFT validation. Config files that set different modes are an error. `trainer`, `orchestrator` and `env-worker-pool` are components, not modes, and take no `mode`.
+`mode` is optional for `uv run rl`, `sft`, `pretrain` and `eval`. When several config files set `mode`, they must set the same one.
 
 ### Env worker pools
 

@@ -1,12 +1,12 @@
 import os
 import sys
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from pydantic_config import BaseConfig as BaseConfig  # noqa: F401
 from pydantic_config import cli  # noqa: F401
-from pydantic_config.cli import ConfigFileError, _load_config_file
 
 if TYPE_CHECKING:
     from prime_rl.configs.rl import RLConfig
@@ -93,19 +93,20 @@ def config_files(args: list[str]) -> list[Path]:
 
 
 def config_mode(args: list[str]) -> str | None:
-    """The ``mode`` that the root config files in ``args`` set, or None. Files that set different modes are an
+    """The ``mode`` that the root TOML config files in ``args`` set, or None. Files that set different modes are an
     error."""
     modes = {}
     for path in config_files(args):
-        try:
-            mode = _load_config_file(str(path)).get("mode")
-        except ConfigFileError as e:
-            raise SystemExit(str(e))
+        if path.suffix != ".toml" or not path.is_file():
+            continue
+        with path.open("rb") as f:
+            mode = tomllib.load(f).get("mode")
         if mode is not None:
             modes[path] = mode
     if len(set(modes.values())) > 1:
-        conflicts = ", ".join(f"{path}: {mode}" for path, mode in modes.items())
-        raise SystemExit(f"config files set conflicting modes: {conflicts}")
+        listed = ", ".join(dict.fromkeys(modes.values()))
+        files = "".join(f"\n  {path}: {mode}" for path, mode in modes.items())
+        raise SystemExit(f"config files set conflicting modes ({listed}):{files}")
     mode = next(iter(modes.values()), None)
     if mode is not None and mode not in MODES:
         raise SystemExit(f'unknown mode "{mode}": use one of {", ".join(MODES)}')
@@ -113,13 +114,7 @@ def config_mode(args: list[str]) -> str | None:
 
 
 def check_mode(entrypoint: str, args: list[str] | None = None) -> None:
-    """Stop before parsing when the config files set conflicting modes or a mode that is not ``entrypoint``. An
-    internal entrypoint (one that is not a mode) takes no mode."""
+    """Stop before parsing when the config files set conflicting modes or a mode other than ``entrypoint``."""
     mode = config_mode(sys.argv[1:] if args is None else args)
-    if mode is None or mode == entrypoint:
-        return
-    if entrypoint in MODES:
-        raise SystemExit(f'this is a `mode = "{mode}"` config: run `uv run {mode}` or `uv run launch`')
-    raise SystemExit(
-        f'`uv run {entrypoint}` takes no `mode`, and this is a `mode = "{mode}"` config: did you mean `uv run launch`?'
-    )
+    if mode is not None and mode != entrypoint:
+        raise SystemExit(f'this is a `mode = "{mode}"` config: run it with `uv run {mode}` or `uv run launch`')

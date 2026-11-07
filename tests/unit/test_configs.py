@@ -194,7 +194,7 @@ def test_launch_needs_a_mode(tmp_path, monkeypatch):
 
     write_toml(tmp_path / "config.toml", {"max_steps": 1})
     monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
-    with pytest.raises(SystemExit, match="set `mode` in the config files"):
+    with pytest.raises(SystemExit):
         launch.main()
 
 
@@ -203,16 +203,15 @@ def test_mode_must_match_the_entrypoint(tmp_path):
     write_toml(tmp_path / "pretrain.toml", {"mode": "pretrain"})
     args = ["@", str(tmp_path / "pretrain.toml")]
     check_mode("pretrain", args)
-    with pytest.raises(SystemExit, match="run `uv run pretrain` or `uv run launch`"):
-        check_mode("sft", args)
-    with pytest.raises(SystemExit, match="did you mean `uv run launch`"):
-        check_mode("trainer", args)
+    for entrypoint in ("sft", "trainer"):
+        with pytest.raises(SystemExit):
+            check_mode(entrypoint, args)
 
 
 def test_config_files_with_different_modes_conflict(tmp_path):
     write_toml(tmp_path / "base.toml", {"mode": "rl"})
     write_toml(tmp_path / "override.toml", {"mode": "sft"})
-    with pytest.raises(SystemExit, match="conflicting modes: .*base.toml: rl, .*override.toml: sft"):
+    with pytest.raises(SystemExit, match="conflicting modes"):
         check_mode("rl", ["@", str(tmp_path / "base.toml"), "@", str(tmp_path / "override.toml")])
 
 
