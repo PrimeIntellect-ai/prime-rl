@@ -300,6 +300,9 @@ class ModelConfig(BaseModelConfig):
     offload_grad_accumulation: Literal["cpu", "gpu"] = "cpu"
     """Where ``offload = "full"`` sums a step's micro-batch gradients. ``cpu`` copies every backward's gradients to CPU and adds them there. ``gpu`` sums them in FP32 on the GPU and copies once after the last backward, which cuts host traffic per step by the number of micro batches but holds 4 bytes per local parameter of GPU memory during the step."""
 
+    offload_overlap_forward: bool = False
+    """With ``offload = "optimizer"`` and AdamW, run the optimizer step's state copies and updates alongside the next forward instead of waiting for them: each FSDP module waits only for the chunks holding its own parameters before its all-gather, and weight broadcasts wait for the whole step first. The math is unchanged; the step's gradients stay allocated until their chunk has updated. Off by default until it has been exercised in RL runs."""
+
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
