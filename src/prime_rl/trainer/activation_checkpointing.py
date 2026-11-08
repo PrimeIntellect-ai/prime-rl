@@ -35,6 +35,10 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_kernels::select_indexed_blocks",
         "prime_kernels::indexed_attention_plan",
         "prime_rl::record_moe_routing_statistics",
+        # The EP dispatch splits are a saved CUDA-to-CPU copy of these counts. Replayed under torch.compile, the
+        # counts exchange would no longer feed the dispatch all-to-all, so inductor could order the two differently
+        # on ranks with different sequence lengths, leaving the ranks in mismatched collectives.
+        "prime_rl_collectives::all_to_all_counts",
     }
 )
 

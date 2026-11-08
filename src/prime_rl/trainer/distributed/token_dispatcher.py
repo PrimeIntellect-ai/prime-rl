@@ -6,8 +6,8 @@ import torch
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.distributed.collectives import (
+    all_to_all_counts,
     all_to_all_single,
-    all_to_all_single_equal,
     mxfp8_all_to_all_combine,
     mxfp8_all_to_all_dispatch,
 )
@@ -344,7 +344,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
 
         ep_degree = self.group.size()
         with torch.no_grad():
-            num_tokens_per_expert_group = all_to_all_single_equal(num_tokens_per_expert, self.group)
+            num_tokens_per_expert_group = all_to_all_counts(num_tokens_per_expert, self.group)
             input_splits, output_splits = torch.stack(
                 (
                     num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
