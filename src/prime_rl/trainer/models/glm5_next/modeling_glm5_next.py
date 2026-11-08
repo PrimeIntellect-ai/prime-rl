@@ -144,9 +144,6 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
 class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Glm5NextConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["Glm5NextDecoderLayer"]
-    _can_compile_fullgraph = False
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -273,9 +270,6 @@ class Glm5NextModel(nn.Module):
 
 
 class Glm5NextForCausalLM(Glm5NextPreTrainedModel):
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
     def __init__(self, config: Glm5NextConfig | Glm5NextTextConfig) -> None:
         super().__init__(config)
         text_config = getattr(config, "text_config", config)

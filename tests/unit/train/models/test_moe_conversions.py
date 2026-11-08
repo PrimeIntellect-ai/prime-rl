@@ -5,7 +5,8 @@ import torch
 
 from prime_rl.trainer.models.afmoe.converting_afmoe import conversion_chain as afmoe_conversion_chain
 from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoePreTrainedModel
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf, view_mapping
+from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain as glm4_moe_conversion_chain
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain as laguna_conversion_chain
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaPreTrainedModel
 from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
@@ -17,6 +18,22 @@ def _afmoe_state_dict() -> dict[str, torch.Tensor]:
     state_dict = {
         f"{prefix}.router.gate.weight": torch.randn(2, 4),
         f"{prefix}.expert_bias": torch.randn(2),
+        f"{prefix}.shared_experts.gate_proj.weight": torch.randn(3, 4),
+        f"{prefix}.shared_experts.up_proj.weight": torch.randn(3, 4),
+        f"{prefix}.shared_experts.down_proj.weight": torch.randn(4, 3),
+    }
+    for expert in range(2):
+        state_dict[f"{prefix}.experts.{expert}.gate_proj.weight"] = torch.randn(3, 4)
+        state_dict[f"{prefix}.experts.{expert}.up_proj.weight"] = torch.randn(3, 4)
+        state_dict[f"{prefix}.experts.{expert}.down_proj.weight"] = torch.randn(4, 3)
+    return state_dict
+
+
+def _glm4_moe_state_dict() -> dict[str, torch.Tensor]:
+    prefix = "model.layers.0.mlp"
+    state_dict = {
+        f"{prefix}.gate.weight": torch.randn(2, 4),
+        f"{prefix}.gate.e_score_correction_bias": torch.randn(2),
         f"{prefix}.shared_experts.gate_proj.weight": torch.randn(3, 4),
         f"{prefix}.shared_experts.up_proj.weight": torch.randn(3, 4),
         f"{prefix}.shared_experts.down_proj.weight": torch.randn(4, 3),
@@ -91,3 +108,26 @@ def test_current_hf_moe_conversion_roundtrip(model_cls, operations, hf_state_dic
     assert hf_state_dict.keys() == original.keys()
     for name, tensor in original.items():
         torch.testing.assert_close(hf_state_dict[name], tensor, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("operations", "hf_state_dict", "singleton_shared_experts"),
+    [
+        (laguna_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _laguna_state_dict(), False),
+        (glm4_moe_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _glm4_moe_state_dict(), True),
+    ],
+)
+def test_view_mapping_matches_prime_to_hf(operations, hf_state_dict, singleton_shared_experts):
+    prime_state_dict = apply_hf_to_prime(hf_state_dict, operations)
+    prime_state_dict["model.layers.0.mlp.tokens_per_expert"] = torch.zeros(2)
+    for name in [n for n in prime_state_dict if ".shared_expert." in n and singleton_shared_experts]:
+        prime_state_dict[name] = prime_state_dict[name].unsqueeze(0)
+
+    views = view_mapping(operations, {name: tensor.shape for name, tensor in prime_state_dict.items()})
+
+    torch.testing.assert_close(
+        {name: prime_state_dict[view["from"]][tuple(view["index"])] for name, view in views.items()},
+        apply_prime_to_hf(dict(prime_state_dict), operations),
+        rtol=0,
+        atol=0,
+    )
