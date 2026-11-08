@@ -14,6 +14,7 @@ deltas here:
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -42,9 +43,14 @@ from vllm.outputs import CompletionOutput, RequestOutput
 from prime_rl.inference.patches import PackedSamplingMask
 from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
 from prime_rl.inference.vllm.serving_tokens import (
+    PD_ROUTED_EXPERTS_KEY,
+    PrimeRlGenerateResponse,
+    PrimeRlGenerateResponseChoice,
     PrimeRlServingTokens,
     _PackedOutputs,
+    _prefill_routed_experts,
     encode_array,
+    hand_off_pd_routed_experts,
     pack_sampled_logprobs,
 )
 
@@ -235,6 +241,71 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
     assert responses[1]["kv_transfer_params"] == {"kv": "kept"}
     assert responses[1]["ec_transfer_params"] == {"ec": "kept"}
+
+
+@pytest.mark.asyncio
+async def test_pd_routed_experts_travel_through_kv_transfer_params():
+    serving = object.__new__(PrimeRlServingTokens)
+    serving.engine_client = SimpleNamespace(
+        vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=True))
+    )
+    serving.enable_prompt_tokens_details = False
+    serving.enable_log_outputs = False
+    prompt = list(range(10, 20))
+    truth = np.random.default_rng(0).integers(0, 255, size=(12, 3, 2), dtype=np.uint8)
+
+    async def respond(kv_transfer_params, generated, rows, out_kv_transfer_params):
+        output = RequestOutput(
+            "test",
+            None,
+            prompt,
+            None,
+            [CompletionOutput(0, "", generated, None, None, routed_experts=rows, finish_reason="length")],
+            True,
+            kv_transfer_params=out_kv_transfer_params,
+        )
+
+        async def outputs():
+            yield output
+
+        request = GenerateRequest(
+            model="test", token_ids=prompt, sampling_params=SamplingParams(), kv_transfer_params=kv_transfer_params
+        )
+        metadata = RequestResponseMetadata(request_id="test")
+        return await serving.serve_tokens_full_generator(request, outputs(), "test", "test", metadata)
+
+    # Prefill forwards the 10 prompt tokens and hands their rows over with the KV.
+    nixl = {"do_remote_prefill": True, "do_remote_decode": False, "remote_engine_id": "p0", "remote_block_ids": [1]}
+    prefill = await respond({"do_remote_decode": True}, [1], truth[:10], dict(nixl))
+    assert prefill.kv_transfer_params[PD_ROUTED_EXPERTS_KEY] == prefill.choices[0].routed_experts
+    # The proxy copies the prefill response's kv_transfer_params into the decode request.
+    forwarded = JSONResponse(content=prefill.model_dump()).body
+    kv_transfer_params = json.loads(forwarded)["kv_transfer_params"]
+
+    # Decode recomputes the last prompt token, so its own rows start at position 9.
+    _prefill_routed_experts.set(kv_transfer_params.pop(PD_ROUTED_EXPERTS_KEY))
+    assert kv_transfer_params == nixl
+    decode = await respond(kv_transfer_params, [1, 2, 3], truth[9:12], None)
+    merged = decode.choices[0].routed_experts
+    assert merged["start"] == 0
+    np.testing.assert_array_equal(_decode_routed_experts(merged), truth)
+
+    # A proxy that drops the key must not yield rows with a gap.
+    request = GenerateRequest(
+        model="test", token_ids=prompt, sampling_params=SamplingParams(), kv_transfer_params=kv_transfer_params
+    )
+    gap = PrimeRlGenerateResponse(
+        request_id="test",
+        model="test",
+        choices=[
+            PrimeRlGenerateResponseChoice(
+                index=0, token_ids=[1, 2, 3], routed_experts={**encode_array(truth[9:12]), "start": 9}
+            )
+        ],
+        usage=UsageInfo(prompt_tokens=10, completion_tokens=3, total_tokens=13),
+    )
+    with pytest.raises(ValueError, match=PD_ROUTED_EXPERTS_KEY):
+        hand_off_pd_routed_experts(request, gap, None)
 
 
 def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
