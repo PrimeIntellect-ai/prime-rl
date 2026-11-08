@@ -27,7 +27,7 @@ prime login   # or: prime config set-api-key <your-key>
   - `WANDB_API_KEY` — every config logs to W&B (`[monitors.wandb]`).
   - `HF_TOKEN` — optional; the Qwen checkpoints are public, but a token avoids rate limits.
 
-`math.toml` needs none of the above beyond W&B: its agents run as local subprocesses on the env server.
+`math.toml` needs none of the above beyond W&B: its agents run as local subprocesses in the env workers.
 
 ## Setup
 

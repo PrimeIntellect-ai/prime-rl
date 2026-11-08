@@ -2,7 +2,7 @@ import json
 import threading
 import uuid
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -14,6 +14,7 @@ from prime_rl.control.types import (
     ControlConflictError,
     InvalidActionError,
     InvalidConfigError,
+    StepActionType,
     UpdateConfigRequest,
 )
 from prime_rl.utils.config import dump_resolved_config
@@ -27,8 +28,9 @@ ApplyConfig = Callable[[BaseModel, list[ConfigChange]], None]
 
 
 class Controller:
-    """Run control. A pause only queues when submitted; ``update`` applies it at a step, so each
-    step runs with one consistent decision. A config update likewise waits for ``apply_update``."""
+    """Run control. A pause or checkpoint only queues when submitted; ``update`` applies it at a
+    step, so each step runs with one consistent decision. A config update likewise waits for
+    ``apply_update``."""
 
     def __init__(
         self,
@@ -38,8 +40,8 @@ class Controller:
         read_config: Callable[[], tuple[int, BaseModel]] | None = None,
         check_config: CheckConfig | None = None,
     ) -> None:
-        """``requires_step``: whether a pause names its step (orchestrator) or applies at the next
-        one (trainer). ``on_submit`` runs after a pause queues, from the API thread. ``read_config`` and
+        """``requires_step``: whether a pause or checkpoint names its step (orchestrator) or applies
+        at the next one (trainer). ``on_submit`` runs after one queues, from the API thread. ``read_config`` and
         ``check_config``: read the running config with its revision and validate a new one, for
         components that update live."""
         self.requires_step = requires_step
@@ -67,11 +69,11 @@ class Controller:
         return action
 
     def mark_saved(self, step: int) -> None:
-        """Record that this process saved ``step``, the step its pause applied to."""
+        """Record that this process saved ``step``, the step its pause or checkpoint applied to."""
         with self.lock:
             self.saved_steps.add(step)
 
-    def submit(self, action_type: Literal["pause"], step: int | None = None) -> Action:
+    def submit(self, action_type: StepActionType, step: int | None = None) -> Action:
         self._validate_step(step)
         with self.lock:
             self._validate_accepting(step)
@@ -81,18 +83,19 @@ class Controller:
         self.on_submit()
         return action
 
-    def update(self, step: int) -> bool:
-        """Apply a pause due at ``step``. Returns whether the run pauses there."""
+    def update(self, step: int) -> StepActionType | None:
+        """Apply a pause or checkpoint due at ``step``. Returns which one saves the run there."""
         with self.lock:
             self.step = step
             action = self.pending
             if action is None or action.step not in (None, step):
-                return False
+                return None
             self.pending = None
             action.state, action.step = "accepted", step
-            self.stop_step = step
+            if action.type == "pause":
+                self.stop_step = step
         get_logger().info(f"Control action {action.id}: {action.type} at step {step}")
-        return True
+        return action.type
 
     def get_config(self) -> ConfigSnapshot:
         if self.read_config is None:
@@ -134,7 +137,9 @@ class Controller:
                 f"The run paused at step {self.stop_step} and takes no more actions; resume it to submit new ones."
             )
         if self.pending is not None:
-            raise ControlConflictError("A pause is already queued and the run takes no more actions.")
+            raise ControlConflictError(
+                f"A {self.pending.type} is already queued; wait until it is accepted, then submit again."
+            )
         if step is not None and self.step is not None and step < self.step:
             raise ControlConflictError(f"Step {step} has passed, this component is at step {self.step}.")
 
@@ -147,9 +152,9 @@ class Controller:
 
     def _validate_step(self, step: int | None) -> None:
         if self.requires_step and step is None:
-            raise InvalidActionError("The orchestrator pauses at a step you name: pass the trainer's accepted 'step'.")
+            raise InvalidActionError("The orchestrator saves at a step you name: pass the trainer's accepted 'step'.")
         if not self.requires_step and step is not None:
-            raise InvalidActionError("The trainer pauses at its next step and takes no 'step'.")
+            raise InvalidActionError("The trainer saves at its next step and takes no 'step'.")
 
 
 def validate_update(current: BaseModel, raw: dict[str, Any]) -> tuple[BaseModel, list[ConfigChange]]:
