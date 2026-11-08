@@ -153,7 +153,6 @@ def train(config: SFTConfig | PretrainConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
-    check_vocab_size(model.config, tokenizer)
     processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
@@ -184,6 +183,7 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
+        check_vocab_size(model.config, tokenizer)
         dataset = setup_token_dataset(config.data, config.model.cp)
         warn_if_no_document_separator(dataset.shards, tokenizer)
     else:
