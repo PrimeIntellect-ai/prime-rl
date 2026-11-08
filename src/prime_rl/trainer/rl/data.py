@@ -231,17 +231,18 @@ class ReplayLog:
     trainer replays them instead of asking the orchestrator, which has moved on, and the env
     workers, which freed the arrays."""
 
-    def __init__(self, output_dir: Path, dp_rank: int, writer: bool):
+    def __init__(self, output_dir: Path, dp_rank: int, dp_world_size: int, writer: bool):
         self.dir = get_replay_dir(output_dir)
         self.dp_rank = dp_rank
+        self.dp_world_size = dp_world_size
         self.writer = writer
         """One rank per data rank writes; the ranks sharing it read the same file."""
         self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
         self.decoder = msgspec.msgpack.Decoder(type=tuple[list[int], list[MicroBatch]])
         self.executor = ThreadPoolExecutor(1, thread_name_prefix="replay")
 
-    def path(self, step: int) -> Path:
-        return get_step_path(self.dir, step) / f"rank_{self.dp_rank}.bin"
+    def path(self, step: int, dp_rank: int | None = None) -> Path:
+        return get_step_path(self.dir, step) / f"rank_{self.dp_rank if dp_rank is None else dp_rank}.bin"
 
     def save(self, step: int, failed: list[int], micro_batches: list[MicroBatch]) -> None:
         """Write the step's micro batches (and the ones whose arrays could not be fetched) in the background."""
@@ -257,15 +258,20 @@ class ReplayLog:
         tmp_path.write_bytes(data)
         tmp_path.rename(path)
 
+    def flush(self) -> None:
+        """Wait for the background writes."""
+        self.executor.submit(lambda: None).result()
+
     def load(self, step: int) -> tuple[list[int], list[MicroBatch]] | None:
-        path = self.path(step)
-        if not path.exists():
+        """The step's micro batches, if every data rank saved its share: the ranks either all
+        replay the step or all ask the orchestrator for it."""
+        if not all(self.path(step, dp_rank).exists() for dp_rank in range(self.dp_world_size)):
             return None
-        return self.decoder.decode(path.read_bytes())
+        return self.decoder.decode(self.path(step).read_bytes())
 
     def prune(self, step: int) -> None:
         """Delete the steps up to ``step`` (call on the master once a checkpoint covers them)."""
-        self.executor.submit(lambda: None).result()
+        self.flush()
         for old_step in get_all_ckpt_steps(self.dir):
             if old_step <= step:
                 shutil.rmtree(get_step_path(self.dir, old_step), ignore_errors=True)
@@ -303,7 +309,9 @@ class DataLoader:
             transport=config,
         )
         self.replay_log = (
-            ReplayLog(output_dir, dp_rank, writer=self.world.rank % non_dp_world_size == 0) if replay else None
+            ReplayLog(output_dir, dp_rank, dp_world_size, writer=self.world.rank % non_dp_world_size == 0)
+            if replay
+            else None
         )
         self.replayed: tuple[list[int], list[MicroBatch]] | None = None
 
@@ -316,6 +324,11 @@ class DataLoader:
         if self.replayed is not None:
             get_logger().info(f"Replaying step {step} from the replay log")
             return
+        if self.replay_log is not None:
+            # The orchestrator moves past a step only once every rank asked for the next one, so
+            # every saved step stays replayable: a restarted trainer replays all but the last step
+            # sent, which the orchestrator keeps.
+            self.replay_log.flush()
         self.receiver.request()
         if peer_timeout is None:
             while not self.receiver.poll(60):

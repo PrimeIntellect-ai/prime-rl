@@ -64,16 +64,22 @@ def _zmq(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
     return sender, receivers
 
 
+def _wait(receiver: BatchReceiver) -> None:
+    receiver.request()
+    while not receiver.poll(1):
+        pass
+
+
 async def _send_while_ranks_request(
     sender: BatchSender, receivers: list[BatchReceiver]
 ) -> tuple[bool, list[list[MicroBatch]]]:
     send = asyncio.create_task(sender.send(MICRO_BATCH_GRID))
     # every rank but the last asks, which covers both data ranks
-    early_requests = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in receivers[:-1]]
+    early_requests = [asyncio.create_task(asyncio.to_thread(_wait, receiver)) for receiver in receivers[:-1]]
     await asyncio.sleep(0.5)
     sent_before_last_request = send.done()
 
-    last_request = asyncio.create_task(asyncio.to_thread(receivers[-1].wait))
+    last_request = asyncio.create_task(asyncio.to_thread(_wait, receivers[-1]))
     await asyncio.wait_for(asyncio.gather(send, *early_requests, last_request), timeout=10)
 
     return sent_before_last_request, [receiver.receive() for receiver in receivers]
