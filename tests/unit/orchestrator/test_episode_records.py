@@ -1,4 +1,4 @@
-"""Episodes decoded from the env-server wire hold per-token streams as numpy arrays (read-only
+"""Episodes decoded from the env-worker-pool wire hold per-token streams as numpy arrays (read-only
 views into the received bytes). Every record written to disk or uploaded must still carry
 plain JSON lists."""
 
@@ -9,13 +9,16 @@ import orjson
 import verifiers.v1 as vf
 from prime_runs._http import encode_json
 from prime_runs.projection import build_samples, episodes_to_parquet_bytes
+from prime_runs.sinks.base import stamp_run, to_mapping
+from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
-from verifiers.v1.serve.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
 
 from prime_rl.configs.monitors import FileMonitorConfig
+from prime_rl.env.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
 from prime_rl.monitors.file.monitor import FileMonitor
-from prime_rl.monitors.file.traces import get_annotations_dir, get_trace_stream
+from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_path
+from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, read_live
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.annotations import stamp_batch
@@ -92,3 +95,29 @@ def test_received_episode_uploads_plain_json():
     # The samples table and the training viewer's parquet rows
     assert encode_json(build_samples([received]))
     assert episodes_to_parquet_bytes([received], "run", 1)
+
+
+def test_received_episode_encodes_as_its_record_did(tmp_path):
+    """The file monitor and the Prime SDK encode episodes with `to_json`, one node at a
+    time: the stream line and its index row match what encoding the whole record gave,
+    and the upload carries the same record."""
+    received, _ = _over_the_wire(episode([trace(), trace()]))
+    record = received.to_record()
+
+    monitor = FileMonitor(FileMonitorConfig())
+    asyncio.run(monitor.init(tmp_path))
+    asyncio.run(monitor.log_episodes([received], step=1, kind="train", subset="all"))
+
+    stream = get_trace_stream(tmp_path)
+    (line,) = chunk_path(stream, 0).read_bytes().splitlines()
+    assert line == orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
+    (row,) = get_index_path(stream).read_bytes().splitlines()
+    assert orjson.loads(row) == orjson.loads(orjson.dumps(index_row(1, record, 0, 0), default=str))
+
+    # With the run recorded on the episode and its traces, as the dispatcher does, the
+    # SDK uploads `to_json` as is; it carries what the SDK stamped on the record before.
+    received.record_run(vf.TrainRunInfo(id="prime-run", work=vf.TrainWorkInfo(step=1)))
+    assert names_run(received, "prime-run", "train")
+    assert orjson.loads(received.to_json()) == orjson.loads(
+        _encode_record(stamp_run(to_mapping(received), "prime-run", "train"), 1)
+    )
