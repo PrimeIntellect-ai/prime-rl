@@ -184,6 +184,13 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_freeze_with_init_from_scratch(self):
+        # Frozen weights are not checkpointed: a resume reloads them from model.name, which a from-scratch run lacks.
+        if self.init_from_scratch and (self.model.freeze_layers > 0 or self.model.freeze_ngram_embedding is True):
+            raise ValueError("model.freeze_layers and model.freeze_ngram_embedding need pretrained weights")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_online_eval(self):
         """Wire online evals and the trainer-to-inference weight transport."""
         if self.eval is None:
