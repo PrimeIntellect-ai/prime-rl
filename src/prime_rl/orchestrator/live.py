@@ -1,6 +1,6 @@
 """The dispatcher's side of the live traces.
 
-Env servers stream every in-flight rollout as deltas (``prime_rl.env.delta``). The
+Env worker pools stream every in-flight rollout as deltas (``prime_rl.env.delta``). The
 dispatcher relays each delta to the monitors stamped with who dispatched it, and keeps
 only what its own progress line needs: the phase and turn count of each live trace.
 """

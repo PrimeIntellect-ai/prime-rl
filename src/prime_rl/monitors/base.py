@@ -58,7 +58,7 @@ class Monitor(ABC):
         Monitors that only carry scalars ignore them."""
 
     async def log_live(self, events: list[dict[str, Any]]) -> None:
-        """Log the env servers' stream of in-flight traces: ``{"delta", "dispatch"}`` for
+        """Log the env worker pools' stream of in-flight traces: ``{"delta", "dispatch"}`` for
         each delta as it arrived, ``{"done": trace_id}`` when a trace's episode finished.
         Monitors that only carry finished work ignore it."""
 

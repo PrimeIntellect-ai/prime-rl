@@ -109,18 +109,29 @@ def collect(run_dir: Path, repeat: int, wall_s: float | None) -> dict:
     }
 
 
-def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
-    """Render the comparison table against the baseline. Returns (lines, regressed)."""
+@dataclass(frozen=True)
+class Row:
+    metric: Metric
+    value: float
+    base_mean: float
+    base_std: float
+    tol: float | None
+    status: str
+
+    @property
+    def delta(self) -> str:
+        delta = self.value - self.base_mean
+        return ("+" if delta >= 0 else "−") + fmt(abs(delta), self.metric.spec)
+
+
+def gate(results: list[dict], baseline: dict) -> list[Row]:
+    """Compare each metric against the baseline. ❌ marks a regression."""
     base = baseline["results"]
     # A baseline can widen a metric's tolerance, e.g. for an eval whose errors are rare
     # infra events the five baseline repeats under-sample.
     min_tol = baseline.get("tolerance", {})
     n = len(base)
-    lines = [
-        "| Metric | Tonight | Baseline mean ± std | Δ | Tolerance | Status |",
-        "|---|---:|---:|---:|---:|:---:|",
-    ]
-    regressed = False
+    rows = []
     for m in METRICS:
         values = [r[m.key] for r in results if r.get(m.key) is not None]
         base_values = [r[m.key] for r in base if r.get(m.key) is not None]
@@ -140,17 +151,29 @@ def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
             )
             worse = -delta if m.higher_is_better else delta
             if worse > tol:
-                status, regressed = "❌", True
+                status = "❌"
             elif -worse > tol:
                 status = "🟢"
             else:
                 status = "✅"
-        sign = "+" if delta >= 0 else "−"
+        rows.append(Row(m, value, base_mean, base_std, tol, status))
+    return rows
+
+
+def compare(results: list[dict], baseline: dict) -> tuple[list[str], bool]:
+    """Render the comparison table against the baseline. Returns (lines, regressed)."""
+    rows = gate(results, baseline)
+    lines = [
+        "| Metric | Tonight | Baseline mean ± std | Δ | Tolerance | Status |",
+        "|---|---:|---:|---:|---:|:---:|",
+    ]
+    for r in rows:
+        spec = r.metric.spec
         lines.append(
-            f"| {m.label} | {fmt(value, m.spec)} | {fmt(base_mean, m.spec)} ± {fmt(base_std, m.spec)}"
-            f" | {sign}{fmt(abs(delta), m.spec)} | {fmt(tol, '±' + m.spec)} | {status} |"
+            f"| {r.metric.label} | {fmt(r.value, spec)} | {fmt(r.base_mean, spec)} ± {fmt(r.base_std, spec)}"
+            f" | {r.delta} | {fmt(r.tol, '±' + spec)} | {r.status} |"
         )
-    return lines, regressed
+    return lines, any(r.status == "❌" for r in rows)
 
 
 def spread(results: list[dict]) -> list[str]:
@@ -193,6 +216,10 @@ def per_repeat(results: list[dict]) -> list[str]:
     return lines
 
 
+def identity_mismatch(result: dict, baseline: dict) -> list[str]:
+    return [key for key in IDENTITY if result.get(key) != baseline["results"][0].get(key)]
+
+
 def summarize(
     results: list[dict], expected: int | None, baseline: dict | None, name: str | None = None
 ) -> tuple[str, bool]:
@@ -215,7 +242,7 @@ def summarize(
     regressed = False
     if baseline is None:
         lines += ["⚠️ No baseline. Skipped the regression check.", ""]
-    elif mismatch := [key for key in IDENTITY if first.get(key) != baseline["results"][0].get(key)]:
+    elif mismatch := identity_mismatch(first, baseline):
         lines += [
             f"⚠️ The baseline is for a different eval ({', '.join(mismatch)} differ). Skipped the regression check.",
             "",
@@ -239,11 +266,48 @@ def summarize(
     return "\n".join(lines) + "\n", regressed
 
 
-def make_baseline(results: list[dict]) -> dict:
+def slack(results: list[dict], expected: int | None, baseline: dict | None, name: str | None = None) -> dict:
+    """Render a short Slack message (webhook payload) with the gated metrics of the summary."""
+    run = f" · <{run_url()}|workflow run>" if run_url() else ""
+    title = f"*Eval regression: {name}*" if name else "*Eval regression*"
+    if not results:
+        return {"text": f"❌ {title}: no repeat finished{run}"}
+
+    results = sorted(results, key=lambda r: r["repeat"])
+    first, k = results[0], len(results)
+    lines = []
+    if expected is not None and k < expected:
+        lines.append(f"⚠️ {expected - k} of {expected} repeats failed")
+    if baseline is None:
+        icon, verdict = "⚠️", "no baseline, skipped the regression check"
+    elif mismatch := identity_mismatch(first, baseline):
+        icon, verdict = "⚠️", f"the baseline is for a different eval ({', '.join(mismatch)} differ)"
+    else:
+        rows = [r for r in gate(results, baseline) if r.tol is not None]
+        regressed = any(r.status == "❌" for r in rows)
+        icon, verdict = ("❌", "regression detected") if regressed else ("✅", "no regression")
+        for r in rows:
+            spec = r.metric.spec
+            lines.append(
+                f"{r.status} {r.metric.label}: *{fmt(r.value, spec)}* vs {fmt(r.base_mean, spec)}"
+                f" ± {fmt(r.base_std, spec)} (Δ {r.delta}, tolerance {fmt(r.tol, '±' + spec)})"
+            )
+    header = [
+        f"{icon} {title}: {verdict}",
+        f"`{first['model']}` · {first['tasks']} tasks × {first['episodes'] // first['tasks']} rollouts{run}",
+    ]
+    return {"text": "\n".join(header + lines)}
+
+
+def run_url() -> str | None:
     server, repo, run_id = (os.environ.get(v) for v in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"))
+    return f"{server}/{repo}/actions/runs/{run_id}" if run_id else None
+
+
+def make_baseline(results: list[dict]) -> dict:
     return {
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "source": f"{server}/{repo}/actions/runs/{run_id}" if run_id else "local",
+        "source": run_url() or "local",
         "commit": os.environ.get("GITHUB_SHA"),
         "results": sorted(results, key=lambda r: r["repeat"]),
     }
@@ -286,6 +350,7 @@ def main() -> None:
     p_summarize.add_argument("--expected", type=int, default=None, help="Number of repeats launched.")
     p_summarize.add_argument("--baseline", type=Path, default=None, help="Baseline file to compare against.")
     p_summarize.add_argument("--name", default=None, help="Config name for the heading.")
+    p_summarize.add_argument("--slack", type=Path, default=None, help="Also write a Slack webhook payload here.")
 
     p_baseline = sub.add_parser("baseline", help="Turn 2+ result JSONs into a baseline and its report.")
     p_baseline.add_argument("results", type=Path, nargs="+")
@@ -313,6 +378,8 @@ def main() -> None:
     baseline = json.loads(args.baseline.read_text()) if args.baseline and args.baseline.exists() else None
     markdown, regressed = summarize(results, args.expected, baseline, args.name)
     sys.stdout.write(markdown)
+    if args.slack:
+        args.slack.write_text(json.dumps(slack(results, args.expected, baseline, args.name)) + "\n")
     sys.exit(1 if regressed else 0)
 
 

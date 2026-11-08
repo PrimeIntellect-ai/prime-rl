@@ -14,7 +14,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
-from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
+from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -27,7 +27,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     prepare_run,
     resolve_latest_ckpt_step,
-    write_env_server_config,
+    write_env_worker_pool_config,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -54,18 +54,18 @@ MODELEXPRESS_BIN_DIR = Path(__file__).resolve().parents[3] / "third_party" / "mo
 MODELEXPRESS_READY_TIMEOUT_S = 120
 
 
-def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
+def env_worker_pools(config: RLConfig) -> list[tuple[str, EnvConfig]]:
     """``(split, source)`` for every launcher-managed train/eval source. The launcher
-    runs one env server per source; each binds an OS-assigned port and publishes it to
+    runs one env worker pool per source; each binds an OS-assigned port and publishes it to
     its address file, where the orchestrator picks it up. A source with ``serve.address``
-    set is externally managed — its server runs elsewhere and only the orchestrator
-    connects to it — so the launcher neither writes its TOML nor spawns a server for it."""
+    set is externally managed — its pool runs elsewhere and only the orchestrator
+    connects to it — so the launcher neither writes its TOML nor starts a pool for it."""
     return [(split, source) for split, source in config.orchestrator.env_sources if source.serve.address is None]
 
 
-def env_server_names(config: RLConfig, split: str) -> list[str]:
-    """Names of the launcher-managed env servers for one split."""
-    return [source.resolved_name for source_split, source in env_servers(config) if source_split == split]
+def env_worker_pool_names(config: RLConfig, split: str) -> list[str]:
+    """Names of the launcher-managed env worker pools for one split."""
+    return [source.resolved_name for source_split, source in env_worker_pools(config) if source_split == split]
 
 
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | dict[str, Any] | None = None) -> None:
@@ -83,7 +83,7 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
     ]
     if config.inference is not None:
         components.append(("Inference", config_dir / INFERENCE_CONFIG))
-    if env_servers(config):
+    if env_worker_pools(config):
         components.append(("Envs", f"{config_dir}/{ENVS_DIR}/*/*.json"))
     return components
 
@@ -167,11 +167,11 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     if config.inference is not None:
         write_pd_configs(config.inference, output_dir)
 
-    # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
+    # One EnvWorkerPoolConfig per launcher-managed source: `env-worker-pool @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
-    for split, source in env_servers(config):
-        write_env_server_config(output_dir, split, source, config.orchestrator.log)
+    for split, source in env_worker_pools(config):
+        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log)
 
 
 def rl_local(config: RLConfig):
@@ -197,7 +197,7 @@ def rl_local(config: RLConfig):
             trainer=True,
             orchestrator=True,
             inference=config.inference is not None,
-            env_names={split: env_server_names(config, split) for split in ("train", "eval")},
+            env_names={split: env_worker_pool_names(config, split) for split in ("train", "eval")},
         )
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
@@ -273,15 +273,15 @@ def rl_local(config: RLConfig):
                 "otherwise rollouts will hang."
             )
 
-        # Start one env server per source. The orchestrator waits for each server's
-        # published address and polls until it answers, so the servers and the
+        # Start one env worker pool per source. The orchestrator waits for each broker's
+        # published address and polls until it answers, so the pools and the
         # orchestrator start in parallel.
-        for split, source in env_servers(config):
+        for split, source in env_worker_pools(config):
             name = source.resolved_name
-            logger.info(f"Starting {name} server")
+            logger.info(f"Starting {name} env worker pool")
             processes.start(
-                f"{split} env server {name}",
-                ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
+                f"{split} env worker pool {name}",
+                ["env-worker-pool", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
                 env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
                 log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
@@ -368,9 +368,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         else {}
     )
 
-    # Env servers launch on every inference node, one replica per launcher-managed train/eval source.
-    train_env_names = env_server_names(config, "train")
-    eval_env_names = env_server_names(config, "eval")
+    # Env worker pools launch on every inference node, one replica per launcher-managed train/eval source.
+    train_env_names = env_worker_pool_names(config, "train")
+    eval_env_names = env_worker_pool_names(config, "eval")
 
     # NIXL and ModelExpress weight broadcasts both rendezvous through a ModelExpress server.
     mx_broadcast = (
@@ -511,8 +511,8 @@ def rl_slurm(config: RLConfig):
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})
         logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', [('RL', config_dir / RL_CONFIG)])}")
 
-        train_env_names = env_server_names(config, "train")
-        eval_env_names = env_server_names(config, "eval")
+        train_env_names = env_worker_pool_names(config, "train")
+        eval_env_names = env_worker_pool_names(config, "eval")
 
         log_message = format_log_message(
             log_dir=log_dir,
@@ -529,8 +529,8 @@ def rl_slurm(config: RLConfig):
         components = [("RL", config_dir / RL_CONFIG), *rl_config_components(config, config_dir)]
         logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', components)}")
 
-        train_env_names = env_server_names(config, "train")
-        eval_env_names = env_server_names(config, "eval")
+        train_env_names = env_worker_pool_names(config, "train")
+        eval_env_names = env_worker_pool_names(config, "eval")
 
         has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(
@@ -607,6 +607,7 @@ def rl(config: RLConfig):
 
 def main():
     set_proc_title("Launcher")
+    check_mode("rl")
     rl(cli(RLConfig))
 
 

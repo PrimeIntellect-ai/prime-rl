@@ -1,4 +1,4 @@
-"""The env server ships its env config to workers as plain data: a JSON-mode
+"""The env worker pool ships its env config to workers as plain data: a JSON-mode
 `model_dump` and `resolve_env_config` rebuilds the env's own config class, role-typed seats
 included."""
 

@@ -7,7 +7,7 @@ admits episodes under the adaptive ``ConcurrencyController``, fed by the
 measurements and are never cancelled on load - a controller cut only blocks admission
 until the pool drains.
 
-Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
+Env worker pools belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
 ``rl``: a source without an explicit ``serve.address`` is found through the address file
 its server publishes; one with an address is reached directly."""
 
@@ -56,7 +56,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
@@ -77,7 +77,7 @@ class EvalRunner:
 
         # The heartbeat is beaten only by landed episodes — the first episode is its
         # first beat. No startup ping on purpose: the run-start to first-episode gap
-        # (pool boot, env servers, the first episode's full duration) would otherwise
+        # (pool boot, env worker pools, the first episode's full duration) would otherwise
         # sit inside the ping stream as an abnormally long silence and flip a healthy
         # run stale. Until then the heartbeat has simply never been pinged.
         if config.heartbeat is not None:

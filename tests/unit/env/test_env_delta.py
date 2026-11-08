@@ -246,6 +246,37 @@ async def test_discarded_attempt_drops_its_trace():
     assert list(assembly.traces) == [second.id]
 
 
+@pytest.mark.asyncio
+async def test_retried_agent_run_replaces_its_trace():
+    traces: list[vf.Trace] = []
+    frames: list[bytes] = []
+
+    async def send(data: dict) -> None:
+        frames.append(pack(data))
+
+    async with DeltaStreamer(lambda: traces, send) as streamer:
+        first = make_trace()
+        traces.append(first)
+        streamer.watch(first)
+        add_turn(first, "a1")
+        add_turn(first, "a2")
+        await settle()
+        retry = make_trace()
+        retry.id, retry.attempt = first.id, 2
+        traces[:] = [retry]
+        streamer.watch(retry)
+        add_turn(retry, "b1")
+        await settle()
+    deltas = [unpack(frame) for frame in frames]
+    assert {"trace": first.id, "discard": True} in deltas
+    assembly = EpisodeAssembly()
+    for delta in deltas:
+        assembly.apply(delta)
+    (trace,) = assembly.traces.values()
+    assert trace["attempt"] == 2
+    assert [node["message"]["content"] for node in trace["nodes"]] == ["q", "b1"]
+
+
 def test_finish_refuses_a_gap():
     assembly = EpisodeAssembly()
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
