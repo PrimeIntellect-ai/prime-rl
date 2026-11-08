@@ -30,6 +30,7 @@ from transformers import AutoConfig, AutoTokenizer, GenerationConfig, Pretrained
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
+from prime_rl.configs.pretrain import PretrainModelConfig
 from prime_rl.configs.trainer import (
     ActivationCheckpointConfig,
     CompileConfig,
@@ -308,6 +309,32 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
+def get_model_config(config: ModelConfig, **kwargs) -> PretrainedConfig:
+    """The model's HF config: ``model.name``'s, with the fields of pretraining's ``model.config`` on top. Without a
+    name, ``model.config``'s ``model_type`` with its other fields over that architecture's defaults. ``kwargs`` go to
+    transformers."""
+    fields = dict(config.config) if isinstance(config, PretrainModelConfig) else {}
+    model_type = fields.pop("model_type", None)
+    if config.name is None:
+        base, config_dict = AutoConfig.for_model(model_type), {}
+    else:
+        base = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code, **kwargs)
+        if model_type not in (None, base.model_type):
+            raise ValueError(
+                f"model.config.model_type is {model_type!r}, but {config.name} is a {base.model_type!r} model"
+            )
+        if not fields:
+            return cast(PretrainedConfig, base)
+        config_dict, _ = PretrainedConfig.get_config_dict(config.name)
+    # transformers keeps unknown fields as attributes, so a misspelled field would be ignored.
+    unknown = sorted(fields.keys() - base.to_dict().keys())
+    if unknown:
+        raise ValueError(f"model.config: {type(base).__name__} has no field {', '.join(unknown)}")
+    # Built like transformers loads a config.json, so fields derived from others (e.g. layer_types) follow the
+    # overrides, and the config class validates the result.
+    return type(base).from_dict({**config_dict, **fields}, **kwargs)
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -316,12 +343,7 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    model_config = cast(
-        PretrainedConfig,
-        AutoConfig.from_pretrained(
-            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
-        ),
-    )
+    model_config = get_model_config(config, attn_implementation=config.attn)
     model_config.use_cache = False
 
     if config.vlm is not None:
@@ -408,7 +430,9 @@ def get_model(
 
         load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
+            logger.info(
+                f"Loading model {config.name or model_config.model_type} using {model_cls.__name__} to meta device"
+            )
             model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")

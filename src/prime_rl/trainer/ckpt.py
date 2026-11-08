@@ -1,6 +1,7 @@
 import bisect
 import gc
 import json
+import reprlib
 import shutil
 import time
 from dataclasses import asdict, dataclass
@@ -22,6 +23,7 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
+from transformers import PretrainedConfig
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -45,6 +47,27 @@ class Progress:
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
+
+
+def write_model_config(model_config: PretrainedConfig, directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text(model_config.to_json_string(use_diff=False))
+
+
+def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
+    """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``."""
+    path = directory / "config.json"
+    if not path.exists():
+        return
+    saved = json.loads(path.read_text())
+    current = json.loads(model_config.to_json_string(use_diff=False))
+    # Fields only one side has come from another transformers version.
+    keys = (saved.keys() & current.keys()) - {"transformers_version", "_name_or_path"}
+    changed = {key: (saved[key], current[key]) for key in sorted(keys) if saved[key] != current[key]}
+    if changed:
+        short = reprlib.Repr(maxlist=3, maxdict=3).repr
+        details = ", ".join(f"{key} {short(old)} -> {short(new)}" for key, (old, new) in changed.items())
+        raise ValueError(f"The checkpoint at {directory} has another model architecture: {details}")
 
 
 def _try_rmtree(path: Path, logger) -> None:
@@ -169,10 +192,18 @@ class AppState(Stateful):
 
 
 class CheckpointManager:
-    """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
+    """Utility class to save and load trainer checkpoints to resume SFT and RL training. With ``model_config``, every
+    checkpoint carries it as ``config.json``, and a checkpoint with another architecture does not load."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
+    def __init__(
+        self,
+        output_dir: Path,
+        config: CheckpointConfig,
+        resume: ResumeConfig | None = None,
+        model_config: PretrainedConfig | None = None,
+    ):
         self.config = config
+        self.model_config = model_config
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -217,6 +248,8 @@ class CheckpointManager:
 
         # Before the sharded state, so the mapping is in place once .metadata appears
         self._save_mapping(path, model)
+        if self.model_config is not None and self.world.is_master:
+            write_model_config(self.model_config, path)
         dcp_save(state_dict, checkpoint_id=path, process_group=get_dcp_group())
 
         self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
@@ -248,6 +281,8 @@ class CheckpointManager:
         """Load the trainer checkpoint from a given path (in-place)."""
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
+        if self.model_config is not None:
+            check_model_config(self.model_config, path)
 
         # Load sharded state
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
@@ -355,8 +390,9 @@ def setup_ckpt_manager(
     output_dir: Path,
     ckpt_config: CheckpointConfig | None,
     resume: ResumeConfig | None = None,
+    model_config: PretrainedConfig | None = None,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume, model_config)
