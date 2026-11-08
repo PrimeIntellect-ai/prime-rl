@@ -357,7 +357,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init; a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The run writes the architecture's `config.json` into its run directory and every checkpoint, and a resume checks that the checkpoint has the same architecture. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
 **Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
 
@@ -380,23 +380,14 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** `[model.config]` defines the architecture: `model_type` picks the model, and the other fields of its `config.json` override that model's defaults. `[tokenizer]` names the tokenizer, and `data.paths` the shards:
+**Configure.** Only `data.paths` is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
 max_steps = 1000
 
-[model.config]             # the shape of Qwen3-0.6B
-model_type = "qwen3"
-hidden_size = 1024
-intermediate_size = 3072
-num_hidden_layers = 28
-num_attention_heads = 16
-num_key_value_heads = 8
-tie_word_embeddings = true
-
-[tokenizer]
-name = "Qwen/Qwen3-0.6B"
+[model]
+name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
 paths = ["data/fineweb-edu"]
@@ -411,8 +402,6 @@ num_samples = 512          # windows per validation; leave out to read the held-
 paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
-
-To train an existing model's architecture from scratch, set `model.name` instead: its config is the base, `[model.config]` fields override it, and its tokenizer is the default. The run writes the architecture to `<run_dir>/config.json` and into every checkpoint, and a resumed run checks that it has the same one.
 
 All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 

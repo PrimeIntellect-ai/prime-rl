@@ -270,9 +270,9 @@ class ParallelDims:
 
 def _num_experts(config: ModelConfig) -> int | None:
     """Return the routed expert count from the HuggingFace config, or None for non-MoE models."""
-    from prime_rl.trainer.model import get_model_config
+    from transformers import AutoConfig
 
-    model_config = get_model_config(config)
+    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     model_config = getattr(model_config, "text_config", model_config)
     for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
         if num_experts := getattr(model_config, attr, None):

@@ -157,18 +157,11 @@ def test_rl_launcher_config_roundtrip(tmp_path):
 
 
 def test_pretrain_config_roundtrip(tmp_path):
-    """A minimal pretrain TOML (an architecture, a tokenizer and data) gets the pretraining defaults and survives the
-    launcher's resolved config, which `uv run sft` rejects."""
+    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config, which
+    `uv run sft` rejects."""
     from prime_rl.entrypoints.launcher import write_config
 
-    write_toml(
-        tmp_path / "pretrain.toml",
-        {
-            "model": {"config": {"model_type": "qwen3", "hidden_size": 64}},
-            "tokenizer": {"name": "Qwen/Qwen3-0.6B"},
-            "data": {"paths": [str(tmp_path / "tokens")]},
-        },
-    )
+    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
     assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
@@ -182,15 +175,6 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert muon.optim.lr == 1e-3
     warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
-
-
-def test_pretrain_needs_an_architecture(tmp_path):
-    """Without model.name, model.config needs a model_type and the run a tokenizer."""
-    data = {"data": {"paths": [str(tmp_path / "tokens")]}}
-    for config, error in (({}, "model_type"), ({"model": {"config": {"model_type": "qwen3"}}}, "tokenizer")):
-        write_toml(tmp_path / "pretrain.toml", {**data, **config})
-        with pytest.raises(ConfigFileError, match=error):
-            cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml")])
 
 
 @pytest.mark.parametrize("mode", MODES)

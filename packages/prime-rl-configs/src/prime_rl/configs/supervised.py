@@ -133,7 +133,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         set explicitly."""
         if self.run.name is None:
             dataset = str(getattr(self.data, "name", "")).split("/")[-1]
-            model = str(self.model.name or "").split("/")[-1]
+            model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
         if self.run.dir is None:

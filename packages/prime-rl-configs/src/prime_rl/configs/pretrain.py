@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
@@ -9,7 +9,6 @@ from prime_rl.configs.trainer import (
     ConstantSchedulerConfig,
     CosineSchedulerConfig,
     LinearSchedulerConfig,
-    ModelConfig,
     MuonConfig,
     SignSGDConfig,
 )
@@ -40,16 +39,6 @@ class PretrainValConfig(BaseValConfig):
 
     num_samples: int | None = Field(None, ge=1)
     """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
-
-
-class PretrainModelConfig(ModelConfig):
-    name: str | None = None
-    """An existing model (HF name or local path) whose architecture is trained from scratch. Not needed when
-    ``config.model_type`` defines the architecture."""
-
-    config: dict[str, Any] = {}
-    """Fields of the model's HF config (``config.json``). ``model_type`` picks the architecture and the other fields
-    override its defaults; with ``name``, they override ``name``'s config."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -87,8 +76,6 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 
-    model: PretrainModelConfig = PretrainModelConfig()
-
     data: DatatroveDataConfig
 
     val: PretrainValConfig | None = None
@@ -99,12 +86,3 @@ class PretrainConfig(SupervisedTrainerConfig):
     scheduler: PretrainSchedulerConfig = PretrainLinearSchedulerConfig()
     """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
     first updates at the full learning rate are unstable."""
-
-    @model_validator(mode="after")
-    def validate_model_architecture(self):
-        if self.model.name is None:
-            if "model_type" not in self.model.config:
-                raise ValueError("Set model.config.model_type, or model.name for an existing model's architecture.")
-            if self.tokenizer.name is None:
-                raise ValueError("Set tokenizer.name: a model defined by model.config has no tokenizer.")
-        return self

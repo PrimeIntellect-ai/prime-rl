@@ -31,7 +31,6 @@ import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
-from prime_rl.configs.pretrain import PretrainModelConfig
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model, setup_tokenizer
@@ -87,8 +86,7 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
             "- the checkpoint must live in its run directory"
         )
 
-    model_cls = PretrainModelConfig if path.name == "pretrain.json" else ModelConfig
-    model = model_cls(**run_config["model"])
+    model = ModelConfig(**run_config["model"])
     tokenizer = TokenizerConfig(**run_config["tokenizer"])
     return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
 
@@ -130,7 +128,7 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
         gen_config.save_pretrained(output_dir)
     # Processor first: it saves its own (unmodified) tokenizer, which the configured
     # tokenizer (pad token, custom chat template) must override.
-    processor = setup_processor(model_config) if model_config.name is not None else None
+    processor = setup_processor(model_config)
     if processor is not None:
         processor.save_pretrained(output_dir)
     if tokenizer_config.name is None:
@@ -138,8 +136,9 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
     setup_tokenizer(tokenizer_config).save_pretrained(output_dir)
     # Local trust_remote_code models localize auto_map to plain module names, so the
     # custom code files must travel with the weights.
-    if model_config.name is not None and Path(model_config.name).is_dir():
-        for path in Path(model_config.name).glob("*.py"):
+    source_dir = Path(model_config.name)
+    if source_dir.is_dir():
+        for path in source_dir.glob("*.py"):
             shutil.copyfile(path, output_dir / path.name)
 
 

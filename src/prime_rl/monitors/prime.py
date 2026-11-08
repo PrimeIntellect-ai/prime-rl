@@ -64,7 +64,7 @@ def register(
         init_kwargs = {"name": name, "model": "unknown"}
     else:
         if isinstance(config, SupervisedTrainerConfig):
-            model = config.model.name or "unknown"
+            model = config.model.name
             # SFT and pretraining train on a dataset, not on environments, and have no rollouts.
             environments = []
             training = pr.TrainingSpec(

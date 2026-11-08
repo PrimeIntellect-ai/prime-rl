@@ -12,6 +12,7 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
+from transformers import AutoConfig
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, write_model_config
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
@@ -29,7 +30,6 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
-    get_model_config,
     is_tt_moe_model,
     reshard_module,
     setup_tokenizer,
@@ -128,7 +128,11 @@ def train(config: SFTConfig | PretrainConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
 
     # A model trained from scratch: checkpoints carry its architecture, and a resume checks it.
-    model_config = get_model_config(config.model) if isinstance(config, PretrainConfig) else None
+    model_config = (
+        AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+        if isinstance(config, PretrainConfig)
+        else None
+    )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -156,7 +160,7 @@ def train(config: SFTConfig | PretrainConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
-    processor = setup_processor(config.model) if config.model.name is not None else None
+    processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
 
