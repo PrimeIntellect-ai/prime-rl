@@ -11,7 +11,6 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.distributed.checkpoint.staging import AsyncStager
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -19,7 +18,6 @@ from torch.distributed.checkpoint.state_dict import (
     set_state_dict,
 )
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
-from torch.distributed.checkpoint.state_dict_saver import AsyncCheckpointerType, AsyncSaveResponse, async_save
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.tensor import DTensor, Shard
@@ -54,12 +52,27 @@ class Progress:
 
 
 @dataclass
+class Staging:
+    """A copy to pinned host memory in flight: the copied state dict, the event recorded after the copies, and the
+    source state dict, kept alive (with its GPU temporaries) until the copies are done."""
+
+    state_dict: dict[str, Any]
+    copied: torch.cuda.Event
+    sources: dict[str, Any] | None
+
+    def wait(self) -> dict[str, Any]:
+        self.copied.synchronize()
+        self.sources = None
+        return self.state_dict
+
+
+@dataclass
 class PendingSave:
     """An async save whose write to storage may still be running."""
 
     step: int
-    staging: Future | None
-    """Resolves once the state is copied to host memory; None once that copy is known to be done."""
+    staging: Staging | None
+    """The copy to host memory; None once it is known to be done."""
     write: Future
     start_time: float
     end_time: float = 0.0
@@ -68,32 +81,25 @@ class PendingSave:
         self.end_time = time.perf_counter()
 
 
-class PinnedStager(AsyncStager):
+class PinnedStager:
     """Copies a state dict into pinned host buffers that are kept and reused across saves (one per tensor path).
-    GPU tensors are copied on a side stream, so the copy can run alongside the next step; the returned future
-    resolves once the copy is complete, and the source tensors are kept alive until then. CPU tensors are copied
-    synchronously. Non-tensor values are deep-copied, so later updates do not reach the checkpoint."""
-
-    _synchronize_after_execute = False
+    GPU tensors are copied on a side stream, so the copy can run alongside the next step. CPU tensors are copied
+    synchronously. Non-tensor values are deep-copied, so later updates do not reach the checkpoint. DCP's
+    ``DefaultStager`` cannot stage this trainer's DTensors ("invalid python storage"), so DTensors are staged through
+    their local shard and rewrapped with their spec."""
 
     def __init__(self):
         self.buffers: dict[tuple, torch.Tensor] = {}
         self.stream = torch.cuda.Stream()
-        self.executor = ThreadPoolExecutor(max_workers=1)
 
-    def stage(self, state_dict: dict[str, Any]) -> Future:
+    def stage(self, state_dict: dict[str, Any]) -> Staging:
         # The side stream must see everything the training stream wrote, including the optimizer step
         self.stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self.stream):
             staged = self._copy(state_dict, ())
         copied = torch.cuda.Event()
         copied.record(self.stream)
-
-        def wait_for_copies(sources: dict[str, Any]) -> dict[str, Any]:
-            copied.synchronize()
-            return staged
-
-        return self.executor.submit(wait_for_copies, state_dict)
+        return Staging(staged, copied, state_dict)
 
     def _copy(self, value: Any, path: tuple) -> Any:
         if isinstance(value, DTensor):
@@ -277,7 +283,8 @@ class CheckpointManager:
         self.world = get_world()
 
         self.stager: PinnedStager | None = None
-        # Background writes run their DCP collectives on their own gloo group, created on the first one
+        # Background writes run in their own thread, with their DCP collectives on their own gloo group
+        self.writer: ThreadPoolExecutor | None = None
         self.write_group: torch.distributed.ProcessGroup | None = None
         self.pending: PendingSave | None = None
 
@@ -299,8 +306,8 @@ class CheckpointManager:
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
-    ) -> tuple[Future | None, Future] | None:
-        """Save the trainer checkpoint to a given path. With ``async_save``, returns the futures of ``_async_save``."""
+    ) -> tuple[Staging | None, Future] | None:
+        """Save the trainer checkpoint to a given path. With ``async_save``, returns what ``_async_save`` does."""
         self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.perf_counter()
 
@@ -325,29 +332,26 @@ class CheckpointManager:
             return None
         return self._async_save(app_state, path, start_time)
 
-    def _async_save(self, app_state: AppState, path: Path, start_time: float) -> tuple[Future | None, Future]:
-        """Copy the state into pinned host buffers and write them from a background thread. Returns the staging
-        future (None once the copy is done) and the write future.
+    def _async_save(self, app_state: AppState, path: Path, start_time: float) -> tuple[Staging | None, Future]:
+        """Copy the state into pinned host buffers and write them from a background thread. Returns the copy (None
+        once it is done) and the write future.
 
         The copy of GPU-resident state overlaps the next step, until ``wait_for_staging`` before its optimizer step.
         Offloaded optimizer state is updated outside the optimizer step (``full`` offload updates it during backward),
         so with an offload optimizer the copy finishes before this returns."""
         if self.stager is None:
             self.stager = PinnedStager()
+            # A thread rather than DCP's writer process: sending DTensors to that process crashes on torch 2.13/2.14,
+            # and it needs shared memory the size of the shard. A new thread's current device is 0, so without the
+            # initializer its first CUDA call would create a context on GPU 0 for every rank.
+            self.writer = ThreadPoolExecutor(
+                max_workers=1, initializer=torch.cuda.set_device, initargs=(torch.cuda.current_device(),)
+            )
             self.write_group = torch.distributed.new_group(backend="gloo", timeout=DCP_TIMEOUT)
-        # The writer runs in a thread: a process would need the staged DTensors pickled (which crashes on torch
-        # 2.13/2.14) and shared memory the size of the shard. The GIL is released during file writes.
-        response = async_save(
-            {"app": app_state.async_state_dict()},
-            checkpoint_id=path,
-            process_group=self.write_group,
-            async_checkpointer_type=AsyncCheckpointerType.THREAD,
-            async_stager=self.stager,
-        )
-        assert isinstance(response, AsyncSaveResponse)
-        staging, write = response.staging_completion, response.upload_completion
+        staging = self.stager.stage({"app": app_state.async_state_dict()})
+        write = self.writer.submit(lambda: dcp_save(staging.wait(), checkpoint_id=path, process_group=self.write_group))
         if any(isinstance(optimizer, OffloadOptimizer) for optimizer in app_state.optimizers):
-            staging.result()
+            staging.wait()
             staging = None
         self.logger.info(
             f"{'Staged' if staging is None else 'Started staging'} training checkpoint in "
@@ -470,7 +474,7 @@ class CheckpointManager:
             return
         if self.pending.staging is not None:
             start_time = time.perf_counter()
-            self.pending.staging.result()
+            self.pending.staging.wait()
             self.pending.staging = None
             self.logger.info(f"Waited {format_time(time.perf_counter() - start_time)} for checkpoint staging")
         if self.pending.write.done():
