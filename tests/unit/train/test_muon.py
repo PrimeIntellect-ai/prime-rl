@@ -107,15 +107,23 @@ def test_muon_matches_reference():
 
 
 def test_subset_steps_match_the_full_step():
-    """An offloaded step updates one chunk of units at a time, after the trainer has moved on (zero_grad)."""
+    """An offloaded step updates one chunk of units at a time, after the trainer has moved on (zero_grad, a new
+    lr)."""
 
     def train(chunked: bool) -> list[torch.Tensor]:
         torch.manual_seed(0)
-        params = [torch.nn.Parameter(torch.randn(shape)) for shape in [(16, 48), (40, 24), (3, 32, 16), (24,)]]
+        shapes = [(16, 48), (40, 24), (3, 32, 16), (24,), (8,), (32, 8), (20, 8)]
+        params = [torch.nn.Parameter(torch.randn(shape)) for shape in shapes]
+        sinkhorn = dict(algorithm="sinkhorn", weight_decay=0.0, lr_scale=2.0, tau=1e-3, iters=5)
         optimizer = Muon(
-            [dict(params=params[:3], algorithm="muon"), dict(params=params[3:], algorithm="adamw")],
+            [
+                dict(params=params[:3], algorithm="muon"),
+                dict(params=params[3:4], algorithm="adamw"),
+                dict(params=params[4:5], algorithm="adamw", weight_decay=0.0),
+                dict(params=params[5:], **sinkhorn),
+            ],
             lr=0.02,
-            matrix_partitions={params[2]: (16, 16)},
+            matrix_partitions={params[1]: (8, 8, 8, 16), params[2]: (16, 16)},
             bucket_bytes=2048,
         )
         for step in range(3):
@@ -124,11 +132,15 @@ def test_subset_steps_match_the_full_step():
             if chunked and step > 0:
                 subset_step = optimizer.begin_subset_step()
                 optimizer.zero_grad()
+                for group in optimizer.param_groups:
+                    group["lr"] *= 0.5
                 for unit in reversed(subset_step.units):
                     subset_step.step_params(unit)
             else:
                 optimizer.step()
-        assert [group["step"] for group in optimizer.param_groups] == [3, 3]
+                for group in optimizer.param_groups:
+                    group["lr"] *= 0.5
+        assert [group["step"] for group in optimizer.param_groups] == [3, 3, 3, 3]
         return [p.detach() for p in params]
 
     for reference, chunked in zip(train(False), train(True)):
