@@ -64,7 +64,8 @@ def register(
         init_kwargs = {"name": name, "model": "unknown"}
     else:
         if isinstance(config, SupervisedTrainerConfig):
-            model = config.model.name
+            # A local model folder (e.g. pretraining's default) registers by its name, not by its path on this machine.
+            model = Path(config.model.name).name if Path(config.model.name).is_dir() else config.model.name
             # SFT and pretraining train on a dataset, not on environments, and have no rollouts.
             environments = []
             training = pr.TrainingSpec(

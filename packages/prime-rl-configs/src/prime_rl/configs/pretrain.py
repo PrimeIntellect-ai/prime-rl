@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
@@ -9,9 +9,14 @@ from prime_rl.configs.trainer import (
     ConstantSchedulerConfig,
     CosineSchedulerConfig,
     LinearSchedulerConfig,
+    ModelConfig,
     MuonConfig,
     SignSGDConfig,
 )
+
+# nanochat's d12 shape (12 layers, 768 wide) with Qwen3's vocabulary, shipped with prime-rl.
+DEFAULT_MODEL = str(Path(__file__).parent / "models" / "nanochat-d12")
+DEFAULT_TOKENIZER = "Qwen/Qwen3-30B-A3B"
 
 
 class DatatroveDataConfig(BaseDataConfig):
@@ -39,6 +44,12 @@ class PretrainValConfig(BaseValConfig):
 
     num_samples: int | None = Field(None, ge=1)
     """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
+
+
+class PretrainModelConfig(ModelConfig):
+    name: str = DEFAULT_MODEL
+    """The architecture to train from scratch: an HF model name or a folder with a ``config.json``, of which only the
+    config is read. Defaults to nanochat d12, shipped with prime-rl."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -76,6 +87,8 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 
+    model: PretrainModelConfig = PretrainModelConfig()
+
     data: DatatroveDataConfig
 
     val: PretrainValConfig | None = None
@@ -86,3 +99,10 @@ class PretrainConfig(SupervisedTrainerConfig):
     scheduler: PretrainSchedulerConfig = PretrainLinearSchedulerConfig()
     """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
     first updates at the full learning rate are unstable."""
+
+    @model_validator(mode="after")
+    def default_tokenizer(self):
+        """The default model's folder holds only its config.json: its tokenizer is Qwen3's."""
+        if self.tokenizer.name == DEFAULT_MODEL:
+            self.tokenizer.name = DEFAULT_TOKENIZER
+        return self
