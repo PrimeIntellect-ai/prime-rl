@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
+from verifiers.v1.configs.client import BaseClientConfig
 
 from prime_rl.utils.config import BaseConfig
 
@@ -38,9 +39,93 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer. The trainer
-    fails the run when no consumer acknowledges an offered version in time."""
+    timeout: int = 3600
+    """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
+    for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
+    offered version in time. Raise it for large models on slow shared filesystems."""
+
+
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["filesystem"] = "filesystem"
+
+
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    host: str = "localhost"
+    """Weight transfer host."""
+
+    port: int
+    """Weight transfer port."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference workers across all servers. Set automatically by ``rl`` and ``sft``."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
+
+    port: int = 29501
+    """Port for the NCCL broadcast rendezvous."""
+
+
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
+
+    overlap_transfer_and_replay: bool = False
+    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
+
+
+class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["modelexpress"] = "modelexpress"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
+    """Trainer storage policy passed to ModelExpress."""
+
+    staging_buffer_bytes: int | None = Field(None, gt=0)
+    """Receiver staging capacity per buffer. None stages a complete update."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of receiver buffers. Two overlap the next read with installation."""
+
+
+WeightBroadcastConfig: TypeAlias = Annotated[
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | ModelExpressWeightBroadcastConfig,
+    Field(discriminator="type"),
+]
+"""Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
+
+
+class BaseDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
+
+
+class BaseSingleNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["single_node"] = "single_node"
+
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
+
+    num_infer_gpus: int = 1
+    """GPUs allocated to inference. ``sft`` uses them only for online evals with an ``[inference]`` block."""
+
+
+class BaseMultiNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["multi_node"] = "multi_node"
+
+    num_train_nodes: int = Field(ge=1)
+    """Training nodes."""
 
 
 class RunConfig(BaseConfig):
@@ -49,6 +134,14 @@ class RunConfig(BaseConfig):
 
     dir: str | None = None
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
+
+
+class ControlConfig(BaseConfig):
+    host: str = "0.0.0.0"
+    """Address the control API binds to."""
+
+    port: int = Field(8040, ge=1, le=65535)
+    """Port the control API listens on."""
 
 
 class ResumeConfig(BaseConfig):
@@ -79,8 +172,8 @@ class ResumeConfig(BaseConfig):
 
 
 class SlurmConfig(BaseConfig):
-    job_name: str = "prime-rl"
-    """SLURM job name."""
+    job_name: str | None = None
+    """SLURM job name. Defaults to ``run.name`` for ``rl`` and ``sft``, and to ``inference`` for ``inference``."""
 
     project_dir: Path = Path(".")
     """Path to the project root, used to source .env, activate .venv, and run uv sync."""
@@ -88,8 +181,8 @@ class SlurmConfig(BaseConfig):
     template_path: Path | None = None
     """SLURM template file. If None, uses the bundled single-node or multi-node template."""
 
-    partition: str = "cluster"
-    """SLURM partition (#SBATCH --partition)."""
+    partition: str | None = None
+    """SLURM partition (#SBATCH --partition). If None, the job goes to the cluster's default partition."""
 
     nodelist: str | None = None
     """Comma-separated list of specific nodes to run on (#SBATCH --nodelist)."""
@@ -107,10 +200,10 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     launch_modelexpress: bool = True
-    """Start a job-scoped ModelExpress service for NIXL weight transfer."""
+    """Start a job-scoped ModelExpress server for NIXL and ModelExpress weight broadcasts on multi-node jobs."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
-    """Seconds to wait before tearing down a multi-node RL job that hit a non-zero exit, letting in-flight checkpoints flush. Set to 0 to tear down immediately."""
+    """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
 
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
@@ -141,12 +234,6 @@ ServerType = Literal["vllm", "openai"]
 
 
 class VLMConfig(BaseConfig):
-    vision_encoder_attr: str
-    """Dotted attribute path to the vision encoder module (e.g. ``model.visual``)."""
-
-    language_model_attr: str
-    """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
-
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
 
@@ -158,9 +245,6 @@ class BaseModelConfig(BaseConfig):
     trust_remote_code: bool = False
     """Trust remote code when initializing the tokenizer."""
 
-    vlm: "VLMConfig | None" = None
-    """VLM configuration. Setting this enables vision-language model support."""
-
 
 class DynamoConfig(BaseConfig):
     enabled: bool = True
@@ -170,21 +254,9 @@ class DynamoConfig(BaseConfig):
     """Dynamo frontend URL used to discover inference workers for RL control."""
 
 
-class ClientConfig(BaseConfig):
+class ClientConfig(BaseClientConfig):
     wait_for_ready_timeout: int = 3600
     """Seconds to wait at startup for the inference pool to become ready."""
-
-    base_url: str = "http://localhost:8000/v1"
-    """Base URL for the OpenAI API. For multi-replica deployments, point this at a router in front of the replicas."""
-
-    api_key_var: str = "VLLM_API_KEY"
-    """Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL."""
-
-    headers: dict[str, str] = {}
-    """Static headers sent with every request."""
-
-    headers_from_env: dict[str, str] = {}
-    """Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``."""
 
     skip_model_check: bool = False
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
@@ -192,16 +264,25 @@ class ClientConfig(BaseConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
+
+class VLLMClientConfig(ClientConfig):
+    """Client defaults for the live inference deployment managed by training."""
+
+    base_url: str = "http://localhost:8000/v1"
+    api_key_var: str = "VLLM_API_KEY"
+
+
+class PolicyClientConfig(VLLMClientConfig):
+    """Client of the policy deployment the orchestrator drives (weight updates, admin plane)."""
+
     dynamo: DynamoConfig | None = None
     """Dynamo RL worker-discovery configuration."""
 
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
-    """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
-
-    vf_level: str = Field(default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"))
-    """Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
+    """Log level for the process and the verifiers library it runs, env worker pools included.
+    Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
@@ -218,6 +299,11 @@ class TrainerLogConfig(LogConfig):
     """Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``."""
 
 
+class GCConfig(BaseConfig):
+    interval: int = Field(50, ge=1)
+    """Run a scheduled garbage collection every N training steps, in place of Python's automatic collections that would run at unpredictable times."""
+
+
 class HeartbeatConfig(BaseConfig):
     url: str
     """URL to send the heartbeat to."""
@@ -226,14 +312,6 @@ class HeartbeatConfig(BaseConfig):
     """Minimum seconds between pings. Beats can arrive far more often (evals beat once
     per landed episode); surplus beats are dropped to stay under Better Stack's heartbeat
     rate limit. Size it well under the monitor's period."""
-
-
-class MetricsServerConfig(BaseConfig):
-    port: int = Field(8000, ge=1, le=65535)
-    """Port to expose metrics and health endpoints on."""
-
-    host: str = "0.0.0.0"
-    """Host to bind the server to."""
 
 
 class BaseTransportConfig(BaseConfig):
@@ -251,10 +329,7 @@ class ZMQTransportConfig(BaseTransportConfig):
     """Host address for ZMQ transport."""
 
     port: int = 5555
-    """Base port for ZMQ transport."""
-
-    hwm: int = 10
-    """High-water mark (max in-flight messages per ZMQ socket)."""
+    """Port for ZMQ transport."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]

@@ -24,8 +24,6 @@ class OPDAlgorithm(Algorithm):
     credit is assigned — rollouts keep ``advantages=None`` and samples ship no
     advantage stream; ``group_size`` only fans out sampling."""
 
-    action_loss_type = "ref_kl"
-
     def __init__(self, config: OPDAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.teacher = config.teacher
@@ -40,6 +38,6 @@ class OPDAlgorithm(Algorithm):
         branches = [
             branch for _, trace in iter_trainable_traces([episode]) for branch, _ in iter_trainable_branches(trace)
         ]
-        scores = await asyncio.gather(*(teacher.score(branch.token_ids) for branch in branches))
+        scores = await asyncio.gather(*(teacher.score(branch.token_ids.tolist()) for branch in branches))
         for branch, logprobs in zip(branches, scores, strict=True):
             assign_reference_logprobs(branch, logprobs)

@@ -24,9 +24,9 @@ def conversion_chain(config: NemotronHConfig) -> list[ConvOp]:
 
     for layer_idx, layer_type in enumerate(config.layer_types):
         prefix = f"model.layers.{layer_idx}"
-        if layer_type == "mamba":
+        if layer_type == "linear_attention":
             ops.append(PrefixRename(f"{prefix}.mixer.", f"{prefix}.mamba."))
-        elif layer_type == "attention":
+        elif layer_type == "full_attention":
             ops.append(PrefixRename(f"{prefix}.mixer.", f"{prefix}.self_attn."))
         elif layer_type == "moe":
             ops.extend(

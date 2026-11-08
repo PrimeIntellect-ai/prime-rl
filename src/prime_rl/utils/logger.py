@@ -1,9 +1,9 @@
+import inspect
 import json as json_module
 import logging
 import sys
 import traceback
 from pathlib import Path
-from typing import Any
 
 # Global logger instance
 _LOGGER = None
@@ -17,21 +17,6 @@ def build_log_entry(record) -> dict:
     """Build a flat JSON log entry from a loguru record."""
     extra = record["extra"]
 
-    # Handle progress events specially - emit structured progress format
-    if extra.get("_progress"):
-        return {
-            "timestamp": record["time"].isoformat(),
-            "level": record["level"].name,
-            "type": "progress",
-            "desc": extra["desc"],
-            "current": extra["current"],
-            "total": extra["total"],
-            "percent": extra["percent"],
-            **({"step": extra["step"]} if extra.get("step") is not None else {}),
-            **({"extra": extra["postfix"]} if extra.get("postfix") else {}),
-        }
-
-    # Standard log entry
     log_entry = {
         "timestamp": record["time"].isoformat(),
         "level": record["level"].name,
@@ -84,8 +69,9 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        # Step out of this handler, then past stdlib logging's frames, to the call site.
+        frame, depth = inspect.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
 
@@ -104,11 +90,13 @@ def setup_logger(
     json_logging: bool = False,
     log_file: Path | None = None,
     console_level: str | None = None,
+    colorize: bool = True,
 ):
     """Install the prime-rl logger: a console sink (colorized, or JSON lines with
     ``json_logging``) and, with ``log_file``, a plain-text file sink for processes that
     no launcher redirects. ``console_level`` raises the console sink's threshold above
-    ``log_level`` (the file keeps everything), e.g. to surface only errors while a run is in flight."""
+    ``log_level`` (the file keeps everything), e.g. to surface only errors while a run is in flight.
+    ``colorize=False`` writes the console sink in the file sink's plain layout."""
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
 
@@ -132,6 +120,9 @@ def setup_logger(
     else:
         debug = "".join([f"<level>{NO_BOLD}", " [{file}::{line}]", f"{RESET}</level>"])
     format = time + message + debug
+    plain = "{time:HH:mm:ss} {level: >7} " + f"{tag_prefix}{{message}}"
+    if log_level.upper() == "DEBUG":
+        plain += " [{file}::{line}]"
 
     # NOTE: We are creating a new "module-level" logger instance for prime-rl so that third-party code cannot "hijack" our logger
     # This is a bit hacky because loguru does not publicly expose the logger class, but oh well, it works
@@ -159,18 +150,33 @@ def setup_logger(
     if json_logging and tag:
         logger = logger.bind(tag=tag)
 
+    # Records bound with ``console=True`` (the launcher's banner) pass ``console_level``.
+    console_no = logger.level((console_level or log_level).upper()).no
+
+    def console_filter(record) -> bool:
+        return record["level"].no >= console_no or record["extra"].get("console", False)
+
+    # diagnose=False: repr()-ing frame locals that hold multi-GB tensors makes a crash look like a hang.
     # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
     if json_logging:
-        logger.add(json_sink, level=(console_level or log_level).upper(), enqueue=True)
+        logger.add(json_sink, level=log_level.upper(), filter=console_filter, enqueue=True, diagnose=False)
     else:
-        logger.add(sys.stdout, format=format, level=(console_level or log_level).upper(), colorize=True)
+        logger.add(
+            sys.stdout,
+            format=format if colorize else plain,
+            level=log_level.upper(),
+            filter=console_filter,
+            colorize=colorize,
+            diagnose=False,
+        )
     if log_file is not None:
         # The console format carries raw ANSI codes; the file gets a plain layout.
         logger.add(
             log_file,
-            format="{time:HH:mm:ss} {level: >7} " + f"{tag_prefix}{{message}}",
+            format=plain,
             level=log_level.upper(),
             colorize=False,
+            diagnose=False,
         )
 
     # Disable critical logging
@@ -196,73 +202,6 @@ def reset_logger():
         _LOGGER.remove()
     _LOGGER = None
     _JSON_LOGGING = False
-
-
-class ProgressTracker:
-    """Progress tracker that uses tqdm or logs progress when JSON logging is enabled."""
-
-    def __init__(
-        self,
-        total: int,
-        desc: str,
-        json_logging: bool | None = None,
-        log_every_percent: int = 10,
-        step: int | None = None,
-    ):
-        self.total = total
-        self.desc = desc
-        self.step = step
-        self.json_logging = json_logging if json_logging is not None else _JSON_LOGGING
-        self.log_every_percent = log_every_percent
-        self.current = 0
-        self._last_logged_percent = -log_every_percent
-        self._postfix: dict[str, Any] = {}
-
-        if self.json_logging:
-            self._pbar = None
-            # Don't log 0% on init - only log on actual progress
-        else:
-            from tqdm import tqdm
-
-            self._pbar = tqdm(total=total, desc=desc)
-
-    def update(self, n: int = 1):
-        self.current += n
-        if self._pbar is not None:
-            self._pbar.update(n)
-        else:
-            self._log_progress()
-
-    def set_postfix(self, postfix: dict[str, Any]):
-        self._postfix = postfix
-        if self._pbar is not None:
-            self._pbar.set_postfix(postfix)
-
-    def _log_progress(self):
-        percent = int(100 * self.current / self.total) if self.total > 0 else 0
-        if percent >= self._last_logged_percent + self.log_every_percent or self.current >= self.total:
-            self._emit_progress(percent)
-            self._last_logged_percent = percent
-
-    def _emit_progress(self, percent: int):
-        """Emit progress as structured JSON through loguru (only called in JSON logging mode)."""
-        get_logger().bind(
-            _progress=True,
-            desc=self.desc,
-            current=self.current,
-            total=self.total,
-            percent=percent,
-            step=self.step,
-            postfix=self._postfix if self._postfix else None,
-        ).info("progress")
-
-    def close(self):
-        if self._pbar is not None:
-            self._pbar.close()
-        elif self.current > 0 and self.current < self.total:
-            percent = int(100 * self.current / self.total)
-            if percent > self._last_logged_percent:
-                self._emit_progress(percent)
 
 
 def format_time(seconds: float) -> str:

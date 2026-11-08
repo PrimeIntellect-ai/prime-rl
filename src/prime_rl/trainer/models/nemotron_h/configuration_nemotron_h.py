@@ -3,11 +3,12 @@ from transformers.configuration_utils import PretrainedConfig
 
 class NemotronHConfig(PretrainedConfig):
     model_type = "nemotron_h"
+    attribute_map = {"layer_types": "layers_block_type"}
 
     PATTERN_TO_LAYER_TYPE = {
-        "M": "mamba",
+        "M": "linear_attention",
         "E": "moe",
-        "*": "attention",
+        "*": "full_attention",
     }
 
     def __init__(
@@ -124,10 +125,6 @@ class NemotronHConfig(PretrainedConfig):
             eos_token_id=eos_token_id,
             **kwargs,
         )
-
-    @property
-    def layer_types(self) -> list[str]:
-        return self.layers_block_type
 
     @property
     def num_hidden_layers(self) -> int:

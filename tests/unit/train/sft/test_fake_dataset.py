@@ -27,6 +27,20 @@ def test_fake_dataset_state():
 
 
 @pytest.mark.parametrize("length", ["fixed", "variable"])
+@pytest.mark.parametrize("input_ids", ["increasing", "random"])
+def test_fake_dataset_sample_lengths(length: str, input_ids: str):
+    dataset = FakeDataset(vocab_size=10000, seq_len=128, length=length, input_ids=input_ids)
+    dataiter = iter(dataset)
+    for _ in range(20):
+        sample = next(dataiter)
+        seq_len = len(sample["input_ids"])
+        assert len(sample["target_ids"]) == seq_len
+        assert len(sample["position_ids"]) == seq_len
+        assert len(sample["loss_mask"]) == seq_len
+        assert sum(sample["seq_lens"]) == seq_len
+
+
+@pytest.mark.parametrize("length", ["fixed", "variable"])
 @pytest.mark.parametrize("data_world_size", [1, 2, 3])
 def test_fake_dataset_random_resume(length: str, data_world_size: int):
     # Resuming mid run must replay the same per perank PR foir every data rank

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import tempfile
 import time
@@ -27,7 +28,11 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+    def save(self, progress: Progress, train_source: TrainSource, config_state: dict, step: int) -> None:
+        self.save_state(build_state(progress, train_source, config_state), step)
+
+    def save_state(self, state: dict, step: int) -> None:
+        """Save a ``build_state`` snapshot as the checkpoint of ``step``."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -36,7 +41,7 @@ class CheckpointManager:
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                torch.save({"progress": progress, "train_source": train_source.state_dict()}, f)
+                torch.save(state, f)
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
@@ -46,7 +51,7 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
+    def read_state(self, step: int, path: Path | None = None) -> dict:
         """``path`` overrides where the checkpoint is read from (an external run's
         ``step_<N>/orchestrator``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
@@ -54,21 +59,30 @@ class CheckpointManager:
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
         get_logger().debug(f"Loading checkpoint from {state_file}")
+        with open(state_file, "rb") as f:
+            return torch.load(f, weights_only=False)
+
+    def read_config_state(self, step: int, path: Path | None = None) -> dict | None:
+        """The checkpoint's ``{base, applied, revision}`` configs, None for checkpoints
+        written before configs were checkpointed."""
+        return self.read_state(step, path).get("config")
+
+    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
         start = time.perf_counter()
-        if self.config.skip_progress:
-            get_logger().info("Skipping progress and train source loading from checkpoint")
-        else:
-            with open(state_file, "rb") as f:
-                state = torch.load(f, weights_only=False)
-            saved: Progress = state["progress"]
-            for key, value in asdict(saved).items():
-                if hasattr(progress, key):
-                    setattr(progress, key, value)
-            train_source.load_state_dict(state["train_source"])
-            for name in state["train_source"]["envs"]:
-                if name in train_source.curricula:
-                    get_logger().info(f"Resumed curriculum state for env {name}")
+        state = self.read_state(step, path)
+        saved: Progress = state["progress"]
+        for key, value in asdict(saved).items():
+            if hasattr(progress, key):
+                setattr(progress, key, value)
+        train_source.load_state_dict(state["train_source"])
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
+
+
+def build_state(progress: Progress, train_source: TrainSource, config_state: dict) -> dict:
+    """A snapshot of the orchestrator's checkpointed state, independent of later changes.
+    ``config_state`` holds the launch config (``base``), the config that applies from the
+    resume step on (``applied``) and its ``revision``, all dumped to JSON-ready dicts."""
+    return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict(), "config": config_state})
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:

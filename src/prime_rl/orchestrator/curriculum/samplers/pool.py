@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum.samplers.base import TaskSampler
+from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
@@ -63,12 +64,15 @@ class DifficultyPoolSampler(TaskSampler):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
+    def find_task(self, key: str) -> vf.Task | None:
+        return self.tasks_by_key.get(key)
+
     def observe(self, group: list[vf.Episode]) -> None:
         rewards = [
             trace.reward
             for episode in group
             for trace in episode.traces
-            if not trace.has_error and trace.agent.trainable
+            if episode.ok and not trace.has_error and trace.agent.trainable and trace.num_turns > 0
         ]
         if not rewards:
             return
@@ -84,8 +88,12 @@ class DifficultyPoolSampler(TaskSampler):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore rewards of tasks still in the taskset; new tasks start unseen."""
         self.rng.setstate(state_dict["rng"])
-        self.task_rewards = dict(state_dict["task_rewards"])
+        task_rewards = state_dict["task_rewards"]
+        self.task_rewards = {key: reward for key, reward in task_rewards.items() if key in self.tasks_by_key}
+        if removed := len(task_rewards) - len(self.task_rewards):
+            get_logger().info(f"Dropped the rewards of {removed} task(s) no longer in the taskset")
 
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.pools, 0)

@@ -5,9 +5,8 @@ import torch
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, get_custom_vlm_cls
 from prime_rl.trainer.models.fusions import apply_model_fusions
-from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -16,7 +15,7 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
-from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
+from prime_rl.trainer.vlm import get_vision_encoder
 from prime_rl.utils.cp import CPContext
 
 
@@ -72,15 +71,24 @@ def get_vlm_config(text_config) -> Qwen3_5Config:
     )
 
 
-def get_model(config, device="cuda"):
-    runtime_config = ModelConfig()
+def get_model(config, device="cuda", attn="auto"):
+    runtime_config = ModelConfig(attn=attn)
     resolve_auto_attn(runtime_config)
     with torch.device(device):
-        model = AutoModelForCausalLMPrimeRL.from_config(
+        model = (get_custom_vlm_cls(config) or AutoModelForCausalLMPrimeRL).from_config(
             config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
         )
     inject_prime_lm_head(model, chunk_size=None)
     return model
+
+
+def test_tied_word_embeddings_share_lm_head():
+    config = get_vlm_config(get_text_config())
+    config.tie_word_embeddings = True
+    with torch.device("meta"):
+        model = get_custom_vlm_cls(config).from_config(config, attn_implementation="flash_attention_2")
+    inject_prime_lm_head(model)
+    assert model.lm_head.weight is model.get_input_embeddings().weight
 
 
 @pytest.mark.gpu
@@ -91,7 +99,7 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     linear_layer = text_model.model.layers[0]
     text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
 
-    text_cp_context = CPContext(cp_group, 1, 2, "ulysses")
+    text_cp_context = CPContext(cp_group, 1, 2)
     for module in text_model.modules():
         if hasattr(module, "cp_context"):
             module.cp_context = text_cp_context
@@ -99,33 +107,30 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     assert text_model.model.cp_context is text_cp_context
     assert text_model.model.cp_context.cp_rank == 1
     assert text_model.model.cp_context.cp_world_size == 2
-    assert text_model.model.cp_context.cp_style == "ulysses"
     assert linear_layer.linear_attn.cp_context is text_cp_context
 
     vlm_model = get_model(get_vlm_config(text_config), device="meta")
 
-    vlm_cp_context = CPContext(cp_group, 0, 2, "ulysses")
+    vlm_cp_context = CPContext(cp_group, 0, 2)
     for module in vlm_model.modules():
         if hasattr(module, "cp_context"):
             module.cp_context = vlm_cp_context
 
     assert vlm_model.model.cp_context is vlm_cp_context
     assert vlm_model.model.language_model.cp_context is vlm_cp_context
-    assert vlm_model.model.language_model.cp_context.cp_style == "ulysses"
     assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
 
 
-def test_ring_patches_flash_attention():
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
+def test_language_model_only_has_no_vision_encoder(text_config):
+    config = get_vlm_config(text_config)
+    config.language_model_only = True
+    config = type(config).from_dict(config.to_dict())
+    model = get_model(config, device="meta", attn="flash_attention_2")
 
-    originals = {cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention)}
-    try:
-        substitute_ring_attn(process_group=MagicMock(), heads_k_stride=1)
-        assert Qwen3_5Attention._compute_attention is FlashAttention._compute_attention
-        assert Qwen3_5Attention._compute_attention is not originals[FlashAttention]
-    finally:
-        for cls, method in originals.items():
-            cls._compute_attention = method
+    assert config.language_model_only
+    assert not model.is_vlm and not model.supports_packed_multimodal_training
+    assert get_vision_encoder(model) is None
+    assert all(key.startswith(("model.language_model.", "lm_head.")) for key in model.state_dict())
 
 
 @pytest.mark.gpu

@@ -75,10 +75,9 @@ class ParallelDims:
             assert ep % cp == 0 and (dp_shard * cp) % ep == 0
 
     def build_mesh(self) -> DeviceMesh:
-        if self.ep > 1:
-            return self._build_mesh_with_ep()
-        else:
-            return self._build_mesh_without_ep()
+        mesh = self._build_mesh_with_ep() if self.ep > 1 else self._build_mesh_without_ep()
+        self._submeshes["head"] = self._submeshes["dp_shard_cp"]
+        return mesh
 
     def _build_mesh_with_ep(self) -> DeviceMesh:
         # With ep, dp_shard and ep are derived submeshes:
@@ -96,12 +95,13 @@ class ParallelDims:
                 dp_shard_mod_ep,
                 dp_shard_in_ep,
                 self.cp,
+                1,
             ],
-            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp"],
+            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp", "dp_shard_mod_head"],
         ):
             # dp_shard_mod_ep is needed even if it's 1, whose FSDP wrapping
             # helps the MoE layers do mixed precision training
-            if d > 1 or name == "dp_shard_mod_ep":
+            if d > 1 or name in ("dp_shard_mod_ep", "dp_shard_mod_head"):
                 dims.append(d)
                 names.append(name)
 
@@ -112,7 +112,7 @@ class ParallelDims:
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
-        # Mesh for data loading (no communication on this mesh)
+        # Mesh for data loading and per-step token counts
         dp_mesh_dim_names = []
         # Mesh for param sharding
         dp_shard_cp_mesh_dim_names = []
@@ -158,10 +158,10 @@ class ParallelDims:
         dims = []
         names = []
         for d, name in zip(
-            [self.pp, self.dp_replicate, self.dp_shard, self.cp],
-            ["pp", "dp_replicate", "dp_shard", "cp"],
+            [self.pp, self.dp_replicate, self.dp_shard, self.cp, 1],
+            ["pp", "dp_replicate", "dp_shard", "cp", "dp_shard_mod_head"],
         ):
-            if d > 1 or name == "dp_shard":
+            if d > 1 or name == "dp_shard" or (name == "dp_shard_mod_head" and self.dp_shard * self.cp > 1):
                 dims.append(d)
                 names.append(name)
 
@@ -172,7 +172,7 @@ class ParallelDims:
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
-        # Mesh for data loading (no communication on this mesh)
+        # Mesh for data loading and per-step token counts
         dp_mesh_dim_names = []
         # Mesh for param sharding
         dp_shard_cp_mesh_dim_names = []
@@ -264,58 +264,62 @@ class ParallelDims:
         return self.cp * self.pp
 
     @cached_property
-    def seq_len_divisor(self):
-        # Context Parallel requires that seq_len be divisible by 2 * CP degree,
-        # when load balancing is enabled (by default).
-        # https://github.com/pytorch/pytorch/blob/4f62dcc/torch/distributed/tensor/experimental/_attention.py#L1246
-        return self.cp * 2
-
-    @cached_property
     def logger(self):
         return get_logger()
 
 
-def _is_moe_model(config: ModelConfig) -> bool:
-    """Return True if the model has MoE layers, by loading its HuggingFace config."""
+def _num_experts(config: ModelConfig) -> int | None:
+    """Return the routed expert count from the HuggingFace config, or None for non-MoE models."""
     from transformers import AutoConfig
 
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     model_config = getattr(model_config, "text_config", model_config)
-    return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        if num_experts := getattr(model_config, attr, None):
+            return num_experts
+    return None
+
+
+def auto_ep(fsdp_island_size: int, num_experts: int, cp: int) -> int:
+    """Largest EP degree up to 8 that divides the FSDP island and the expert count and is a multiple of cp."""
+    return max(
+        ep
+        for ep in range(1, min(fsdp_island_size, 8) + 1)
+        if fsdp_island_size % ep == 0 and num_experts % ep == 0 and (ep == 1 or ep % cp == 0)
+    )
 
 
 def resolve_ep(config: ModelConfig) -> None:
-    """Resolve ``ep="auto"`` in-place to a concrete integer.
-
-    For MoE models, resolves to ``min(fsdp_island_size, 8)`` where
-    ``fsdp_island_size = world_size // dp_replicate``. For non-MoE
-    models, resolves to 1 (no-op).
-    """
+    """Resolve ``ep="auto"`` in-place to a concrete integer: ``auto_ep`` for MoE models, 1 otherwise."""
     if config.ep != "auto":
         return
 
-    # EP requires the custom implementation; skip auto-resolution for HF impl
-    if config.impl not in ("custom", "auto"):
-        config.ep = 1
-        get_logger().info(f"EP auto: impl='{config.impl}' does not support EP, resolving ep=1")
-        return
-
     world_size = dist.get_world_size()
+    num_experts = _num_experts(config)
 
-    if not _is_moe_model(config):
+    if num_experts is None:
         config.ep = 1
         get_logger().info("EP auto: model is not MoE, resolving ep=1")
         return
 
     dp_replicate = config.dp_replicate
     fsdp_island_size = world_size // dp_replicate  # pp is always 1
-    resolved_ep = min(fsdp_island_size, 8)
+    resolved_ep = auto_ep(fsdp_island_size, num_experts, config.cp)
 
     config.ep = resolved_ep
-    get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
+    if resolved_ep == 1:
+        get_logger().info(
+            f"EP auto: no ep>1 divides fsdp_island_size={fsdp_island_size} and num_experts={num_experts} "
+            f"and is a multiple of cp={config.cp}, resolving ep=1"
+        )
+    else:
+        get_logger().info(
+            f"EP auto: world_size={world_size}, dp_replicate={dp_replicate}, num_experts={num_experts}, "
+            f"cp={config.cp} -> resolved ep={resolved_ep}"
+        )
 
 
-def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
+def get_parallel_dims(config: ModelConfig) -> ParallelDims:
     assert isinstance(config.ep, int), (
         f"config.ep must be resolved to an int before get_parallel_dims; got {config.ep!r}. "
         "Call resolve_ep(config) first."
@@ -330,13 +334,5 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
         ep=config.ep,
         world_size=dist.get_world_size(),
     )
-
-    # Validate sequence length against parallel dimensions requirements
-    if seq_len is not None and seq_len % parallel_dims.seq_len_divisor != 0:
-        raise ValueError(
-            f"Sequence length ({seq_len}) must be divisible by "
-            f"seq_len_divisor ({parallel_dims.seq_len_divisor}) for the given parallel dimensions. "
-            f"This requirement comes from context parallel (CP={config.cp})."
-        )
 
     return parallel_dims

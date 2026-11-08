@@ -4,7 +4,10 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
+from prime_rl.configs.trainer import DSABackend
+from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -30,6 +33,7 @@ class SparseMlaAttentionArgs:
     index_n_heads: int
     index_head_dim: int
     index_topk: int
+    dsa_backend: DSABackend
     use_index_cache: bool = False
     skip_topk: bool = False
 
@@ -105,7 +109,8 @@ class Indexer(nn.Module):
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
         k_idx = torch.cat([k_pe, k_nope], dim=-1)
 
-        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale)
+        cp_group_name = cp_group.group_name if cp_world_size > 1 else None
+        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale, cp_group_name=cp_group_name)
         # indices shape: [S_local, topk] in K's coordinate space (sentinel = s_full)
         # KV passed to sparse MLA has length s_full + 1 (sentinel zeros at index s_full).
         return indices.view(1, s_local, 1, index_topk)
@@ -144,8 +149,28 @@ class GlmMoeDsaAttention(nn.Module):
         self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
+        if args.dsa_backend == "cudnn_flashmla" and (
+            error := cudnn_flashmla_error(self.num_heads, 1, self.kv_lora_rank)
+        ):
+            raise ValueError(
+                f'GLM DSA sparse attention cannot run the cudnn_flashmla backend: {error}. Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+            )
 
         self.cp_context = CPContext()
+
+    def attention_flops(self, seq_len: int) -> int:
+        # MLA counted un-absorbed (qk = nope + rope); sparse attention attends `index_topk` tokens, and
+        # the indexer scores every token with its own heads, forward only (it runs under no_grad).
+        flops = quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.qk_head_dim,
+            v_head_dim=self.v_head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.args.index_topk),
+        )
+        if self.indexer is not None:
+            flops += 2 * self.args.index_n_heads * self.args.index_head_dim * seq_len * seq_len
+        return flops
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
@@ -230,7 +255,7 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling)
+        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.args.dsa_backend, self.scaling)
         out = torch.einsum("bshk,hdk->bshd", out, w_v)
         batch_size, total_tokens = out.shape[:2]
         out = out.reshape(batch_size, total_tokens, -1)

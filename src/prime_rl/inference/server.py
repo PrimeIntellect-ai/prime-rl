@@ -10,15 +10,16 @@ def setup_vllm_env(config: InferenceConfig):
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
-    # Standard deployments use V2 for both capture modes. NIXL P/D also uses V2
-    # for sampling-mask capture, but router replay remains on V1 because vLLM
-    # rejects routed-expert capture with KV connectors and prime-rl's stitching
-    # patch is V1-only. setdefault keeps an explicit env-var choice authoritative.
-    if config.enable_return_sampling_mask:
+    # vLLM captures sampling masks and routed experts only on the V2 model runner.
+    # setdefault keeps an explicit env-var choice authoritative.
+    if config.enable_return_sampling_mask or config.vllm.enable_return_routed_experts:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
-    elif config.vllm.enable_return_routed_experts:
-        use_v2_runner = config.deployment.type != "disaggregated"
-        os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1" if use_v2_runner else "0")
+
+    top_p_first = config.top_p_before_top_k and config.enable_return_sampling_mask
+    if top_p_first:
+        if os.environ.get("VLLM_USE_V2_MODEL_RUNNER") != "1":
+            raise ValueError("top_p_before_top_k requires VLLM_USE_V2_MODEL_RUNNER=1")
+    os.environ["PRL_TOP_P_BEFORE_TOP_K"] = "1" if top_p_first else "0"
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice

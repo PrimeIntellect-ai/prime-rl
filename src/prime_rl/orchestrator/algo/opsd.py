@@ -31,8 +31,6 @@ class OPSDAlgorithm(Algorithm):
     multimodal prompts and any number of turns. No scalar advantage is
     assigned."""
 
-    action_loss_type = "ref_kl"
-
     def __init__(self, config: OPSDAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.demo_key = config.demo_key
@@ -73,6 +71,8 @@ class OPSDAlgorithm(Algorithm):
             hint = self.template.format(demonstration=self._demonstration(episode, trace))
             hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
             branches = [branch for branch, _ in iter_trainable_branches(trace)]
-            scores = await asyncio.gather(*(teacher.score(hint_block + branch.token_ids) for branch in branches))
+            scores = await asyncio.gather(
+                *(teacher.score([*hint_block, *branch.token_ids.tolist()]) for branch in branches)
+            )
             for branch, full_logprobs in zip(branches, scores, strict=True):
                 assign_reference_logprobs(branch, full_logprobs[len(hint_block) :])

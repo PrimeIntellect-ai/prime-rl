@@ -1,0 +1,12 @@
+# IPO arm: mask a token when |p_train - p_infer| > eps. eps = 0.3 is the default; the ablation also ran
+# eps = 0.2 (`--trainer.loss.eps 0.2`).
+
+[slurm]
+job_name = "ipo-ablation-ipo"
+
+[monitors.wandb]
+name = "ipo-eps-0.3"
+
+[trainer.loss]
+type = "ipo"
+eps = 0.3

@@ -8,7 +8,7 @@ from prime_rl.trainer.optim.cpu_adam import (
     sign_sgd_step,
 )
 from prime_rl.trainer.optim.offload import _cast_full_offload_compute_parameters
-from prime_rl.trainer.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sign_sgd import SignSGD
 
 
 def test_full_offload_preserves_per_parameter_compute_dtypes():

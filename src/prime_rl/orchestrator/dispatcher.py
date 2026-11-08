@@ -1,11 +1,11 @@
 """Dispatcher: schedules rollouts under a shared permit counter.
 
 - Capacity (``max_inflight``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server. The cap is dynamic —
+  one episode: one ``run`` request against an env worker pool. The cap is dynamic —
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
-- Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
+- Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
 - Every dispatched attempt reaches ``out_q`` exactly once: as the native
   episode returned by the environment, as a ``DispatchFailure`` when no
   episode was produced, or under the group's ``GroupCancellation`` when the
@@ -14,13 +14,10 @@
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
   naturally on either side of an eval boundary.
-- ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) drops train groups already past ``max_off_policy_steps`` — a
-  compute-saving early cancel; the sink's queue sweep is what guarantees the
-  bound. Eval episodes are measurements for the policy version they started
-  with. Online evals may explicitly cancel them when a newer checkpoint is ready. Train
-  episodes sampled from a frozen model never go stale — their generation
-  source doesn't change with policy updates.
+- Staleness never cancels a rollout: tokens past ``max_staleness`` are
+  masked by the sink's queue sweep. Eval episodes are measurements for the
+  policy version they started with. Online evals may explicitly cancel them
+  when a newer checkpoint is ready.
 """
 
 from __future__ import annotations
@@ -30,13 +27,14 @@ import time
 import traceback
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
+from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
 from prime_rl.orchestrator import live
@@ -55,7 +53,7 @@ from prime_rl.orchestrator.types import (
     Progress,
     WorkKind,
 )
-from prime_rl.orchestrator.utils import min_fresh_version
+from prime_rl.transports.payload import delete_payloads, trace_payload_urls
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
@@ -124,8 +122,8 @@ class Dispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules episodes
     under shared capacity, and emits native verifier episodes to ``out_q``.
-    The watcher drives ``on_version_pending`` for staleness
-    cancellation; the orchestrator triggers eval epochs."""
+    The watcher drives ``on_version_pending`` around weight updates; the
+    orchestrator triggers eval epochs."""
 
     def __init__(
         self,
@@ -139,13 +137,14 @@ class Dispatcher:
         progress: Progress | None,
         initial_max_inflight: int,
         max_inflight_ceiling: int | None,
-        tasks_per_minute: float | None,
-        max_off_policy_steps: int,
+        dispatch_per_minute: float | None,
         run_id: str,
         run_name: str | None,
-        on_episode_complete: Callable[[str, str, int, float], None] | None = None,
+        policy_weights_change: bool = True,
+        on_episode_complete: Callable[[int], None] | None = None,
     ) -> None:
         self.policy = policy
+        self.policy_weights_change = policy_weights_change
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -154,10 +153,9 @@ class Dispatcher:
         self.policy_clients = policy_clients
         self.train_source = train_source
         self.eval_source = eval_source
-        self.max_off_policy_steps = max_off_policy_steps
         self.run_id = run_id
         self.run_name = run_name
-        # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
+        # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
 
         # Starting value of the dynamic cap (the concurrency controller moves
@@ -166,7 +164,7 @@ class Dispatcher:
         self.max_inflight = initial_max_inflight
         self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
-            AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
+            AsyncLimiter(dispatch_per_minute, time_period=60) if dispatch_per_minute else None
         )
         # Admission smoothing: the pool may only GROW by ``burst_cap`` per
         # window. Replacing a completed episode is always free (each natural
@@ -184,6 +182,9 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        # Policy versions repeat after a resume, with weights that can differ from the
+        # previous attempt's, and engines or a KV offload pool may outlive that attempt.
+        self.cache_salt_prefix = uuid.uuid4().hex[:8]
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
@@ -214,10 +215,10 @@ class Dispatcher:
         """``(clients, model_name, is_live)`` for *train* rollouts of this env —
         eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
-        source = self.train_envs.get(env_name).generation_source
-        if source.uses_live_policy:
-            return source.clients, self.policy.model_name, True
-        return source.clients, source.clients.model_name, False
+        env = self.train_envs.get(env_name)
+        if env.uses_live_policy:
+            return env.clients, self.policy.model_name, True
+        return env.clients, env.clients.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -307,18 +308,6 @@ class Dispatcher:
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
 
-    def inflight_staleness(self) -> list[int]:
-        """Current staleness of each in-flight live-sourced train episode: the
-        version the batch being collected trains on (v{step-1}) minus the
-        episode's dispatch version."""
-        if self.train_envs is None or self.progress is None:
-            return []
-        return [
-            (self.progress.step - 1) - meta.policy_version
-            for meta in self.inflight.values()
-            if meta.kind == "train" and self.train_envs.get(meta.env_name).generation_source.uses_live_policy
-        ]
-
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -397,44 +386,14 @@ class Dispatcher:
             await self.flush_live()
 
     async def on_version_pending(self, step: int) -> None:
-        """Drop train groups past ``max_off_policy_steps``: a group dispatched at
-        v{k} ships at earliest in the batch currently collecting, at staleness
-        ``(progress.step - 1) - k`` — beyond the bound it can never train, so
-        cut it before more inference sinks in. This is a compute saver; the
-        sink's queue sweep is what guarantees no stale episode ships. Eval
-        groups never go stale (they are tied to their start-time policy
-        version), nor do frozen-sourced train groups (their generation source
-        doesn't change with policy updates).
-
-        Runs *before* the inference engines are paused for the weight update so
-        the resulting aborts are processed while the engine is still stepping —
-        otherwise the orphaned KV transfers crash the decode engine on resume
-        (see ``WeightWatcher.apply_policy_update``)."""
+        """Block train scheduling across the weight update. Staleness never
+        cancels a rollout: it keeps sampling fresh tokens, and the sink masks
+        the ones that age past ``max_staleness``."""
         self.policy_update_pending = True
         # Wait for a scheduling call that started before the pending update.
         # No rollout can cross the inference weight swap after this barrier.
         async with self.scheduling_lock:
             pass
-
-        if self.train_envs is None or self.progress is None:
-            return
-        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
-        stale_groups = [
-            gid
-            for gid, group in self.groups.items()
-            if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
-            and group.policy_version_at_start < min_version
-        ]
-        cancelled = 0
-        for gid in stale_groups:
-            cancelled += await self.drop_group(gid, reason="stale")
-
-        if cancelled:
-            get_logger().warning(
-                f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
-                "Consider increasing it to avoid this."
-            )
 
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
@@ -556,14 +515,14 @@ class Dispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
-        # version would invalidate its prefix cache every weight update for
-        # no reason.
-        if live_sourced:
-            cache_salt = str(group.policy_version_at_start)
+        # Only endpoints receiving policy weight updates need a cache salt.
+        if live_sourced and self.policy_weights_change:
+            cache_salt = f"{self.cache_salt_prefix}-{group.policy_version_at_start}"
         else:
             cache_salt = None
 
+        # A group samples with the settings of the step it was opened at, also across a live update.
+        sampling = env.sampling_at(group.step)
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
@@ -582,6 +541,10 @@ class Dispatcher:
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            # A recursive harness's sub-agents are routed as sessions of their own.
+            for call in delta.get("calls", ()):
+                if (acp := call.get("acp")) is not None:
+                    session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
@@ -591,10 +554,12 @@ class Dispatcher:
                 self.live_events.append(live.dispatched_event(meta))
 
         async def run_episode() -> vf.WireEpisode:
+            episode = None
             try:
                 episode = await env.run(
                     client=client,
                     model_name=model_name,
+                    sampling=sampling,
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
@@ -606,6 +571,9 @@ class Dispatcher:
                 try:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
+                    if episode is not None:
+                        # Returned, but cancelled before it could be emitted.
+                        self._release_episodes([episode])
                     await cleanup
                     raise
 
@@ -613,6 +581,19 @@ class Dispatcher:
         self.inflight[task] = meta
         self.live_events.append(live.pending_event(meta))
         return True
+
+    def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
+        """Delete the training arrays env workers kept for episodes no sink will see."""
+        delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
+
+    async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:
+        """Cancel claimed episode tasks. A task that had already returned its episode
+        before the claim is never emitted, so its arrays are deleted here."""
+        await safe_cancel_all(tasks)
+        # A task can still be pending here: `safe_cancel` also swallows a cancel aimed at us.
+        self._release_episodes(
+            task.result() for task in tasks if task.done() and not task.cancelled() and task.exception() is None
+        )
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck
@@ -638,11 +619,14 @@ class Dispatcher:
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
-        try:
-            episode: vf.WireEpisode = task.result()
-        except asyncio.CancelledError:
+        if task.cancelled():
             return
-        except Exception as exc:
+        # Read the exception rather than re-raise it with ``task.result()``: re-raising adds this
+        # frame, which holds ``task``, to the exception's traceback, a reference cycle that keeps
+        # the env request's frames (and its partial episode) alive until a full garbage collection,
+        # which the orchestrator only runs every few hours.
+        exc = task.exception()
+        if isinstance(exc, Exception):
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
@@ -664,10 +648,7 @@ class Dispatcher:
                 )
             )
             return
-
-        if not episode.traces and episode.ok:
-            episode.ok = False
-            episode.errors.append(vf.Error(type="EmptyEpisode", message="Episode returned with no traces"))
+        episode: vf.WireEpisode = task.result()
 
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
@@ -676,14 +657,8 @@ class Dispatcher:
                 trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
                 trace.ok = False
                 episode.ok = False
-            if not trace.has_error and not trace.is_timeout and trace.num_turns == 0:
-                # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure (``has_error`` reads ``ok``).
-                # A timed-out eval trace with no turns stays a timeout: scored, no samples.
-                trace.errors.append(vf.Error(type="EmptyTrajectory", message="Trace returned with no trajectory steps"))
-                trace.ok = False
-                episode.ok = False
-                get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
+            if trace.is_dropped:
+                get_logger().info(f"Trace dropped in group {meta.group_id} ({meta.env_name}) — {trace.dropped}")
             if trace.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if trace.last_error is not None:
@@ -691,12 +666,16 @@ class Dispatcher:
                         f"Trace failed in group {meta.group_id} ({meta.env_name}) — "
                         f"{trace.last_error.type}: {trace.last_error.message}"
                     )
-        if not episode.ok and not episode.traces:
-            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-        if self.on_episode_complete is not None and meta.started_at > 0:
-            self.on_episode_complete(
-                meta.env_name, meta.kind, episode.num_total_tokens, time.monotonic() - meta.started_at
+        if not episode.ok:
+            if not any(trace.has_error for trace in episode.traces):
+                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            error = episode.last_error
+            get_logger().warning(
+                f"Episode failed in group {meta.group_id} ({meta.env_name})"
+                + (f" — {error.type}: {error.message}" if error is not None else "")
             )
+        if self.on_episode_complete is not None and meta.started_at > 0:
+            self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
@@ -724,7 +703,7 @@ class Dispatcher:
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
             assert self.train_envs is not None
-            live_policy = self.train_envs.get(meta.env_name).generation_source.uses_live_policy
+            live_policy = self.train_envs.get(meta.env_name).uses_live_policy
         policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
         work: vf.WorkInfo = (
             vf.EvalWorkInfo(step=meta.step, policy=policy)
@@ -782,7 +761,7 @@ class Dispatcher:
             )
 
         if claimed:
-            await safe_cancel_all([task for task, _ in claimed])
+            await self._cancel_claimed([task for task, _ in claimed])
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
@@ -796,15 +775,33 @@ class Dispatcher:
         self.inflight.clear()
         self.groups.clear()
         if tasks:
-            await safe_cancel_all(tasks)
+            await self._cancel_claimed(tasks)
 
-    async def cancel_inflight_train_episodes(self) -> int:
+    async def cancel_inflight_train_episodes(self) -> list[GroupCancellation]:
         """Cancel in-flight train episodes, leaving eval alone. Used by the
         orchestrator at ``max_steps`` so triggered eval can still complete
-        through the pipeline while wasted train inference is short-circuited."""
+        through the pipeline while wasted train inference is short-circuited.
+        Return terminal markers directly to the consumer, which cannot enqueue
+        them onto its own bounded result queue while it is draining."""
+        self.disable_train_scheduling()
+        # Include admissions already waiting on the rate limiter in the snapshot.
+        async with self.scheduling_lock:
+            pass
         train_tasks: list[asyncio.Task] = []
-        train_group_ids: set[uuid.UUID] = set()
-        cancelled = 0
+        cancelled_by_group: dict[uuid.UUID, GroupCancellation] = {}
+        for gid, group in list(self.groups.items()):
+            if group.kind != "train":
+                continue
+            self.groups.pop(gid)
+            cancelled_by_group[gid] = GroupCancellation(
+                kind="train",
+                env_name=group.env_name,
+                group_id=str(gid),
+                step=group.step,
+                count=group.episodes_to_schedule,
+                reason="shutdown",
+            )
+            self.metrics.record_cancellation(kind="train", env_name=group.env_name, n=group.episodes_to_schedule)
         for task, meta in list(self.inflight.items()):
             if meta.kind != "train":
                 continue
@@ -812,14 +809,20 @@ class Dispatcher:
             self.release()
             self.retire(meta)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
-            cancelled += 1
             train_tasks.append(task)
-            train_group_ids.add(meta.group_id)
-        for gid in train_group_ids:
-            self.groups.pop(gid, None)
+            if meta.group_id not in cancelled_by_group:
+                cancelled_by_group[meta.group_id] = GroupCancellation(
+                    kind="train",
+                    env_name=meta.env_name,
+                    group_id=str(meta.group_id),
+                    step=meta.step,
+                    count=0,
+                    reason="shutdown",
+                )
+            cancelled_by_group[meta.group_id].count += 1
         if train_tasks:
-            await safe_cancel_all(train_tasks)
-        return cancelled
+            await self._cancel_claimed(train_tasks)
+        return [cancellation for cancellation in cancelled_by_group.values() if cancellation.count]
 
     async def cancel_eval_step(self, step: int) -> int:
         """Cancel queued and active eval groups for a superseded checkpoint.
@@ -863,12 +866,9 @@ class Dispatcher:
 
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
-        staleness = self.inflight_staleness()
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/off_policy/max": float(max(staleness, default=0)),
-            "dispatcher/off_policy/mean": sum(staleness) / len(staleness) if staleness else 0.0,
         }

@@ -38,8 +38,6 @@ group_size = 16
 [orchestrator.concurrency]
 initial_inflight = 1024
 
-[orchestrator.model.lora]
-
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 

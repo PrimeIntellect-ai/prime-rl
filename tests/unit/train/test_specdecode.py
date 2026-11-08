@@ -34,7 +34,7 @@ def test_draft_learning_rate_survives_checkpoint_restore(freeze_backbone):
     model["backbone"].requires_grad_(not freeze_backbone)
     dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
     optimizer, _ = setup_optimizer(
-        AdamWConfig(lr=1e-3), list(model.named_parameters()), dims, lr_overrides={"speculator.": 1e-2}
+        AdamWConfig(lr=1e-3, weight_decay=0.0), list(model.named_parameters()), dims, lr_overrides={"speculator.": 1e-2}
     )
     loss = sum(parameter.square().sum() for parameter in model.parameters())
     loss.backward()

@@ -90,17 +90,6 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
 class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
     config: MiniMaxM2Config
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["MiniMaxM2DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_flex_attn = True
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": MiniMaxM2DecoderLayer,
-    }
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -177,7 +166,9 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -193,8 +184,6 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
 @auto_docstring
 class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)

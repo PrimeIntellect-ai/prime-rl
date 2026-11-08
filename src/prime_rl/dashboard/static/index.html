@@ -5,14 +5,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>prime-rl dashboard</title>
-<link rel="icon" href="/static/butterfly-white.svg">
-<link rel="stylesheet" href="/static/vendor/uPlot.min.css">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="static/butterfly-white.svg">
+<link rel="stylesheet" href="static/vendor/uPlot.min.css">
+<link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 <header id="topbar">
   <div class="brand">
-    <img src="/static/butterfly-white.svg" alt="Prime Intellect">
+    <img src="static/butterfly-white.svg" alt="Prime Intellect">
   </div>
   <select id="run-select" title="run"></select>
   <div id="compare-wrap" class="dd-wrap">
@@ -30,8 +30,8 @@
   <label class="toggle" title="apply agent view commands as they arrive"><input type="checkbox" id="follow-toggle" checked><span class="dot"></span>follow</label>
   <label class="toggle" title="poll for updates"><input type="checkbox" id="live-toggle" checked><span class="dot"></span>live</label>
   <div id="platform-wrap" class="dd-wrap" hidden>
-    <a id="platform-link" class="btn platform" target="_blank" rel="noopener">view on platform<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M9 7h8v8"></path></svg></a>
-    <button id="platform-btn" class="btn dd-btn platform" hidden>view on platform</button>
+    <a id="platform-link" class="btn platform" target="_blank" rel="noopener">View on Prime<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M9 7h8v8"></path></svg></a>
+    <button id="platform-btn" class="btn dd-btn platform" hidden>View on Prime</button>
     <div class="dd-menu" id="platform-menu" hidden></div>
   </div>
 </header>
@@ -273,7 +273,7 @@
     <div class="dd-sec">filter</div>
     <div class="dd-row flt-status-row"><span class="t-label">status</span>
       <div class="seg toggle-seg flt-status">
-        <button data-status="live" class="on" title="live rollouts, streamed by their env servers">live</button>
+        <button data-status="live" class="on" title="live rollouts, streamed by their env worker pools">live</button>
         <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
       </div>
     </div>
@@ -295,7 +295,7 @@
   </div>
 </template>
 
-<script src="/static/vendor/uPlot.iife.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="static/vendor/uPlot.iife.min.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>

@@ -10,15 +10,19 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
-from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
+from prime_rl.trainer.models.layers.activations import Activation, ActivationDispatch, ActivationType
+from prime_rl.trainer.models.layers.expert_compute import (
+    BF16ExpertCompute,
+    ExpertCompute,
+    FusedDispatchExpertCompute,
+)
+from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
-ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
+ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax", "sqrtsoftplus"]
 
 
 @torch.library.custom_op(
@@ -67,21 +71,6 @@ class MoEArgs:
         ActivationDispatch[self.activation]
 
 
-def broadcast_expert_bias(
-    bias: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    target_rows: int,
-) -> torch.Tensor:
-    repeats = num_tokens_per_expert.to(torch.int64)
-    padding_rows = repeats.new_tensor(target_rows) - repeats.sum()
-    return torch.repeat_interleave(
-        torch.cat((bias, bias.new_zeros((1, bias.shape[1])))),
-        torch.cat((repeats, padding_rows.unsqueeze(0))),
-        dim=0,
-        output_size=target_rows,
-    )
-
-
 class GroupedExperts(nn.Module):
     supported_fusions = {"gate_up": fuse_gate_up_projections}
 
@@ -92,9 +81,9 @@ class GroupedExperts(nn.Module):
         num_experts: int,
         *,
         expert_type: ExpertType = "gated",
-        activation: ActivationType = "silu",
+        activation: ActivationType | Activation = "silu",
         bias: bool = False,
-        grouped_gemm: GroupedGemm | None = None,
+        compute: ExpertCompute | FusedDispatchExpertCompute | None = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -109,59 +98,23 @@ class GroupedExperts(nn.Module):
         self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
-        self.grouped_gemm = grouped_gemm or BF16GroupedGemm()
-        self.activation = ActivationDispatch[activation]
+        self.activation = ActivationDispatch[activation] if isinstance(activation, str) else activation
         if expert_type == "non_gated":
             self.supported_fusions = {}
+        self.set_compute(compute or BF16ExpertCompute())
+
+    def set_compute(self, compute: ExpertCompute | FusedDispatchExpertCompute) -> None:
+        compute.validate(self)
+        self.compute = compute
 
     @property
     def token_group_alignment(self) -> int:
-        return self.grouped_gemm.token_group_alignment
+        return self.compute.token_group_alignment
 
-    def set_grouped_gemm(self, grouped_gemm: GroupedGemm) -> None:
-        self.grouped_gemm = grouped_gemm
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-    ) -> torch.Tensor:
-        assert x.dim() == 2
-
-        def to_local(tensor: torch.Tensor) -> torch.Tensor:
-            return tensor.to_local() if isinstance(tensor, DTensor) else tensor
-
-        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-        x_bf16 = x.bfloat16()
-
-        if self.gate_up_proj is None:
-            up_proj = to_local(self.up_proj).transpose(-2, -1)
-            up = self.grouped_gemm(x_bf16, up_proj.bfloat16(), offs=offsets)
-
-            gate = None
-            if self.gate_proj is not None:
-                gate_proj = to_local(self.gate_proj).transpose(-2, -1)
-                gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
-        else:
-            gate_up_proj = to_local(self.gate_up_proj).transpose(-2, -1)
-            gate_up = self.grouped_gemm(x_bf16, gate_up_proj.bfloat16(), offs=offsets)
-            gate, up = gate_up.chunk(2, dim=-1)
-
-        if self.up_proj_bias is not None:
-            up_proj_bias = to_local(self.up_proj_bias)
-            up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
-
-        if gate is not None and self.gate_proj_bias is not None:
-            gate_proj_bias = to_local(self.gate_proj_bias)
-            gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
-
-        hidden = self.activation.apply(gate, up)
-        down_proj = to_local(self.down_proj).transpose(-2, -1)
-        output = self.grouped_gemm(hidden, down_proj.bfloat16(), offs=offsets)
-        if self.down_proj_bias is not None:
-            down_proj_bias = to_local(self.down_proj_bias)
-            output = output + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()
-        return output.type_as(x)
+    def forward(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor:
+        """``routing`` is ``num_tokens_per_expert`` for dispatched tokens grouped by expert, or
+        ``top_scores, selected_experts_indices`` for undispatched tokens when the compute fuses dispatch."""
+        return self.compute(self, x, *routing)
 
     def init_weights(self, init_std: float):
         if self.gate_up_proj is None:
@@ -186,8 +139,8 @@ class TokenChoiceTopKRouter(nn.Module):
         dim (int): Dimension of input tokens.
         num_experts (int): Number of experts in each moe layer.
         top_k (int): Number of experts each token will be routed to in token-choice routing.
-        score_func (Literal["softmax", "sigmoid", "topk_softmax"]): Score transform. ``topk_softmax``
-            selects experts from the logits and normalizes only the selected logits.
+        score_func (ScoreFuncType): Score transform. ``topk_softmax`` selects experts from the logits
+            and normalizes only the selected logits. ``sqrtsoftplus`` is DeepSeek V4's ``sqrt(softplus(.))``.
         route_norm (bool): Whether to normalize the routing scores when using sigmoid.
         route_scale (float): Scaling factor applied to the routing scores.
         gate_bias (bool): Whether the gate has a trainable logit bias.
@@ -201,7 +154,7 @@ class TokenChoiceTopKRouter(nn.Module):
         dim: int,
         num_experts: int,
         top_k: int,
-        score_func: Literal["softmax", "sigmoid", "topk_softmax"],
+        score_func: ScoreFuncType,
         route_norm: bool,
         route_scale: float,
         *,
@@ -210,7 +163,7 @@ class TokenChoiceTopKRouter(nn.Module):
         topk_sorted: bool = True,
     ):
         super().__init__()
-        self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
+        self.gate = FP32Linear(dim, num_experts, bias=gate_bias)
         self.register_buffer(
             "selection_bias",
             torch.zeros(num_experts, dtype=torch.float32) if selection_bias else None,
@@ -222,9 +175,6 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_scale = route_scale
         self.topk_sorted = topk_sorted
         self.force_balanced = False
-        # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
-        # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
-        self.fp32_gate = False
 
     def forward(
         self,
@@ -251,19 +201,16 @@ class TokenChoiceTopKRouter(nn.Module):
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
-        if self.fp32_gate:
-            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
-            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
-        else:
-            logits = self.gate(x)
+        logits = self.gate(x)
 
-        # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
         if self.score_func == "sigmoid":
-            scores = torch.sigmoid(logits.float())
+            scores = torch.sigmoid(logits)
         elif self.score_func == "softmax":
-            scores = F.softmax(logits.float(), dim=1)
+            scores = F.softmax(logits, dim=1)
         elif self.score_func == "topk_softmax":
             scores = logits
+        elif self.score_func == "sqrtsoftplus":
+            scores = F.softplus(logits).sqrt()
         else:
             raise NotImplementedError(f"Unknown score function {self.score_func}")
 
@@ -453,8 +400,6 @@ class MoE(nn.Module):
         shared_output = None
         if self.shared_expert is not None:
             shared_output = self.shared_expert(x)
-
-        self.token_dispatcher.synchronize()
 
         routed_output = self.prepare_expert_output(routed_output)
 

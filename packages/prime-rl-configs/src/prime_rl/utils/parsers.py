@@ -12,6 +12,7 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^zai-org/GLM-4\.7"), "glm47"),
     (re.compile(r"^zai-org/GLM-5"), "glm47"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
+    (re.compile(r"^meta-models/Muse-Glimmer"), "muse_glimmer"),
     (re.compile(r"^openai/gpt-oss"), "openai"),
     (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "qwen3_coder"),
@@ -32,12 +33,13 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.[12]"), "deepseek_r1"),
     (re.compile(r"^zai-org/GLM-"), "glm45"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2_append_think"),
+    (re.compile(r"^meta-models/Muse-Glimmer"), "muse_glimmer"),
     # openai/gpt-oss has no entry here — vLLM's harmony serving path splits reasoning natively.
     (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Super"), "nemotron_v3"),
-    (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Nano"), "nano_v3"),
-    (re.compile(r"^nvidia/NVIDIA-Nemotron-3\.5"), "nano_v3"),
+    (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Nano"), "nemotron_v3"),
+    (re.compile(r"^nvidia/NVIDIA-Nemotron-3\.5"), "nemotron_v3"),
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
     # Only Qwen3 Thinking models reason — Instruct/base models do not.
     (re.compile(r"^Qwen/Qwen3-.*Thinking"), "deepseek_r1"),

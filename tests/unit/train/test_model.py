@@ -1,8 +1,9 @@
 import pytest
 import torch
+import torch.distributed as dist
 
-from prime_rl.configs.trainer import AttnImplementation, ModelConfig
-from prime_rl.trainer.model import get_model
+from prime_rl.configs.trainer import AttnImplementation, DebugModelConfig, ModelConfig
+from prime_rl.trainer.model import clear_padding_idx, get_model, initialize_from_scratch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
 BS = 1
@@ -69,63 +70,8 @@ def test_model_with_position_ids(model):
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
-@pytest.mark.skip(reason="Sequence packing for Qwen not working.")
-@pytest.mark.parametrize("correct_position_ids", [True, False])
-def test_model_with_sequence_packing(model, correct_position_ids):
-    """
-    The goal of this test is to check that the sequence packing works correctly.
-
-    The idea is that is to check that the logits is the same when doing
-
-    [B, seq]  and doing [1, B*seq] with the proper masking.
-
-    """
-    if model.config.attn != "flash_attention_2":
-        pytest.skip("Test only works with flash attention")
-
-    model = model.to("cuda")
-    inputs = [0, 1, 2, 3]
-
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        inputs_ids = torch.Tensor(inputs).repeat(1, 1).int().to("cuda")
-        outputs = model(input_ids=inputs_ids, seq_lens=torch.tensor([len(inputs)], device="cuda"))
-        output_base = outputs["logits"]
-
-        assert output_base.shape == (1, len(inputs), model.config.vocab_size)
-
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        inputs_ids = torch.Tensor(inputs + inputs).repeat(1, 1).int().to("cuda")
-        if correct_position_ids:
-            position_ids = torch.Tensor([0, 1, 2, 3, 0, 1, 2, 3]).repeat(1, 1).int().to("cuda")
-            # should work
-        else:
-            position_ids = torch.Tensor([0, 1, 2, 3, 4, 5, 6, 7]).repeat(1, 1).int().to("cuda")
-            # should fail
-        outputs = model(
-            input_ids=inputs_ids,
-            position_ids=position_ids,
-            seq_lens=torch.tensor([len(inputs), len(inputs)], device="cuda"),
-        )
-        outputs_packed = outputs["logits"]
-
-        assert outputs_packed.shape == (1, 2 * len(inputs), model.config.vocab_size)
-
-    output_packed_left = outputs_packed[:, : len(inputs), :]
-    output_packed_right = outputs_packed[:, len(inputs) :, :]
-
-    assert output_packed_left.shape == output_base.shape == output_packed_right.shape
-
-    if correct_position_ids:
-        torch.testing.assert_close(output_packed_left, output_base)
-        torch.testing.assert_close(output_packed_right, output_base)
-    else:
-        torch.testing.assert_close(output_packed_left, output_base)
-        with pytest.raises(AssertionError):
-            torch.testing.assert_close(output_packed_right, output_base)
-
-
 def test_moe_custom_impl():
-    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2", impl="custom")
+    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2")
     model = get_model(config)
     model = model.to("cuda")
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
@@ -138,17 +84,17 @@ def test_moe_custom_impl():
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
-@pytest.mark.skip(reason="need special token for meta stuff in ci")
-@pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.2-1B-Instruct"])
-def test_model_forward_custom_impl(model_name):
-    config = ModelConfig(name=model_name, impl="custom", attn="flash_attention_2")
-    model = get_model(config)
-    # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
-    inject_prime_lm_head(model, chunk_size=None)
-    model = model.to("cuda")
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids, seq_lens=torch.tensor([SEQ_LEN], device="cuda"))
-        logits = outputs["logits"]
-
-        assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
+def test_initialize_from_scratch_initializes_the_padding_embedding(attn):
+    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn, debug=DebugModelConfig(num_layers=1))
+    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    padding_idx = model.model.embed_tokens.padding_idx
+    assert padding_idx is not None
+    dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29513", world_size=1, rank=0)
+    try:
+        clear_padding_idx(model)
+        initialize_from_scratch(model)
+    finally:
+        dist.destroy_process_group()
+    embedding = model.model.embed_tokens
+    assert embedding.padding_idx is None
+    assert embedding.weight[padding_idx].abs().sum() > 0

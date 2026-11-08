@@ -1,3 +1,5 @@
+import itertools
+import random
 import uuid
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -23,6 +25,14 @@ def make_task(idx: int) -> vf.Task:
     return vf.Task(vf.TaskData(idx=idx, prompt=f"task {idx}"))
 
 
+def reload_tasks(indices: list[int]) -> list[vf.Task]:
+    class Taskset(vf.Taskset[vf.Task]):
+        def load(self):
+            return [make_task(i) for i in indices]
+
+    return list(Taskset(vf.TasksetConfig()))
+
+
 def make_rollout(
     task: vf.Task,
     *,
@@ -42,7 +52,7 @@ def make_rollout(
             )
         ]
         if advantages is not None
-        else []
+        else [vf.MessageNode(message=vf.AssistantMessage(content="answer"), sampled=True)]
     )
     trace = vf.Trace(
         task=vf.TraceTask(
@@ -61,6 +71,7 @@ def make_rollout(
         task=trace.task,
         group=vf.GroupInfo(id=str(uuid.uuid4())),
         traces=[trace],
+        ok=True,
     )
     return [episode]
 
@@ -111,7 +122,12 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_task(step=1).task
-    assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0])) is False
+    empty = make_rollout(sampled, reward=1.0)
+    empty[0].traces[0].nodes[0].sampled = False
+    group = make_rollout(sampled, reward=0.25, advantages=[0.0])
+    failed = make_rollout(sampled, reward=1.0, advantages=[1.0])
+    failed[0].ok = False
+    assert source.on_result(group + failed + empty) is False
     assert source.metrics() == {
         "curriculum/test/admission_rate": 0.0,
         "curriculum/test/sampler/pool/unseen": 2.0,
@@ -126,6 +142,19 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
         "reject": {},
         "admit": {},
     }
+
+    assert source.on_result(empty) is False
+    assert source.metrics()["curriculum/test/admission_rate"] == 0.0
+    assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.25}
+
+    # A scored rollout without token metadata still informs task difficulty.
+    assert source.on_result(make_rollout(sampled, reward=0.5)) is False
+    assert source.metrics()["curriculum/test/admission_rate"] == 0.0
+    assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.5}
+
+    assert source.on_result(make_rollout(sampled, reward=0.75, advantages=[1.0])) is True
+    assert source.metrics()["curriculum/test/admission_rate"] == 1.0
+    assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.75}
 
 
 def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> None:
@@ -175,3 +204,199 @@ def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
 
     positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
     assert positive_gate.admit(make_rollout(task, advantages=[0.5])) is False
+
+
+def keys(tasks: list[vf.Task]) -> list[str]:
+    return [task.key for task in tasks]
+
+
+def sample_keys(sampler: StandardSampler, count: int) -> list[str]:
+    return [next(sampler).key for _ in range(count)]
+
+
+def test_standard_sampler_matches_cycle_order() -> None:
+    tasks = [make_task(i) for i in range(5)]
+    sampler = StandardSampler(tasks)
+    assert sample_keys(sampler, 23) == keys(list(itertools.islice(itertools.cycle(tasks), 23)))
+    assert sampler.state_dict() == {"counts": {task.key: 5 if i < 3 else 4 for i, task in enumerate(tasks)}}
+
+
+def test_standard_sampler_new_tasks_join_the_current_pass() -> None:
+    tasks = reload_tasks(list(range(5)))
+    sampler = StandardSampler(tasks)
+    sample_keys(sampler, 7)
+    reloaded = reload_tasks([10, *range(5), 11])
+    first, last = reloaded[0], reloaded[-1]
+    restored = StandardSampler(reloaded)
+    restored.load_state_dict(sampler.state_dict())
+
+    current_pass = [first, *tasks[2:], last]
+    assert sample_keys(restored, 12) == keys(current_pass + [first, *tasks, last])
+
+
+def test_standard_sampler_drops_removed_tasks() -> None:
+    tasks = reload_tasks(list(range(5)))
+    sampler = StandardSampler(tasks)
+    sample_keys(sampler, 7)
+    kept = reload_tasks([1, 3, 4])
+    restored = StandardSampler(kept)
+    restored.load_state_dict(sampler.state_dict())
+
+    assert restored.state_dict() == {"counts": {tasks[1].key: 2, tasks[3].key: 1, tasks[4].key: 1}}
+    assert sample_keys(restored, 5) == keys([tasks[3], tasks[4], tasks[1], tasks[3], tasks[4]])
+
+
+def test_standard_sampler_restarts_counts_when_every_task_is_new() -> None:
+    sampler = StandardSampler([make_task(i) for i in range(3)])
+    sample_keys(sampler, 4)
+    tasks = [make_task(i) for i in range(10, 12)]
+    restored = StandardSampler(tasks)
+    restored.load_state_dict(sampler.state_dict())
+
+    assert restored.state_dict() == {"counts": dict.fromkeys(keys(tasks), 0)}
+
+
+def test_standard_sampler_converts_a_legacy_cursor() -> None:
+    tasks = [make_task(i) for i in range(5)]
+    restored = StandardSampler(tasks)
+    restored.load_state_dict({"cursor": 7})
+
+    assert restored.state_dict() == {"counts": {task.key: 2 if i < 2 else 1 for i, task in enumerate(tasks)}}
+    assert sample_keys(restored, 6) == keys(list(itertools.islice(itertools.cycle(tasks), 7, 13)))
+
+
+def test_curriculum_resumes_a_legacy_checkpoint() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    curriculum = Curriculum(None, tasks)
+    curriculum.load_state_dict({"sampler": {"cursor": 4}, "gates": {}})
+
+    assert next(curriculum.sampler).key == tasks[1].key
+
+
+def test_curriculum_starts_a_changed_sampler_type_fresh() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    pools = {"all": DifficultyPoolConfig(threshold=1.0, weight=1.0)}
+    pool_config = CurriculumConfig(sampler=DifficultyPoolSamplerConfig(pools=pools))
+    standard = Curriculum(None, tasks)
+    next(standard.sampler)
+
+    pool = Curriculum(pool_config, tasks)
+    pool.load_state_dict(standard.state_dict())
+    assert pool.state_dict() == Curriculum(pool_config, tasks).state_dict()
+
+    pool.on_result(make_rollout(tasks[0], reward=0.5))
+    restored = Curriculum(None, tasks)
+    restored.load_state_dict(pool.state_dict())
+    assert restored.state_dict() == Curriculum(None, tasks).state_dict()
+    # A checkpoint written before the sampler type was recorded.
+    legacy = {key: value for key, value in pool.state_dict().items() if key != "sampler_type"}
+    restored.load_state_dict(legacy)
+    assert restored.state_dict() == Curriculum(None, tasks).state_dict()
+
+
+def test_curriculum_matches_gates_by_name() -> None:
+    tasks = [make_task(0)]
+    loaded: list[str] = []
+
+    class RecordingGate(AdvRangeGate):
+        def __init__(self, name: str) -> None:
+            super().__init__(AdvRangeGateConfig())
+            self.name = name
+
+        def load_state_dict(self, state_dict: dict) -> None:
+            loaded.append(self.name)
+
+    saved = Curriculum(CurriculumConfig(gates={"kept": AdvRangeGateConfig(), "removed": AdvRangeGateConfig()}), tasks)
+    curriculum = Curriculum(
+        CurriculumConfig(gates={"kept": AdvRangeGateConfig(), "added": AdvRangeGateConfig()}), tasks
+    )
+    curriculum.gates = {name: RecordingGate(name) for name in curriculum.gates}
+    curriculum.load_state_dict(saved.state_dict())
+
+    assert loaded == ["kept"]
+
+
+def test_difficulty_pool_sampler_drops_rewards_of_removed_tasks() -> None:
+    tasks = reload_tasks(list(range(3)))
+    config = CurriculumConfig(sampler=DifficultyPoolSamplerConfig())
+    curriculum = Curriculum(config, tasks)
+    for task in tasks:
+        curriculum.on_result(make_rollout(task, reward=0.5))
+    reloaded = reload_tasks([2, 0, 10])
+    restored = Curriculum(config, reloaded)
+    restored.load_state_dict(curriculum.state_dict())
+
+    assert restored.sampler.task_rewards == {tasks[0].key: 0.5, tasks[2].key: 0.5}
+    assert restored.metrics()["sampler/pool/unseen"] == 1.0
+
+
+def make_env(name: str, tasks: list[vf.Task]) -> SimpleNamespace:
+    config = SimpleNamespace(ratio=1.0, curriculum=None)
+    return SimpleNamespace(name=name, tasks=iter(tasks), num_tasks=len(tasks), config=config)
+
+
+def test_train_source_matches_envs_by_name() -> None:
+    tasks = {name: [make_task(i) for i in range(offset, offset + 3)] for name, offset in [("a", 0), ("b", 10)]}
+    source = TrainSource([make_env(name, env_tasks) for name, env_tasks in tasks.items()])
+    for name in tasks:
+        next(source.curricula[name].sampler)
+    source.rng.random()  # the restored rng must differ from a fresh one
+
+    added = [make_task(i) for i in range(20, 23)]
+    restored = TrainSource([make_env("b", tasks["b"]), make_env("c", added)])
+    restored.load_state_dict(source.state_dict())
+
+    assert set(restored.curricula) == {"b", "c"}
+    assert next(restored.curricula["b"].sampler).key == tasks["b"][1].key
+    assert next(restored.curricula["c"].sampler).key == added[0].key
+    assert restored.rng.getstate() == source.rng.getstate() != random.Random(42).getstate()
+
+
+def test_train_source_reopens_open_groups_in_order_without_recounting() -> None:
+    tasks = reload_tasks(list(range(4)))
+    source = TrainSource([make_env("a", tasks)])
+    requests = [source.next_task(step=1) for _ in range(3)]
+    source.close_groups([requests[1].group_id])
+    state = source.state_dict()
+    assert state["open_groups"] == [("a", requests[0].task.key), ("a", requests[2].task.key)]
+
+    restored = TrainSource([make_env("a", reload_tasks([3, 2, 0, 1]))])
+    restored.load_state_dict(state)
+    counts, rng = dict(restored.curricula["a"].sampler.counts), restored.rng.getstate()
+    first = restored.next_task(step=2)
+    assert first.task.key == requests[0].task.key
+    assert first.group_id not in {request.group_id for request in requests}
+    # A checkpoint between re-runs keeps the waiting groups after the re-run ones.
+    assert restored.state_dict()["open_groups"] == state["open_groups"]
+    assert restored.next_task(step=2).task.key == requests[2].task.key
+    assert restored.curricula["a"].sampler.counts == counts and restored.rng.getstate() == rng
+    assert len(restored.open_groups) == 2 and next(iter(restored.open_groups)) == first.group_id
+    assert restored.next_task(step=2).task.key == tasks[3].key
+
+
+def test_train_source_drops_open_groups_it_cannot_reopen() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    state = {
+        "rng": TrainSource([make_env("a", tasks)]).rng.getstate(),
+        "envs": {},
+        "open_groups": [("a", tasks[0].key), ("removed", tasks[0].key), ("a", "gone"), ("stream", tasks[1].key)],
+    }
+    stream = SimpleNamespace(
+        name="stream", tasks=iter(tasks), num_tasks=None, config=SimpleNamespace(ratio=1.0, curriculum=None)
+    )
+    restored = TrainSource([make_env("a", tasks), stream])
+    restored.load_state_dict(state)
+    assert [(env_name, task.key) for env_name, task in restored.reopened] == [("a", tasks[0].key)]
+
+
+def test_train_source_loads_a_checkpoint_without_open_groups() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    source = TrainSource([make_env("a", tasks)])
+    source.next_task(step=1)
+    state = source.state_dict()
+    del state["open_groups"]
+
+    restored = TrainSource([make_env("a", tasks)])
+    restored.load_state_dict(state)
+    assert not restored.reopened
+    assert restored.next_task(step=2).task.key == tasks[1].key

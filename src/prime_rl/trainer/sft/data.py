@@ -1,81 +1,23 @@
 import json
 import time
 import uuid
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, cast
 
 import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
-from jaxtyping import Bool, Int
-from renderers import AutoRendererConfig, RendererConfig
+from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
-from torch.distributed.checkpoint.stateful import Stateful
-from torch.utils.data import IterableDataset, get_worker_info
-from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
-from prime_rl.trainer.world import get_world
+from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
-
-
-class Sample(TypedDict):
-    input_ids: list[int]
-    position_ids: list[int]
-    loss_mask: list[bool]
-    target_ids: list[int]
-    seq_lens: list[int]
-    mm_kwargs: dict[str, Tensor] | None
-    mm_token_type_ids: list[int] | None
-
-
-class Batch(TypedDict):
-    input_ids: Int[Tensor, "batch seq"]
-    position_ids: Int[Tensor, "batch seq"]
-    target_ids: Int[Tensor, "batch seq"]
-    loss_mask: Bool[Tensor, "batch seq"]
-    seq_lens: Int[Tensor, "packed"]
-    mm_kwargs: dict[str, Tensor] | None
-    mm_token_type_ids: Int[Tensor, "batch seq"] | None
-
-
-class StatefulIterableDataset(Stateful, IterableDataset):
-    """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
-
-    def __init__(self, non_dp_size: int = 1):
-        self.step, self.epoch = 0, 0
-        self.num_samples = defaultdict(int)
-        self.num_tokens = defaultdict(int)
-        self.fast_forward = False
-        self.non_dp_size = non_dp_size
-        self._setup_world_info()
-
-    def state_dict(self) -> dict:
-        return {"step": self.step, "epoch": self.epoch}
-
-    def load_state_dict(self, state_dict: dict):
-        assert "step" in state_dict and "epoch" in state_dict
-        self.fast_forward = True
-        self.step = state_dict["step"]
-        self.epoch = state_dict["epoch"]
-
-    def _setup_world_info(self):
-        worker_info = get_worker_info()
-        if worker_info is not None:
-            worker_id = worker_info.id
-            num_workers = worker_info.num_workers
-        else:
-            worker_id, num_workers = 0, 1
-        world = get_world()
-        assert world.world_size % self.non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = world.rank // self.non_dp_size * num_workers + worker_id
-        self.data_world_size = world.world_size // self.non_dp_size * num_workers
 
 
 class FakeDataset(StatefulIterableDataset):
@@ -105,7 +47,7 @@ class FakeDataset(StatefulIterableDataset):
             else self.seq_len
         )
         random_input_ids = (
-            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
+            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().tolist()
             if self.input_ids == "random"
             else None
         )
@@ -144,7 +86,7 @@ class FakeDataset(StatefulIterableDataset):
                 "mm_token_type_ids": None,
             }
             self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += len(input_ids)
+            self.num_tokens["fake"] += seq_len
             yield fake_sample
 
 
@@ -209,42 +151,53 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> RendererConfig:
-    """Copy ``config`` with its ``reasoning_effort`` field set, validated by the config class."""
-    if isinstance(config, AutoRendererConfig):
-        raise ValueError(
-            "A reasoning_effort column requires a typed renderer config (e.g. [renderer] name = 'qwen3.8'), "
-            "not renderer.name = 'auto'"
-        )
-    if "reasoning_effort" not in type(config).model_fields:
-        raise ValueError(f"Renderer {config.name!r} has no reasoning_effort field, but a row sets {reasoning_effort!r}")
-    return type(config).model_validate({**config.model_dump(), "reasoning_effort": reasoning_effort})
-
-
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    A ``reasoning_effort`` column overrides the configured renderer's field of
-    the same name per row. Renderer configs are frozen, so renderers are cached
+    ``columns`` maps renderer fields to dataset columns; a row's non-null
+    values override the configured renderer's fields, validated as
+    chat-template kwargs. Renderer configs are frozen, so renderers are cached
     per config and rows that resolve to the same config share one instance.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        config: RendererConfig,
+        processor: Any | None = None,
+        columns: dict[str, str] | None = None,
+    ):
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
+        self.columns = SFTColumnsConfig().renderer if columns is None else columns
         self.renderers: dict[RendererConfig, Renderer] = {}
 
+    def resolve_config(self, example: dict) -> RendererConfig:
+        kwargs = {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
+        if not kwargs:
+            return self.config
+        if isinstance(self.config, AutoRendererConfig):
+            raise ValueError(
+                f"Per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
+                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+            )
+        return merge_chat_template_kwargs(self.config, kwargs)
+
     def __call__(self, example: dict) -> Renderer:
-        config = self.config
-        reasoning_effort = example.get("reasoning_effort")
-        if reasoning_effort is not None:
-            config = with_reasoning_effort(config, reasoning_effort)
+        config = self.resolve_config(example)
         renderer = self.renderers.get(config)
         if renderer is None:
             renderer = create_renderer(self.tokenizer, config)
             if self.processor is not None and hasattr(renderer, "_processor"):
                 renderer._processor = self.processor
+            if not getattr(renderer, "is_prefix_stable", False):
+                get_logger().warning(
+                    f"SFT renderer {type(renderer).__name__} does not guarantee prefix stability. "
+                    "SFT renders each conversation once to produce one training sample; "
+                    "it does not expand N assistant turns into N samples. Depending on the template, "
+                    "reasoning from earlier turns may be omitted from the training sample."
+                )
             self.renderers[config] = renderer
         return renderer
 
@@ -264,12 +217,21 @@ class SFTDataset(StatefulIterableDataset):
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
+        columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
         super().__init__(non_dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
         self.renderers = renderers
+        self.columns = columns
+        # Default names are optional: a dataset carries either messages or
+        # prompt/completion, and tools only for tool use. A name set in the
+        # config must exist.
+        for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
+            column = getattr(columns, field)
+            if column != field and column not in dataset.column_names:
+                raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
@@ -289,16 +251,17 @@ class SFTDataset(StatefulIterableDataset):
             # as a whole-chat training sample with an empty prompt. Null-check rather
             # than key-check: Arrow schema union adds `messages: null` to
             # prompt/completion rows whenever other rows have a `messages` column.
-            if example.get("messages") is not None:
-                messages = normalize_messages(example["messages"], default_role="assistant")
-            elif example.get("prompt") is not None and example.get("completion") is not None:
-                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-                    example["completion"], default_role="assistant"
+            columns = self.columns
+            if example.get(columns.messages) is not None:
+                messages = normalize_messages(example[columns.messages], default_role="assistant")
+            elif example.get(columns.prompt) is not None and example.get(columns.completion) is not None:
+                messages = normalize_messages(example[columns.prompt], default_role="user") + normalize_messages(
+                    example[columns.completion], default_role="assistant"
                 )
             else:
                 raise ValueError(
-                    "All examples in the dataset must have either a 'messages' column "
-                    "or both 'prompt' and 'completion' columns for SFT"
+                    f"All examples in the dataset must have either a {columns.messages!r} column "
+                    f"or both {columns.prompt!r} and {columns.completion!r} columns for SFT"
                 )
 
             # Strip nulls before deserializing so genuine nulls inside tool-call
@@ -308,30 +271,11 @@ class SFTDataset(StatefulIterableDataset):
 
         messages = resolve_messages(example)
 
-        # Parse available tools, if present - assumes OAI format. Accepts either
-        # `tools` or `tool_defs` (the verifiers rollout format), as either a
-        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
-        # tools are converted to OAI form for the chat template.
-        raw_tools = example.get("tools", example.get("tool_defs"))
-        if not raw_tools:
-            tools = []
-        else:
-            if isinstance(raw_tools, str):
-                raw_tools = json.loads(raw_tools)
-            tools = [
-                t
-                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
-                else {
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name"),
-                        "description": t.get("description"),
-                        "parameters": t.get("parameters"),
-                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
-                    },
-                }
-                for t in raw_tools
-            ]
+        # Tool schemas in OpenAI function-calling format, as a list of dicts or a
+        # JSON-encoded string of one.
+        tools = example.get(self.columns.tools) or []
+        if isinstance(tools, str):
+            tools = json.loads(tools)
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
@@ -347,9 +291,7 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        # Defer to the renderer's sampled_mask by default: a role filter would
-        # drop sampled stop markers attributed to the next message (e.g. GLM's
-        # turn-closing <|user|> / <|observation|>).
+        # Let the renderer identify sampled targets when assistant loss is enabled.
         role_to_mask = None if self.loss_mask_config.assistant else should_mask
 
         # Non-assistant roles are opted into the loss via the renderer's
@@ -364,6 +306,7 @@ class SFTDataset(StatefulIterableDataset):
             tools=tools,
             content_sft_roles=content_sft_roles or None,
             ensure_final_stop=True,
+            message_loss_mask=example.get(self.columns.message_loss_mask),
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
@@ -478,149 +421,6 @@ class SFTDataset(StatefulIterableDataset):
             yield processed_example
 
 
-class CatDataset(StatefulIterableDataset):
-    """Concatenate text and multimodal samples into one fixed-length row."""
-
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
-        self.logger = get_logger()
-        self.dataset = dataset
-        self.seq_len = seq_len
-        self.pending_sample: Sample | None = None
-
-    def state_dict(self) -> dict:
-        state = {
-            "dataset": self.dataset.state_dict(),
-            "progress": {
-                "num_samples": dict(self.dataset.num_samples),
-                "num_tokens": dict(self.dataset.num_tokens),
-            },
-        }
-        if self.pending_sample is not None:
-            state["pending_sample"] = self.pending_sample
-        return state
-
-    def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
-        progress = state_dict.get("progress", {})
-        self.dataset.num_samples.update(progress.get("num_samples", {}))
-        self.dataset.num_tokens.update(progress.get("num_tokens", {}))
-        self.pending_sample = state_dict.get("pending_sample")
-
-    def __iter__(self):
-        packed_samples = defaultdict(list)
-        packed_samples["mm_kwargs"] = None
-        packed_samples["mm_token_type_ids"] = None
-        seq_len = 0
-
-        pending_sample = self.pending_sample
-        self.pending_sample = None
-
-        def samples():
-            if pending_sample is not None:
-                yield pending_sample
-            yield from self.dataset
-
-        for sample in samples():
-            sample_len = len(sample["input_ids"])
-            would_overflow = seq_len + sample_len > self.seq_len
-            if seq_len > 0 and would_overflow:
-                self.pending_sample = sample
-                yield self._finalize_pack(packed_samples, self.seq_len)
-                self.pending_sample = None
-                packed_samples = defaultdict(list)
-                packed_samples["mm_kwargs"] = None
-                packed_samples["mm_token_type_ids"] = None
-                seq_len = 0
-
-            existing_len = len(packed_samples["input_ids"])
-            for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
-                value = sample[key]
-                assert isinstance(value, list)
-                packed_samples[key].extend(value)
-            packed_samples["seq_lens"].append(sample_len)
-
-            sample_mm_kwargs = sample.get("mm_kwargs")
-            sample_mm_type_ids = sample.get("mm_token_type_ids")
-            if sample_mm_kwargs is None:
-                if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend([0] * sample_len)
-            else:
-                if packed_samples["mm_kwargs"] is not None and (
-                    (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
-                ):
-                    raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
-
-                if packed_samples["mm_kwargs"] is None:
-                    packed_samples["mm_kwargs"] = dict(sample_mm_kwargs)
-                else:
-                    if packed_samples["mm_kwargs"].keys() != sample_mm_kwargs.keys():
-                        raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
-                    for key, value in sample_mm_kwargs.items():
-                        packed_samples["mm_kwargs"][key] = torch.cat([packed_samples["mm_kwargs"][key], value], dim=0)
-
-                if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
-                    packed_samples["mm_token_type_ids"] = [0] * existing_len
-                if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
-
-            seq_len += sample_len
-
-            if seq_len >= self.seq_len:
-                yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = defaultdict(list)
-                packed_samples["mm_kwargs"] = None
-                packed_samples["mm_token_type_ids"] = None
-                seq_len = 0
-
-        if seq_len > 0:
-            yield self._finalize_pack(packed_samples, self.seq_len)
-
-    def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
-        result: dict[str, Any] = {
-            k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
-        }
-        result["seq_lens"] = []
-        remaining = len(result["input_ids"])
-        for sample_len in packed["seq_lens"]:
-            if remaining <= 0:
-                break
-            kept = min(sample_len, remaining)
-            if kept > 0:
-                result["seq_lens"].append(kept)
-            remaining -= kept
-        pad_len = seq_len - len(result["input_ids"])
-        if pad_len > 0:
-            result["input_ids"].extend([0] * pad_len)
-            result["position_ids"].extend(range(pad_len))
-            result["loss_mask"].extend([False] * pad_len)
-            result["target_ids"].extend([0] * pad_len)
-            result["seq_lens"][-1] += pad_len
-        result["mm_kwargs"] = packed["mm_kwargs"]
-        if packed["mm_token_type_ids"] is not None:
-            result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
-        else:
-            result["mm_token_type_ids"] = None
-        return result
-
-
-def cat_collate(samples: list[Sample]) -> Batch:
-    # CPU tensors only: this runs in dataloader workers then the trainer moves batches to the GPU with async copies from pinned memory
-    (sample,) = samples
-    mm_kwargs = sample.get("mm_kwargs")
-    mm_token_type_ids = sample.get("mm_token_type_ids")
-    return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
-        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
-        "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
-        "mm_token_type_ids": (
-            torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
-        ),
-    }
-
-
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
     if not isinstance(data, SFTDataConfig):
         return
@@ -716,7 +516,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         )
 
 
-def setup_dataset(
+def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
     config: DataConfig,
     non_dp_size: int = 1,
@@ -741,7 +541,7 @@ def setup_dataset(
             raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor)
+        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
         return SFTDataset(
             raw_dataset,
             renderers,
@@ -752,50 +552,7 @@ def setup_dataset(
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
+            columns=config.columns,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
-
-
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
-    return StatefulDataLoader(
-        packing_dataset,
-        batch_size=1,
-        collate_fn=cat_collate,
-        num_workers=config.num_workers,
-        pin_memory=True,
-    )
-
-
-def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
-    """Dataset position per worker for the startup log, parsed from ``StatefulDataLoader.state_dict()``.
-
-    The loader is the only source that is correct in every case: after a resume's
-    ``load_state_dict`` the restored position exists solely in the loader's stashed
-    state (it reaches the dataset copies inside workers when the iterator forks them;
-    the main-process dataset object stays at position zero). The keys are torchdata's
-    private worker-snapshot layout."""
-    snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
-    return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
-
-
-def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
-    """Dataset position and aggregate counters from dataloader workers."""
-    snapshot = dataloader.state_dict()["_snapshot"]
-    worker_snapshots = snapshot["_worker_snapshots"]
-    positions = [worker_snapshot["dataset_state"]["dataset"] for worker_snapshot in worker_snapshots.values()]
-    furthest = max(positions, key=lambda position: position["step"])
-    num_samples = defaultdict(int)
-    num_tokens = defaultdict(int)
-    for worker_snapshot in worker_snapshots.values():
-        progress = worker_snapshot["dataset_state"].get("progress", {})
-        for name, count in progress.get("num_samples", {}).items():
-            num_samples[name] += count
-        for name, count in progress.get("num_tokens", {}).items():
-            num_tokens[name] += count
-    return {
-        **furthest,
-        "num_samples": dict(num_samples),
-        "num_tokens": dict(num_tokens),
-    }

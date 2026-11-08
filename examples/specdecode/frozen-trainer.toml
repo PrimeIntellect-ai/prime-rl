@@ -4,7 +4,7 @@ max_steps = 3
 [model]
 name = "Qwen/Qwen3-4B"
 seq_len = 512
-optim_cpu_offload = false
+offload = "none"
 
 [data.fake]
 batch_size = 2

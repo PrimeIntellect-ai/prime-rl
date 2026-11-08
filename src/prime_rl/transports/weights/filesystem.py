@@ -1,10 +1,10 @@
 from pathlib import Path
 
-import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
-from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
+from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
@@ -51,7 +51,6 @@ class FileSystemWeightSender(WeightSender):
                     dropout=self.lora_config.dropout,
                 )
         else:
-            dist.barrier()
             state_dict = gather_weights_parallel(model, include_draft_projections=True)
             state_dict = convert_state_dict_to_hf(model, state_dict)
             self.logger.debug(f"Saving weights to {step_dir}")
@@ -70,6 +69,6 @@ class FileSystemWeightReceiver(WeightReceiver):
         self._ack(step)
         await wait_for_path(weights_dir / FINISHED_MARKER)
         if (weights_dir / "adapter_config.json").exists():
-            await load_lora_adapter(self.admin_plane, self.model_name, weights_dir)
+            await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
             await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)

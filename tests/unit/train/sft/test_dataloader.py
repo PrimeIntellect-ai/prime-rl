@@ -6,7 +6,8 @@ import torch
 from datasets import Dataset
 
 from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
-from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.sft.data import FakeDataset, SFTDataset
 from prime_rl.trainer.world import reset_world
 
 
@@ -19,7 +20,7 @@ def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
         seed=config.seed,
         non_dp_size=non_dp_size,
     )
-    return dataset, setup_dataloader(dataset, config)
+    return dataset, setup_dataloader(dataset, config, cp=1)
 
 
 def test_fake_dataset_single_rank_state():
@@ -88,7 +89,7 @@ def test_fake_dataset_single_rank_resume():
 
     # Reload dataloader
     state_dict = dataloader.state_dict()
-    dataloader = setup_dataloader(dataset, config)
+    dataloader = setup_dataloader(dataset, config, cp=1)
     dataloader.load_state_dict(state_dict)
     dataiter = iter(dataloader)
 
@@ -110,7 +111,8 @@ def test_fake_dataset_single_rank_state_with_packing():
         micro_batch = next(dataiter)
         num_packed_examples = len(micro_batch["input_ids"][micro_batch["loss_mask"]].unique())
         step += num_packed_examples
-        assert micro_batch["input_ids"].shape == (1, 128)
+        assert micro_batch["input_ids"].shape[0] == 1
+        assert micro_batch["input_ids"].shape[1] <= 128
         assert micro_batch["seq_lens"].sum() == micro_batch["input_ids"].shape[1]
         worker_state = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]["worker_0"]["dataset_state"]
         pending_sample = worker_state.get("pending_sample")
@@ -186,7 +188,7 @@ def test_dataloader_shards_across_ranks_and_workers(
                 seq_len=config.seq_len,
                 non_dp_size=non_dp_size,
             )
-            return setup_dataloader(dataset, config)
+            return setup_dataloader(dataset, config, cp=1)
 
         dataloader = setup_epoch_dataloader()
         dataiter = iter(dataloader)

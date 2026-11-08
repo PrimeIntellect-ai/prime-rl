@@ -26,7 +26,7 @@ def test_dspark_preserves_independent_replica_cache_index(replica, monkeypatch):
     factory = utils._get_dspark_parallel_config
     monkey_patch_dspark_dp_compile_cache()
     assert utils._get_dspark_parallel_config is factory
-    draft = factory(target, tensor_parallel_size=1)
+    draft = factory(target, tensor_parallel_size=1, draft_model_config=None)
 
     assert draft.data_parallel_index == replica
     assert draft.data_parallel_rank == 0

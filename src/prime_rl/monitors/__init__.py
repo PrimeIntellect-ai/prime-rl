@@ -15,13 +15,12 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 from prime_rl.configs.monitors import (
     FileMonitorConfig,
-    PrimeEvalMonitorConfig,
-    PrimeTrainMonitorConfig,
+    PrimeMonitorConfig,
     WandbMonitorConfig,
 )
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file import FileMonitor
-from prime_rl.monitors.prime import PrimeEvalMonitor, PrimeTrainMonitor
+from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import format_time, get_logger
@@ -32,8 +31,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Monitor",
     "WandbMonitor",
-    "PrimeTrainMonitor",
-    "PrimeEvalMonitor",
+    "PrimeMonitor",
     "FileMonitor",
     "setup",
     "get",
@@ -47,7 +45,7 @@ MONITORS: list[Monitor] = []
 
 async def setup(
     wandb: WandbMonitorConfig | None = None,
-    prime: PrimeTrainMonitorConfig | PrimeEvalMonitorConfig | None = None,
+    prime: PrimeMonitorConfig | None = None,
     file: FileMonitorConfig | None = None,
     *,
     output_dir: Path,
@@ -69,10 +67,10 @@ async def setup(
         return
 
     monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
-    if isinstance(prime, PrimeTrainMonitorConfig):
-        monitors.append(("prime", PrimeTrainMonitor(prime), dict(config=run_config, output_dir=output_dir)))
-    elif isinstance(prime, PrimeEvalMonitorConfig):
-        monitors.append(("prime", PrimeEvalMonitor(prime), dict(config=run_config, output_dir=output_dir)))
+    if prime is not None:
+        monitors.append(
+            ("prime", PrimeMonitor(prime), dict(config=run_config, output_dir=output_dir, producer=producer))
+        )
     if wandb is not None:
         monitors.append(
             (
@@ -166,10 +164,10 @@ async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def finalize() -> None:
-    """Finalize the run on all registered monitors."""
+async def finalize(paused: bool = False) -> None:
+    """Finalize the run on all registered monitors. A paused run is not reported as completed."""
     for monitor in MONITORS:
         try:
-            await monitor.finalize()
+            await monitor.finalize(paused=paused)
         except Exception as e:
             get_logger().warning(f"Failed to finalize {monitor.__class__.__name__}: {e}")

@@ -1,0 +1,46 @@
+from fastapi import FastAPI, HTTPException, status
+
+from prime_rl.control.controller import Controller
+from prime_rl.control.types import (
+    Action,
+    ActionNotFoundError,
+    ActionRequest,
+    ConfigSnapshot,
+    ControlConflictError,
+    InvalidActionError,
+    InvalidConfigError,
+    StepActionRequest,
+)
+
+
+def create_app(controller: Controller) -> FastAPI:
+    app = FastAPI(title="prime-rl control")
+
+    @app.get("/v1/actions/{action_id}")
+    async def get_action(action_id: str) -> Action:
+        try:
+            return controller.get(action_id)
+        except ActionNotFoundError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+
+    @app.post("/v1/actions", status_code=status.HTTP_202_ACCEPTED)
+    async def submit_action(request: ActionRequest) -> Action:
+        try:
+            if isinstance(request, StepActionRequest):
+                return controller.submit(request.type, request.step)
+            return controller.submit_config(request)
+        except ControlConflictError as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+        except InvalidConfigError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, error.detail) from error
+        except InvalidActionError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+
+    @app.get("/v1/config")
+    async def get_config() -> ConfigSnapshot:
+        try:
+            return controller.get_config()
+        except InvalidActionError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+
+    return app

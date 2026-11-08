@@ -41,6 +41,8 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
+    # Muse Glimmer
+    ("meta-models/Muse-Glimmer-30B", "muse_glimmer", "muse_glimmer"),
     # gpt-oss (reasoning handled natively by vLLM's harmony path)
     ("openai/gpt-oss-20b", "openai", None),
     ("openai/gpt-oss-120b", "openai", None),
@@ -55,8 +57,8 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("PrimeIntellect/INTELLECT-3.1", "qwen3_coder", "deepseek_r1"),
     # NemotronH
     ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "qwen3_coder", "nemotron_v3"),
-    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "qwen3_coder", "nano_v3"),
-    ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "qwen3_coder", "nano_v3"),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "qwen3_coder", "nemotron_v3"),
+    ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "qwen3_coder", "nemotron_v3"),
     # StepFun
     ("stepfun-ai/Step-3.5-Flash", "step3p5", "step3p5"),
     # Qwen3 dense

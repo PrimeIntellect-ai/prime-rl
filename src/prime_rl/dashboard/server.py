@@ -81,7 +81,7 @@ _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
 """Per stream and kind filter: how many summaries were scanned for series keys, and the keys."""
 _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
-_index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_index_cache: OrderedDict[Path, tuple[int, bytes, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
@@ -240,8 +240,10 @@ def resolved_config_dir(run_dir: Path, attempt: str = "latest") -> Path:
 
 def main_config(run_dir: Path) -> tuple[str, dict]:
     configs = resolved_config_dir(run_dir)
-    if (configs / "sft.json").exists():
-        return "sft", read_json(configs / "sft.json")
+    # Pretraining uses the same trainer as SFT, so the dashboard shows its runs as SFT runs.
+    for name in ("sft.json", "pretrain.json"):
+        if (configs / name).exists():
+            return "sft", read_json(configs / name)
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
     if (configs / "eval.json").exists():
@@ -304,7 +306,13 @@ def run_meta(run_dir: Path) -> dict:
     resolved = resolved_config_dir(run_dir)
 
     def envs(split: str) -> list[str]:
-        return sorted(p.stem for p in (resolved / "envs" / split).glob("*.json"))
+        sources = (config.get(split) or {}).get("source") or []
+        names = {p.stem for p in (resolved / "envs" / split).glob("*.json")}
+        for source in sources:
+            env = source.get("env") or {}
+            env_id = "+".join(filter(None, (env.get("id"), (env.get("taskset") or {}).get("id"))))
+            names.add(source.get("name") or env_id)
+        return sorted(name for name in names if name)
 
     steps = step_numbers(run_dir)
     metrics_path = metrics_file(run_dir)
@@ -830,16 +838,6 @@ def timeline_status(trace: dict) -> str:
     return "completed"
 
 
-def timeline_reward(trace: dict) -> float | None:
-    rewards = [reward for reward in (trace.get("rewards") or {}).values() if isinstance(reward, dict)]
-    if not rewards:
-        return None
-    return sum(
-        (reward.get("score") or 0) * (reward.get("weight") if reward.get("weight") is not None else 1)
-        for reward in rewards
-    )
-
-
 def annotation_streams(run_dir: Path) -> list[Path]:
     """The annotation streams, one chunk directory per producer, each indexed beside it."""
     directory = get_annotations_dir(run_dir)
@@ -946,9 +944,6 @@ def activity_spans(
         ended = call_time.get("end")
         usage = call.get("usage") or {}
         input_tokens, cached_tokens, output_tokens = token_usage(usage)
-        reasoning_tokens = usage.get("reasoning_tokens")
-        if reasoning_tokens is None:
-            reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
         text = " ".join(message_text(node.get("message") or {}).split())
         mask = node.get("mask")
         spans.append(
@@ -966,7 +961,6 @@ def activity_spans(
                 "input_tokens": input_tokens,
                 "cached_tokens": cached_tokens,
                 "output_tokens": output_tokens,
-                "reasoning_tokens": reasoning_tokens,
                 "cost": usage.get("cost"),
                 "trainable": any(mask) if isinstance(mask, list) and mask else None,
             }
@@ -1000,6 +994,20 @@ def lifecycle_spans(trace: dict) -> list[dict]:
     return spans
 
 
+def new_input_tokens(activities: list[dict]) -> int | None:
+    """Fed-in tokens of one call chain, counted once: each call's prompt beyond the
+    previous call's final sequence, clamped at zero (verifiers' `min_new_input_tokens`)."""
+    total = None
+    previous = 0
+    for span in sorted(activities, key=lambda span: span["call_index"]):
+        if span.get("input_tokens") is None:
+            continue
+        prompt = span["input_tokens"] + (span.get("cached_tokens") or 0)
+        total = (total or 0) + max(0, prompt - previous)
+        previous = prompt + (span.get("output_tokens") or 0)
+    return total
+
+
 def timeline_lane(
     trace: dict,
     trace_index: int,
@@ -1015,8 +1023,15 @@ def timeline_lane(
     starts = [span["started_at"] for span in spans if span.get("started_at") is not None]
     ends = [span["ended_at"] for span in spans if span.get("ended_at") is not None]
     started = started_at if started_at is not None else min(starts or ends, default=None)
+    terminal = next(
+        (span["status"] for span in lifecycle if span["status"] in {"cancelled", "failed", "timeout"}),
+        None,
+    )
     status = (
-        ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        (
+            terminal
+            or ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        )
         if branch
         else timeline_status(trace)
     )
@@ -1029,14 +1044,15 @@ def timeline_lane(
         values = [span[field] for span in activities if isinstance(span.get(field), (int, float))]
         return sum(values) if values else None
 
-    input_tokens = total("input_tokens")
-    cached_tokens = total("cached_tokens")
     output_tokens = total("output_tokens")
-    reasoning_tokens = total("reasoning_tokens")
-    total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
-    total_tokens = (
-        total_input_tokens + output_tokens if total_input_tokens is not None and output_tokens is not None else None
-    )
+    if branch:
+        input_tokens = new_input_tokens(activities)
+    else:
+        # the trace counts input on shared branch prefixes once; its call list
+        # interleaves branches, so the lane's spans cannot reproduce that
+        input_tokens = trace.get("num_input_tokens")
+        output_tokens = trace.get("num_output_tokens", output_tokens)
+    total_tokens = input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None
     context_lengths = [
         (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
         for span in activities
@@ -1051,18 +1067,15 @@ def timeline_lane(
         "ended_at": ended,
         "status": status,
         "outcome": status if branch else (trace.get("stop_condition") or status),
-        "reward": timeline_reward(trace),
+        "reward": trace.get("reward") if trace.get("rewards") else None,
         "usage": {
             "model_calls": len(activities),
             "input_tokens": input_tokens,
-            "cached_tokens": cached_tokens,
-            "total_input_tokens": total_input_tokens,
             "output_tokens": output_tokens,
-            "reasoning_tokens": reasoning_tokens,
             "latest_context_tokens": context_lengths[-1] if context_lengths else None,
             "max_context_tokens": max(context_lengths, default=None),
             "total_tokens": total_tokens,
-            "cost": total("cost"),
+            "cost": total("cost") if branch else (trace.get("usage") or {}).get("cost"),
         },
         "spans": spans,
     }
@@ -1207,6 +1220,13 @@ def semantic_context_lanes(
 
     ordered_components = sorted(components, key=lambda component: (component_start(component), component))
     cross_edges = [edge for edge in edges if component_for[edge["source_node"]] != component_for[edge["target_node"]]]
+    # subagent_failed (child -> parent) marks its source; subagent_cancel (parent -> child) its target.
+    context_outcome = {}
+    for edge in cross_edges:
+        if edge["type"] == "subagent_failed":
+            context_outcome[component_for[edge["source_node"]]] = "failed"
+        elif edge["type"] == "subagent_cancel":
+            context_outcome[component_for[edge["target_node"]]] = "cancelled"
     created_components = {
         component_for[edge["target_node"]]
         for edge in cross_edges
@@ -1276,6 +1296,10 @@ def semantic_context_lanes(
             default=None,
         )
         completed = bool(trace.get("is_completed"))
+        # A cancelled/failed context is done even if the trace as a whole is not.
+        outcome = context_outcome.get(component)
+        status = outcome or ("completed" if completed else "running")
+        ended_at = end if (outcome is not None or completed) else None
         label = f"{agent_label} · context {context_index}"
         lifecycle = (
             [
@@ -1284,8 +1308,8 @@ def semantic_context_lanes(
                     "label": label,
                     "track": "lifecycle",
                     "started_at": start,
-                    "ended_at": end if completed else None,
-                    "status": "completed" if completed else "running",
+                    "ended_at": ended_at,
+                    "status": status,
                 }
             ]
             if start != float("inf")
@@ -1304,6 +1328,8 @@ def semantic_context_lanes(
             "agent": agent_label,
             "index": context_index,
         }
+        if outcome is not None:
+            lane["context"]["outcome"] = outcome
         if component in unlinked_components:
             lane["context"]["unlinked"] = True
         if component in attempt_by_component:
@@ -1446,9 +1472,14 @@ def index_rows(path: Path) -> list[dict] | None:
     size = path.stat().st_size
     with _lock:
         cached = _lru_get(_index_cache, path)
+    # A resume rewrites/truncates the index (dropped errored rows, then re-grows it),
+    # so the bytes before the old EOF change: reusing the cache append-only would splice
+    # stale rows in. Detect it via file_checkpoint, exactly like line_offsets().
+    if cached and (cached[0] > size or (cached[0] and file_checkpoint(path, cached[0]) != cached[1])):
+        cached = None
     if cached and cached[0] == size:
-        return cached[1]
-    rows, read_from = (list(cached[1]), cached[0]) if cached and cached[0] < size else ([], 0)
+        return cached[2]
+    rows, read_from = (list(cached[2]), cached[0]) if cached else ([], 0)
     with path.open("rb") as f:
         f.seek(read_from)
         for raw in f:
@@ -1460,7 +1491,7 @@ def index_rows(path: Path) -> list[dict] | None:
                 break
             read_from += len(raw)
     with _lock:
-        _lru_put(_index_cache, path, (read_from, rows))
+        _lru_put(_index_cache, path, (read_from, file_checkpoint(path, read_from), rows))
     return rows
 
 
@@ -1521,6 +1552,7 @@ def row_filter(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
+    trace: str | None = None,
     ok: bool | None = None,
     start: float | None = None,
     end: float | None = None,
@@ -1537,6 +1569,8 @@ def row_filter(
         if env and row.get("env") != env:
             return False
         if episode is not None and row.get("id") != episode:
+            return False
+        if trace is not None and trace not in row.get("trace_ids", []):
             return False
         if ok is not None and bool(row.get("ok")) != ok:
             return False
@@ -1566,6 +1600,7 @@ def list_stream_episodes(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
+    trace: str | None = None,
     ok: bool | None = None,
     sort: str = "arrival",
     order: str = "desc",
@@ -1593,7 +1628,7 @@ def list_stream_episodes(
     if upto is not None:
         rows = rows[:upto]
     envs, kinds = index_facets(run_dir)
-    keep = row_filter(step=step, kind=kind, env=env, episode=episode, ok=ok, start=start, end=end)
+    keep = row_filter(step=step, kind=kind, env=env, episode=episode, trace=trace, ok=ok, start=start, end=end)
     if sort == "arrival":
         # the index is already in arrival order: walk it from the right end and stop
         # once the page is full, so the common view costs a page rather than a run
@@ -1759,7 +1794,7 @@ _live_folds = LiveFolds()
 
 @app.get("/api/runs/{run}/live")
 def live_traces(run: str, etag: str | None = None) -> dict:
-    """The run's in-flight traces, folded from the env servers' streamed deltas
+    """The run's in-flight traces, folded from the env worker pools' streamed deltas
     (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
     phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
     gone has finished and sits in the stream. ``etag`` is the fingerprint the client

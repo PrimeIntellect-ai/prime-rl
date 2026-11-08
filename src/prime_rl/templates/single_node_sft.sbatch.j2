@@ -5,7 +5,9 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --exclusive
+{%- if partition %}
 #SBATCH --partition={{ partition }}
+{%- endif %}
 {%- if account %}
 #SBATCH --account={{ account }}
 {%- endif %}
@@ -39,4 +41,4 @@ uv sync --all-extras --all-packages
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
-uv run sft @ {{ config_path }}
+uv run {{ entrypoint }} @ {{ config_path }}

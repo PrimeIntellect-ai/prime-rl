@@ -1,4 +1,5 @@
 import asyncio
+import gc
 from argparse import Namespace
 from typing import Literal
 
@@ -16,32 +17,6 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.logger import get_logger
-
-logger = get_logger()
-from prime_rl.inference.patches import (
-    monkey_patch_dp_coordinator_startup_timeout,
-    monkey_patch_nano_v3_reasoning_parser,
-    monkey_patch_strip_routed_experts_from_chat,
-    monkey_patch_tokenize_params_validation,
-)
-
-# NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.30 — upstream rejects prompt_len > max_model_len - max_tokens
-monkey_patch_tokenize_params_validation()
-# NOTE: Register Nano V3 reasoning parser so configs can use
-# `reasoning_parser = "nano_v3"` without a vLLM plugin file.
-monkey_patch_nano_v3_reasoning_parser()
-# NOTE: routed_experts are consumed only via the serialized /generate path (router
-# replay). The chat-completions path encodes them as a base64 np.save string the PD
-# router cannot merge, which fails eval rollouts (they use chat completions). Strip
-# routed_experts from chat responses since the server-wide enable flag has no
-# per-request toggle.
-monkey_patch_strip_routed_experts_from_chat()
-# NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
-# API server blows through when all engine-core ranks on the node are loading
-# weights concurrently (multi-node disaggregated deployments).
-monkey_patch_dp_coordinator_startup_timeout()
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -57,10 +32,13 @@ def models(request: Request) -> OpenAIServingModels:
     return request.app.state.openai_serving_models
 
 
+API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
+
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
 }
 
 
@@ -85,6 +63,18 @@ async def update_weights(request: Request, target: Literal["model", "draft"] = "
     await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),), kwargs=kwargs)
     if target == "draft":
         await client.reset_prefix_cache(reset_running_requests=True)
+        return {"status": "ok"}
+    # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
+    await client.update_weight_version(str(data["weight_version"]))
+    return {"status": "ok"}
+
+
+@router.post("/update_weights_from_modelexpress")
+async def update_weights_from_modelexpress(request: Request):
+    data = await request.json()
+    client = engine_client(request)
+    await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
+    await client.update_weight_version(str(data["weight_version"]))
     return {"status": "ok"}
 
 
@@ -104,18 +94,16 @@ async def weight_fingerprint(request: Request, target: Literal["model", "draft"]
 
 
 @router.post("/load_lora_adapter")
-async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
+async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
     """Wrapper around vLLM's /v1/load_lora_adapter.
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
-    changes per policy version; the name is constant — the base model name, which
-    the adapter shadows: ``_maybe_get_adapters`` resolves ``lora_requests`` before
-    the base-model match, so requests keep addressing one stable name. If a future
-    vLLM rejects registering an adapter under a served model name, fall back to a
-    distinct constant adapter name set once at startup.) vLLM's native loader
-    rejects a same-name reload unless ``load_inplace=True``, so we force it here —
-    that makes the worker re-read the new weights during ``add_lora``, reusing the
-    existing ``lora_int_id``.
+    changes per policy version; the name is constant — the model name every client
+    sends. vLLM rejects an adapter named like a served base model, so with LoRA on
+    the base model is served as ``<model>-base``; see ``InferenceConfig.to_namespace``.)
+    vLLM's native loader rejects a same-name reload unless ``load_inplace=True``, so
+    we force it here — that makes the worker re-read the new weights during
+    ``add_lora``, reusing the existing ``lora_int_id``.
 
     We then reset the stored request's flag back to ``False``. ``load_inplace`` is
     a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
@@ -134,6 +122,7 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    await engine_client(raw_request).update_weight_version(weight_version)
     return {"status": "ok"}
 
 
@@ -159,10 +148,10 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     session_id = data.get("session_id", "default")
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, session_id),
-    )
+    args = (host, port, rank_offset, inference_world_size, timeout, session_id)
+    if "staging_buffer_bytes" in data:
+        args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
+    await engine_client(request).collective_rpc("init_broadcaster", args=args)
     return {"status": "ok"}
 
 
@@ -194,6 +183,13 @@ async def custom_init_app_state(
         prime_serving = object.__new__(PrimeRlServingTokens)
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
+
+    # Under RL load the API server holds millions of live objects, and CPython's
+    # default thresholds rerun full collections over them every few seconds.
+    # Move everything alive after startup out of GC and collect less often.
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(*API_SERVER_GC_THRESHOLDS)
 
 
 import vllm.entrypoints.launchers.api_server.entry

@@ -15,9 +15,10 @@ from transformers.utils import TransformersKwargs
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import (
-    flash_attn_3_varlen_func,
-    flash_attn_4_varlen_func,
-    flash_attn_varlen_func,
+    flash_attn_2_varlen_op,
+    flash_attn_3_varlen_op,
+    flash_attn_4_varlen_op,
+    quadratic_attention_flops,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -82,35 +83,39 @@ class AfmoeAttentionBase(nn.Module):
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.sliding_window or seq_len),
+        )
+
 
 class AfmoeFlashAttention(AfmoeAttentionBase):
     """AFMoE attention using Flash Attention varlen functions."""
 
     _funcs = {
-        2: flash_attn_varlen_func,
-        3: flash_attn_3_varlen_func,
-        4: flash_attn_4_varlen_func,
+        2: flash_attn_2_varlen_op,
+        3: flash_attn_3_varlen_op,
+        4: flash_attn_4_varlen_op,
     }
 
     def __init__(self, config: AfmoeAttentionConfig, flash_attn_version: int = 4):
         super().__init__(config)
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
-        self._flash_attn_call = self.func
-        if self._flash_attn_version == 4:
-            self._flash_attn_call = torch._dynamo.disable(self.func)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
-        args = [q, k, v, cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
         kwargs: dict = {"causal": True}
         if self.sliding_window is not None:
             kwargs["window_size"] = (self.sliding_window - 1, 0)
-        out = self._flash_attn_call(*args, **kwargs)
-        if isinstance(out, tuple):
-            out = out[0]
+        if self._flash_attn_version == 4:
+            out, _ = self.func(q, k, v, cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens, **kwargs)
+        else:
+            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         return out
 
     def forward(
@@ -274,8 +279,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
 class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = AfmoeConfig
     base_model_prefix = "model"
-    _no_split_modules = ["AfmoeDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
     _keep_in_fp32_modules = [
         "input_layernorm",
         "post_attention_layernorm",
@@ -285,15 +288,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
         "k_norm",
         "norm",
     ]
-    _supports_sdpa = False
-    _supports_flash_attn = True
-    _supports_flex_attn = False
-    _supports_attention_backend = True
-    _can_compile_fullgraph = False
-    _can_record_outputs = {
-        "hidden_states": AfmoeDecoderLayer,
-    }
-    supports_gradient_checkpointing = True
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
@@ -309,8 +303,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class AfmoeModel(AfmoePreTrainedModel):
-    _no_split_modules = ["AfmoeDecoderLayer"]
-
     def __init__(self, config: AfmoeConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -372,7 +364,9 @@ class AfmoeModel(AfmoePreTrainedModel):
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             mask = causal_mask_mapping[decoder_layer.attention_type] if causal_mask_mapping is not None else None
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
 
             hidden_states = decoder_layer(
                 hidden_states,
@@ -391,8 +385,6 @@ class AfmoeModel(AfmoePreTrainedModel):
 
 class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)

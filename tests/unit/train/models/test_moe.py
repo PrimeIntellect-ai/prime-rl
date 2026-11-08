@@ -4,9 +4,11 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import is_tt_moe_model
-from prime_rl.trainer.models.layers.activations import ActivationDispatch
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
+from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
+from prime_rl.trainer.models.fusions import fuse_gate_up_projections
+from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
+from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
+from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
@@ -21,6 +23,44 @@ from prime_rl.trainer.models.qwen3_5 import (
 )
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("trainable_weight", [False, True])
+def test_router_linear_preserves_fp32_output_and_gradients(compiled, trainable_weight):
+    from torch.utils.checkpoint import checkpoint
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for low-precision GEMM with FP32 output")
+
+    linear = FP32Linear(64, 8, device="cuda", dtype=torch.bfloat16)
+    with torch.no_grad():
+        linear.weight.zero_()
+        linear.weight[:, 0] = 1
+        linear.weight[:, 1] = 2**-12
+        linear.bias.zero_()
+    linear.weight.requires_grad_(trainable_weight)
+
+    def forward(x):
+        return checkpoint(linear, x, use_reentrant=False)
+
+    forward = torch.compile(forward, fullgraph=True, dynamic=True) if compiled else forward
+
+    for length in (17, 33, 65):
+        x = torch.ones(length, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        actual = forward(x)
+        expected = F.linear(x.float(), linear.weight.float(), linear.bias.float())
+        assert actual.dtype == torch.float32
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert not torch.equal(actual, F.linear(x, linear.weight, linear.bias).float())
+
+        grad_output = torch.linspace(-0.25, 0.25, actual.numel(), device="cuda").reshape_as(actual)
+        parameters = (x, linear.weight, linear.bias) if trainable_weight else (x, linear.bias)
+        actual_grads = torch.autograd.grad(actual, parameters, grad_output)
+        expected_grads = torch.autograd.grad(expected, parameters, grad_output)
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+            torch.testing.assert_close(actual_grad, expected_grad)
 
 
 @pytest.mark.parametrize(
@@ -40,37 +80,74 @@ def test_moe_detection_for_text_and_vlm(config_cls, expected):
 
 
 @pytest.mark.parametrize("selection", [[], [0], "0%", "50%"])
-def test_unselected_moe_uses_bf16_without_loading_quantization_backend(selection):
+@pytest.mark.parametrize("compute", [{"type": "mxfp8"}, {"type": "bf16", "backend": "sonicmoe"}])
+def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, compute):
     moe = MoE.from_args(MoEArgs(num_experts=2), dim=4, hidden_dim=8, shared_expert=None)
     parameters = dict(moe.named_parameters())
     model = torch.nn.Module()
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([torch.nn.Identity(), moe])
-    config = ModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
+    config = ModelConfig.model_validate({"moe": {"compute": {**compute, "apply_to": selection}}})
     dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
 
     configure_moe_runtime(model, config, dims)
 
-    assert isinstance(moe.experts.grouped_gemm, BF16GroupedGemm)
+    assert isinstance(moe.experts.compute, BF16ExpertCompute)
     assert isinstance(moe.token_dispatcher, LocalTokenDispatcher)
-    assert moe.token_dispatcher.token_group_alignment == moe.experts.grouped_gemm.token_group_alignment
+    assert moe.token_dispatcher.token_group_alignment == moe.experts.compute.token_group_alignment
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
 
 
-def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
+def test_mega_moe_dispatch_requires_expert_parallelism():
+    moe = MoE.from_args(MoEArgs(num_experts=2, score_before_experts=False), dim=512, hidden_dim=512, shared_expert=None)
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([moe])
+    config = ModelConfig.model_validate({"moe": {"dispatch": {"type": "mega_moe"}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    with pytest.raises(ValueError, match="expert-parallel group"):
+        configure_moe_runtime(model, config, dims)
+
+
+@pytest.mark.parametrize(
+    ("expert_cls", "kwargs", "fused", "error"),
+    [
+        pytest.param(GroupedExperts, {}, True, None, id="swiglu"),
+        pytest.param(GroupedExperts, {}, False, "fused gate/up", id="unfused"),
+        pytest.param(GroupedExperts, {"expert_type": "non_gated"}, False, "gated experts", id="non-gated"),
+        pytest.param(GroupedExperts, {"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
+        pytest.param(GroupedExperts, {"activation": "clamped_swiglu"}, True, "standard SwiGLU", id="clamped-swiglu"),
+        pytest.param(GroupedExperts, {"bias": True}, True, "bias-free", id="bias"),
+        pytest.param(GroupedExperts, {"activation": ClampedSilu(10.0)}, True, "standard SwiGLU", id="deepseek-v4"),
+    ],
+)
+def test_set_compute_validates_sonic_expert_structure(expert_cls, kwargs, fused, error):
+    pytest.importorskip("sonicmoe")
+    from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
+
+    experts = expert_cls(dim=4, hidden_dim=8, num_experts=2, **kwargs)
+    if fused:
+        fuse_gate_up_projections(experts)
+    original_compute = experts.compute
+    compute = SonicMoEExpertCompute()
+
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            experts.set_compute(compute)
+        assert experts.compute is original_compute
+    else:
+        experts.set_compute(compute)
+        assert experts.compute is compute
+
+
+def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     outputs = []
     start = 0
     for expert, end in enumerate(offs.tolist()):
         outputs.append(x[start:end] @ weights[expert])
         start = end
     return torch.cat(outputs)
-
-
-class ReferenceGroupedGemm:
-    token_group_alignment = 1
-
-    def __call__(self, x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
-        return _grouped_mm_reference(x, weights, offs=offs)
 
 
 def _scaled_square_experts(x: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -95,12 +172,14 @@ def test_local_token_dispatcher(score_before_experts):
         score_before_experts=score_before_experts,
     )
 
-    expected = torch.zeros_like(x)
-    for token in range(len(x)):
+    x_ref = x.detach().clone().requires_grad_()
+    scores_ref = scores.detach().clone().requires_grad_()
+    expected = torch.zeros_like(x_ref)
+    for token in range(len(x_ref)):
         for route in range(selected.shape[1]):
-            score = scores[token, route]
+            score = scores_ref[token, route]
             expert_scale = selected[token, route] + 1
-            expert_input = x[token] * score if score_before_experts else x[token]
+            expert_input = x_ref[token] * score if score_before_experts else x_ref[token]
             contribution = expert_input.square() * expert_scale
             if not score_before_experts:
                 contribution = contribution * score
@@ -108,13 +187,14 @@ def test_local_token_dispatcher(score_before_experts):
 
     torch.testing.assert_close(actual, expected)
     actual.sum().backward()
-    assert x.grad is not None
-    assert scores.grad is not None
+    expected.sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(scores.grad, scores_ref.grad)
 
 
 def test_local_token_dispatcher_handles_empty_input_and_unused_experts():
     dispatcher = LocalTokenDispatcher(num_experts=3, top_k=1, token_group_alignment=1)
-    x = torch.randn(2, 4)
+    x = torch.randn(2, 4, dtype=torch.bfloat16)
     scores = torch.ones(2, 1)
     selected = torch.tensor([[0], [2]])
 
@@ -130,6 +210,7 @@ def test_local_token_dispatcher_handles_empty_input_and_unused_experts():
         score_before_experts=False,
     )
     assert empty.shape == (0, 4)
+    assert empty.dtype == x.dtype
 
 
 @pytest.mark.parametrize(
@@ -149,8 +230,9 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
         expert_type=expert_type,
         activation=activation,
         bias=True,
-        grouped_gemm=ReferenceGroupedGemm(),
     )
+    experts.set_compute(GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1))
+    assert experts.token_group_alignment == 1
     experts.init_weights(0.02)
 
     has_gate = expert_type == "gated"
@@ -207,3 +289,20 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
     assert moe.experts.activation is ActivationDispatch[activation]
     assert (moe.shared_expert.gate_proj is not None) == has_gate
     assert moe.shared_expert.activation is ActivationDispatch[activation]
+
+
+def test_expert_load_stats():
+    # Layer 0 is balanced; layer 1 sends 8 of 16 tokens to one expert and leaves one expert cold (< 0.1x mean).
+    tokens_per_expert = torch.tensor([[4.0, 4.0, 4.0, 4.0], [8.0, 4.0, 4.0, 0.0]])
+    stats = compute_expert_load_stats(tokens_per_expert)
+    expected = {
+        "expert_load/cv/mean": 2**0.5 / 4,
+        "expert_load/cv/max": 2**0.5 / 2,
+        "expert_load/max_mean/mean": 1.5,
+        "expert_load/max_mean/max": 2.0,
+        "expert_load/cold_frac/mean": 0.125,
+        "expert_load/cold_frac/max": 0.25,
+    }
+    assert stats.keys() == expected.keys()
+    for name, value in expected.items():
+        assert stats[name].item() == pytest.approx(value)

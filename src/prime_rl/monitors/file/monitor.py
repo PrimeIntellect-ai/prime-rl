@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import orjson
+from verifiers.v1.trace import EXCLUDE_FIELDS
+from verifiers.v1.types import decode_ndarray
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
-from prime_rl.monitors.file.traces.index import index_row
+from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
@@ -23,6 +25,20 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+
+LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
+"""Node fields that stay on the wire but out of live trace files: expensive per-token information
+only the trainer needs."""
+
+
+def _live_value(value: Any) -> Any:
+    """A node field for a live trace file: per-token streams arrive as raw-bytes `__nd__` dicts
+    (a dict of them for `loss_weights`), which orjson writes as lists once decoded."""
+    if isinstance(value, dict):
+        if value.get("__nd__"):
+            return decode_ndarray(value)
+        return {key: _live_value(item) for key, item in value.items()}
+    return value
 
 
 class FileMonitor(Monitor):
@@ -105,7 +121,14 @@ class FileMonitor(Monitor):
                     appends.pop(path, None)
                     path.unlink(missing_ok=True)
                     continue
-                line = {**delta, "dispatch": event["dispatch"]} if "open" in delta else delta
+                line = dict(delta)
+                if "nodes" in line:
+                    line["nodes"] = [
+                        {key: _live_value(value) for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
+                        for node in line["nodes"]
+                    ]
+                if "open" in delta:
+                    line["dispatch"] = event["dispatch"]
                 # deltas key semantic links by node index (int)
                 appends.setdefault(path, []).append(
                     orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS)
@@ -136,14 +159,17 @@ class FileMonitor(Monitor):
 
         def write() -> None:
             stream, index = self._stream(get_trace_stream(self.output_dir))
-            # An index row goes out with every episode: summarising the record here,
-            # while it is already in hand, saves every reader from parsing a stream
+            # An index row goes out with every episode: summarising the episode here,
+            # while it is still in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
             for episode in episodes:
-                record = episode.to_record(float_decimals=self.config.float_decimals)
-                chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
+                # `to_json` encodes in short steps, so a long episode never holds the GIL
+                # (and the event loop) for the whole encode.
+                line = episode.to_json(float_decimals=self.config.float_decimals)
+                chunk, offset = stream.append(line, b"\n")
                 self._logged += 1
-                index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))
+                row = index_row(self._logged, index_record(episode), chunk, offset)
+                index.write(orjson.dumps(row, default=str, option=OPTS))
             stream.flush()
             index.flush()
 
@@ -169,7 +195,7 @@ class FileMonitor(Monitor):
 
         await asyncio.to_thread(write)
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         for stream, index in self._streams.values():
             stream.close()
             index.close()

@@ -15,9 +15,8 @@ num_infer_gpus = 4
 
 [trainer.model]
 cp = 2
-cp_style = "ulysses"
 ep = 1
-optim_cpu_offload = false
+offload = "none"
 
 [trainer.speculator]
 name = "RedHatAI/Qwen3-4B-speculator.dspark"
@@ -32,7 +31,7 @@ lr = 0.000001
 
 [orchestrator]
 batch_size = 8
-max_off_policy_steps = 1
+max_staleness = 1
 
 [orchestrator.concurrency]
 initial_inflight = 8

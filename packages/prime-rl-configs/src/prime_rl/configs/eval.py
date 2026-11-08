@@ -1,31 +1,44 @@
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
-from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
-from prime_rl.configs.trainer import WeightBroadcastConfig
-from prime_rl.utils.config import default_output_dir
+from prime_rl.configs.shared import (
+    ClientConfig,
+    ControlConfig,
+    HeartbeatConfig,
+    LogConfig,
+    RunConfig,
+    VLLMClientConfig,
+    WeightBroadcastConfig,
+)
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
 class ServedEvalConfig(EvalSourcesConfig):
     """Eval sources run against a live inference server: the server's client and the
     adaptive concurrency band."""
 
-    client: ClientConfig = ClientConfig()
+    client: VLLMClientConfig = Field(default_factory=VLLMClientConfig)
     """Client of the inference server evals run against."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on episode dispatch, in tasks per minute. Use it for
-    sandbox-backed environments to pace provisioning during autoscaling. None disables
-    rate limiting."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch: at most this many episodes start per minute. Each
+    episode counts once, so a group of ``group_size`` episodes counts ``group_size``
+    times. Use it for sandbox-backed environments to pace provisioning during
+    autoscaling. None disables it."""
+
+    control: ControlConfig | None = None
+    """Serve the eval's control API, which reads and sets its concurrency while it runs
+    (``GET``/``PUT /v1/concurrency``). If None, it takes no control requests."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat for the run: pinged by landed episodes — the first
@@ -37,26 +50,32 @@ class ServedEvalConfig(EvalSourcesConfig):
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
-        """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
+        """Where each eval source's env worker pool lives, keyed by ``("eval", resolved_name)``.
         Same contract as ``OrchestratorConfig.env_addresses``: an explicit ``serve.address``
         is an externally managed server; None means the launcher spawns the server and the
         eval learns its address from the file it publishes."""
         return {("eval", source.resolved_name): source.serve.address for source in self.source}
 
 
-PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
+class EvalResumeConfig(BaseConfig):
+    skip_checks: bool = False
+    """Reuse saved episodes even when resolved configs differ or snapshots are missing."""
 
 
 class EvalConfig(ServedEvalConfig):
     """``uv run eval``: evaluate the configured sources once against a live inference
-    server, then exit. Every source's env server is spawned by the eval process unless
+    pool, then exit. Every source's env worker pool is spawned by the eval process unless
     the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
     ``prime login``) with the concurrency pinned at 128."""
+
+    mode: Literal["eval"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run eval`` accepts only
+    "eval" (or no mode)."""
 
     model: str = Field("deepseek/deepseek-v4.1-flash", validation_alias=AliasChoices("model", "m"))
     """Model id — the ``model`` field of every eval request and the startup model check."""
 
-    client: ClientConfig = ClientConfig(base_url=PRIME_INFERENCE_URL, api_key_var="PRIME_API_KEY")
+    client: ClientConfig = Field(default_factory=ClientConfig)
     """Client of the inference server. Defaults to Prime Inference."""
 
     select: vf.SelectCLIConfig = vf.SelectCLIConfig()
@@ -88,13 +107,13 @@ class EvalConfig(ServedEvalConfig):
     dashboard: bool = True
     """Start (or reuse) the local dashboard daemon and print its URL."""
 
-    resume: bool = False
+    resume: EvalResumeConfig | None = None
     """Continue the interrupted run named by ``run.name`` from its trace stream: the
     landed episodes rejoin the epoch and only the rollouts still owed run."""
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
+    monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     @property
@@ -158,14 +177,9 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
-
-    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
-    converts the trainer's ``[monitors.prime]`` into a
-    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
-    type would drop (or forbid) the prime block at the eval.json
-    dump/re-parse boundary."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``): the
+    trainer's, so the process logs to the trainer's W&B and Prime runs."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):

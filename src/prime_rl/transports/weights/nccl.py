@@ -1,4 +1,5 @@
 import pickle
+from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -6,19 +7,64 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
-from torch.distributed.tensor import DTensor
+from torch.distributed.tensor import DTensor, Replicate, Shard
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
-from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
-from prime_rl.trainer.conversion_utils import get_max_layer_num
+from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
+from prime_rl.trainer.vlm import get_layer_prefix
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
-from prime_rl.utils.vlm import get_layer_prefix
-from prime_rl.utils.weights import resolve_wire_dtype, weight_state_dict
+from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype, weight_state_dict
+
+
+def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
+    """Assemble one fragment on trainer rank 0 by reducing over its replica's row owners.
+
+    Each owner contributes its rows in an otherwise zero buffer, so the sum on rank 0 is the fragment.
+    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`.
+    """
+    rank = dist.get_rank()
+    if not isinstance(value, DTensor):
+        return value[start:stop].to(dtype) if rank == 0 else None
+    mesh = value.device_mesh
+    active_dims = [
+        i for i, placement in enumerate(value.placements) if mesh.size(i) > 1 and not isinstance(placement, Replicate)
+    ]
+    if len(active_dims) > 1 or (active_dims and value.placements[active_dims[0]] != Shard(0)):
+        raise ValueError("Embedding transfer requires replicated weights or a single row-sharding dimension")
+    if not active_dims:
+        return value.to_local()[start:stop].to(dtype) if rank == 0 else None
+    mesh_dim = active_dims[0]
+    index = [0] * mesh.ndim
+    index[mesh_dim] = slice(None)
+    owners = mesh.mesh[tuple(index)].tolist()
+    if rank not in owners:
+        return None
+    rows_per_rank = (value.shape[0] + len(owners) - 1) // len(owners)
+    local = value.to_local()
+    offset = min(rows_per_rank * owners.index(rank), value.shape[0])
+    left, right = max(start, offset), min(stop, offset + local.shape[0])
+    chunk = torch.zeros((stop - start, *value.shape[1:]), dtype=dtype, device=value.device)
+    if left < right:
+        chunk[left - start : right - start].copy_(local[left - offset : right - offset])
+    dist.reduce(chunk, dst=0, group=mesh.get_group(mesh_dim))
+    return chunk if rank == 0 else None
+
+
+def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
+    """Get the maximum number of layers in the model."""
+    max_num = -1
+    for key in state_dict:
+        if not key.startswith(layer_prefix):
+            continue
+        layer_num_str = key[len(layer_prefix) :].split(".")[0]
+        if layer_num_str.isdigit():
+            max_num = max(max_num, int(layer_num_str))
+    return max_num + 1
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -53,15 +99,13 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
     communicator.broadcast(state_tensor, src=0)
 
     # Concatenate and broadcast tensors grouped by dtype
-    for dtype, items in dtype_groups.items():
-        # Flatten all tensors and concatenate
-        flat_tensors = [value.flatten() for _, value in items]
-        concatenated = torch.cat(flat_tensors)
-        communicator.broadcast(concatenated, src=0)
-        del concatenated
-        # Clean up individual tensors
-        for _, value in items:
-            del value
+    for dtype, tensor_info in metadata.items():
+        for bucket in iter_tensor_buckets(tensor_info, dtype):
+            flat_tensors = [state_dict[key].flatten() for key, _, _ in bucket]
+            concatenated = flat_tensors[0].contiguous() if len(flat_tensors) == 1 else torch.cat(flat_tensors)
+            if concatenated.numel():
+                communicator.broadcast(concatenated, src=0)
+            del concatenated, flat_tensors
 
 
 def filter_state_dict_by_layers(
@@ -105,6 +149,8 @@ def preprocess_layer_checkpoint(
     layer_state_dict: dict[str, Tensor],
     layer_idx: int,
 ) -> dict[str, Tensor]:
+    if not layer_state_dict:
+        return layer_state_dict
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
         return layer_state_dict
@@ -148,30 +194,44 @@ class NCCLBroadcaster:
             for key in list(state_dict)
             if key.startswith("speculator.")
         }
-        layer_prefix = get_layer_prefix(model.config)
+        layer_prefix = get_layer_prefix(model)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
-        num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
-        streams = [(model, state_dict, layer_prefix, num_layers, "")]
+        chunked_ops = get_chunked_conversion_ops(model, state_dict)
+        num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())
+        streams = [(model, state_dict, layer_prefix, num_layers, chunked_ops, "")]
         if draft_state:
             draft = model.speculator
-            draft_layer_prefix = "layers." if hasattr(draft, "layers") else get_layer_prefix(draft.config)
+            draft_layer_prefix = "layers." if hasattr(draft, "layers") else get_layer_prefix(draft)
             draft_num_layers = get_max_layer_num(draft_state, draft_layer_prefix)
             num_state_dict_to_send += draft_num_layers + 1
-            streams.append((draft, draft_state, draft_layer_prefix, draft_num_layers, "speculator."))
+            streams.append((draft, draft_state, draft_layer_prefix, draft_num_layers, {}, "speculator."))
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        for module, weights, layer_prefix, num_layers, namespace in streams:
+        for module, weights, layer_prefix, num_layers, chunked_ops, namespace in streams:
             keep_in_fp32 = getattr(module, "keep_in_fp32_for_weight_transfer", None)
             for layer_id, layer_state_dict in filter_state_dict_by_layers(weights, num_layers, layer_prefix):
+                chunked_weights = {key: layer_state_dict.pop(key) for key in chunked_ops if key in layer_state_dict}
                 layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
                 layer_state_dict = preprocess_layer_checkpoint(module, layer_state_dict, layer_id)
                 if namespace:
                     layer_state_dict = {namespace + key: value for key, value in layer_state_dict.items()}
                 if self.world.is_master:
                     broadcast_state_dict(layer_state_dict, self.communicator)
+                del layer_state_dict
+                for key, value in chunked_weights.items():
+                    op = chunked_ops[key]
+                    dtype = (
+                        resolve_wire_dtype(keep_in_fp32, key, self.dtype) if isinstance(value, DTensor) else value.dtype
+                    )
+                    resolve_rows = partial(_gather_row_chunk_to_master, dtype=dtype)
+                    for packet in op.iter_prime_to_hf(value, resolve_rows):
+                        if self.world.is_master:
+                            assert packet is not None
+                            broadcast_state_dict(packet, self.communicator)
+                        del packet
 
 
 class NCCLWeightSender(WeightSender):
@@ -195,13 +255,6 @@ class NCCLWeightSender(WeightSender):
 
     @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
-        # The master enters only after the receiver acknowledged the handshake,
-        # but all ranks must be held back until then: the broadcast preparation
-        # (DTensor resolution, checkpoint conversion) enqueues collectives on non-master
-        # ranks, and if those start before the receiver has paused inference,
-        # the collectives sit unmatched until NCCL's watchdog kills the process.
-        if self.world.world_size > 1:
-            dist.barrier()
         self.nccl_broadcast_sender.send(model)
 
 

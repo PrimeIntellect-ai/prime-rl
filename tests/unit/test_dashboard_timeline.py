@@ -1,4 +1,7 @@
+import verifiers.v1 as vf
+
 from prime_rl.dashboard.server import project_episode_timeline
+from prime_rl.monitors.file.traces.index import index_record, index_row, summarize_episode
 
 
 def _node(
@@ -48,6 +51,32 @@ def _episode(nodes: list[dict], calls: list[dict]) -> dict:
     }
 
 
+def test_episode_summary_excludes_copied_assistant_context_from_turns() -> None:
+    response = {"role": "assistant", "content": "Search the property details"}
+    nodes = [
+        {"parent": None, "message": {"role": "user", "content": "Find a property"}},
+        {"parent": 0, "message": response, "sampled": True},
+        {"parent": 0, "message": response.copy(), "sampled": False},
+        {"parent": 2, "message": {"role": "tool", "tool_call_id": "call-0", "content": "Property details"}},
+        {"parent": 3, "message": {"role": "assistant", "content": "Found it"}, "sampled": True},
+        {"parent": 0, "message": response.copy()},
+    ]
+    task = {"type": "Task", "data": {"idx": 0}}
+    trace = {"task": task, "agent": {"config": {}}}
+    episode = vf.WireEpisode.model_validate(
+        {
+            "task": task,
+            "traces": [
+                {**trace, "nodes": nodes},
+                {**trace, "nodes": [{"parent": None, "message": response.copy(), "sampled": True}]},
+            ],
+        }
+    )
+
+    assert summarize_episode(1, episode.to_record())["turns"] == 3
+    assert index_row(1, index_record(episode), chunk=0, offset=0)["turns"] == 3
+
+
 def test_semantic_timeline_projects_concurrent_fork_join() -> None:
     nodes = [
         _node(None, 0.0),
@@ -86,7 +115,7 @@ def test_semantic_timeline_projects_concurrent_fork_join() -> None:
         1,
     ]
     assert [lane["usage"]["total_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
-        260,
+        140,
         130,
         130,
     ]
@@ -135,7 +164,7 @@ def test_semantic_timeline_starts_new_context_after_compaction() -> None:
         1,
     ]
     assert [lane["usage"]["total_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
-        310,
+        190,
         70,
     ]
     assert [lane["usage"]["latest_context_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
@@ -274,3 +303,34 @@ def test_semantic_timeline_labels_unrecoverable_components_as_unlinked() -> None
         "index": 0,
         "unlinked": True,
     }
+
+
+def test_semantic_timeline_marks_cancelled_and_failed_subagents() -> None:
+    # A parent spawns three subagents: A returns, B is cancelled (parent -> child subagent_cancel),
+    # C fails on return (child -> parent subagent_failed).
+    nodes = [
+        _node(None, 0.0),
+        _node(0, 1.0),  # parent's spawning turn
+        _node(0, 2.0, [{"node": 1, "type": "subagent_call"}]),  # A
+        _node(0, 2.1, [{"node": 1, "type": "subagent_call"}, {"node": 5, "type": "subagent_cancel"}]),  # B
+        _node(0, 2.2, [{"node": 1, "type": "subagent_call"}]),  # C
+        _node(
+            1,
+            6.0,
+            [
+                {"node": 1, "type": "continuation"},
+                {"node": 2, "type": "subagent_return"},  # A returned
+                {"node": 4, "type": "subagent_failed"},  # C failed on return
+            ],
+        ),
+    ]
+    calls = [_call(1, 0.5, 1.0), _call(2, 2.0, 3.0), _call(3, 2.1, 5.0), _call(4, 2.2, 3.2), _call(5, 5.6, 6.0)]
+    timeline = project_episode_timeline(_episode(nodes, calls))
+
+    status = {lane["label"]: lane["status"] for lane in timeline["semantic_lanes"]}
+    assert status["subagent 1 · context 0"] == "completed"
+    assert status["subagent 2 · context 0"] == "cancelled"
+    assert status["subagent 3 · context 0"] == "failed"
+    cancelled = next(l for l in timeline["semantic_lanes"] if l["label"] == "subagent 2 · context 0")
+    assert cancelled["context"]["outcome"] == "cancelled"
+    assert "subagent_cancel" in {e["type"] for e in timeline["semantic_edges"]}

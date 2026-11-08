@@ -13,9 +13,13 @@ except Exception:
     # This is expected on CPU-only machines
     pass
 
+import math
+
 import tilelang
 import torch
 from tilelang import language as T
+
+from prime_rl.configs.trainer import DSABackend
 
 
 @tilelang.jit(out_idx=[-1])
@@ -115,6 +119,7 @@ def bwd(
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
     assert indices_dtype == T.int32
+    assert D_tail == 0 or D_tail % 4 == 0
 
     if sm_scale is None:
         sm_scale = (D + D_tail) ** (-0.5)
@@ -141,6 +146,7 @@ def bwd(
     NS = tilelang.cdiv(topk, block_size)
 
     split_store = 2
+    has_tail = D_tail > 0
 
     @T.prim_func
     def sparse_mla_bwd_kernel(
@@ -155,25 +161,27 @@ def bwd(
     ):
         with T.Kernel(S, B, kv_group * NH, threads=threads) as (s_i, by, bz):
             Q_shared = T.alloc_shared([block_H, D], dtype)
-            Q_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
             KV_shared = T.alloc_shared([BS, D], dtype)
-            KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
             mask = T.alloc_fragment([BS], "bool")
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dQ_shared = T.alloc_shared([block_H, D], dtype)
-            dQ_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
+            if has_tail:
+                Q_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
+                KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
+                dQ_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
 
             acc_p = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dp = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dq = T.alloc_fragment([block_H, D], accum_dtype)
-            acc_dq_tail = T.alloc_fragment([block_H, D_tail], accum_dtype)
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
-            acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
-            acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
+            if has_tail:
+                acc_dq_tail = T.alloc_fragment([block_H, D_tail], accum_dtype)
+                acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
+                acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
 
             # See sparse_mla_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
             # live in [0, S_kv - 1). Using this single bound makes the kernel work for
@@ -181,11 +189,13 @@ def bwd(
             max_kv_i = S_kv - 2
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
-            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
+            if has_tail:
+                T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
             T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
 
             T.clear(acc_dq)
-            T.clear(acc_dq_tail)
+            if has_tail:
+                T.clear(acc_dq_tail)
 
             for i_i in T.Pipelined(NS, num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
@@ -199,9 +209,12 @@ def bwd(
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
-                for bi_i, d_i in T.Parallel(BS, D_tail):
-                    KV_tail_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i]
-                T.gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
+                if has_tail:
+                    for bi_i, d_i in T.Parallel(BS, D_tail):
+                        KV_tail_shared[bi_i, d_i] = KV[
+                            by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i
+                        ]
+                    T.gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_p[h_i, bi_i] = T.exp2(
@@ -221,7 +234,8 @@ def bwd(
 
                 T.copy(acc_dp, dP_shared_cast)
                 T.gemm(dP_shared_cast, KV_shared, acc_dq, policy=T.GemmWarpPolicy.FullCol)
-                T.gemm(dP_shared_cast, KV_tail_shared, acc_dq_tail, policy=T.GemmWarpPolicy.FullCol)
+                if has_tail:
+                    T.gemm(dP_shared_cast, KV_tail_shared, acc_dq_tail, policy=T.GemmWarpPolicy.FullCol)
 
                 T.gemm(
                     dP_shared_cast,
@@ -233,17 +247,25 @@ def bwd(
                 )
                 T.gemm(P_shared_cast, dO_shared, acc_dkv, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
 
-                T.clear(acc_dkv_tail)
-                T.gemm(dP_shared_cast, Q_tail_shared, acc_dkv_tail, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
+                if has_tail:
+                    T.clear(acc_dkv_tail)
+                    T.gemm(
+                        dP_shared_cast,
+                        Q_tail_shared,
+                        acc_dkv_tail,
+                        transpose_A=True,
+                        policy=T.GemmWarpPolicy.FullCol,
+                    )
 
                 for s in range(split_store):
                     for bi_i, d_i in T.Parallel(BS, D):
                         if bi_i < BS // split_store:
                             acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
 
-                    for bi_i, d_i in T.Parallel(BS, D_tail):
-                        if bi_i < BS // split_store:
-                            acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
+                    if has_tail:
+                        for bi_i, d_i in T.Parallel(BS, D_tail):
+                            if bi_i < BS // split_store:
+                                acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
                         T.atomic_addx4(
@@ -256,28 +278,55 @@ def bwd(
                             acc_dkv_shared[bi_i, d_i * 4],
                         )
 
-                    for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
-                                bz // NH,
-                                D + d_i * 4,
-                            ],
-                            acc_dkv_tail_shared[bi_i, d_i * 4],
-                        )
+                    if has_tail:
+                        for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
+                            T.atomic_addx4(
+                                dKV[
+                                    by,
+                                    Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    bz // NH,
+                                    D + d_i * 4,
+                                ],
+                                acc_dkv_tail_shared[bi_i, d_i * 4],
+                            )
 
             T.copy(acc_dq, dQ_shared)
-            T.copy(acc_dq_tail, dQ_tail_shared)
+            if has_tail:
+                T.copy(acc_dq_tail, dQ_tail_shared)
 
             T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
-            T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
+            if has_tail:
+                T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
 
     return sparse_mla_bwd_kernel
 
 
-@torch.library.custom_op("prime_rl::sparse_mla_backward", mutates_args=())
-def sparse_mla_backward(
+_CUDNN_SM100_CAPABILITIES = ((10, 0), (10, 3))
+
+
+def cudnn_backward_arch(q: torch.Tensor, kv: torch.Tensor) -> str | None:
+    """The cuDNN DSA backward variant for this device ("sm90" / "sm100"), or None if unsupported."""
+    if kv.shape[2] != 1:
+        return None
+    capability = torch.cuda.get_device_capability(q.device)
+    if capability[0] == 9:
+        return "sm90"
+    if capability in _CUDNN_SM100_CAPABILITIES:
+        return "sm100"
+    return None
+
+
+def flat_kv_indices(indices: torch.Tensor, S_kv: int) -> torch.Tensor:
+    """Global indices into the batch-flattened KV, with sentinel / out-of-range indices as -1.
+
+    `indices` is [B, S, kv_group, topk]; valid entries live in [0, S_kv - 1) (see sparse_mla_fwd).
+    """
+    B = indices.shape[0]
+    batch_offset = torch.arange(B, device=indices.device, dtype=indices.dtype).view(B, 1, 1, 1) * S_kv
+    return torch.where(indices <= S_kv - 2, indices + batch_offset, -1)
+
+
+def tilelang_sparse_mla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
     out: torch.Tensor,
@@ -286,20 +335,13 @@ def sparse_mla_backward(
     lse: torch.Tensor,
     sm_scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert q.is_contiguous()
-    assert kv.is_contiguous()
-    assert indices.is_contiguous()
-    assert lse.is_contiguous()
+    """TileLang backward; takes a natural-log LSE."""
     grad_out = grad_out.contiguous()
-    B, S, H, dim_plus_tail_dim = q.shape
-    _, S_kv, kv_group, _ = kv.shape
-    assert kv.shape[-1] == dim_plus_tail_dim
-    assert kv.shape[0] == B
-    D = 512
+    H, dim_plus_tail_dim = q.shape[2:]
+    kv_group = kv.shape[2]
+    D = out.shape[-1]
     D_tail = dim_plus_tail_dim - D
     topk = indices.shape[-1]
-    assert indices.shape == (B, S, kv_group, topk)
-    assert lse.shape == (B, S, H)
 
     preprocess_kernel = preprocess(H, D)
     bwd_kernel = bwd(H, D, D_tail, topk, kv_group, sm_scale, True)
@@ -307,9 +349,87 @@ def sparse_mla_backward(
 
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd_kernel(q, kv, grad_out, indices, lse, delta, dkv)
+    dq = bwd_kernel(q, kv, grad_out, indices, lse * math.log2(math.e), delta, dkv)
     dkv = postprocess_kernel(dkv)
+    return dq, dkv
 
+
+def cudnn_sparse_mla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None,
+    arch: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """cuDNN-frontend CuTe-DSL DSA backward (single KV head with K=V).
+
+    The cuDNN kernels take flat (tokens, ...) tensors with global indices, skip
+    negative indices (no KV load, no dKV atomics) and expect a natural-log LSE.
+    """
+    B, S, H, D_qk = q.shape
+    S_kv = kv.shape[1]
+    topk = indices.shape[-1]
+    args = (
+        q.view(B * S, H, D_qk),
+        kv.view(B * S_kv, D_qk),
+        out.view(B * S, H, -1),
+        grad_out.contiguous().view(B * S, H, -1),
+        lse.view(B * S, H),
+    )
+    flat_indices = flat_kv_indices(indices, S_kv).view(B * S, topk)
+    if arch == "sm90":
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+
+        dq, dkv = flash_attn_bwd_sm90(*args, softmax_scale=sm_scale, topk_idxs=flat_indices)
+    else:
+        # A -inf sink leaves the softmax unchanged.
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+            flash_attn_bwd_sm100,
+            flash_attn_bwd_sm100_workspace_size,
+        )
+
+        no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
+        workspace_bytes = flash_attn_bwd_sm100_workspace_size(B * S, B * S_kv, D_qk, H)
+        workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
+        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale, workspace=workspace)
+    return dq.view_as(q), dkv.view_as(kv)
+
+
+@torch.library.custom_op(
+    "prime_rl::sparse_mla_backward",
+    mutates_args=(),
+    schema="(Tensor q, Tensor kv, Tensor out, Tensor grad_out, Tensor indices, Tensor lse, str backend, float? sm_scale=None) -> (Tensor, Tensor)",
+)
+def sparse_mla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    backend: DSABackend,
+    sm_scale: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sparse MLA backward for the `backend` route (see `sparse_mla`); `lse` is natural-log."""
+    assert q.is_contiguous()
+    assert kv.is_contiguous()
+    assert indices.is_contiguous()
+    assert lse.is_contiguous()
+    B, S, H, dim_plus_tail_dim = q.shape
+    _, S_kv, kv_group, _ = kv.shape
+    assert kv.shape[-1] == dim_plus_tail_dim
+    assert kv.shape[0] == B
+    topk = indices.shape[-1]
+    assert indices.shape == (B, S, kv_group, topk)
+    assert lse.shape == (B, S, H)
+
+    if backend == "cudnn_flashmla":
+        dq, dkv = cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, cudnn_backward_arch(q, kv))
+    else:
+        dq, dkv = tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
     return dq, dkv
 
 
@@ -321,6 +441,7 @@ def _sparse_mla_backward_fake(
     grad_out: torch.Tensor,
     indices: torch.Tensor,
     lse: torch.Tensor,
+    backend: DSABackend,
     sm_scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv)

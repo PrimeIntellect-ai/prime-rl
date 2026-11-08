@@ -2,10 +2,10 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import can_reinit_empty_buffers, resolve_auto_attn
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.model import resolve_auto_attn
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import (
+    Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
     Qwen3_5MoeTextConfig,
     Qwen3_5VisionConfig,
@@ -58,9 +58,7 @@ def get_model(config, device="cuda"):
     runtime_config = ModelConfig()
     resolve_auto_attn(runtime_config)
     with torch.device(device):
-        model = AutoModelForCausalLMPrimeRL.from_config(
-            config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
-        )
+        model = Qwen3_5ForCausalLM.from_config(config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16)
     inject_prime_lm_head(model)
     return model
 
@@ -179,8 +177,6 @@ def test_vlm_meta_device_and_buffer_reinit():
     """Model can be created on meta device and buffers reinitialized."""
     config = get_vlm_config()
     model = get_model(config, device="meta")
-
-    assert can_reinit_empty_buffers(model)
 
     model.to_empty(device="cuda")
     model.init_buffers_post_meta()

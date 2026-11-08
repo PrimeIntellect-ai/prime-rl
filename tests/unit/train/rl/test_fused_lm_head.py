@@ -1,13 +1,50 @@
 import pytest
 import torch
-from transformers import AutoModelForCausalLM
-from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
-from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
+from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("head_only", [False, True])
+def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
+    from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask, selective_topk_log_softmax
+
+    torch.manual_seed(7)
+    hidden = torch.randn(1, 7, 16, device="cuda", dtype=dtype, requires_grad=True)
+    lm = FusedOutputLinear(16, 8203, chunk_size=3).to(device="cuda", dtype=dtype)
+    labels = torch.tensor([[3, 8199, 12, 99, 0, 17, 8192]], device="cuda")
+    head_ids = torch.stack([labels, (labels + 1) % 8203, (labels + 2) % 8203, torch.full_like(labels, -1)], dim=-1)
+    head_ids[:, 2] = -1
+    sampling_mask = head_ids if replay else None
+    temperature = torch.linspace(0.6, 1.4, 7, device="cuda").unsqueeze(0)
+    coefficient = torch.randn_like(head_ids, dtype=torch.float32)
+    out = lm(hidden, labels, temperature, sampling_mask, head_ids)
+    loss = (out["topk_logprobs"] * coefficient).sum()
+    if not head_only:
+        loss = loss + out["logprobs"].sum()
+    actual = torch.autograd.grad(loss, (hidden, lm.weight))
+    logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
+    head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
+    reference = (head * coefficient).sum()
+    if not head_only:
+        sampled = (
+            selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask)
+            if replay
+            else selective_log_softmax(logits, labels)
+        )
+        reference = reference + sampled.sum()
+    expected = torch.autograd.grad(reference, (hidden, lm.weight))
+    torch.testing.assert_close(out["topk_logprobs"], head, atol=3e-6, rtol=1e-6)
+    for grad, ref in zip(actual, expected, strict=True):
+        atol, rtol = (1e-2, 3e-2) if dtype == torch.bfloat16 else (5e-6, 1e-4)
+        torch.testing.assert_close(grad, ref, atol=atol, rtol=rtol)
 
 
 def _baseline_logprobs_and_entropy(
@@ -89,6 +126,41 @@ def test_fused_lm_head_frozen_weight_backward_cpu():
     assert lm.weight.grad is None
 
 
+def test_fused_lm_head_softcap_matches_full_logits_cpu():
+    """With a final-logit softcap, logprobs, entropy, summed cross-entropy and their gradients match full logits."""
+    torch.manual_seed(0)
+    b, s, h, v = 2, 4, 8, 37
+    softcap = 3.0
+    temperature = torch.full((b, s), 1.7, dtype=torch.float32)
+    hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    weight0 = torch.randn(v, h, dtype=torch.float32, requires_grad=True)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    labels[0, 1] = -100
+
+    logits = softcap * torch.tanh(hidden0 @ weight0.t() / softcap)
+    logp0 = torch.log_softmax(logits / temperature.unsqueeze(-1), dim=-1).gather(-1, labels.clamp(min=0)[..., None])
+    ent0 = compute_entropy(logits / temperature.unsqueeze(-1))
+    ce0 = torch.nn.functional.cross_entropy(logits.view(-1, v), labels.view(-1), ignore_index=-100, reduction="sum")
+    (logp0.sum() + ce0).backward()
+
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=3, softcap=softcap)
+    lm.weight = torch.nn.Parameter(weight0.detach().clone())
+    hidden1 = hidden0.detach().clone().requires_grad_(True)
+    out = lm(hidden1, labels.clamp(min=0), temperature=temperature)
+    loss = lm(hidden1, labels)["loss"]
+    (out["logprobs"].sum() + loss).backward()
+
+    torch.testing.assert_close(out["logprobs"], logp0.squeeze(-1), rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["entropy"], ent0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(loss, ce0, rtol=0, atol=1e-4)
+    torch.testing.assert_close(hidden1.grad, hidden0.grad, rtol=0, atol=1e-4)
+    torch.testing.assert_close(lm.weight.grad, weight0.grad, rtol=0, atol=1e-4)
+
+    vanilla = VanillaOutputLinear(in_features=h, out_features=v, softcap=softcap)
+    vanilla.weight = torch.nn.Parameter(weight0.detach().clone())
+    torch.testing.assert_close(vanilla(hidden0.detach())["logits"], logits.detach(), rtol=0, atol=1e-6)
+
+
 def test_fused_lm_head_requires_labels():
     """Test that FusedOutputLinear raises assertion error when labels is None."""
     torch.manual_seed(0)
@@ -161,95 +233,6 @@ def test_fused_vs_vanilla_integration():
     torch.testing.assert_close(fused_out["entropy"], vanilla_entropy, rtol=1e-3, atol=1e-4)
 
 
-@pytest.mark.gpu
-@pytest.mark.skip(reason="Produces NaNs in bf16 with FA3; needs investigation")
-def test_full_model_fused_vs_vanilla():
-    """Full model integration test comparing fused vs vanilla LM head across multiple training steps."""
-    torch.manual_seed(123)
-
-    # Create tiny Llama model for fast testing
-    config = LlamaConfig(
-        hidden_size=128,
-        intermediate_size=256,
-        max_position_embeddings=512,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        num_hidden_layers=2,
-        vocab_size=1000,
-        rms_norm_eps=1e-5,
-        rope_theta=10000.0,
-        attention_bias=False,
-        mlp_bias=False,
-    )
-
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        # Create two identical models
-        model_vanilla = PrimeRLLlamaForCausalLM._from_config(config)
-        model_fused = PrimeRLLlamaForCausalLM._from_config(config)
-
-        # Share weights between models
-        model_fused.load_state_dict(model_vanilla.state_dict())
-
-        # Wrap with different LM heads
-        inject_prime_lm_head(model_vanilla, chunk_size=None)  # Vanilla
-        inject_prime_lm_head(model_fused, chunk_size=32)  # Fused with chunking
-
-    # Setup optimizers
-    optimizer_vanilla = torch.optim.AdamW(model_vanilla.parameters(), lr=1e-4)
-    optimizer_fused = torch.optim.AdamW(model_fused.parameters(), lr=1e-4)
-
-    # Run a few training steps
-    num_steps = 3
-    batch_size, seq_len = 2, 64
-    temp_value = 1.5
-
-    for step in range(num_steps):
-        # Generate random batch
-        with torch.device("cuda"):
-            labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-            position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
-            temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32, device="cuda")
-            seq_lens = torch.tensor([seq_len])
-
-        # Vanilla forward (returns logits, compute logprobs/entropy using RL train functions)
-        optimizer_vanilla.zero_grad()
-        out_vanilla = cast_float_and_contiguous(
-            model_vanilla(labels, position_ids, labels=labels, temperature=temperature, seq_lens=seq_lens)
-        )
-        if out_vanilla.get("logprobs") is None:
-            assert out_vanilla.get("logits") is not None
-            logits = out_vanilla["logits"] / temp_value
-            out_vanilla["logprobs"] = selective_log_softmax(logits, labels)
-            out_vanilla["entropy"] = compute_entropy(logits)
-        loss_vanilla = -out_vanilla["logprobs"].mean()
-        loss_vanilla.backward()
-        optimizer_vanilla.step()
-
-        # Fused forward (returns logprobs and entropy directly)
-        optimizer_fused.zero_grad()
-        out_fused = cast_float_and_contiguous(
-            model_fused(labels, position_ids, labels=labels, temperature=temperature, seq_lens=seq_lens)
-        )
-        if out_fused.get("logprobs") is None:
-            assert out_fused.get("logits") is not None
-            logits = out_fused["logits"] / temp_value
-            out_fused["logprobs"] = selective_log_softmax(logits, labels)
-            out_fused["entropy"] = compute_entropy(logits)
-        loss_fused = -out_fused["logprobs"].mean()
-        loss_fused.backward()
-        optimizer_fused.step()
-
-        # Compare outputs (should be very close since models started identical)
-        torch.testing.assert_close(out_fused["logprobs"], out_vanilla["logprobs"], rtol=1e-3, atol=1e-4)
-        torch.testing.assert_close(out_fused["entropy"], out_vanilla["entropy"], rtol=1e-3, atol=1e-4)
-        torch.testing.assert_close(loss_fused, loss_vanilla, rtol=1e-3, atol=1e-4)
-
-    # After training, weights should still be close (optimizer steps should be similar)
-    for (name_v, param_v), (name_f, param_f) in zip(model_vanilla.named_parameters(), model_fused.named_parameters()):
-        if "lm_head" not in name_v:  # Compare non-lm_head params
-            torch.testing.assert_close(param_f, param_v, rtol=1e-3, atol=1e-4)
-
-
 def test_fused_lm_head_correct_shift():
     """
     End-to-end test that the fused LM head with shifted labels, after shift_tensor_right,
@@ -300,26 +283,25 @@ def test_fused_lm_head_correct_shift():
 
 @pytest.mark.gpu
 def test_inject_prime_lm_head_vanilla():
-    """Test that inject_prime_lm_head correctly wraps HF model with VanillaOutputLinear."""
+    """Test that inject_prime_lm_head correctly wraps the model with VanillaOutputLinear."""
     torch.manual_seed(123)
 
-    # Create tiny Llama model using HuggingFace AutoModelForCausalLM
-    config = LlamaConfig(
+    config = Qwen3Config(
         hidden_size=128,
         intermediate_size=256,
         max_position_embeddings=512,
         num_attention_heads=4,
         num_key_value_heads=2,
+        head_dim=32,
         num_hidden_layers=2,
         vocab_size=1000,
         rms_norm_eps=1e-5,
         rope_theta=10000.0,
         attention_bias=False,
-        mlp_bias=False,
     )
 
-    with torch.device("cuda"), default_dtype(torch.float32):
-        model = AutoModelForCausalLM.from_config(config)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        model = Qwen3ForCausalLM._from_config(config)
 
     # Wrap with VanillaOutputLinear (chunk_size=None)
     inject_prime_lm_head(model, chunk_size=None)
@@ -336,7 +318,13 @@ def test_inject_prime_lm_head_vanilla():
         temperature = torch.full((batch_size, seq_len), 1.5, dtype=torch.float32)
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        out = model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            labels=labels,
+            temperature=temperature,
+            seq_lens=torch.tensor([seq_len], device="cuda"),
+        )
 
     # VanillaOutputLinear returns logits
     assert isinstance(out, dict), "Output should be PrimeLmOutput (dict)"
@@ -347,26 +335,25 @@ def test_inject_prime_lm_head_vanilla():
 
 @pytest.mark.gpu
 def test_inject_prime_lm_head_fused():
-    """Test that inject_prime_lm_head correctly wraps HF model with FusedOutputLinear."""
+    """Test that inject_prime_lm_head correctly wraps the model with FusedOutputLinear."""
     torch.manual_seed(123)
 
-    # Create tiny Llama model using HuggingFace AutoModelForCausalLM
-    config = LlamaConfig(
+    config = Qwen3Config(
         hidden_size=128,
         intermediate_size=256,
         max_position_embeddings=512,
         num_attention_heads=4,
         num_key_value_heads=2,
+        head_dim=32,
         num_hidden_layers=2,
         vocab_size=1000,
         rms_norm_eps=1e-5,
         rope_theta=10000.0,
         attention_bias=False,
-        mlp_bias=False,
     )
 
-    with torch.device("cuda"), default_dtype(torch.float32):
-        model = AutoModelForCausalLM.from_config(config)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        model = Qwen3ForCausalLM._from_config(config)
 
     # Wrap with FusedOutputLinear
     inject_prime_lm_head(model, chunk_size=512)
@@ -383,7 +370,13 @@ def test_inject_prime_lm_head_fused():
         temperature = torch.full((batch_size, seq_len), 1.5, dtype=torch.float32)
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        out = model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            labels=labels,
+            temperature=temperature,
+            seq_lens=torch.tensor([seq_len], device="cuda"),
+        )
 
     # FusedOutputLinear returns logprobs and entropy
     assert isinstance(out, dict), "Output should be PrimeLmOutput (dict)"
@@ -392,66 +385,3 @@ def test_inject_prime_lm_head_fused():
     assert out.get("logits") is None, "Fused path should not return logits"
     assert out["logprobs"].shape == (batch_size, seq_len), "Logprobs shape mismatch"
     assert out["entropy"].shape == (batch_size, seq_len), "Entropy shape mismatch"
-
-
-@pytest.mark.gpu
-def test_hf_model_fused_vs_vanilla_matches():
-    """Test that fused and vanilla paths produce equivalent results for HF models."""
-    torch.manual_seed(42)
-
-    # Create tiny Llama model using HuggingFace AutoModelForCausalLM
-    config = LlamaConfig(
-        hidden_size=128,
-        intermediate_size=256,
-        max_position_embeddings=512,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        num_hidden_layers=2,
-        vocab_size=1000,
-        rms_norm_eps=1e-5,
-        rope_theta=10000.0,
-        attention_bias=False,
-        mlp_bias=False,
-    )
-
-    with torch.device("cuda"), default_dtype(torch.float32):
-        model_vanilla = AutoModelForCausalLM.from_config(config)
-        model_fused = AutoModelForCausalLM.from_config(config)
-        # Share weights
-        model_fused.load_state_dict(model_vanilla.state_dict())
-
-    # Wrap models
-    inject_prime_lm_head(model_vanilla, chunk_size=None)
-    inject_prime_lm_head(model_fused, chunk_size=32)
-
-    # Test data
-    batch_size, seq_len = 2, 64
-    temp_value = 1.5
-
-    with torch.device("cuda"):
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
-        labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32)
-
-    # Run vanilla model
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        out_vanilla = model_vanilla(
-            input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature
-        )
-
-    # Compute logprobs and entropy from vanilla logits
-    logits = out_vanilla["logits"].float() / temp_value
-    vanilla_logprobs = selective_log_softmax(logits, labels)
-    vanilla_entropy = compute_entropy(logits)
-
-    # Run fused model
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        out_fused = model_fused(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
-
-    fused_logprobs = out_fused["logprobs"].float()
-    fused_entropy = out_fused["entropy"].float()
-
-    # Compare results
-    torch.testing.assert_close(fused_logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
-    torch.testing.assert_close(fused_entropy, vanilla_entropy, rtol=1e-3, atol=1e-4)

@@ -3,10 +3,11 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import SGD, AdamW, Optimizer
+from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -14,9 +15,9 @@ from prime_rl.trainer.optim.offload import (
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
+from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
@@ -51,33 +52,27 @@ def setup_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
-    cpu_offload: bool = False,
-    full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
+    offload: OffloadMode = "none",
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
     lr_overrides: dict[str, float] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
-    if cpu_offload and full_offload_config is not None:
-        raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
-    if full_offload_config is not None and config.type not in ("adamw", "sign_sgd"):
+    cpu_offload = offload == "optimizer"
+    full_offload = offload == "full"
+    if full_offload and config.type not in ("adamw", "sign_sgd"):
         raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
-    if full_offload_config is not None and config.max_norm is not None:
+    if full_offload and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
     optimizer_named_params = named_params
     master_weights = None
-    if full_offload_config is not None:
+    if full_offload:
         if model is None:
             raise ValueError("CPU optimizer offload requires the model")
         if full_offload_dtype_policy is None:
             raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
-            model,
-            named_params,
-            pin_memory=not (
-                config.type in ("adamw", "sign_sgd") and full_offload_config.cpu_optimizer_backend == "native"
-            ),
-            dtype_policy=full_offload_dtype_policy,
+            model, named_params, dtype_policy=full_offload_dtype_policy
         )
 
     optimizer = _create_optimizer(
@@ -101,12 +96,11 @@ def setup_optimizer(
                 group["params"] = [param for param in group["params"] if id(param) not in parameter_ids]
                 optimizer.add_param_group({**group, "params": selected, "lr": lr})
 
-    if full_offload_config is not None:
+    if full_offload:
         assert master_weights is not None
         get_logger().info("Using CPU offload for gradients and the optimizer step")
         optimizer = FullCPUOffloadOptimizer(
             optimizer,
-            offload_config=full_offload_config,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
         )
@@ -136,20 +130,13 @@ def _create_optimizer(
     # param at load time, mismatching the saved state). Muon filters internally below.
     trainable_params = [p for _, p in named_params if p.requires_grad]
     match config.type:
-        case "sgd":
-            return SGD(
-                params=trainable_params,
-                lr=lr,
-                weight_decay=config.weight_decay,
-                momentum=config.momentum,
-                nesterov=config.nesterov,
-            )
         case "adamw":
             return AdamW(
                 params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
+                eps=config.eps,
                 fused=fused_adamw,
             )
         case "muon":
@@ -169,12 +156,23 @@ def _create_muon_optimizer(
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
+    ngram_table_params = set()
+    if model is not None:
+        ngram_table_params = {
+            p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()
+        }
+
     def muon_enabled(n, p):
         if p.ndim < 2:
             return False
         if "lm_head" in n:
             return False
         if "embed_tokens" in n:
+            return False
+        if p in ngram_table_params:
+            return False
+        # Expert biases should not go to Muon (and would also raise under EP).
+        if "mlp.experts" in n and n.endswith("_bias"):
             return False
         return True
 
@@ -248,7 +246,9 @@ def _create_muon_optimizer(
         matrix_partitions=matrix_partitions,
         lr=lr,
         mu=config.mu,
+        nesterov=config.nesterov,
         betas=(config.betas1, config.betas2),
+        epsilon=config.eps,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
         distributed_mesh=distributed_mesh,

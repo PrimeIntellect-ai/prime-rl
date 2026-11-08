@@ -10,7 +10,6 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
-from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
@@ -42,6 +41,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
         index_topk=config.index_topk,
         use_index_cache=getattr(config, "use_index_cache", False),
         skip_topk=_index_cache_skip_topk(config, layer_idx),
+        dsa_backend=getattr(config, "dsa_backend", "cudnn_flashmla"),
     )
 
 
@@ -87,7 +87,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -119,17 +118,11 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
 class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     config: GlmMoeDsaConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["GlmMoeDsaDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_flex_attn = True
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": GlmMoeDsaDecoderLayer,
-    }
+
+    @classmethod
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
+        return None
 
     def _init_weights(self, module):
         super()._init_weights(module)
@@ -242,7 +235,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         cached_indices = None
         use_index_cache = getattr(self.config, "use_index_cache", False)
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
             hidden_states, next_cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -260,8 +255,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
 @auto_docstring
 class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)

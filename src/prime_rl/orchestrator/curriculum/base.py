@@ -7,8 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.curriculum.gates import AdmissionGate
 from prime_rl.orchestrator.curriculum.samplers import TaskSampler
+from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import CurriculumConfig
@@ -32,6 +34,7 @@ class Curriculum:
         from prime_rl.orchestrator.curriculum.samplers import DifficultyPoolSampler, StandardSampler
 
         config = CurriculumConfig() if config is None else config
+        self.sampler_type = config.sampler.type
         if isinstance(config.sampler, StandardSamplerConfig):
             self.sampler: TaskSampler = StandardSampler(tasks)
         elif isinstance(config.sampler, DifficultyPoolSamplerConfig):
@@ -48,7 +51,7 @@ class Curriculum:
             self.gates[name] = gate
 
     def on_result(self, group: list[vf.Episode]) -> bool:
-        """Observe every result, evaluate every gate, and combine with AND."""
+        """Observe every result and admit trainable groups that pass every gate."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         task_keys = {episode.task.key for episode in group}
@@ -63,26 +66,37 @@ class Curriculum:
             if not isinstance(decision, bool):
                 raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
             decisions.append(decision)
-        return all(decisions)
+        return all(decisions) and any(iter_trainable_traces(group))
 
     def state_dict(self) -> dict[str, Any]:
         return {
+            "sampler_type": self.sampler_type,
             "sampler": self.sampler.state_dict(),
             "gates": {name: gate.state_dict() for name, gate in self.gates.items()},
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        expected_fields = {"sampler", "gates"}
-        if set(state_dict) != expected_fields:
-            raise ValueError(f"Curriculum checkpoint fields must be {sorted(expected_fields)}")
-        gate_states = state_dict["gates"]
-        if set(gate_states) != set(self.gates):
-            raise ValueError(
-                f"Curriculum checkpoint gates {sorted(gate_states)} do not match configured gates {sorted(self.gates)}"
+        """Restore the sampler unless its type changed, and each gate by name. A new
+        gate or a sampler of a new type starts fresh; state of a removed gate is dropped."""
+        sampler_state = state_dict["sampler"]
+        # Checkpoints from before the sampler type was recorded only knew two samplers.
+        saved_type = state_dict.get("sampler_type", "standard" if "cursor" in sampler_state else "difficulty_pool")
+        if saved_type == self.sampler_type:
+            self.sampler.load_state_dict(sampler_state)
+        else:
+            get_logger().warning(
+                f"The task sampler changed from {saved_type!r} to {self.sampler_type!r}, so its state starts fresh"
             )
-        self.sampler.load_state_dict(state_dict["sampler"])
+        gate_states = state_dict["gates"]
         for name, gate in self.gates.items():
-            gate.load_state_dict(gate_states[name])
+            if name in gate_states:
+                gate.load_state_dict(gate_states[name])
+            else:
+                get_logger().info(f"Admission gate {name!r} is not in the checkpoint, so it starts fresh")
+        for name in sorted(gate_states.keys() - self.gates.keys()):
+            get_logger().info(
+                f"Dropped the checkpointed state of admission gate {name!r}, which is no longer configured"
+            )
 
     def metrics(self) -> dict[str, float]:
         metrics = {f"sampler/{name}": float(value) for name, value in self.sampler.metrics().items()}

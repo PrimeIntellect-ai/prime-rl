@@ -6,11 +6,14 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.utils.config import dump_resolved_config
+from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
 
@@ -72,6 +75,11 @@ def prepare_attempt_dirs(run_dir: Path) -> tuple[Path, Path]:
     return resolved_config_dir, attempt_log_dir
 
 
+def launcher_attempt_env(config_dir: Path, log_dir: Path) -> dict[str, str]:
+    """Env that pins a launcher's child processes to its attempt (see ``prepare_attempt_dirs``)."""
+    return {"PRL_ATTEMPT_CONFIG_DIR": str(config_dir), "PRL_ATTEMPT_LOG_DIR": str(log_dir)}
+
+
 def create_attempt_log_dir(run_dir: Path) -> Path:
     """Create a log-only attempt for standalone processes without config dumps."""
     logs_dir = get_log_dir(run_dir)
@@ -126,7 +134,7 @@ def format_log_message(
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
-    # Env servers, by split (``envs/<split>/<name>.log``); one split lists its envs
+    # Env worker pools, by split (``envs/<split>/<name>.log``); one split lists its envs
     # directly, several list them under the split.
     splits = {split: names for split, names in (env_names or {}).items() if names}
     if splits:
@@ -169,6 +177,23 @@ def get_config_dir(output_dir: Path) -> Path:
     return legacy if legacy.is_dir() and not latest.exists() else latest
 
 
+def write_resolved_config(output_dir: Path, config: BaseModel, name: str) -> None:
+    """Save a component's resolved config and dashboard launch artifacts.
+
+    Independently launched components share the unnumbered config directory;
+    allocating an attempt in each process would split one run across attempts.
+    Launcher-managed components write into their pinned attempt directory.
+    """
+    config_dir = get_config_dir(output_dir)
+    if not config_dir.exists():
+        config_dir = output_dir / "configs" / "resolved"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=config_dir, delete=False) as f:
+        json.dump(dump_resolved_config(config), f, indent=2)
+    os.replace(f.name, config_dir / f"{name}.json")
+    write_launch_artifacts(config_dir, name)
+
+
 def write_launch_command(config_dir: Path, name: str) -> None:
     """Write the user-facing launch command once for a config attempt."""
     attempt_dir = config_dir.parent
@@ -204,7 +229,7 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     launch_toml = attempt_dir / f"{name}.toml"
     if launch_toml.is_file():
         lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
-    # A label starting with a space is a sub-entry (an env server under its split), cut
+    # A label starting with a space is a sub-entry (an env worker pool under its split), cut
     # to the column like the Logs block cuts env names.
     for label, path in components:
         if label.startswith(" "):
@@ -219,30 +244,32 @@ def write_launch_artifacts(config_dir: Path, name: str) -> None:
     write_launch_toml(config_dir, name)
 
 
-def env_address_file(config_dir: Path, split: str, name: str) -> Path:
-    """Where a launcher-managed env server publishes the address it bound
-    (``envs/<split>/<name>.address``, next to its config). The server binds an
-    OS-assigned port, so two runs on one host never race for the same one; a client
-    waits for this file instead of assuming a port."""
-    return config_dir / "envs" / split / f"{name}.address"
+def env_address_file(config_dir: Path, split: str, name: str, replica: int | None = None) -> Path:
+    """Where a launcher-managed env worker pool publishes the address it bound
+    (``envs/<split>/<name>.address``, next to its config, or ``<name>.<replica>.address``
+    for one of several replicas). The pool's broker binds an OS-assigned port, so two runs on one
+    host never race for the same one; a client waits for this file instead of assuming a
+    port."""
+    stem = name if replica is None else f"{name}.{replica}"
+    return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
-    """Write the ``EnvServerConfig`` of a launcher-managed source
+def write_env_worker_pool_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
+    """Write the ``EnvWorkerPoolConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
-    server publishes the OS-assigned port it binds to the address file next to it."""
+    broker publishes the OS-assigned port it binds to the address file next to it."""
     env_dir = config_dir / "envs" / split
     env_dir.mkdir(parents=True, exist_ok=True)
     source_dict = dump_resolved_config(source)
-    server_config = {
+    pool_config = {
         "env": source_dict["env"],
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
-        "log": {"level": log.vf_level, "json_logging": log.json_logging},
+        "log": {"level": log.level, "json_logging": log.json_logging},
     }
     path = env_dir / f"{source.resolved_name}.json"
-    path.write_text(json.dumps(server_config, indent=2))
+    path.write_text(json.dumps(pool_config, indent=2))
     return path
 
 
@@ -376,6 +403,29 @@ def validate_run_dir(
         )
 
 
+def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None:
+    """Set the run identity and prepare the run directory of a launcher's ``config`` (``run``, ``run_dir``,
+    ``output_dir``, ``clean``, ``resume``): validate it (with ``clean``, unless ``$NEVER_CLEAN`` is set, delete it
+    first) and create it and ``ckpt_output_dir``.
+
+    The run identity is runtime-only, never sub-config: ``$PRL_RUN_ID`` / ``$PRL_RUN_NAME`` carry it between
+    processes, and every spawned process inherits them. Components launched standalone have no run identity."""
+    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
+    assert config.run.name is not None  # resolved at construction
+    os.environ["PRL_RUN_NAME"] = config.run.name
+    clean = config.clean and not os.environ.get("NEVER_CLEAN")
+    validate_run_dir(
+        config.run_dir,
+        output_dir=config.output_dir,
+        resuming=config.resume is not None,
+        clean=clean,
+        ckpt_output_dir=ckpt_output_dir,
+    )
+    config.run_dir.mkdir(parents=True, exist_ok=True)
+    if ckpt_output_dir is not None:
+        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+
+
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
     """Remove stale step artifacts past ``resume_step`` and broadcasts from it onward.
 
@@ -423,3 +473,9 @@ async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -
             logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
         await asyncio.sleep(interval)
         wait_time += interval
+
+
+def get_links_path(output_dir: Path) -> Path:
+    """Each monitor's run-page links for the launcher's banner: ``{monitor: {"attempt",
+    "expected", "links": {label: url}}}``."""
+    return output_dir / "monitors" / "links.json"

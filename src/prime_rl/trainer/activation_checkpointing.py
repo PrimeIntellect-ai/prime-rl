@@ -28,11 +28,12 @@ SAC_IGNORED_OPS.update(
 # Adapted from TorchTitan's whole-block selective activation checkpointing policy.
 # These targets and the CUDA-to-CPU copy rule are correctness requirements. They
 # must remain active when custom targets replace the default selective targets.
-MANDATORY_SAVE_NAMESPACES = frozenset({"deepep"})
 MANDATORY_SAVE_OPERATIONS = frozenset(
     {
         "aten::topk",
         "prime_rl::fp8_indexer",
+        "prime_kernels::select_indexed_blocks",
+        "prime_kernels::indexed_attention_plan",
         "prime_rl::record_moe_routing_statistics",
     }
 )
@@ -40,8 +41,10 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
 DEFAULT_SELECTIVE_SAVE_NAMESPACES = frozenset(
     {
         "_c10d_functional",
+        "deepep",
         "flash_attn",
         "flash_attn_3",
+        "prime_rl_attn",
         "prime_rl_collectives",
         "prime_rl_ring",
     }
@@ -66,9 +69,15 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "aten::linear",
         "aten::mm",
         "prime_rl::dsv4_sparse_attn",
+        "prime_rl::fp8_blockwise_bmm",
         "prime_rl::fp8_blockwise_mm",
+        "prime_rl::mega_moe_forward",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",
+        "quack::gemm_act_out",
+        "quack::gemm_gated_out",
+        "quack::gemm_out",
+        "prime_kernels::indexed_attention_forward",
     }
 )
 # An operation target matches one qualified operator name, while a namespace
@@ -84,7 +93,7 @@ def _mandatory_checkpoint_policy(
     *args,
     **kwargs,
 ) -> CheckpointPolicy:
-    if operation.namespace in MANDATORY_SAVE_NAMESPACES or operation.name() in MANDATORY_SAVE_OPERATIONS:
+    if operation.name() in MANDATORY_SAVE_OPERATIONS:
         return CheckpointPolicy.MUST_SAVE
 
     if operation.name() == "aten::_to_copy":
@@ -128,7 +137,6 @@ __all__ = [
     "DEFAULT_SELECTIVE_SAVE_NAMESPACES",
     "DEFAULT_SELECTIVE_SAVE_OPERATIONS",
     "DEFAULT_SELECTIVE_TARGETS",
-    "MANDATORY_SAVE_NAMESPACES",
     "MANDATORY_SAVE_OPERATIONS",
     "get_activation_checkpoint_wrapper",
 ]

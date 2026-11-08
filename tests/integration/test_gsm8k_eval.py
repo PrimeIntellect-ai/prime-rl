@@ -29,6 +29,7 @@ def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) ->
         "@",
         "configs/ci/integration/gsm8k-eval.toml",
         "--clean",
+        "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",

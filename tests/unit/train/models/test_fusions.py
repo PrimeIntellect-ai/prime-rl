@@ -1,6 +1,5 @@
 import copy
 
-import pytest
 import torch
 from torch import nn
 
@@ -98,12 +97,6 @@ def test_qkv_projections_match_the_unpacked_ones():
         assert torch.equal(fused_projection, unfused_projection)
 
 
-def test_unsupported_fusion_fails_loudly():
-    with pytest.raises(ValueError, match="does not support"):
-        apply_model_fusions(build_experts(), ["qkv"])
-    assert apply_model_fusions(build_experts(), ["qkv"], raise_on_fail=False) == {}
-
-
-def test_non_gated_experts_have_nothing_to_pack():
-    with pytest.raises(ValueError, match="does not support"):
-        apply_model_fusions(build_experts(expert_type="non_gated"), ["gate_up"])
+def test_unsupported_fusions_are_skipped():
+    assert apply_model_fusions(build_experts(), ["qkv"]) == {}
+    assert apply_model_fusions(build_experts(expert_type="non_gated"), ["gate_up"]) == {}

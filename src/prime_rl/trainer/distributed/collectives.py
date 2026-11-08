@@ -12,10 +12,11 @@ def _all_to_all_single(
     output_splits: torch.Tensor,
     input_splits: torch.Tensor,
     group_name: str,
+    output_size: int,
 ) -> torch.Tensor:
     output_split_list = output_splits.tolist()
     input_split_list = input_splits.tolist()
-    output = x.new_empty((sum(output_split_list), *x.shape[1:]))
+    output = x.new_empty((output_size, *x.shape[1:]))
     dist.all_to_all_single(
         output,
         x.contiguous(),
@@ -32,18 +33,19 @@ def _all_to_all_single_fake(
     output_splits: torch.Tensor,
     input_splits: torch.Tensor,
     group_name: str,
+    output_size: int,
 ) -> torch.Tensor:
-    output_size = torch.library.get_ctx().new_dynamic_size()
     return x.new_empty((output_size, *x.shape[1:]))
 
 
 def _all_to_all_setup_context(ctx, inputs, output) -> None:
-    _, output_splits, input_splits, group_name = inputs
+    x, output_splits, input_splits, group_name, _ = inputs
     ctx.save_for_backward(output_splits, input_splits)
     ctx.group_name = group_name
+    ctx.input_size = x.shape[0]
 
 
-def _all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None, None]:
+def _all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None]:
     output_splits, input_splits = ctx.saved_tensors
     return (
         _all_to_all_single(
@@ -51,7 +53,9 @@ def _all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, 
             input_splits,
             output_splits,
             ctx.group_name,
+            ctx.input_size,
         ),
+        None,
         None,
         None,
         None,
@@ -99,6 +103,7 @@ def _mxfp8_all_to_all(
     input_splits: torch.Tensor,
     group_name: str,
     quantized: bool,
+    output_size: int,
 ) -> torch.Tensor:
     kernel = prime_kernels.load("mxfp8_moe")
     operation = kernel.all_to_all_dispatch if quantized else kernel.all_to_all_combine
@@ -117,19 +122,20 @@ def _mxfp8_all_to_all_fake(
     input_splits: torch.Tensor,
     group_name: str,
     quantized: bool,
+    output_size: int,
 ) -> torch.Tensor:
-    output_size = torch.library.get_ctx().new_dynamic_size()
     return x.new_empty((output_size, *x.shape[1:]))
 
 
 def _mxfp8_all_to_all_setup_context(ctx, inputs, output) -> None:
-    _, output_splits, input_splits, group_name, quantized = inputs
+    x, output_splits, input_splits, group_name, quantized, _ = inputs
     ctx.save_for_backward(output_splits, input_splits)
     ctx.group_name = group_name
     ctx.quantized = quantized
+    ctx.input_size = x.shape[0]
 
 
-def _mxfp8_all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None]:
+def _mxfp8_all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None, None]:
     output_splits, input_splits = ctx.saved_tensors
     return (
         _mxfp8_all_to_all(
@@ -138,7 +144,9 @@ def _mxfp8_all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Te
             output_splits,
             ctx.group_name,
             not ctx.quantized,
+            ctx.input_size,
         ),
+        None,
         None,
         None,
         None,
@@ -224,8 +232,9 @@ def all_to_all_single(
     output_splits: torch.Tensor,
     input_splits: torch.Tensor,
     group: ProcessGroup,
+    output_size: int,
 ) -> torch.Tensor:
-    return _all_to_all_single(x, output_splits, input_splits, group.group_name)
+    return _all_to_all_single(x, output_splits, input_splits, group.group_name, output_size)
 
 
 def all_to_all_single_equal(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
@@ -237,8 +246,9 @@ def mxfp8_all_to_all_dispatch(
     output_splits: torch.Tensor,
     input_splits: torch.Tensor,
     group: ProcessGroup,
+    output_size: int,
 ) -> torch.Tensor:
-    return _mxfp8_all_to_all(x, output_splits, input_splits, group.group_name, True)
+    return _mxfp8_all_to_all(x, output_splits, input_splits, group.group_name, True, output_size)
 
 
 def mxfp8_all_to_all_combine(
@@ -246,8 +256,9 @@ def mxfp8_all_to_all_combine(
     output_splits: torch.Tensor,
     input_splits: torch.Tensor,
     group: ProcessGroup,
+    output_size: int,
 ) -> torch.Tensor:
-    return _mxfp8_all_to_all(x, output_splits, input_splits, group.group_name, False)
+    return _mxfp8_all_to_all(x, output_splits, input_splits, group.group_name, False, output_size)
 
 
 def all_gather(x: torch.Tensor, dim: int, group: ProcessGroup) -> torch.Tensor:

@@ -1,4 +1,5 @@
-# .git stays: docker-editable-pretend-versions.sh reads .git/modules via the bind mount.
+.git
+**/.git
 outputs
 **/.venv
 **/__pycache__

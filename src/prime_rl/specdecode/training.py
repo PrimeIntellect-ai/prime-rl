@@ -3,14 +3,14 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 from torch import nn
-from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 from torch.distributed.tensor import DTensor, distribute_tensor
 
 from prime_rl.configs.specdecode import SpeculatorConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
-from prime_rl.utils.vlm import get_language_model
 
 
 def draft_loss_mask(
@@ -95,7 +95,6 @@ class SpeculatorTraining:
             mp_policy=MixedPrecisionPolicy(
                 param_dtype=torch.bfloat16, reduce_dtype=getattr(torch, model_config.reduce_dtype)
             ),
-            offload_policy=CPUOffloadPolicy(pin_memory=True) if model_config.fsdp_cpu_offload else OffloadPolicy(),
             reshard_after_forward=model_config.reshard_after_forward,
         )
         for layer in draft.layers:

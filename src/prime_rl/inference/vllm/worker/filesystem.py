@@ -22,10 +22,6 @@ else:
 class FileSystemWeightUpdateWorker(WeightInspectionMixin, Worker):
     """vLLM worker extension for updating weights in-place using shared filesystem."""
 
-    def init_broadcaster(self) -> None:
-        """Initialize the broadcaster."""
-        ...
-
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""
         return None

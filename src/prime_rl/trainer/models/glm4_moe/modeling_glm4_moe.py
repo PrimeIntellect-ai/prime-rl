@@ -23,7 +23,6 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
-from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
@@ -89,7 +88,6 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -121,17 +119,6 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
 class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     config: Glm4MoeConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["Glm4MoeDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_flex_attn = True
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": Glm4MoeDecoderLayer,
-    }
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -158,8 +145,6 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
 
 @auto_docstring
 class Glm4MoeModel(Glm4MoePreTrainedModel):
-    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.92.*", r"model\.layers\.46.*"]
-
     def __init__(self, config: Glm4MoeConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -241,8 +226,6 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 @auto_docstring
 class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)

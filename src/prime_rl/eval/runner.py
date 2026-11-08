@@ -7,7 +7,7 @@ admits episodes under the adaptive ``ConcurrencyController``, fed by the
 measurements and are never cancelled on load - a controller cut only blocks admission
 until the pool drains.
 
-Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
+Env worker pools belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
 ``rl``: a source without an explicit ``serve.address`` is found through the address file
 its server publishes; one with an address is reached directly."""
 
@@ -24,6 +24,8 @@ import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.control.server import serve
+from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
@@ -34,10 +36,6 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import dispatch_failure_metrics
-from prime_rl.orchestrator.patches import (
-    monkey_patch_chat_completion_logprobs,
-    monkey_patch_oai_iterable_types,
-)
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
@@ -45,12 +43,10 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     set_default_executor,
 )
+from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_config_dir
-
-monkey_patch_oai_iterable_types()
-monkey_patch_chat_completion_logprobs()
 
 # How often ``run_epoch`` re-checks for a superseding checkpoint while it waits for episodes.
 POLL_INTERVAL_S = 2.0
@@ -60,10 +56,11 @@ class EvalRunner:
     def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
+        self.control_task: asyncio.Task | None = None
 
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
@@ -80,7 +77,7 @@ class EvalRunner:
 
         # The heartbeat is beaten only by landed episodes — the first episode is its
         # first beat. No startup ping on purpose: the run-start to first-episode gap
-        # (pool boot, env servers, the first episode's full duration) would otherwise
+        # (pool boot, env worker pools, the first episode's full duration) would otherwise
         # sit inside the ping stream as an abnormally long silence and flip a healthy
         # run stale. Until then the heartbeat has simply never been pinged.
         if config.heartbeat is not None:
@@ -112,7 +109,7 @@ class EvalRunner:
 
         # Pessimistic per-episode token cost for the controller's starting cap,
         # only used when the engine doesn't report its max context length.
-        fallback_cost = max((source.sampling.max_completion_tokens or 0) for source in config.source) or 8192
+        fallback_cost = max((source.sampling.max_tokens or 0) for source in config.source) or 8192
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=fallback_cost)
         self.dispatcher = Dispatcher(
             train_envs=None,
@@ -121,11 +118,11 @@ class EvalRunner:
             eval_source=self.eval_source,
             policy_clients=self.clients,
             policy=self.policy,
+            policy_weights_change=isinstance(config, SFTOnlineEvalConfig),
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=config.tasks_per_minute,
-            max_off_policy_steps=0,
+            dispatch_per_minute=config.dispatch_per_minute,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -167,6 +164,9 @@ class EvalRunner:
 
     async def start(self) -> None:
         self.dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
+        if self.config.control is not None:
+            app = create_app(self.concurrency)
+            self.control_task = asyncio.create_task(serve(app, self.config.control), name="control")
         await self.periodic_logger.start()
 
     async def run_epoch(
@@ -260,37 +260,48 @@ class EvalRunner:
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
-        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
+        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict. Aggregation
+        runs in worker threads, as it takes seconds for a large epoch."""
         if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
-        await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes.vf_episodes)
-
         episodes = batch.episodes
         effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        if batch.cancelled:
-            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
-            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
-        metrics["step"] = float(batch.step)
-        await monitors.log(metrics, step=batch.step)
+        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        if effective_episodes:
+            await monitors.log(effective_episodes, batch.step, "eval", "effective")
+            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
+            await monitors.log_annotations(annotations)
+        await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.vf_episodes)
 
-        eff, full = effective.metrics, episodes.metrics
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+
+        def epoch_metrics() -> dict[str, float]:
+            metrics: dict[str, float] = {}
+            for subset, pool in (("all", episodes), ("effective", effective)):
+                metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+            metrics |= dispatch_failure_metrics(
+                batch.failures,
+                prefix=f"eval/{batch.env_name}/all",
+                total_attempts=total_attempts,
+            )
+            if batch.cancelled:
+                metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
+                metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
+            metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
+            metrics["step"] = float(batch.step)
+            return metrics
+
+        await monitors.log(await asyncio.to_thread(epoch_metrics), step=batch.step)
+
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        await asyncio.to_thread(self.log_eval_batch, batch, total_attempts=total_attempts, elapsed=elapsed)
+
+    def log_eval_batch(self, batch: EvalBatch, *, total_attempts: int, elapsed: float) -> None:
+        episodes = batch.episodes
+        eff, full = episodes.effective.metrics, episodes.metrics
         if batch.cancelled:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
@@ -334,6 +345,8 @@ class EvalRunner:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
+        if self.control_task is not None:
+            await safe_cancel(self.control_task)
         if self.periodic_logger is not None:
             await self.periodic_logger.stop()
         if self.inference_metrics is not None:

@@ -7,51 +7,28 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
-from prime_rl.configs.orchestrator import (
-    FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    OrchestratorConfig,
-)
+from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
+    BaseMultiNodeDeploymentConfig,
+    BaseSingleNodeDeploymentConfig,
     EnvVars,
+    FileSystemWeightBroadcastConfig,
+    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
-)
-from prime_rl.configs.trainer import (
-    FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
+    WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
+    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-from prime_rl.utils.validation import (
-    propagate_shared_fields,
-    validate_shared_ckpt_config,
-    validate_shared_max_steps,
-    validate_shared_model_name,
-    validate_shared_seq_len,
-    validate_shared_tokenizer,
-    validate_shared_wandb_config,
-    validate_shared_weight_broadcast,
-)
+from prime_rl.utils.validation import propagate_shared_fields
 
 
 class SharedLogConfig(BaseConfig):
@@ -102,8 +79,8 @@ class SharedMonitorsConfig(BaseConfig):
     file: FileMonitorConfig | None = None
     """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
-    prime: PrimeTrainMonitorConfig | None = None
-    """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
+    prime: PrimeMonitorConfig | None = None
+    """Shared Prime platform monitor. Propagated to trainer and orchestrator, which log to one Prime run."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -128,64 +105,7 @@ class SharedModelConfig(BaseConfig):
     """VLM configuration. Set this to enable vision-language model support."""
 
 
-class SharedInMemoryWeightBroadcastConfig(BaseConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer."""
-
-
-class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for NCCL weight broadcast."""
-
-
-class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
-class SharedFileSystemWeightBroadcastConfig(BaseConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer."""
-
-
-SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
-
-
-class BaseDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
-    """GPUs per node."""
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: int = 1
-    """GPUs allocated to the trainer."""
-
-    num_infer_gpus: int = 1
-    """GPUs allocated to inference."""
-
+class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
         total = self.num_train_gpus + self.num_infer_gpus
@@ -197,20 +117,12 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: int
-    """Training nodes."""
-
+class MultiNodeDeploymentConfig(BaseMultiNodeDeploymentConfig):
     num_infer_nodes: int | None = Field(None, ge=0)
     """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
 
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
-
-    nodes_per_fsdp_group: int | None = None
-    """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
@@ -230,6 +142,10 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
+    mode: Literal["rl"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run rl`` accepts only
+    "rl" (or no mode)."""
+
     trainer: TrainerConfig
 
     orchestrator: OrchestratorConfig
@@ -291,7 +207,7 @@ class RLConfig(BaseConfig):
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     monitors: SharedMonitorsConfig = SharedMonitorsConfig()
-    """Shared monitor configs (``monitors.wandb``, ``monitors.file``). Propagated to trainer and orchestrator; ``[orchestrator.monitors.prime]`` configures the platform monitor."""
+    """Shared monitor configs (``monitors.wandb``, ``monitors.file``, ``monitors.prime``). Propagated to trainer and orchestrator."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""
@@ -305,7 +221,7 @@ class RLConfig(BaseConfig):
     seq_len: int | None = None
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
-    weight_broadcast: SharedWeightBroadcastConfig | None = None
+    weight_broadcast: WeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
 
@@ -407,16 +323,8 @@ class RLConfig(BaseConfig):
                     f"({run_dir}). Under the rl entrypoint, sub-config output directories are derived from "
                     "output_dir / run.name — set those instead."
                 )
-            sub.output_dir = run_dir
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_resume(self):
-        """Propagate the top-level resume onto the sub-configs."""
-        if self.resume is None:
-            return self
-        self.trainer.resume = self.resume.model_copy()
-        self.orchestrator.resume = self.resume.model_copy()
+        self.trainer.output_dir = run_dir
+        self.orchestrator = self.orchestrator.model_copy(update={"output_dir": run_dir})
         return self
 
     @model_validator(mode="after")
@@ -433,7 +341,7 @@ class RLConfig(BaseConfig):
         for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
-        for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
+        for prime in (self.monitors.prime, self.trainer.monitors.prime, self.orchestrator.monitors.prime):
             if prime is not None and prime.name is None:
                 prime.name = self.run.name
         return self
@@ -442,13 +350,87 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_shared_configs(self):
-        """Validate consistency of shared configs across trainer, orchestrator, and inference."""
-        validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
-        validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
-        validate_shared_max_steps(self.trainer, self.orchestrator)
-        validate_shared_seq_len(self.trainer, self.orchestrator)
-        validate_shared_ckpt_config(self.trainer, self.orchestrator)
-        validate_shared_wandb_config(self.trainer, self.orchestrator)
+        """Cross-component constraints for values set per sub-config rather than through the
+        shared fields (``propagate_shared_fields`` already rejects shared vs sub-config conflicts)."""
+        trainer, orchestrator, inference = self.trainer, self.orchestrator, self.inference
+
+        def require_equal(name: str, values: dict[str, Any]) -> None:
+            if len({repr(v) for v in values.values()}) > 1:
+                found = ", ".join(f"{path}={value!r}" for path, value in values.items())
+                raise ValueError(f"{name} must match across components ({found}). Set the shared [{name}] instead.")
+
+        # The orchestrator queries the inference server it is paired with; without one, it
+        # must match the trainer whose weights the external server receives.
+        # The components log to one run per monitor, so a monitor is on in all or none.
+        for name in ("wandb", "file", "prime"):
+            require_equal(
+                f"monitors.{name}",
+                {
+                    f"{component}.monitors.{name}": getattr(config.monitors, name) is not None
+                    for component, config in (("trainer", trainer), ("orchestrator", orchestrator))
+                },
+            )
+
+        if inference is not None:
+            require_equal(
+                "deployment.gpus_per_node",
+                {
+                    "deployment.gpus_per_node": self.deployment.gpus_per_node,
+                    "inference.deployment.gpus_per_node": inference.deployment.gpus_per_node,
+                },
+            )
+            require_equal(
+                "model.name",
+                {"inference.vllm.model": inference.vllm.model, "orchestrator.model.name": orchestrator.model.name},
+            )
+        else:
+            require_equal(
+                "model.name",
+                {"trainer.model.name": trainer.model.name, "orchestrator.model.name": orchestrator.model.name},
+            )
+        # ``tokenizer.name`` / ``trust_remote_code`` may differ (e.g. FP8-quantized inference variants).
+        chat_templates = {
+            "trainer.tokenizer.chat_template": trainer.tokenizer.chat_template,
+            "orchestrator.tokenizer.chat_template": orchestrator.tokenizer.chat_template,
+        }
+        if inference is not None:
+            chat_templates["inference.vllm.chat_template"] = inference.vllm.chat_template
+        require_equal("tokenizer.chat_template", chat_templates)
+        require_equal(
+            "max_steps", {"trainer.max_steps": trainer.max_steps, "orchestrator.max_steps": orchestrator.max_steps}
+        )
+        require_equal("resume", {"trainer.resume": trainer.resume, "orchestrator.resume": orchestrator.resume})
+        if trainer.model.seq_len < orchestrator.seq_len:
+            raise ValueError(
+                f"trainer.model.seq_len ({trainer.model.seq_len}) must be >= orchestrator.seq_len "
+                f"({orchestrator.seq_len}) so the trainer can handle every sequence the orchestrator produces."
+            )
+        if (trainer.ckpt is None) != (orchestrator.ckpt is None):
+            raise ValueError(
+                "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
+            )
+        if trainer.ckpt and orchestrator.ckpt:
+            require_equal(
+                "ckpt.interval",
+                {
+                    "trainer.ckpt.interval": trainer.ckpt.interval,
+                    "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
+                },
+            )
+        trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
+        if (trainer_wandb is None) != (orchestrator_wandb is None):
+            raise ValueError(
+                "W&B must be configured on both trainer and orchestrator, otherwise only one side's "
+                "metrics are logged. Use the shared [monitors.wandb]."
+            )
+        if trainer_wandb and orchestrator_wandb:
+            require_equal(
+                "monitors.wandb.project",
+                {
+                    "trainer.monitors.wandb.project": trainer_wandb.project,
+                    "orchestrator.monitors.wandb.project": orchestrator_wandb.project,
+                },
+            )
         return self
 
     @model_validator(mode="after")
@@ -461,52 +443,31 @@ class RLConfig(BaseConfig):
         """
         if self.weight_broadcast is None:
             if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
+                self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
-                self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+                self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = (
-                self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-                if self.inference
-                else 1
-            )
-            common_config = dict(
-                host=self.weight_broadcast.host,
-                port=self.weight_broadcast.port,
-                timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
-            )
-            if self.weight_broadcast.type == "nccl":
-                transport_config = {}
-                trainer_config_type = TrainerNCCLWeightBroadcastConfig
-                orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
-            else:
-                transport_config = dict(
-                    session_id=self.weight_broadcast.session_id,
-                    overlap_transfer_and_replay=self.weight_broadcast.overlap_transfer_and_replay,
+        if self.weight_broadcast.type == "modelexpress":
+            dynamo = self.orchestrator.model.client.dynamo
+            if dynamo is not None and dynamo.enabled:
+                raise ValueError(
+                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
                 )
-                trainer_config_type = TrainerNIXLWeightBroadcastConfig
-                orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
-            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
-            self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
-        elif self.weight_broadcast.type == "filesystem":
-            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
-            )
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
-            )
+            if self.inference is not None:
+                extra = self.inference.vllm.model_extra or {}
+                if extra.get("speculative_config") is not None:
+                    raise ValueError("modelexpress does not support speculative decoding.")
+        self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
+        self.orchestrator = self.orchestrator.model_copy(
+            update={"weight_broadcast": self.weight_broadcast.model_copy()}
+        )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
-
-        validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
-
         return self
 
     @model_validator(mode="after")
@@ -540,37 +501,6 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.orchestrator.model.lora is None:
-                from prime_rl.configs.orchestrator import LoRAConfig
-
-                self.orchestrator.model.lora = LoRAConfig()
-
-            if (
-                self.orchestrator.model.lora.rank is not None
-                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
-                    f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
-                )
-
-            if (
-                self.orchestrator.model.lora.alpha is not None
-                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
-                    f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
-                )
-
-            if self.orchestrator.model.lora.rank is None:
-                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
-
-            if self.orchestrator.model.lora.alpha is None:
-                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
-
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True
                 self.inference.vllm.max_lora_rank = self.trainer.model.lora.rank
@@ -626,12 +556,46 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_score_centering(self):
+        loss = self.trainer.loss
+        if loss.type != "icepop" or not loss.score_centering:
+            return self
+        if not self.orchestrator.policy_samplings:
+            raise ValueError("Score centering requires a policy-sampled training source")
+        requested = []
+
+        def request_logprobs(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
+            if sampling.temperature <= 0:
+                raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
+            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
+            if k is None:
+                raise ValueError("Truncated score centering requires a bounded top_k")
+            if sampling.logprobs is not None and sampling.logprobs < k:
+                raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
+            requested.append(max(sampling.logprobs or 0, k) + 2)
+            return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
+
+        self.orchestrator.update_policy_samplings(request_logprobs)
+        if self.inference is not None:
+            if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
+                raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
+            self.inference.vllm.logprobs_mode = "processed_logprobs"
+            limit = getattr(self.inference.vllm, "max_logprobs", 20)
+            if limit != -1:
+                self.inference.vllm.max_logprobs = max(limit, *requested)
+        else:
+            warnings.warn(
+                "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
-        on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
-        so eval sampling against the same server must set both."""
+        configs are bounded by TRAIN_TOP_K_BOUND). Only opted-in requests capture
+        masks; eval requests retain independent sampling settings."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
@@ -646,41 +610,6 @@ class RLConfig(BaseConfig):
             )
             return self
         self.inference.enable_return_sampling_mask = True
-        if self.orchestrator.eval is not None:
-            warnings.warn(
-                "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
-                "eval sampling config or the model's generation config) or with temperature 0 are "
-                "rejected by the inference server while truncated train sampling is on.",
-                stacklevel=2,
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_disaggregated_combined_replay(self):
-        inference = self.inference
-        if (
-            inference is not None
-            and inference.deployment.type == "disaggregated"
-            and inference.enable_return_sampling_mask
-            and inference.vllm.enable_return_routed_experts
-        ):
-            raise ValueError(
-                "Combined router and sampling replay is not supported with disaggregated P/D: "
-                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_router_replay_without_kv_offload(self):
-        if (
-            self.trainer.enable_router_replay
-            and self.inference is not None
-            and self.inference.kv_cache_offload is not None
-        ):
-            raise ValueError(
-                "Router replay with inference.kv_cache_offload is not supported. "
-                "External KV cache hits do not carry routed-expert decisions."
-            )
         return self
 
     @model_validator(mode="after")
@@ -699,12 +628,14 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
+        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
+        num_train_workers = self.orchestrator.num_train_workers
+        env_worker_pool_replicas = self.orchestrator.env_worker_pool_replicas
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
             if self.deployment.num_train_gpus > 1:
-                self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
+                num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
 
             # fill up inference capacity with dp ranks
             if self.inference is not None:
@@ -720,21 +651,16 @@ class RLConfig(BaseConfig):
                 dp = self.inference.vllm.data_parallel_size
                 if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
                     self.inference.vllm.api_server_count = dp
+                if self.weight_broadcast.type != "filesystem":
+                    # Every inference GPU joins the in-memory transfer group, so size it after the DP fill.
+                    world_size = dp * self.inference.vllm.tensor_parallel_size
+                    self.trainer.weight_broadcast.inference_world_size = world_size
+                    self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
-            self.orchestrator.num_train_workers = (
-                self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
-            )
-
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.trainer.model.dp_replicate = (
-                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-                )
+            num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
+            if self.deployment.total_infer_nodes > 0:
+                env_worker_pool_replicas = self.deployment.total_infer_nodes
 
             if (
                 self.inference is not None
@@ -788,7 +714,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -797,13 +723,20 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+                assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
+        self.orchestrator = self.orchestrator.model_copy(
+            update={
+                "pad_to_multiple_of": pad_to_multiple_of,
+                "num_train_workers": num_train_workers,
+                "env_worker_pool_replicas": env_worker_pool_replicas,
+            }
+        )
         return self
 
     @model_validator(mode="after")
@@ -831,11 +764,13 @@ class RLConfig(BaseConfig):
             role_order = ["prefill"] * (infer_deploy.num_prefill_nodes * stride) + ["decode"] * (
                 infer_deploy.num_decode_nodes * stride
             )
-            self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+            self.orchestrator = self.orchestrator.model_copy(
+                update={"inference_metrics_roles": role_order * self.deployment.num_infer_replicas}
+            )
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self
@@ -870,6 +805,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:
