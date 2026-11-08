@@ -295,7 +295,7 @@ def train(config: TrainerConfig):
         dist.broadcast_object_list(replay_until, src=0)
         replay_until = replay_until[0]
         logger.warning(
-            f"Restart {restart_count}: resuming at step {start_step}, replaying through step {replay_until} "
+            f"Restarted: resuming at step {start_step}, replaying through step {replay_until} "
             f"(inference serves policy v{replay_until})"
         )
     max_peak_memory = 0.0

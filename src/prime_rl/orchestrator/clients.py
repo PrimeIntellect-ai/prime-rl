@@ -222,15 +222,16 @@ class AdminPlane:
                     "servers get them from the trainer's next weight update, which needs rollouts to train on"
                 )
             answers = await asyncio.gather(*(_answers(client) for client in self.clients))
-            async with self._update_lock:
-                answering_again = []
-                for index, answer in enumerate(answers):
-                    self._misses[index] = 0 if answer else self._misses[index] + 1
-                    if index in self.down and answer:
-                        answering_again.append(index)
-                    elif index not in self.down and self._misses[index] >= 2:
-                        await self.mark_down(index, "missed two health checks")
-                if answering_again:
+            answering_again = []
+            for index, answer in enumerate(answers):
+                self._misses[index] = 0 if answer else self._misses[index] + 1
+                if index in self.down and answer:
+                    answering_again.append(index)
+                elif index not in self.down and self._misses[index] >= 2:
+                    # Without the update lock: a weight update stops waiting for an engine that went down
+                    await self.mark_down(index, "missed two health checks")
+            if answering_again:
+                async with self._update_lock:
                     await self._rejoin(answering_again)
 
     async def mark_down(self, index: int, reason: object) -> None:
@@ -281,15 +282,25 @@ class AdminPlane:
         request time. With ``tolerate_restarts``, an engine that does not answer goes down instead
         of failing the op."""
 
-        async def post(index: int) -> float:
+        async def post(index: int) -> float | None:
             start = time.perf_counter()
-            await _admin_post(
-                self.clients[index],
-                path,
-                attempts=10 if retry else 1,
-                retry_connect=not self.tolerate_restarts,
-                **kwargs,
+            request = asyncio.ensure_future(
+                _admin_post(
+                    self.clients[index],
+                    path,
+                    attempts=10 if retry else 1,
+                    retry_connect=not self.tolerate_restarts,
+                    **kwargs,
+                )
             )
+            if self.tolerate_restarts:
+                down = asyncio.ensure_future(self._wait_down(index))
+                await asyncio.wait({request, down}, return_when=asyncio.FIRST_COMPLETED)
+                down.cancel()
+                if not request.done():
+                    request.cancel()
+                    return None
+            await request
             return time.perf_counter() - start
 
         results = await asyncio.gather(*(post(index) for index in targets), return_exceptions=True)
@@ -300,8 +311,13 @@ class AdminPlane:
                     await self.mark_down(index, repr(result))
                     continue
                 raise result
-            times.append(result)
+            if result is not None:
+                times.append(result)
         return times
+
+    async def _wait_down(self, index: int) -> None:
+        while index not in self.down:
+            await asyncio.sleep(1)
 
     async def _pause(self, targets: list[int], step: int) -> list[float]:
         """Pause the engines, waiting for in-flight requests to drain. Returns each engine's pause time.

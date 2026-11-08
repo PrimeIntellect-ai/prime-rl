@@ -247,6 +247,7 @@ def rl_local(config: RLConfig):
                     "prime_rl.entrypoints.supervise",
                     "--name=inference",
                     f"--restarts={config.restarts.inference}",
+                    f"--health=http://127.0.0.1:{config.inference.server.port}/health",
                     shlex.join(inference_cmd),
                 ]
             processes.start(

@@ -147,7 +147,7 @@ class RestartsConfig(BaseConfig):
     server takes traffic again once the next weight update has reached it."""
 
     trainer: int = Field(3, ge=0)
-    """Times torchrun restarts the trainer's workers after one fails (OOM, NCCL error or timeout)."""
+    """Times each trainer node restarts the trainer after one of its workers fails (OOM, NCCL error or timeout); the other nodes restart with it."""
 
     inference: int = Field(3, ge=0)
     """Times each inference server restarts. The ranks of an expert-parallel group restart together."""
