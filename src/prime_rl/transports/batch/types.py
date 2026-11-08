@@ -37,12 +37,12 @@ class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True)
     counts: bytes
 
 
-# Where an env server that keeps a trace's arrays leaves the references to them:
+# Where an env worker that keeps a trace's arrays leaves the references to them:
 # ``trace.info[PAYLOAD_INFO_KEY] = {"url": ..., "branches": {index: {"id", "fields", ...}}}``.
 PAYLOAD_INFO_KEY = "prime_rl_payload"
 
 
-# A sample's training arrays kept by the env-server worker at ``url`` (see
+# A sample's training arrays kept by the env worker at ``url`` (see
 # ``prime_rl.transports.payload``): the trainer fetches them by ``id`` and keeps the first
 # ``num_tokens``.
 class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
@@ -54,7 +54,7 @@ class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
     routed_dtype: str | None = None
 
 
-# One branch's training arrays as an env-server worker serves them.
+# One branch's training arrays as an env worker serves them.
 class BranchArrays(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     routed_experts: RoutedExperts | None = None
     sampling_mask: SamplingMask | None = None
@@ -113,7 +113,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     branch_index: int | None = None
     staleness: np.ndarray | None = None
     # The branch's training arrays (routing rows, sampling mask, top-k head), kept by an
-    # env server; None when the branch has none.
+    # env worker; None when the branch has none.
     payload: PayloadSlice | None = None
 
 
@@ -183,7 +183,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
     padding: int = 0
     staleness: memoryview | None = None
-    # Per sequence, parallel to ``sequence_lengths``: the arrays an env server kept for it
+    # Per sequence, parallel to ``sequence_lengths``: the arrays an env worker kept for it
     # (None if it has none). The trainer fetches them into ``routed_experts``,
     # ``sampling_mask`` and ``top_logprobs``; None if no sequence has arrays.
     payloads: list[PayloadSlice | None] | None = None

@@ -37,13 +37,13 @@ from prime_rl.utils.logger import get_logger
 
 
 def _kept(sample: TrainingSample, field: str) -> bool:
-    """Whether an env server keeps this array of the sample (see `prime_rl.transports.payload`)."""
+    """Whether an env worker keeps this array of the sample (see `prime_rl.transports.payload`)."""
     return sample.payload is not None and field in sample.payload.fields
 
 
-# Training arrays reach the trainer only through env servers that keep them.
+# Training arrays reach the trainer only through env workers that keep them.
 _KEEP_ARRAYS_HINT = (
-    "Serve the env with prime-rl's `env-server` entrypoint, which keeps them for the trainer, "
+    "Serve the env with prime-rl's `env-worker-pool` entrypoint, which keeps them for the trainer, "
     "and check its log for arrays it could not keep."
 )
 
@@ -134,13 +134,17 @@ class TrainSink(Reconfigurable):
         progress: Progress,
         batch_size: int,
         on_result: Callable[[list[vf.Episode]], bool] | None = None,
+        on_groups_closed: Callable[[Iterable[str]], None] | None = None,
     ) -> None:
+        """``on_groups_closed`` receives the ids of every group that closes: a group
+        that finalized without anything to ship, or one whose batch shipped (`shipped`)."""
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
         self.progress = progress
         self.batch_size = batch_size
         self.on_result = on_result
+        self.on_groups_closed = on_groups_closed
 
         self.rollout_window = RolloutWindow()
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
@@ -164,12 +168,12 @@ class TrainSink(Reconfigurable):
         self._swept_step = 0
 
     def _release(self, urls: Iterable[str]) -> None:
-        """Env servers keep the arrays of delivered traces; the sink deletes those of every
+        """Env workers keep the arrays of delivered traces; the sink deletes those of every
         sample and trace it drops without shipping."""
         delete_payloads(urls)
 
     def release_samples(self, samples: Iterable[TrainingSample]) -> None:
-        """Delete the env-server arrays of samples that will never ship."""
+        """Delete the env workers' arrays of samples that will never ship."""
         self._release(sample_payload_urls(samples))
 
     def group_size_for(self, env_name: str) -> int:
@@ -257,6 +261,7 @@ class TrainSink(Reconfigurable):
         if min_version <= 0:
             return
         dropped = 0
+        dropped_groups: set[str] = set()
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
@@ -275,7 +280,9 @@ class TrainSink(Reconfigurable):
                 continue
             del self.pending_batch[trace_id]
             del self.episode_by_trace[trace_id]
+            dropped_groups.add(episode_group_id(episode))
             dropped += 1
+        self._close_unqueued(dropped_groups)
         if dropped:
             self.rollout_window.metrics.count("staleness/rollout/dropped", float(dropped))
             get_logger().warning(
@@ -318,7 +325,8 @@ class TrainSink(Reconfigurable):
         )
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
         # A shutdown drop voids the whole group and bypasses the curriculum —
-        # a pipeline decision is not a task result.
+        # a pipeline decision is not a task result. The group stays open, so a
+        # resume re-runs it.
         if cancellation is not None and cancellation.reason == "shutdown":
             self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=group)
             self._record_zero_output(group, [], n_owed)
@@ -334,6 +342,7 @@ class TrainSink(Reconfigurable):
             await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
+            self._close([group_id])
             self._record_group(group, failures, cancellation, env_name, admitted=admitted)
             self._record_zero_output(group, survivors, n_owed)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
@@ -372,6 +381,7 @@ class TrainSink(Reconfigurable):
                 samples_by_trace[trace.id] = samples
 
         if not samples_by_trace:
+            self._close([group_id])
             self._record_group(group, failures, cancellation, env_name)
             self._record_zero_output(group, survivors, n_owed)
             return
@@ -439,6 +449,20 @@ class TrainSink(Reconfigurable):
         )
         self.pending_batch.clear()
         self.episode_by_trace.clear()
+
+    def shipped(self, batch: TrainBatch) -> None:
+        """Close the groups of a batch that the consumer shipped to the trainer."""
+        self._close(episode_group_id(episode) for episode in batch.cohort.episodes)
+
+    def _close(self, group_ids: Iterable[str]) -> None:
+        if self.on_groups_closed is not None:
+            self.on_groups_closed(group_ids)
+
+    def _close_unqueued(self, group_ids: set[str]) -> None:
+        """Close the groups left with no queued trace, which can no longer ship."""
+        if group_ids:
+            queued = {episode_group_id(episode) for episode in self.episode_by_trace.values()}
+            self._close(group_ids - queued)
 
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
@@ -521,13 +545,18 @@ class TrainSink(Reconfigurable):
         shipped_ids = set(selected_by_trace)
         traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)
         selected_episodes: dict[str, vf.Episode] = {}
+        pruned_groups: set[str] = set()
         for trace_id in selected_ids:
             episode = self.episode_by_trace.pop(trace_id)
             if trace_id in shipped_ids:
                 selected_episodes[episode.id] = episode
                 traces_by_episode[episode.id].extend(episode.traces)
+            else:
+                pruned_groups.add(episode_group_id(episode))
         if pruned := len(selected_ids - shipped_ids):
             self.rollout_window.metrics.count("rollout/queued/pruned", float(pruned))
+        # A group with a trace in this batch closes when the batch ships.
+        self._close_unqueued(pruned_groups - {episode_group_id(episode) for episode in selected_episodes.values()})
         cohort_episodes = [
             episode.model_copy(update={"traces": traces_by_episode[episode.id]})
             for episode in selected_episodes.values()

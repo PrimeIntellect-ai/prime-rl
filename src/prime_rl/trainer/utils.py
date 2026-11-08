@@ -19,6 +19,7 @@ from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.control.controller import Controller
+from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 DCP_TIMEOUT = timedelta(hours=4)
+STEP_ACTIONS: tuple[StepActionType | None, ...] = (None, "checkpoint", "pause")
+"""Step actions by the code ranks broadcast them as."""
 
 
 class GarbageCollection:
@@ -153,7 +156,8 @@ def bind_process_to_gpu_numa_node() -> None:
         bus_id = bus_id.decode()
     domain, rest = bus_id.split(":", 1)
     sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
-    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    numa_path = Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node")
+    numa_node = int(numa_path.read_text()) if numa_path.exists() else -1
     if numa_node < 0:
         logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
         return
@@ -216,11 +220,22 @@ def get_dcp_group() -> dist.ProcessGroup:
     return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
 
 
-def broadcast_pause(controller: Controller, step: int) -> bool:
-    """Whether the master's controller pauses at ``step``, applied by every rank."""
-    paused = torch.tensor(controller.update(step), device="cuda")
-    dist.broadcast(paused, src=0)
-    return bool(paused.item())
+def broadcast_step_action(controller: Controller, step: int) -> StepActionType | None:
+    """The pause or checkpoint the master's controller applies at ``step``, applied by every rank."""
+    code = torch.tensor(STEP_ACTIONS.index(controller.update(step)), device="cuda")
+    dist.broadcast(code, src=0)
+    return STEP_ACTIONS[code.item()]
+
+
+def get_peak_memory_across_ranks() -> tuple[float, float]:
+    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
+    peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    dist.all_reduce(memory, op=dist.ReduceOp.MAX)
+    peak_memory, non_torch_memory = memory.tolist()
+    return peak_memory, non_torch_memory
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):

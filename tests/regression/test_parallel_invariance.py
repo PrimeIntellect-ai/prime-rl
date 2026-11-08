@@ -59,6 +59,7 @@ def layout_metrics(run_process: Callable[..., ProcessResult], output_dir: Path) 
             run_dir.as_posix(),
             "--monitors.file.path",
             "metrics.jsonl",
+            "--no-monitors.prime",
             *extra,
         ]
         env = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, range(num_gpus)))}
