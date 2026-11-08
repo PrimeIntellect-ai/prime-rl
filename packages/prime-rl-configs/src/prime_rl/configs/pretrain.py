@@ -72,6 +72,10 @@ class PretrainConfig(SupervisedTrainerConfig):
 
     init_from_scratch = True
 
+    mode: Literal["pretrain"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
+    "pretrain" (or no mode)."""
+
     data: DatatroveDataConfig
 
     val: PretrainValConfig | None = None
