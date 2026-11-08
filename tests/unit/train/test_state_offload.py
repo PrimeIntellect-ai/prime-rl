@@ -1,6 +1,5 @@
 from typing import NamedTuple
 
-import dion
 import pytest
 import torch
 from torch.distributed.checkpoint import load as dcp_load
@@ -9,6 +8,7 @@ from torch.optim import Optimizer
 
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.optim import state_offload
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 
 pytestmark = [pytest.mark.gpu]
@@ -139,7 +139,7 @@ def test_parameter_without_grad_on_the_first_step_is_stepped_later() -> None:
 
 
 def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
-    """dion's Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
+    """Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
 
     def setup():
         model = make_model(0)
@@ -147,7 +147,7 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
             dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
             dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
         ]
-        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        optimizer = Muon(groups, lr=1e-2)
         return model, CPUOffloadOptimizer(optimizer)
 
     model, optimizer = setup()
@@ -164,8 +164,8 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
 
 @pytest.mark.parametrize("chunk_bytes", [1 << 30, 1 << 12])
 def test_chunked_muon_matches_plain_muon(monkeypatch, chunk_bytes: int) -> None:
-    """dion's Muon steps chunk by chunk (a Muon batch or a whole AdamW group per unit) and advances its
-    param-group step counters once per step."""
+    """Muon steps chunk by chunk (a bucket of sharded matrices, a batch of local matrices or a whole AdamW
+    group per unit) and advances its param-group step counters once per step."""
     monkeypatch.setattr(state_offload, "CHUNK_BYTES", chunk_bytes)
 
     def train(wrap: bool) -> tuple[torch.nn.Module, Optimizer]:
@@ -174,7 +174,7 @@ def test_chunked_muon_matches_plain_muon(monkeypatch, chunk_bytes: int) -> None:
             dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
             dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
         ]
-        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        optimizer = Muon(groups, lr=1e-2)
         if wrap:
             optimizer = CPUOffloadOptimizer(optimizer)
         run_steps(model, optimizer, num_steps=4, seed=1)

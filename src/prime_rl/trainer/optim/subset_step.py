@@ -1,8 +1,8 @@
 """Optimizer steps that update a subset of the parameters at a time.
 
 ``CPUOffloadOptimizer`` streams offloaded optimizer state through the GPU in chunks, so it updates one
-chunk of parameters at a time. An optimizer opts in by implementing ``SupportsSubsetStep``; torch
-``AdamW`` and dion's ``Muon`` get adapters here (``subset_step_for``).
+chunk of parameters at a time. An optimizer opts in by implementing ``SupportsSubsetStep`` (e.g.
+prime-rl's ``Muon``); torch ``AdamW`` gets an adapter here (``subset_step_for``).
 
 The contract:
 
@@ -25,9 +25,7 @@ The contract:
 from collections.abc import Collection
 from typing import Protocol, runtime_checkable
 
-import dion
 import torch
-from dion.opt_utils import create_param_batches
 from torch.optim import AdamW, Optimizer
 
 
@@ -86,39 +84,10 @@ class AdamWSubsetStep:
         return GroupSubsetStep(self.optimizer, units)
 
 
-class DionMuonSubsetStep:
-    """dion's Muon: a unit is one of dion's own Muon batches (matrices of one shape that share an
-    all-to-all), or a whole element-wise group, whose compiled foreach update must keep seeing the
-    whole group. dion advances each group's step counter on every ``step()`` call: the captured
-    counter is reinstated before each partial update, which advances it to this step's value."""
-
-    def __init__(self, optimizer: dion.Muon):
-        self.optimizer = optimizer
-
-    def begin_subset_step(self) -> SubsetStep:
-        optimizer = self.optimizer
-        units = []
-        for group in optimizer.param_groups:
-            params = [param for param in group["params"] if param.grad is not None]
-            if not params:
-                continue
-            if group["algorithm"] == "muon":
-                batch_size = optimizer._get_group_mesh_info(group)[1]
-                units.extend(create_param_batches(params, batch_size, matrix_partitions=optimizer._matrix_partitions))
-            else:
-                units.append(params)
-        subset_step = GroupSubsetStep(optimizer, units)
-        for group in optimizer.param_groups:
-            group["step"] += 1
-        return subset_step
-
-
 def subset_step_for(optimizer: Optimizer) -> SupportsSubsetStep | None:
     """The optimizer itself if it implements partial steps, an adapter for known optimizers, else None."""
     if isinstance(optimizer, SupportsSubsetStep):
         return optimizer
     if isinstance(optimizer, AdamW):
         return AdamWSubsetStep(optimizer)
-    if isinstance(optimizer, dion.Muon):
-        return DionMuonSubsetStep(optimizer)
     return None
