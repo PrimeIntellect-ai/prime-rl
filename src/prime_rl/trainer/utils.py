@@ -19,6 +19,7 @@ from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.control.controller import Controller
+from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 DCP_TIMEOUT = timedelta(hours=4)
+STEP_ACTIONS: tuple[StepActionType | None, ...] = (None, "checkpoint", "pause")
+"""Step actions by the code ranks broadcast them as."""
 
 
 class GarbageCollection:
@@ -217,11 +220,11 @@ def get_dcp_group() -> dist.ProcessGroup:
     return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
 
 
-def broadcast_pause(controller: Controller, step: int) -> bool:
-    """Whether the master's controller pauses at ``step``, applied by every rank."""
-    paused = torch.tensor(controller.update(step), device="cuda")
-    dist.broadcast(paused, src=0)
-    return bool(paused.item())
+def broadcast_step_action(controller: Controller, step: int) -> StepActionType | None:
+    """The pause or checkpoint the master's controller applies at ``step``, applied by every rank."""
+    code = torch.tensor(STEP_ACTIONS.index(controller.update(step)), device="cuda")
+    dist.broadcast(code, src=0)
+    return STEP_ACTIONS[code.item()]
 
 
 def get_peak_memory_across_ranks() -> tuple[float, float]:

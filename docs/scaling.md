@@ -15,6 +15,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Context Parallelism](#context-parallelism)
   - [Activation Checkpointing and Offloading](#activation-checkpointing-and-offloading)
   - [Optimizer Offloading](#optimizer-offloading)
+  - [Muon](#muon)
   - [LM Head Chunking](#lm-head-chunking)
 - [Memory-Tight Recipe](#memory-tight-recipe)
 - [Max Trainer Throughput Recipe](#max-trainer-throughput-recipe)
@@ -104,7 +105,7 @@ type = "torch"
 transport = "bf16"
 ```
 
-For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
+For DeepEP, set `type = "deepep"` and tune `num_sms` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
 Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
 
@@ -141,7 +142,7 @@ cp = 2                       # CP degree
 | `trainer.model.ac.mode = "selective"` | medium | small | 
 | `trainer.model.ac_offloading` | extra | a bit more |
 
-AC and AC offloading are enabled by default (full mode). Both AC modes retain stateful MoE routing updates and DeepEP communication that cannot safely replay. Selective AC uses the same transformer-block boundaries and additionally retains distributed communication, expensive matrix multiplications, grouped GEMMs, and supported attention kernels:
+AC and AC offloading are enabled by default (full mode). Both AC modes retain stateful MoE routing updates that cannot safely replay; full AC recomputes MoE dispatch communication. Selective AC uses the same transformer-block boundaries and additionally retains distributed communication, expensive matrix multiplications, grouped GEMMs, and supported attention kernels:
 
 ```toml
 [trainer.model.ac]
@@ -157,6 +158,38 @@ Activation offloading still applies to tensors saved by autograd, but tensors re
 ### Optimizer Offloading
 
 State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+
+### Muon
+
+`optim.type = "muon"` updates matrices with the orthogonalized (Newton-Schulz) Nesterov momentum and the remaining parameters with AdamW. Orthogonalization needs whole matrices, and the optimizer gets them without any setting:
+
+- Expert stacks sharded only along the expert dim (EP, or FSDP over the experts) already hold whole matrices on every rank and are orthogonalized in place, batched over the experts.
+- Matrices that FSDP shards along a row or column dim are gathered onto one rank of their shard group with uneven all-to-alls, orthogonalized there and scattered back. Ranks own matrices by Newton-Schulz FLOPs, matrices move in buckets of a few layers, and the next bucket gathers while the current one is orthogonalized. The all-to-alls run on Muon's own NCCL communicators, next to FSDP's.
+- Newton-Schulz runs in bf16, batched over all matrices of one shape, on QuACK's symmetric GEMM where available (`quack` extra, SM80+).
+
+Packed parameters (runtime fusions) are orthogonalized per logical matrix. `optim.newton_schulz` picks the iteration schedule and `optim.update_rms` the RMS of each update (0.2, which matches AdamW's learning rates).
+
+Options from the DeepSeek-V4.1 recipe, all off by default:
+
+- `[optim.heads]` orthogonalizes attention projections that hold heads along their rows (queries, keys, values, output gates, MLA up-projections, DeepSeek-V4's grouped `o_a_proj`) per block of `per_block` heads. `split_values = false` keeps value projections whole. Output projections and latent projections stay whole.
+- `optim.decay_bias_and_scales = false` exempts biases and 1-D parameters that are not normalization weights (scales, gates, attention sinks) from weight decay.
+- `[optim.embeddings]` updates the token embeddings, the LM head and n-gram tables with Sinkhorn-balanced momentum (`iters` alternating row/column normalizations, rows below `tau` times the mean row norm masked) instead of AdamW. `ngram_lr_scale` scales the n-gram tables' learning rate.
+
+```toml
+[optim]
+type = "muon"
+update_rms = 0.18
+newton_schulz = "deepseek_v4"
+decay_bias_and_scales = false
+
+[optim.heads]
+per_block = 1
+split_values = false
+
+[optim.embeddings]
+iters = 11
+tau = 1e-3
+```
 
 ### LM Head Chunking
 
@@ -310,7 +343,7 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 uv run sft @ sft.toml --data.type fake --max-steps 4
 
 # RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
-uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4
+uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4 --no-monitors.prime
 ```
 
 With `--data.fake.generate-samples`, fake RL data packs random-length samples into each row; add `--data.fake.doc-len N` to make every sample N tokens instead (the last one cut to fill the row), e.g. two 262k-token rollouts in a 524k-token row.

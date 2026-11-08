@@ -4,7 +4,6 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from dion.muon import zeropower_via_newtonschulz5
 from torch import nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import Shard, distribute_tensor
@@ -16,25 +15,16 @@ from prime_rl.trainer.models.fusions import apply_model_fusions, get_model_packe
 from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
-from prime_rl.trainer.optim import muon_matrix_partitions, muon_param_groups
-from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
-
-# Polar Express (arXiv 2505.16932, Appendix A) before the 1.01 safety factor
-REFERENCE_POLAR_EXPRESS = [
-    (8.28721201814563, -23.595886519098837, 17.300387312530933),
-    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
-    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
-    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
-    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
-]
+from prime_rl.trainer.optim import _create_muon_optimizer, muon_matrix_partitions, muon_param_groups
+from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon, newton_schulz
 
 
 @pytest.mark.parametrize("schedule, tolerance", [("deepseek_v4", 0.02), ("polar_express", 0.25), ("step3p5", 0.02)])
 def test_orthogonalization_singular_values(schedule, tolerance):
     torch.manual_seed(0)
     for shape in [(64, 32), (32, 96)]:
-        singular_values = torch.linalg.svdvals(NEWTON_SCHULZ[schedule](torch.randn(shape)).float())
-        assert (singular_values - 1).abs().max() < tolerance
+        X = newton_schulz(torch.randn(1, *shape), NEWTON_SCHULZ[schedule], 1e-7)
+        assert (torch.linalg.svdvals(X[0].float()) - 1).abs().max() < tolerance
 
 
 def reference_sinkhorn(W, grads, lr, momentum, update_rms, tau, epsilon, iters):
@@ -51,70 +41,9 @@ def reference_sinkhorn(W, grads, lr, momentum, update_rms, tau, epsilon, iters):
     return W
 
 
-def reference_dimuon(W, grads, lr, beta, update_rms):
-    """Dimuon (github.com/anpaure/dimuon, dimuon.py) on one matrix in float64, with our update norm."""
-    M = torch.zeros_like(W)
-
-    def conditioner(energy):
-        return (energy / energy.max() + 1e-4) ** -0.25 if energy.max() > 0 else torch.ones_like(energy)
-
-    for G in grads:
-        L, C = conditioner(M.square().sum(1))[:, None], conditioner(M.square().sum(0))[None, :]
-        M = beta * M + (1 - beta) * G
-        X = L * M * C
-        transpose = X.shape[0] > X.shape[1]
-        X = X.T if transpose else X
-        X = X / (1.01 * X.norm())
-        for a, b, c in REFERENCE_POLAR_EXPRESS[:5]:
-            A = X @ X.T
-            X = a / 1.01 * X + (b / 1.01**3 * A + c / 1.01**5 * A @ A) @ X
-        D = L * (X.T if transpose else X) * C
-        W = W - lr * update_rms * math.sqrt(W.numel()) * D / D.norm()
-    return W
-
-
-def reference_muown(W, grads, lr, momentum, betas, eps, weight_decay):
-    """Muown (github.com/kcc-lion/muown, optim/muown.py) on one matrix, with dion's Newton-Schulz."""
-    g = v_norm = W.norm(dim=1, keepdim=True)
-    m_v, m_g, v_g = torch.zeros_like(W), torch.zeros_like(g), torch.zeros_like(g)
-    for step, grad in enumerate(grads, 1):
-        u = W / g
-        v = u * v_norm
-        grad_g = (grad * u).sum(dim=1, keepdim=True)
-        grad_v = (g / v_norm) * (grad - u * grad_g)
-        m_v = momentum * m_v + grad_v
-        update = zeropower_via_newtonschulz5(grad_v + momentum * m_v).float()
-        v_new = v - lr * 0.2 * max(W.shape) ** 0.5 * update
-        m_g = betas[0] * m_g + (1 - betas[0]) * grad_g
-        v_g = betas[1] * v_g + (1 - betas[1]) * grad_g**2
-        g = g - lr * (m_g / (1 - betas[0] ** step)) / ((v_g / (1 - betas[1] ** step)).sqrt() + eps)
-        v_norm = v_new.norm(dim=1, keepdim=True)
-        W = g * v_new / v_norm - lr * weight_decay * W
-        g = W.norm(dim=1, keepdim=True)
-    return W
-
-
-def run_variant(variant, params, grads, partitions=None, mesh=None, **kwargs):
-    if variant == "sinkhorn":
-        group = dict(algorithm="sinkhorn", weight_decay=0.0, lr_scale=1.0, tau=1e-3, iters=11)
-    else:
-        group = dict(algorithm="muon", weight_decay=0.1 if variant == "muown" else 0.0)
-    optimizer = Muon(
-        [dict(params=params, **group)],
-        lr=0.01,
-        mu=0.9,
-        nesterov=variant == "muown",
-        betas=(0.9, 0.95),
-        epsilon=1e-8,
-        update_rms=0.2,
-        variant="muon" if variant == "sinkhorn" else variant,
-        fsdp_mesh_dim=0,
-        world_mesh=mesh,
-        distributed_mesh=mesh,
-        adjust_lr="rms_norm",
-        matrix_partitions=partitions,
-        **kwargs,
-    )
+def run_sinkhorn(params, grads):
+    group = dict(params=params, algorithm="sinkhorn", weight_decay=0.0, lr_scale=1.0, tau=1e-3, iters=11)
+    optimizer = Muon([group], lr=0.01, mu=0.9, epsilon=1e-8)
     for step_grads in grads:
         for p, grad in zip(params, step_grads):
             p.grad = grad
@@ -127,73 +56,31 @@ def test_sinkhorn_matches_reference():
     W, grads = torch.randn(64, 16), torch.randn(3, 64, 16)
     grads[0, 5] *= 1e-6  # a near-zero row is masked
     param = nn.Parameter(W.clone())
-    run_variant("sinkhorn", [param], grads[:, None])
+    run_sinkhorn([param], grads[:, None])
     expected = reference_sinkhorn(W.double(), grads.double(), 0.01, 0.9, 0.2, 1e-3, 1e-8, 11)
     torch.testing.assert_close(param.detach(), expected.float(), rtol=1e-4, atol=1e-6)
 
 
-@pytest.mark.parametrize("bf16_momentum", [False, True])
-def test_dimuon_matches_reference(bf16_momentum):
-    torch.manual_seed(0)
-    W = torch.randn(24, 16)
-    grads = torch.randn(3, 24, 16)
-    whole = nn.Parameter(W.clone())
-    run_variant("dimuon", [whole], grads[:, None], bf16_momentum=bf16_momentum)
-    # a packed parameter trains like its matrices on their own
-    packed = nn.Parameter(W.clone())
-    run_variant("dimuon", [packed], grads[:, None], {packed: (16, 8)}, bf16_momentum=bf16_momentum)
-    for result, row_blocks in [(whole, [slice(None)]), (packed, [slice(0, 16), slice(16, 24)])]:
-        for rows in row_blocks:
-            expected = reference_dimuon(W[rows].double(), grads[:, rows].double(), 0.01, 0.9, 0.2)
-            delta, expected_delta = result[rows].detach() - W[rows], expected.float() - W[rows]
-            assert (delta - expected_delta).norm() < 0.03 * expected_delta.norm()
-
-
-def test_muown_matches_reference():
-    torch.manual_seed(0)
-    W = torch.randn(24, 8)
-    grads = torch.randn(3, 24, 8)
-    params = [nn.Parameter(W.clone())]
-    run_variant("muown", params, grads[:, None], {params[0]: (8, 8, 8)})
-    expected = torch.cat(
-        [reference_muown(W[i : i + 8], grads[:, i : i + 8], 0.01, 0.9, (0.9, 0.95), 1e-8, 0.1) for i in (0, 8, 16)]
-    )
-    delta, expected_delta = params[0].detach() - W, expected - W
-    assert (delta - expected_delta).norm() < 0.01 * expected_delta.norm()
-
-
-def sharded_variants(rank, world_size, init_file, weights, grads, shard_dim):
+def sharded_sinkhorn(rank, world_size, init_file, weights, grads, shard_dim):
     dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size)
     mesh = init_device_mesh("cpu", (world_size,))
-
-    def shard(t):
-        return distribute_tensor(t, mesh, [Shard(0 if shard_dim == 0 else t.ndim - 1)])
-
-    for variant in ["dimuon", "muown", "sinkhorn"]:
-        n = 2 if variant == "sinkhorn" else len(weights)  # Sinkhorn takes the matrices
-        expected = [nn.Parameter(w.clone()) for w in weights[:n]]
-        sharded = [nn.Parameter(shard(w.clone())) for w in weights[:n]]
-        sharded_grads = [[shard(g) for g in step[:n]] for step in grads]
-        runs = []
-        for params, step_grads, run_mesh in [(expected, grads, None), (sharded, sharded_grads, mesh)]:
-            partitions = None if variant == "sinkhorn" else {params[0]: (16, 9), params[1]: (16, 9)}
-            runs.append(run_variant(variant, params, step_grads, partitions, mesh=run_mesh).state)
-        for actual, full in zip(sharded, expected):
-            torch.testing.assert_close(actual.full_tensor(), full.detach(), rtol=1e-4, atol=1e-6)
-            # the state, Muown's per-row state included, is laid out as without sharding
-            for key, value in runs[0][full].items():
-                torch.testing.assert_close(runs[1][actual][key].full_tensor(), value, rtol=1e-4, atol=1e-6)
+    expected = [nn.Parameter(w.clone()) for w in weights]
+    sharded = [nn.Parameter(distribute_tensor(w.clone(), mesh, [Shard(shard_dim)])) for w in weights]
+    sharded_grads = [[distribute_tensor(g, mesh, [Shard(shard_dim)]) for g in step] for step in grads]
+    states = [run_sinkhorn(expected, grads).state, run_sinkhorn(sharded, sharded_grads).state]
+    for actual, full in zip(sharded, expected):
+        torch.testing.assert_close(actual.full_tensor(), full.detach(), rtol=1e-4, atol=1e-6)
+        torch.testing.assert_close(states[1][actual]["momentum"].full_tensor(), states[0][full]["momentum"])
     dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("shard_dim", [0, -1])
-def test_sharded_variants_match_unsharded(tmp_path, shard_dim):
-    """Two packed matrices with uneven row shards (or column shards) and a single expert sharded by expert, which
-    leaves the second rank an empty shard (or by column)."""
+@pytest.mark.parametrize("shard_dim", [0, 1])
+def test_sharded_sinkhorn_matches_unsharded(tmp_path, shard_dim):
+    """Uneven row (or column) shards."""
     torch.manual_seed(0)
-    weights = [torch.randn(25, 12), torch.randn(25, 12), torch.randn(1, 12, 8)]
+    weights = [torch.randn(25, 13), torch.randn(13, 25)]
     grads = [[torch.randn_like(w) for w in weights] for _ in range(3)]
-    mp.spawn(sharded_variants, args=(2, tmp_path / "init", weights, grads, shard_dim), nprocs=2)
+    mp.spawn(sharded_sinkhorn, args=(2, tmp_path / "init", weights, grads, shard_dim), nprocs=2)
 
 
 class TinyModel(nn.Module):
@@ -211,8 +98,10 @@ def test_muon_param_groups_route_dsv41_recipe():
     named_params = list(model.named_parameters())
 
     def groups(**config):
-        result = muon_param_groups(MuonConfig(weight_decay=0.1, **config), named_params, model, 1.0, False)
-        return [(g["algorithm"], g["lr"], g["weight_decay"], [p.shape for p in g["params"]]) for g in result]
+        optimizer = _create_muon_optimizer(MuonConfig(weight_decay=0.1, **config), named_params, model, lr=1.0)
+        return [
+            (g["algorithm"], g["lr"], g["weight_decay"], [p.shape for p in g["params"]]) for g in optimizer.param_groups
+        ]
 
     adamw_shapes = [(2,), (32, 8), (8,), (8,), (32, 8)]
     assert groups() == [("muon", 1.0, 0.1, [(8, 8)]), ("adamw", 1.0, 0.1, adamw_shapes)]
@@ -233,7 +122,7 @@ def test_update_scales_keep_the_group_lr():
             dict(params=[weight], algorithm="muon", weight_decay=0.1),
             dict(params=[embedding], algorithm="sinkhorn", weight_decay=0.0, lr_scale=lr_scale, tau=1e-3, iters=11),
         ]
-        optimizer = Muon(groups, lr=0.1, update_rms=update_rms, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        optimizer = Muon(groups, lr=0.1, update_rms=update_rms)
         before = weight.detach().clone(), embedding.detach().clone()
         weight.grad, embedding.grad = torch.randn(16, 8), torch.randn(32, 8)
         optimizer.step()
@@ -289,12 +178,12 @@ def build_on_meta(model_type):
 )
 def test_default_muon_routing_and_norms(model_type):
     """By default Muon takes every trainable matrix except embeddings, the LM head, n-gram tables and expert biases
-    (depthwise convolutions and grouped linears included, as on main), and splits only runtime-packed parameters.
+    (depthwise convolutions and grouped linears included), and splits only runtime-packed parameters.
     Without decay for scales, every normalization weight is still decayed."""
     model = build_on_meta(model_type)
     named_params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
     ngram = {p for module in model.modules() if isinstance(module, NGramTable) for p in module.parameters()}
-    groups = muon_param_groups(MuonConfig(), named_params, model, 1.0, False)
+    groups = muon_param_groups(MuonConfig(), named_params, model)
     muon = {p for group in groups if group["algorithm"] == "muon" for p in group["params"]}
     excluded = ("lm_head", "embed_tokens")
     assert muon == {
@@ -312,7 +201,7 @@ def test_default_muon_routing_and_norms(model_type):
         p: s for p, s in packed.items() if s is not None and p in muon
     }
 
-    groups = muon_param_groups(MuonConfig(decay_bias_and_scales=False), named_params, model, 1.0, False)
-    undecayed = {p for group in groups if group["weight_decay"] == 0.0 for p in group["params"]}
+    groups = muon_param_groups(MuonConfig(decay_bias_and_scales=False), named_params, model)
+    undecayed = {p for group in groups if group.get("weight_decay") == 0.0 for p in group["params"]}
     norm_weights = [p for n, p in named_params if p.ndim == 1 and "norm" in n.split(".")[-2]]
     assert norm_weights and not any(p in undecayed for p in norm_weights)

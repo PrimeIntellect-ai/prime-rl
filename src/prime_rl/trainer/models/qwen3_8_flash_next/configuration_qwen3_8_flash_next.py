@@ -173,6 +173,7 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
         image_token_id: int = 248056,
         vision_start_token_id: int = 248053,
         vision_end_token_id: int = 248054,
+        language_model_only: bool = False,
         tie_word_embeddings: bool = False,
         **kwargs,
     ) -> None:
@@ -185,8 +186,9 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
         self.image_token_id = image_token_id
         self.vision_start_token_id = vision_start_token_id
         self.vision_end_token_id = vision_end_token_id
+        # Text-only checkpoint: no vision tower is built (vLLM's `--language-model-only`).
+        self.language_model_only = language_model_only
 
-        kwargs.pop("language_model_only", None)
         kwargs.setdefault("pad_token_id", self.text_config.pad_token_id)
         kwargs.setdefault("bos_token_id", self.text_config.bos_token_id)
         kwargs.setdefault("eos_token_id", self.text_config.eos_token_id)

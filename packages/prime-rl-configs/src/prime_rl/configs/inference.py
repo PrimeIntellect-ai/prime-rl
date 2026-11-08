@@ -247,6 +247,12 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     device_name: str = ""
     """RDMA device name(s) for the store (empty = auto-detect)."""
 
+    lease_ttl_s: float = Field(60.0, gt=0)
+    """How long the master protects a newly written or read KV object from eviction (``-default_kv_lease_ttl``).
+    It must outlast the P/D handoff (decode reads what prefill wrote; 5 s expired objects under load), but a lease
+    longer than the time the pool takes to fill blocks eviction: puts then fail and the store stops caching. Under
+    P/D the larger of the two roles' values applies, since one master serves both."""
+
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +

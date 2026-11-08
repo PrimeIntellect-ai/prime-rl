@@ -1,10 +1,8 @@
 from collections import defaultdict
 
 import torch
-import torch.distributed as dist
 from fla.modules import FusedRMSNormGated
 from torch import nn
-from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import MuonConfig, MuonHeadsConfig, OffloadMode, OptimizerConfig
@@ -13,7 +11,7 @@ from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
-from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -26,33 +24,6 @@ from prime_rl.utils.logger import get_logger
 
 # Normalization layers: prime-rl's own (``Norm``) and the ones our models use from torch and fla
 NORMS = (Norm, nn.LayerNorm, nn.RMSNorm, FusedRMSNormGated)
-
-
-def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
-    """Establish NCCL peer connections before Muon's first optimizer step.
-
-    This is a correctness workaround, not an optional performance warm-up:
-    multi-node GLM-Air training can deadlock on Muon's first bulk all-to-all
-    without it. Optimizer refactors must preserve this initialization.
-    """
-    # get_group() without a mesh dim is only valid for 1-D meshes; the
-    # replicate-only world mesh is 2-D and has no single group to warm.
-    if mesh.ndim != 1:
-        return
-    group = mesh.get_group()
-    size = dist.get_world_size(group)
-    if size <= 1 or dist.get_backend(group) != "nccl":
-        return
-
-    get_logger().info(f"Warming Muon all-to-all connections on group {group.group_name} ({size} ranks)")
-    device = torch.device("cuda", torch.cuda.current_device())
-    # Use a bulk list all-to-all, matching Dion's path rather than a scalar
-    # collective that may leave bulk-transfer peer channels uninitialized.
-    inputs = [torch.zeros(3 * 1024 * 1024, dtype=torch.bfloat16, device=device) for _ in range(size)]
-    outputs = [torch.empty_like(tensor) for tensor in inputs]
-    dist.all_to_all(outputs, inputs, group=group, async_op=True).wait()
-    torch.cuda.synchronize()
-    get_logger().info(f"Finished warming Muon all-to-all connections on group {group.group_name}")
 
 
 def setup_optimizer(
@@ -84,7 +55,6 @@ def setup_optimizer(
     optimizer = _create_optimizer(
         config,
         optimizer_named_params,
-        parallel_dims,
         fused_adamw=config.type == "adamw" and not cpu_offload,
         model=model,
     )
@@ -109,7 +79,6 @@ def setup_optimizer(
 def _create_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
-    parallel_dims: ParallelDims,
     lr: float | None = None,
     fused_adamw: bool = False,
     model: nn.Module | None = None,
@@ -133,7 +102,7 @@ def _create_optimizer(
                 fused=fused_adamw,
             )
         case "muon":
-            return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
+            return _create_muon_optimizer(config, named_params, model, lr)
         case "sign_sgd":
             return SignSGD(
                 params=trainable_params,
@@ -145,50 +114,30 @@ def _create_optimizer(
 def _create_muon_optimizer(
     config: MuonConfig,
     named_params: list[tuple[str, nn.Parameter]],
-    parallel_dims: ParallelDims,
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
-    param_groups = muon_param_groups(config, named_params, model, lr, parallel_dims.ep_enabled)
-
-    if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
-        distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
-    else:
-        distributed_mesh = parallel_dims.world_mesh
-
-    optimizer = Muon(
-        params=param_groups,
-        matrix_partitions={} if model is None else muon_matrix_partitions(model, param_groups, config.heads),
+    param_groups = muon_param_groups(config, named_params, model)
+    return Muon(
+        param_groups,
         lr=lr,
         mu=config.mu,
-        nesterov=config.nesterov,
         betas=(config.betas1, config.betas2),
-        epsilon=config.eps,
         weight_decay=config.weight_decay,
-        adjust_lr="rms_norm",
+        epsilon=config.eps,
+        nesterov=config.nesterov,
         update_rms=config.update_rms,
-        variant=config.variant.type,
-        bf16_momentum=config.variant.type == "dimuon" and config.variant.bf16_momentum,
-        newton_schulz_func=NEWTON_SCHULZ[config.newton_schulz],
-        distributed_mesh=distributed_mesh,
-        world_mesh=parallel_dims.world_mesh,
-        fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
+        newton_schulz=config.newton_schulz,
+        matrix_partitions={} if model is None else muon_matrix_partitions(model, param_groups, config.heads),
     )
-    # Keep both warm-ups after Muon construction and before its first step. The
-    # main and expert groups establish independent NCCL peer connections.
-    _warmup_muon_mesh(distributed_mesh)
-    if any(group.get("distributed_mesh_name") for group in param_groups):
-        _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
-    return optimizer
 
 
 def muon_param_groups(
-    config: MuonConfig,
-    named_params: list[tuple[str, nn.Parameter]],
-    model: nn.Module | None,
-    lr: float,
-    ep_enabled: bool,
+    config: MuonConfig, named_params: list[tuple[str, nn.Parameter]], model: nn.Module | None
 ) -> list[dict]:
+    """Muon's param groups: ``[muon, experts?, router?, adamw]`` as dion's (so its checkpoints load), then the
+    AdamW parameters without weight decay (``decay_bias_and_scales = false``) and the Sinkhorn groups
+    (``optim.embeddings``) when there are any."""
     ngram_table_params = set()
     norm_params = set()
     if model is not None:
@@ -225,17 +174,16 @@ def muon_param_groups(
         if p.requires_grad:
             routed[route(n, p)].append(p)
 
-    muon = dict(algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
     groups = {
-        "muon": muon,
-        "experts": dict(muon, distributed_mesh_name="dp_shard_mod_ep" if ep_enabled else None),
-        "router": muon,
-        "adamw": dict(algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
-        "no_decay": dict(algorithm="adamw", lr=lr, weight_decay=0.0),
+        "muon": dict(algorithm="muon"),
+        "experts": dict(algorithm="muon"),
+        "router": dict(algorithm="muon"),
+        "adamw": dict(algorithm="adamw"),
+        "no_decay": dict(algorithm="adamw", weight_decay=0.0),
     }
     if config.embeddings is not None:
         e = config.embeddings
-        sinkhorn = dict(algorithm="sinkhorn", lr=lr, weight_decay=0.0, tau=e.tau, iters=e.iters)
+        sinkhorn = dict(algorithm="sinkhorn", weight_decay=0.0, tau=e.tau, iters=e.iters)
         groups |= {"embeddings": dict(sinkhorn, lr_scale=1.0), "ngram": dict(sinkhorn, lr_scale=e.ngram_lr_scale)}
     # The main Muon and AdamW groups always exist, even if empty
     return [dict(params=routed[k], **g) for k, g in groups.items() if routed[k] or k in ("muon", "adamw")]
