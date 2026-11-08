@@ -2,12 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from prime_rl.configs.diff import merge_resumed_config
 from prime_rl.configs.orchestrator import CheckpointConfig, ConcurrencyConfig, OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.control.controller import validate_update
 from prime_rl.control.types import ConfigUpdate, InvalidConfigError
 from prime_rl.orchestrator.ckpt import CheckpointManager
 from prime_rl.orchestrator.concurrency import ConcurrencyController
+from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.config import cli, dump_resolved_config
 
@@ -64,7 +66,7 @@ def test_example_config_frozen_changes_are_rejected(example):
     assert error.value.detail["frozen"] == [
         "train.source[0].sampling.logprobs",
         "train.source[0].group_size",
-        "train.sampling",
+        "train.sampling.temperature",
         "seq_len",
     ]
 
@@ -87,7 +89,10 @@ def test_example_config_rest_of_algo_is_frozen(example):
     with pytest.raises(InvalidConfigError) as error:
         validate_update(example, raw)
 
-    assert error.value.detail["frozen"] == ["train.source[0].algo", "train.algo"]
+    assert error.value.detail["frozen"] == [
+        "train.source[0].algo.length_weighted_baseline",
+        "train.algo.length_penalty",
+    ]
 
 
 def test_example_config_frozen_change_that_fails_validation_is_reported_frozen(example):
@@ -108,3 +113,31 @@ def test_checkpoint_keeps_config_state(tmp_path):
     manager.save(Progress(), train_source, config_state, step=3)
 
     assert manager.read_config_state(3) == config_state
+
+
+def eval_config(intervals: dict[str, int]) -> OrchestratorConfig:
+    sources = [
+        {"name": name, "env": {"taskset": {"id": "reverse-text"}}, "interval": interval}
+        for name, interval in intervals.items()
+    ]
+    return OrchestratorConfig.model_validate(
+        {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}, "eval": {"source": sources}}
+    )
+
+
+def test_resume_with_changed_eval_sources():
+    base = dump_resolved_config(eval_config({"kept": 10, "removed": 20}))
+    applied = dump_resolved_config(eval_config({"kept": 5, "removed": 20}))
+    launch = dump_resolved_config(eval_config({"kept": 10, "added": 7}))
+
+    config = OrchestratorConfig.model_validate(merge_resumed_config(base, applied, launch))
+    assert config.eval.intervals == {"kept": 5, "added": 7}
+
+    envs = [
+        SimpleNamespace(
+            name=name, examples=[SimpleNamespace(key=name, hash=name)], config=SimpleNamespace(group_size=1)
+        )
+        for name in config.eval.intervals
+    ]
+    source = EvalSource(envs, intervals=config.eval.intervals, is_resumed=True)
+    assert [source.trigger(step)[0] for step in (13, 14, 15, 35)] == [[], ["added"], ["kept"], ["kept", "added"]]

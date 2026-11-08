@@ -1,4 +1,3 @@
-import math
 import uuid
 import warnings
 from pathlib import Path
@@ -8,9 +7,11 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
+from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
+    BaseMultiNodeDeploymentConfig,
+    BaseSingleNodeDeploymentConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
@@ -22,9 +23,9 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
-    MXFP8Config,
     TokenizerConfig,
     TrainerConfig,
+    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import propagate_shared_fields
@@ -78,8 +79,8 @@ class SharedMonitorsConfig(BaseConfig):
     file: FileMonitorConfig | None = None
     """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
-    prime: PrimeTrainMonitorConfig | None = None
-    """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
+    prime: PrimeMonitorConfig | None = None
+    """Shared Prime platform monitor. Propagated to trainer and orchestrator, which log to one Prime run."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -104,20 +105,7 @@ class SharedModelConfig(BaseConfig):
     """VLM configuration. Set this to enable vision-language model support."""
 
 
-class BaseDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
-    """GPUs per node."""
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: int = 1
-    """GPUs allocated to the trainer."""
-
-    num_infer_gpus: int = 1
-    """GPUs allocated to inference."""
-
+class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
         total = self.num_train_gpus + self.num_infer_gpus
@@ -129,20 +117,12 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: int
-    """Training nodes."""
-
+class MultiNodeDeploymentConfig(BaseMultiNodeDeploymentConfig):
     num_infer_nodes: int | None = Field(None, ge=0)
     """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
 
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
-
-    nodes_per_fsdp_group: int | None = None
-    """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
@@ -162,6 +142,10 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
+    mode: Literal["rl"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run rl`` accepts only
+    "rl" (or no mode)."""
+
     trainer: TrainerConfig
 
     orchestrator: OrchestratorConfig
@@ -208,7 +192,7 @@ class RLConfig(BaseConfig):
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     monitors: SharedMonitorsConfig = SharedMonitorsConfig()
-    """Shared monitor configs (``monitors.wandb``, ``monitors.file``). Propagated to trainer and orchestrator; ``[orchestrator.monitors.prime]`` configures the platform monitor."""
+    """Shared monitor configs (``monitors.wandb``, ``monitors.file``, ``monitors.prime``). Propagated to trainer and orchestrator."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""
@@ -342,7 +326,7 @@ class RLConfig(BaseConfig):
         for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
-        for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
+        for prime in (self.monitors.prime, self.trainer.monitors.prime, self.orchestrator.monitors.prime):
             if prime is not None and prime.name is None:
                 prime.name = self.run.name
         return self
@@ -362,6 +346,16 @@ class RLConfig(BaseConfig):
 
         # The orchestrator queries the inference server it is paired with; without one, it
         # must match the trainer whose weights the external server receives.
+        # The components log to one run per monitor, so a monitor is on in all or none.
+        for name in ("wandb", "file", "prime"):
+            require_equal(
+                f"monitors.{name}",
+                {
+                    f"{component}.monitors.{name}": getattr(config.monitors, name) is not None
+                    for component, config in (("trainer", trainer), ("orchestrator", orchestrator))
+                },
+            )
+
         if inference is not None:
             require_equal(
                 "deployment.gpus_per_node",
@@ -443,6 +437,16 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
+        if self.weight_broadcast.type == "modelexpress":
+            dynamo = self.orchestrator.model.client.dynamo
+            if dynamo is not None and dynamo.enabled:
+                raise ValueError(
+                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
+                )
+            if self.inference is not None:
+                extra = self.inference.vllm.model_extra or {}
+                if extra.get("speculative_config") is not None:
+                    raise ValueError("modelexpress does not support speculative decoding.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
@@ -609,12 +613,9 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        pad_to_multiple_of = self.trainer.model.cp
-        if isinstance(self.trainer.model.quantization, MXFP8Config):
-            # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
-            pad_to_multiple_of = math.lcm(pad_to_multiple_of, self.trainer.model.cp * 32)
+        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
         num_train_workers = self.orchestrator.num_train_workers
-        env_server_replicas = self.orchestrator.env_server_replicas
+        env_worker_pool_replicas = self.orchestrator.env_worker_pool_replicas
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
@@ -644,17 +645,7 @@ class RLConfig(BaseConfig):
         elif self.deployment.type == "multi_node":  # multi-node
             num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             if self.deployment.total_infer_nodes > 0:
-                env_server_replicas = self.deployment.total_infer_nodes
-
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.trainer.model.dp_replicate = (
-                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-                )
+                env_worker_pool_replicas = self.deployment.total_infer_nodes
 
             if (
                 self.inference is not None
@@ -708,7 +699,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -717,18 +708,18 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+                assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         self.orchestrator = self.orchestrator.model_copy(
             update={
                 "pad_to_multiple_of": pad_to_multiple_of,
                 "num_train_workers": num_train_workers,
-                "env_server_replicas": env_server_replicas,
+                "env_worker_pool_replicas": env_worker_pool_replicas,
             }
         )
         return self
@@ -761,10 +752,10 @@ class RLConfig(BaseConfig):
             self.orchestrator = self.orchestrator.model_copy(
                 update={"inference_metrics_roles": role_order * self.deployment.num_infer_replicas}
             )
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self
