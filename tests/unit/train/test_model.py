@@ -1,8 +1,9 @@
 import pytest
 import torch
+import torch.distributed as dist
 
-from prime_rl.configs.trainer import AttnImplementation, ModelConfig
-from prime_rl.trainer.model import get_model
+from prime_rl.configs.trainer import AttnImplementation, DebugModelConfig, ModelConfig
+from prime_rl.trainer.model import clear_padding_idx, get_model, initialize_from_scratch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
 BS = 1
@@ -81,3 +82,19 @@ def test_moe_custom_impl():
         logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
+
+
+def test_initialize_from_scratch_initializes_the_padding_embedding(attn):
+    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn, debug=DebugModelConfig(num_layers=1))
+    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    padding_idx = model.model.embed_tokens.padding_idx
+    assert padding_idx is not None
+    dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29513", world_size=1, rank=0)
+    try:
+        clear_padding_idx(model)
+        initialize_from_scratch(model)
+    finally:
+        dist.destroy_process_group()
+    embedding = model.model.embed_tokens
+    assert embedding.padding_idx is None
+    assert embedding.weight[padding_idx].abs().sum() > 0

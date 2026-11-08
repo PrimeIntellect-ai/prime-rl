@@ -11,8 +11,6 @@ name = "your-run-name"
 name = "Qwen/Qwen3.8-Flash-Next"
 
 [model.vlm]
-language_model_attr = "model.language_model"
-vision_encoder_attr = "model.visual"
 freeze_vision_encoder = true
 
 [deployment]
