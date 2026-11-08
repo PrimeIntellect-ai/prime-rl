@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 import shutil
@@ -6,7 +7,7 @@ import time
 import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 # Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
 # modules with implementations that have incompatible CUDA requirements.
@@ -309,6 +310,19 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
+def read_cli_value(value: Any, like: Any) -> Any:
+    """A CLI override (``--model.config.num-hidden-layers 24``) arrives as a string: read it as the type of ``like``
+    when that is a bool, int or float. The config class rejects a string it cannot use."""
+    if not isinstance(value, str):
+        return value
+    if isinstance(like, bool):
+        return {"true": True, "false": False}.get(value.lower(), value)
+    if isinstance(like, int | float):
+        with contextlib.suppress(ValueError):
+            return type(like)(value)
+    return value
+
+
 def get_model_config(config: ModelConfig, **kwargs) -> PretrainedConfig:
     """The model's HF config: ``model.name``'s, with the fields of pretraining's ``model.config`` on top. Without a
     name, ``model.config``'s ``model_type`` with its other fields over that architecture's defaults. ``kwargs`` go to
@@ -327,9 +341,11 @@ def get_model_config(config: ModelConfig, **kwargs) -> PretrainedConfig:
             return cast(PretrainedConfig, base)
         config_dict, _ = PretrainedConfig.get_config_dict(config.name)
     # transformers keeps unknown fields as attributes, so a misspelled field would be ignored.
-    unknown = sorted(fields.keys() - base.to_dict().keys())
+    known = base.to_dict()
+    unknown = sorted(fields.keys() - known.keys())
     if unknown:
         raise ValueError(f"model.config: {type(base).__name__} has no field {', '.join(unknown)}")
+    fields = {key: read_cli_value(value, known[key]) for key, value in fields.items()}
     # Built like transformers loads a config.json, so fields derived from others (e.g. layer_types) follow the
     # overrides, and the config class validates the result.
     return type(base).from_dict({**config_dict, **fields}, **kwargs)

@@ -1,4 +1,5 @@
 import pytest
+from huggingface_hub.errors import StrictDataclassFieldValidationError
 from transformers import LlamaConfig, Qwen3Config
 
 from prime_rl.configs.pretrain import PretrainModelConfig
@@ -28,6 +29,16 @@ def test_model_config_overrides_a_named_model(tmp_path):
 def test_model_config_rejects_unknown_fields():
     with pytest.raises(ValueError, match="hiden_size"):
         get_model_config(PretrainModelConfig(config={"model_type": "qwen3", "hiden_size": 64}))
+
+
+def test_cli_overrides_take_the_field_types():
+    """A --model.config.<field> override arrives as a string: booleans and numbers take their field's type, and the
+    config class rejects a string its field cannot hold."""
+    cli_fields = {"num_hidden_layers": "3", "rms_norm_eps": "1e-5", "tie_word_embeddings": "true"}
+    config = get_model_config(PretrainModelConfig(config={"model_type": "qwen3", **cli_fields}))
+    assert (config.num_hidden_layers, config.rms_norm_eps, config.tie_word_embeddings) == (3, 1e-5, True)
+    with pytest.raises(StrictDataclassFieldValidationError, match="num_hidden_layers"):
+        get_model_config(PretrainModelConfig(config={"model_type": "qwen3", "num_hidden_layers": "three"}))
 
 
 def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path):
