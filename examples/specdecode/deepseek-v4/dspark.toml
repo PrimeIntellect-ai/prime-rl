@@ -1,0 +1,8 @@
+# Serve a trained DSpark draft against a DeepSeek-V4-Flash target. The draft runs in BF16 with a
+# BF16 KV cache instead of inheriting the target's MXFP8 and FP8 KV settings.
+#   uv run inference @ <target serving config> @ examples/specdecode/deepseek-v4/dspark.toml \
+#       --vllm.speculative-config.model <draft checkpoint>
+[vllm.speculative_config]
+method = "dspark"
+num_speculative_tokens = 7
+kv_cache_dtype = "auto"

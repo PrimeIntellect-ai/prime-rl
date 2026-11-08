@@ -58,6 +58,20 @@ uv run speculators generate-offline-data \
 uv run specdecode @ examples/specdecode/qwen3_train_dspark.toml
 ```
 
+### Drafts from RL traces
+
+Agentic RL episodes run to hundreds of thousands of tokens, so the tools train on windows instead of whole episodes. `tools/specdecode_windows.py` samples one window per episode from a run's most recent successful train episodes, using the trainer's own branch token ids and sampled-token masks. Each env gets a token budget proportional to the square root of the tokens it decoded in that period. A row keeps the window's exact prefix, and a fraction of episodes is held out. The extraction server prefills each full prefix. `TailHiddenStatesConnector` (`kv_connector_extra_config.tail_tokens`) writes only the window's positions, so they carry the full context at window-sized storage cost.
+
+```bash
+uv run python tools/specdecode_windows.py <run_dir> outputs/specdecode/windows --launch-dir <run launch dir>
+uv run inference @ examples/specdecode/deepseek-v4/extract.toml --vllm.model <checkpoint>
+uv run python tools/specdecode_extract.py outputs/specdecode/windows/train outputs/specdecode/deepseek-v4-data --model <checkpoint>
+uv run python tools/specdecode_extract.py outputs/specdecode/windows/train outputs/specdecode/deepseek-v4-data --model <checkpoint> --finalize
+uv run specdecode @ examples/specdecode/deepseek-v4/train_dspark.toml
+```
+
+Extract with the quantization, kernels and cache dtypes the draft will be served against. For DeepSeek V4, prime-rl's vLLM plugin captures the final layer as the `hc_head` output, the input of the final norm, rather than the mean of the hyper-connection streams. This makes training targets match the verifier's logits. The training workers also resolve DeepSeek V4's `embed` and `head` weight names. `tools/specdecode_bench.py` replays held-out prompts and reports output throughput and mean acceptance length; run it against the same server with and without `examples/specdecode/deepseek-v4/dspark.toml`.
+
 The default file backend reads `<data_path>/hidden_states`. To select another directory, set `hidden_states_path` under `[train.backend]`. Offline mode uses `train.generation.on_missing = "raise"`; online mode sets it to `"generate"`. Upstream manages standalone checkpoint saving and resume within `train.trainer.save_path`.
 
 ## Joint RL training

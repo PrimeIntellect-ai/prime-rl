@@ -1,0 +1,51 @@
+# A fresh DSpark draft for a DeepSeek-V4-Flash target, trained on extracted windows. The draft and
+# recipe follow Speculators' Kimi-K3 DSpark example: five sliding-window Qwen3 layers at the
+# target's width, block 8, Markov and confidence heads, CE 0.1 + TV 0.9, Muon.
+#   uv run specdecode @ examples/specdecode/deepseek-v4/train_dspark.toml
+output_dir = "outputs/specdecode/deepseek-v4-dspark"
+num_gpus = 8
+
+[train]
+speculator_type = "dspark"
+
+[train.verifier]
+verifier_name_or_path = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[train.draft]
+draft_config = "examples/specdecode/deepseek-v4/draft_layers.json"
+target_layer_ids = [11, 22, 34, 41]
+# A reserved placeholder token that DeepSeek V4 chat rendering never emits.
+mask_token_id = 128799
+
+[train.data]
+data_path = "outputs/specdecode/deepseek-v4-data"
+total_seq_len = 8192
+max_anchors = 1024
+train_data_ratio = 0.98
+num_workers = 4
+
+[train.generation]
+on_missing = "raise"
+
+[train.dflash]
+block_size = 8
+
+[train.dspark]
+markov_rank = 256
+enable_confidence_head = true
+confidence_head_with_markov = true
+
+[train.loss]
+loss_fn = '{"ce": 0.1, "tv": 0.9}'
+
+[train.optimizer]
+optimizer = "muon"
+lr = 0.0001
+
+[train.scheduler]
+scheduler_type = "cosine"
+scheduler_warmup_ratio = 0.03
+
+[train.trainer]
+epochs = 3
+log_freq = 20

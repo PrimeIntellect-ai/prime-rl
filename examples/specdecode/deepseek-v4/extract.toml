@@ -1,0 +1,38 @@
+# Hidden-state extraction for a DeepSeek-V4-Flash target on one 8-GPU node (DP8 + EP, online MXFP8).
+# Match the quantization, kernels and cache dtypes of the serving config the draft will run with.
+# Layers 11, 22, 34 and 41 feed the draft; layer 43 is the final hidden state its targets are built
+# from (prime-rl captures DeepSeek V4's hc_head output there). Cached tokens are not captured, so
+# prefix caching is off, and the target runs eagerly for the capture. The tail connector writes
+# each window's last 8192 positions after prefilling its full prefix.
+#   uv run inference @ examples/specdecode/deepseek-v4/extract.toml --vllm.model <bf16 checkpoint>
+
+[server]
+port = 8000
+
+[vllm]
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+max_model_len = 262144
+quantization = "mxfp8"
+quantization_config = { ignore = ["*.wo_a", "*.indexer.*"] }
+data_parallel_size = 8
+enable_expert_parallel = true
+kv_cache_dtype = "fp8"
+block_size = 256
+enable_prefix_caching = false
+enforce_eager = true
+
+[vllm.speculative_config]
+method = "extract_hidden_states"
+num_speculative_tokens = 1
+
+[vllm.speculative_config.draft_model_config.hf_config]
+eagle_aux_hidden_state_layer_ids = [11, 22, 34, 41, 43]
+
+[vllm.kv_transfer_config]
+kv_connector = "TailHiddenStatesConnector"
+kv_connector_module_path = "prime_rl.specdecode.connector"
+kv_role = "kv_producer"
+
+[vllm.kv_transfer_config.kv_connector_extra_config]
+shared_storage_path = "outputs/specdecode/hidden-states"
+tail_tokens = 8192
