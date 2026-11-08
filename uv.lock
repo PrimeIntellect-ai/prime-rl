@@ -5191,7 +5191,7 @@ requires-dist = [
     { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", specifier = "==1.4.2" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
-    { name = "cyberstrike-rl", specifier = "==0.1.3" },
+    { name = "cyberstrike-rl", git = "https://github.com/PrimeIntellect-ai/prime-rl.git?subdirectory=packages%2Fcyberstrike-rl&rev=079583ce2535f37e380e6a5209d5996c11236c5f" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-ep", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
@@ -5291,7 +5291,6 @@ name = "prime-rl-configs"
 version = "0.4.0"
 source = { editable = "packages/prime-rl-configs" }
 dependencies = [
-    { name = "cyberstrike-rl" },
     { name = "prime-pydantic-config" },
     { name = "pydantic" },
     { name = "renderers" },
@@ -5302,7 +5301,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cyberstrike-rl", git = "https://github.com/PrimeIntellect-ai/prime-rl.git?subdirectory=packages%2Fcyberstrike-rl&rev=079583ce2535f37e380e6a5209d5996c11236c5f" },
     { name = "prime-pydantic-config", specifier = ">=0.4.3" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "renderers", specifier = ">=0.1.11" },

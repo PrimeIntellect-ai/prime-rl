@@ -11,7 +11,6 @@ dependencies = [
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
     "verifiers>=0.3.2.dev158",
-    "cyberstrike-rl @ git+https://github.com/PrimeIntellect-ai/prime-rl.git@079583ce2535f37e380e6a5209d5996c11236c5f#subdirectory=packages/cyberstrike-rl",
 ]
 
 [build-system]

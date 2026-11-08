@@ -270,6 +270,7 @@ prime-kernels = false
 flash-mla = false
 
 [tool.uv.sources]
+cyberstrike-rl = { git = "https://github.com/PrimeIntellect-ai/prime-rl.git", rev = "079583ce2535f37e380e6a5209d5996c11236c5f", subdirectory = "packages/cyberstrike-rl" }
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # Match the verifier Git source required by the pinned Flow relay.
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "65ca809" }
