@@ -216,7 +216,8 @@ class DepthAttentionConnection(Connection):
         return torch.cat([stream, pending, ring], dim=-2).flatten(-2)
 
     def extra_flops_per_token(self) -> int:
-        return 6 * self.depth * (self.dim + self.hidden_size)
+        # The key projection runs once per ring entry; its parameters are only charged once by the 6-per-parameter count.
+        return 6 * (self.depth - 1) * self.hidden_size * self.dim + 6 * self.depth * (self.dim + self.hidden_size)
 
 
 class StaticStreamsConnection(Connection):
@@ -380,7 +381,7 @@ class DepthReplayConnection(Connection):
 
 class CausalFirConnection(Connection):
     """Design FIR: the sublayer reads the stream plus a learned per-channel causal FIR over the previous ``taps`` tokens
-    of the same document (sequence-axis residual), zero-initialized so it starts plain."""
+    of the same row (sequence-axis residual; rows can span documents, as attention does), zero-initialized so it starts plain."""
 
     def __init__(self, hidden_size: int, taps: int) -> None:
         super().__init__(hidden_size)
