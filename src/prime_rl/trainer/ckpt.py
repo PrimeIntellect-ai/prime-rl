@@ -1,7 +1,6 @@
 import bisect
 import gc
 import json
-import reprlib
 import shutil
 import time
 from dataclasses import asdict, dataclass
@@ -54,6 +53,25 @@ def write_model_config(model_config: PretrainedConfig, directory: Path) -> None:
     (directory / "config.json").write_text(model_config.to_json_string(use_diff=False))
 
 
+# Fields of a saved config.json that are metadata, not architecture.
+NOT_ARCHITECTURE = {"transformers_version", "_name_or_path", "architectures", "dtype", "use_cache"}
+MISSING = "(missing)"
+
+
+def describe_change(key: str, old: Any, new: Any) -> str:
+    """One field of an architecture mismatch: scalars as ``old -> new``, lists by their first differing index or
+    their lengths, dicts by name."""
+    if isinstance(old, dict) or isinstance(new, dict):
+        return key
+    if isinstance(old, list) and isinstance(new, list):
+        if len(old) != len(new):
+            return f"{key} ({len(old)} -> {len(new)} entries)"
+        index = next(index for index, (a, b) in enumerate(zip(old, new)) if a != b)
+        return f"{key} (differs from index {index})"
+    old, new = (f"{len(value)} entries" if isinstance(value, list) else value for value in (old, new))
+    return f"{key} {old} -> {new}"
+
+
 def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
     """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``."""
     path = directory / "config.json"
@@ -64,13 +82,16 @@ def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
         )
     saved = json.loads(path.read_text())
     current = json.loads(model_config.to_json_string(use_diff=False))
-    # Fields only one side has come from another transformers version.
-    keys = (saved.keys() & current.keys()) - {"transformers_version", "_name_or_path"}
-    changed = {key: (saved[key], current[key]) for key in sorted(keys) if saved[key] != current[key]}
-    if changed:
-        short = reprlib.Repr(maxlist=3, maxdict=3).repr
-        details = ", ".join(f"{key} {short(old)} -> {short(new)}" for key, (old, new) in changed.items())
-        raise ValueError(f"The checkpoint at {directory} has another model architecture: {details}")
+    # A field only one config has (e.g. from another transformers version) has the class default in the other.
+    defaults = json.loads(type(model_config)().to_json_string(use_diff=False))
+    changes = []
+    for key in sorted((saved.keys() | current.keys()) - NOT_ARCHITECTURE):
+        old, new = saved.get(key, MISSING), current.get(key, MISSING)
+        if (defaults.get(key) if old == MISSING else old) != (defaults.get(key) if new == MISSING else new):
+            changes.append(describe_change(key, old, new))
+    if changes:
+        more = f", +{len(changes) - 5} more" if len(changes) > 5 else ""
+        raise ValueError(f"Checkpoint at {directory} has another architecture: {', '.join(changes[:5])}{more}")
 
 
 def _try_rmtree(path: Path, logger) -> None:
