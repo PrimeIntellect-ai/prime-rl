@@ -95,7 +95,9 @@ def setup_optimizer(
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        overlap_model = model if offload_overlap_forward else None
+        # dion's Muon step syncs the host and launches hundreds of kernels per chunk; run alongside the
+        # forward, that delays the forward by more than the copies it hides, so Muon steps synchronously.
+        overlap_model = model if offload_overlap_forward and config.type == "adamw" else None
         return CPUOffloadOptimizer(optimizer, overlap_model=overlap_model), None
 
     return optimizer, None
