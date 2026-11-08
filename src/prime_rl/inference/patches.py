@@ -46,6 +46,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    monkey_patch_deepseek_v4_final_hidden_capture()
     monkey_patch_dspark_dp_compile_cache()
 
 
@@ -68,6 +69,38 @@ def monkey_patch_dspark_dp_compile_cache():
 
     _get_dspark_parallel_config._prime_rl_preserves_dp_cache_index = True
     utils._get_dspark_parallel_config = _get_dspark_parallel_config
+
+
+def monkey_patch_deepseek_v4_final_hidden_capture():
+    """Capture DeepSeek V4's last layer as its logits see it, for draft training targets.
+
+    Captured layers are the mean of the hyper-connection streams, but the logits are
+    ``head(norm(hc_head(streams)))``. Draft trainers rebuild the verifier's logits from the last
+    captured layer with its final norm and head, so that layer must be the ``hc_head`` output,
+    i.e. the final norm's input. Other captured layers keep the stream mean the draft reads at
+    serving time.
+    """
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_forward = dsv4_model.DeepseekV4Model.forward
+    if getattr(original_forward, "_prime_rl_captures_final_hidden", False):
+        return
+
+    def forward(self, *args, **kwargs):
+        if self.end_layer not in self.aux_hidden_state_layers:
+            return original_forward(self, *args, **kwargs)
+        final_hidden = []
+        handle = self.norm.register_forward_pre_hook(lambda module, inputs: final_hidden.append(inputs[0]))
+        try:
+            output = original_forward(self, *args, **kwargs)
+        finally:
+            handle.remove()
+        if isinstance(output, tuple):
+            output[1][-1] = final_hidden[0]
+        return output
+
+    forward._prime_rl_captures_final_hidden = True
+    dsv4_model.DeepseekV4Model.forward = forward
 
 
 @dataclass

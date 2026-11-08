@@ -13,6 +13,15 @@ from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 
 
+def add_verifier_weight_aliases() -> None:
+    """DeepSeek V4 checkpoints name the verifier embedding and head ``embed`` and ``head``."""
+    from speculators.utils import loading
+
+    for name, alias in (("embed_tokens.weight", "embed.weight"), ("lm_head.weight", "head.weight")):
+        if alias not in loading._WEIGHT_ALIASES[name]:
+            loading._WEIGHT_ALIASES[name].append(alias)
+
+
 def draft_loss_mask(
     loss_mask: torch.Tensor, seq_lens: torch.Tensor, block_size: int, predict_next: bool
 ) -> torch.Tensor:
@@ -55,6 +64,7 @@ class SpeculatorTraining:
         from speculators.model import SpeculatorModel
         from speculators.train.config import TrainConfig
 
+        add_verifier_weight_aliases()
         self.model = model
         self.config = config
         self.cp_context = CPContext()
