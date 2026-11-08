@@ -162,7 +162,10 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         policy_weights_change: bool = True,
-        on_episode_complete: Callable[[int], None] | None = None,
+        on_episode_complete: Callable[[int, int], None] | None = None,
+        on_call: Callable[[int, int], None] | None = None,
+        on_pause: Callable[[], None] | None = None,
+        on_resume: Callable[[], None] | None = None,
         circuit_breaker: CircuitBreakerConfig | None = None,
     ) -> None:
         self.policy = policy
@@ -177,8 +180,14 @@ class Dispatcher:
         self.eval_source = eval_source
         self.run_id = run_id
         self.run_name = run_name
-        # Called with ``total_tokens`` per completed episode
+        # Called with ``total_tokens`` and the model calls per completed episode
         self.on_episode_complete = on_episode_complete
+        # Called with the context of each live model call that extends its trace's history, and the call's number
+        # within the episode
+        self.on_call = on_call
+        # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
+        self.on_pause = on_pause
+        self.on_resume = on_resume
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -424,6 +433,8 @@ class Dispatcher:
         cancels a rollout: it keeps sampling fresh tokens, and the sink masks
         the ones that age past ``max_staleness``."""
         self.policy_update_pending = True
+        if self.on_pause is not None:
+            self.on_pause()
         # Wait for a scheduling call that started before the pending update.
         # No rollout can cross the inference weight swap after this barrier.
         async with self.scheduling_lock:
@@ -432,6 +443,8 @@ class Dispatcher:
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
         self.policy_update_pending = False
+        if self.on_resume is not None:
+            self.on_resume()
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -588,7 +601,9 @@ class Dispatcher:
                 if (acp := call.get("acp")) is not None:
                     session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
-            live.apply(meta, delta)
+            for context, call in live.apply(meta, delta):
+                if context and self.on_call is not None:
+                    self.on_call(context, call)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)
@@ -737,7 +752,7 @@ class Dispatcher:
             if breaker.inconclusive(time.monotonic(), meta.started_at):
                 await self.fail_paused_groups(meta.env_name)
         if self.on_episode_complete is not None and meta.started_at > 0:
-            self.on_episode_complete(episode.num_total_tokens)
+            self.on_episode_complete(episode.num_total_tokens, meta.calls)
         await self.emit_episode(meta, group, episode)
 
     async def record_outcome(self, meta: InflightEpisode, *, ok: bool, reason: str | None = None) -> None:

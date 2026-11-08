@@ -464,7 +464,7 @@ class CheckpointConfig(BaseConfig):
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
-    in-flight episode cap from engine KV pressure; these fields only bound and
+    in-flight episode cap from engine load; these fields only bound and
     seed it."""
 
     initial_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
@@ -473,8 +473,8 @@ class ConcurrencyConfig(BaseConfig):
     min_inflight: Annotated[int, Live()] = Field(1, ge=1)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: Annotated[int | None, Live()] = Field(1024, ge=1)
-    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
+    max_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
+    """Maximum number of in-flight episodes. None (the default) leaves the cap to the controller. Set it to bound other external resources the episodes hold (e.g. sandboxes)."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
