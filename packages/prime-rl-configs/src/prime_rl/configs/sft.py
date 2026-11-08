@@ -120,6 +120,10 @@ DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discrimi
 
 
 class SFTConfig(SupervisedTrainerConfig):
+    mode: Literal["sft"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run sft`` accepts only
+    "sft" (or no mode)."""
+
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
