@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import os
 from argparse import Namespace
 
 import uvloop
@@ -153,6 +154,11 @@ async def custom_init_app_state(
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
+    # A restarted server holds requests until the next weight update gives it the current policy
+    if int(os.environ.get("PRL_RESTART_COUNT", "0")) > 0:
+        logger.info("Restarted: holding requests until the next weight update")
+        await engine_client.pause_generation(mode="keep", clear_cache=False)
+
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
     # used by prime-RL's renderer / router-replay paths — keep working.
@@ -206,8 +212,6 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig):
-    import os
-
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.launchers.api_server.entry import run_server
 

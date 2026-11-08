@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
@@ -26,6 +27,10 @@ STARTED_MARKER = ".started"
 FINISHED_MARKER = ".finished"
 
 
+class OfferSuperseded(Exception):
+    """The trainer offered the version again (it restarted) while it was being received."""
+
+
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
     """Remove broadcast dirs beyond ``step``. Resume hygiene, run by the
     trainer master before its startup broadcast: stale leftovers of a longer
@@ -34,6 +39,17 @@ def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
     for old_step in get_all_ckpt_steps(broadcast_dir):
         if old_step > step:
             shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
+
+
+def last_finished_broadcast(output_dir: Path) -> int:
+    """Newest policy version a broadcast finished for (0 if none)."""
+    broadcast_dir = get_broadcast_dir(output_dir)
+    finished = [
+        step
+        for step in get_all_ckpt_steps(broadcast_dir)
+        if (get_step_path(broadcast_dir, step) / FINISHED_MARKER).exists()
+    ]
+    return max(finished, default=0)
 
 
 class WeightSender(ABC):
@@ -60,7 +76,10 @@ class WeightSender(ABC):
             # the consumer or the trainer on stale markers of a previous run.
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
-            (step_dir / SENDER_READY_MARKER).touch()
+            # The offer id tells the consumer a re-offered version (after a restart) from the old one
+            pending = step_dir / f"{SENDER_READY_MARKER}.pending"
+            pending.write_text(uuid.uuid4().hex)
+            pending.replace(step_dir / SENDER_READY_MARKER)
             self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
         wait_for_master(f"weight_broadcast/{step}", self.timeout)
@@ -129,6 +148,10 @@ class WeightReceiver(ABC):
         self.config = config
         self.admin_plane = admin_plane
         self.model_name = model_name
+        self.receiving: str | None = None
+        """The offer ``apply`` is receiving."""
+        self.failed_offers: set[str] = set()
+        """Offers whose receive failed. The trainer offers the version again after its restart."""
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""
@@ -136,9 +159,17 @@ class WeightReceiver(ABC):
     def step_dir(self, step: int) -> Path:
         return get_step_path(self.broadcast_dir, step)
 
+    def offer(self, step: int) -> str | None:
+        """The id of the trainer's offer of v{step}, None if there is none."""
+        try:
+            return (self.step_dir(step) / SENDER_READY_MARKER).read_text()
+        except FileNotFoundError:
+            return None
+
     def is_published(self, step: int) -> bool:
-        """Whether the trainer has offered v{step}."""
-        return (self.step_dir(step) / SENDER_READY_MARKER).exists()
+        """Whether the trainer has offered v{step} (and receiving that offer has not failed)."""
+        offer = self.offer(step)
+        return offer is not None and offer not in self.failed_offers
 
     def next_version(self, current: int) -> int:
         """Newest version offered beyond ``current``; ``current`` if none."""
@@ -159,11 +190,38 @@ class WeightReceiver(ABC):
         """Acknowledge the offered version — unblocks the waiting trainer."""
         (self.step_dir(step) / RECEIVER_READY_MARKER).touch()
 
+    async def wait_for_marker(self, step: int, marker: str, timeout: float | None = None) -> None:
+        """Wait for the trainer to write ``marker`` for v{step}. Raises ``OfferSuperseded`` once
+        the trainer offers the version again, and ``TimeoutError`` after ``timeout`` seconds."""
+        path = self.step_dir(step) / marker
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not path.exists():
+            if self.receiving is not None and self.offer(step) != self.receiving:
+                raise OfferSuperseded(f"The trainer offered v{step} again")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"The trainer did not write {path} within {timeout}s")
+            await asyncio.sleep(0.05)
+
     @abstractmethod
     async def receive(self, step: int) -> None:
         """Acknowledge the offered v{step} and move the engines onto it."""
 
+    @final
+    async def apply(self, step: int) -> None:
+        """Receive the trainer's current offer of v{step}. A failed offer is not received again."""
+        self.receiving = self.offer(step)
+        try:
+            await self.receive(step)
+        except OfferSuperseded:
+            raise
+        except Exception:
+            if self.receiving is not None:
+                self.failed_offers.add(self.receiving)
+            raise
+        finally:
+            self.receiving = None
+
     async def sync_startup(self, step: int, timeout: float) -> None:
         """Rendezvous with the trainer's startup broadcast of v{step}."""
         await asyncio.wait_for(self.wait_published(step), timeout=timeout)
-        await self.receive(step)
+        await self.apply(step)

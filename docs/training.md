@@ -21,6 +21,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
+  - [Restarting Failed Components](#restarting-failed-components)
   - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
@@ -468,6 +469,26 @@ A resume can add, remove or change train and eval sources.
 - A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task.
 - A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
 - Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
+
+### Restarting Failed Components
+
+By default, any failed component ends the run. With `[restarts]`, the trainer and the inference servers restart in place while the orchestrator, the env worker pools and the in-flight rollouts keep running:
+
+```toml
+[ckpt]
+interval = 10
+
+[restarts]
+trainer = 3    # torchrun restarts of the trainer's workers
+inference = 3  # restarts of each inference server
+
+[weight_broadcast]
+type = "modelexpress"  # or "filesystem"; nccl and nixl fix their transfer group at startup
+```
+
+- **Trainer.** When a worker fails (OOM, NCCL error or timeout), torchrun restarts the workers of every trainer node. They resume from the newest checkpoint and replay the steps since from the replay log: each data rank writes the micro batches it received, with their fetched arrays, to `<run_dir>/replay/step_{n}/`, and the log is deleted up to each checkpoint. Inference keeps serving the policy the trainer last broadcast, so replayed steps are not broadcast. A rank that hangs outside a collective, so that its peers wait for their next batch, ends the waiting ranks after `trainer.dist_timeout_seconds`, which restarts the trainer as well.
+- **Inference.** A failed server restarts; the ranks of an expert-parallel group restart together. The orchestrator polls every server's `/health`: a server that stops answering leaves the router and the weight updates, and the in-flight cap shrinks with it. A restarted server holds its requests until the next weight update reaches it, then rejoins the router. With every server down, a restarted one waits for a trainer step, which needs rollouts, so the orchestrator fails after 30 minutes without a serving engine. Replicas must fit one node.
+- Restarts stop at their budget, and a failure of the orchestrator, an env worker pool or the router still ends the run.
 
 ### Pausing or Checkpointing a Live Run
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.types import MicroBatch
-from prime_rl.utils.pathing import get_batch_dir, get_step_path, sync_wait_for_path
+from prime_rl.utils.pathing import get_batch_dir, get_step_path
 
 REQUEST_POLL_INTERVAL_S = 0.1
 
@@ -70,12 +70,19 @@ class FileSystemBatchReceiver(BatchReceiver):
     def _get_micro_batch_path(self) -> Path:
         return get_step_path(self.batch_dir, self.current_step) / f"rank_{self.data_rank}.bin"
 
-    def wait(self) -> None:
-        """Request the current step, then wait for its micro batch file to appear on disk."""
+    def request(self) -> None:
         step_path = get_step_path(self.batch_dir, self.current_step)
         step_path.mkdir(parents=True, exist_ok=True)
         write_atomic(step_path / f"rank_{self.rank}.request", str(self.world_size).encode())
-        sync_wait_for_path(self._get_micro_batch_path())
+
+    def poll(self, timeout: float) -> bool:
+        """Whether the step's micro batch file appeared on disk within ``timeout`` seconds."""
+        deadline = time.monotonic() + timeout
+        while not self._get_micro_batch_path().exists():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(min(1.0, timeout))
+        return True
 
     def receive(self) -> list[MicroBatch]:
         """Read and return the micro batches from disk."""

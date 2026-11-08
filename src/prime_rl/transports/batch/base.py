@@ -63,8 +63,13 @@ class BatchReceiver(ABC):
         self.world_size = world_size
 
     @abstractmethod
-    def wait(self) -> None:
-        """Request the current step from the orchestrator and block until it is available."""
+    def request(self) -> None:
+        """Ask the orchestrator for the current step."""
+        pass
+
+    @abstractmethod
+    def poll(self, timeout: float) -> bool:
+        """Whether the requested step arrived within ``timeout`` seconds."""
         pass
 
     @abstractmethod

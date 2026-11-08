@@ -22,8 +22,7 @@ from modelexpress_rl import (
 from torch import nn
 
 from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
-from prime_rl.utils.pathing import wait_for_path
+from prime_rl.transports.weights.base import OfferSuperseded, WeightReceiver, WeightSender
 
 VERSION_MARKER = ".mx_version"
 INSTALLED_MARKER = ".installed"
@@ -123,6 +122,11 @@ class ModelExpressWeightReceiver(WeightReceiver):
     async def initialize(self) -> None:
         self._control = ModelExpressControlClient.connect(server_url=f"{self.config.host}:{self.config.port}")
         atexit.register(self._control.close)
+        await self._initialize_engines()
+        # A restarted engine starts a new ModelExpress client before the next weight update reaches it
+        self.admin_plane.on_rejoin = self._initialize_engines
+
+    async def _initialize_engines(self, indices: list[int] | None = None) -> None:
         await self.admin_plane.initialize_modelexpress(
             self.config.host,
             self.config.port,
@@ -130,13 +134,13 @@ class ModelExpressWeightReceiver(WeightReceiver):
             self.config.inference_world_size,
             self.config.staging_buffer_bytes,
             self.config.staging_buffers_count,
+            indices=indices,
         )
 
     async def receive(self, step: int) -> None:
         self._ack(step)
-        marker = self.step_dir(step) / VERSION_MARKER
-        await asyncio.wait_for(wait_for_path(marker, interval=0.01), timeout=self.config.timeout)
-        uid = marker.read_text()
+        await self.wait_for_marker(step, VERSION_MARKER, timeout=self.config.timeout)
+        uid = (self.step_dir(step) / VERSION_MARKER).read_text()
         deadline = time.monotonic() + self.config.timeout
         while True:
             version = await asyncio.to_thread(self._control.get_weight_version, uid)
@@ -144,6 +148,8 @@ class ModelExpressWeightReceiver(WeightReceiver):
                 break
             if version.state is WeightVersionState.RELEASING:
                 raise RuntimeError(f"Weight version {uid} was retired before installation")
+            if self.offer(step) != self.receiving:
+                raise OfferSuperseded(f"The trainer offered v{step} again")
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Weight version {uid} was not ready within {self.config.timeout}s")
             await asyncio.sleep(0.1)

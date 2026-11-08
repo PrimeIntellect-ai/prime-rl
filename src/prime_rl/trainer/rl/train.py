@@ -2,6 +2,8 @@ import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
 from functools import partial
+import os
+import shutil
 import time
 import asyncio
 from datetime import timedelta
@@ -9,13 +11,13 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import last_finished_broadcast, prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, latest_saved_ckpt_step, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -89,7 +91,7 @@ from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import get_replay_dir, resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -147,7 +149,18 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
 
-    if config.resume is not None:
+    # torchrun restarted the workers after one failed: resume from the newest checkpoint this run
+    # saved and replay the steps since, while the orchestrator and inference keep running. Only the
+    # node whose worker failed counts the restart, so every rank takes the highest count.
+    restart_count = torch.tensor(int(os.environ.get("TORCHELASTIC_RESTART_COUNT", "0")), device="cuda")
+    dist.all_reduce(restart_count, op=dist.ReduceOp.MAX)
+    restart_count = int(restart_count.item())
+    replayable = int(os.environ.get("TORCHELASTIC_MAX_RESTARTS", "0")) > 0 and config.ckpt is not None
+    resume_dir = config.resume.dir if config.resume else None
+    if restart_count > 0 and (saved_step := latest_saved_ckpt_step(ckpt_manager.ckpt_dir)) is not None:
+        checkpoint_step = saved_step
+        resume_dir = None
+    elif config.resume is not None:
         if config.resume.dir is not None:
             checkpoint_step = config.resume.dir_step
         else:
@@ -224,7 +237,6 @@ def train(config: TrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        resume_dir = config.resume.dir if config.resume else None
         ckpt_manager.load(
             checkpoint_step,
             model,
@@ -253,7 +265,13 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            replay=replayable,
         )
+        # A fresh start replays nothing: drop a previous run's log before any rank looks into it
+        if replayable and restart_count == 0:
+            if world.is_master:
+                shutil.rmtree(get_replay_dir(config.output_dir), ignore_errors=True)
+            dist.barrier()
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
     annotation_writer = AnnotationWriter(
@@ -269,6 +287,17 @@ def train(config: TrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     start_step = progress.step
+    # Inference already serves the policies the trainer had broadcast before it restarted, so the
+    # trainer replays the steps up to the newest of them without broadcasting.
+    replay_until = 0
+    if restart_count > 0 and weight_sender is not None:
+        replay_until = [last_finished_broadcast(config.output_dir) if world.is_master else 0]
+        dist.broadcast_object_list(replay_until, src=0)
+        replay_until = replay_until[0]
+        logger.warning(
+            f"Restart {restart_count}: resuming at step {start_step}, replaying through step {replay_until} "
+            f"(inference serves policy v{replay_until})"
+        )
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
@@ -290,7 +319,7 @@ def train(config: TrainerConfig):
         # rollouts so the trainer and inference pool join the same update lifecycle,
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
-        if progress.step == start_step and weight_sender is not None:
+        if progress.step == start_step and weight_sender is not None and restart_count == 0:
             startup_version = progress.step - 1
             if world.is_master:
                 prune_broadcasts_beyond(config.output_dir, startup_version)
@@ -304,7 +333,10 @@ def train(config: TrainerConfig):
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
-        dataloader.wait_for_batch()
+        if replayable and not config.data.fake:
+            dataloader.wait_for_batch(peer_timeout=config.dist_timeout_seconds)
+        else:
+            dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
         logger.debug(f"Waited for batch for {format_time(wait_for_batch_time)}")
 
@@ -670,7 +702,7 @@ def train(config: TrainerConfig):
 
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.
-        if weight_sender is None:
+        if weight_sender is None or progress.step <= replay_until:
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
@@ -702,6 +734,8 @@ def train(config: TrainerConfig):
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            if replayable and not config.data.fake and world.is_master:
+                dataloader.replay_log.prune(progress.step)
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
 
@@ -822,6 +856,8 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        if replayable and not config.data.fake and world.is_master:
+            dataloader.replay_log.prune(progress.step)
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:

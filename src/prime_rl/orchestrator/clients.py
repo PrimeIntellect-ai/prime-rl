@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal
 
@@ -44,6 +44,10 @@ class PrefillScorer:
         if self._client is not None:
             await self._client.close()
 
+
+# How long the policy deployment may have no engine serving the current weights. A restarted
+# engine gets them from the trainer's next weight update, which needs a batch of rollouts.
+NO_SERVICE_TIMEOUT_S = 1800
 
 # Concurrent session releases per endpoint. The release client has one connection per slot, so
 # requests never wait in httpx's pool, where a pool timeout can leak connections for good
@@ -166,7 +170,9 @@ class AdminPlane:
     # Replaced, never mutated.
     update_times: dict[str, list[float]] = {}
 
-    def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
+    def __init__(
+        self, client_config: ClientConfig, roles: list[str | None] | None = None, tolerate_restarts: bool = False
+    ):
         self.clients = setup_admin_clients(client_config)
         self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
@@ -178,7 +184,148 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._modelexpress_lock = asyncio.Lock()
+        self._init_membership(tolerate_restarts)
+
+    def _init_membership(self, tolerate_restarts: bool) -> None:
+        # Serializes weight updates and changes to which engines are up
+        self._update_lock = asyncio.Lock()
+        self.tolerate_restarts = tolerate_restarts
+        """Mark an engine that stops answering down instead of failing the admin op (see ``watch``)."""
+        self.down: set[int] = set()
+        """Engines that stopped answering. They get no admin ops and no traffic until they answer again."""
+        self.rejoining: set[int] = set()
+        """Restarted engines. They take traffic once a weight update has reached them."""
+        self.on_rejoin: Callable[[list[int]], Awaitable[None]] | None = None
+        """Prepares restarted engines to receive weights; set by the weight transport."""
+        self.on_down: Callable[[int, int], None] | None = None
+        """Called with the number of engines up before and after one goes down."""
+        self._misses = [0] * len(self.clients)
+
+    def up(self) -> list[int]:
+        """Indices of the engines that answer."""
+        return [index for index in range(len(self.clients)) if index not in self.down]
+
+    async def watch(self, interval: float = 10.0) -> None:
+        """Poll every engine's /health. An engine that misses two polls goes down (and leaves the
+        router); a down engine that answers again rejoins: the weight transport prepares it, the
+        next weight update reaches it, and then it takes traffic again."""
+        no_service_since: float | None = None
+        while True:
+            await asyncio.sleep(interval)
+            if self.down | self.rejoining != set(range(len(self.clients))):
+                no_service_since = None
+            elif no_service_since is None:
+                no_service_since = time.monotonic()
+            elif time.monotonic() - no_service_since > NO_SERVICE_TIMEOUT_S:
+                raise RuntimeError(
+                    f"No inference server has served the current weights for {NO_SERVICE_TIMEOUT_S}s: restarted "
+                    "servers get them from the trainer's next weight update, which needs rollouts to train on"
+                )
+            answers = await asyncio.gather(*(_answers(client) for client in self.clients))
+            async with self._update_lock:
+                answering_again = []
+                for index, answer in enumerate(answers):
+                    self._misses[index] = 0 if answer else self._misses[index] + 1
+                    if index in self.down and answer:
+                        answering_again.append(index)
+                    elif index not in self.down and self._misses[index] >= 2:
+                        await self.mark_down(index, "missed two health checks")
+                if answering_again:
+                    await self._rejoin(answering_again)
+
+    async def mark_down(self, index: int, reason: object) -> None:
+        if index in self.down:
+            return
+        up = len(self.up())
+        self.down.add(index)
+        self.rejoining.discard(index)
+        get_logger().warning(
+            f"Inference server {self.clients[index].base_url} is down ({reason}); it gets no traffic and no weight "
+            "updates until it answers again"
+        )
+        await self._route(index, "remove")
+        if self.on_down is not None:
+            self.on_down(up, up - 1)
+
+    async def _rejoin(self, indices: list[int]) -> None:
+        urls = ", ".join(str(self.clients[index].base_url) for index in indices)
+        if self.on_rejoin is not None:
+            try:
+                await self.on_rejoin(indices)
+            except Exception as error:
+                get_logger().warning(f"Restarted inference servers {urls} are not ready to rejoin yet: {error!r}")
+                return
+        self.down.difference_update(indices)
+        self.rejoining.update(indices)
+        get_logger().info(f"Inference servers {urls} answer again; they take traffic after the next weight update")
+
+    async def _admit(self, targets: list[int]) -> None:
+        """Route traffic to the rejoining engines the last weight update reached."""
+        for index in sorted(self.rejoining.intersection(targets) - self.down):
+            self.rejoining.discard(index)
+            await self._route(index, "add")
+            get_logger().info(f"Inference server {self.clients[index].base_url} has the current weights and rejoined")
+
+    async def _route(self, index: int, action: Literal["add", "remove"]) -> None:
+        if not self._router_clients:
+            return
+        url = str(self.clients[index].base_url).rstrip("/")
+        try:
+            response = await self._router_clients[0].post(f"/{action}_worker", params={"url": url}, timeout=60)
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            get_logger().warning(f"Could not {action} {url} on the router: {error!r}")
+
+    async def _post(self, targets: list[int], path: str, *, retry: bool = True, **kwargs) -> list[float]:
+        """POST ``path`` to the ``targets`` engines concurrently; returns each answering engine's
+        request time. With ``tolerate_restarts``, an engine that does not answer goes down instead
+        of failing the op."""
+
+        async def post(index: int) -> float:
+            start = time.perf_counter()
+            await _admin_post(
+                self.clients[index],
+                path,
+                attempts=10 if retry else 1,
+                retry_connect=not self.tolerate_restarts,
+                **kwargs,
+            )
+            return time.perf_counter() - start
+
+        results = await asyncio.gather(*(post(index) for index in targets), return_exceptions=True)
+        times = []
+        for index, result in zip(targets, results, strict=True):
+            if isinstance(result, BaseException):
+                if self.tolerate_restarts and isinstance(result, httpx.TransportError):
+                    await self.mark_down(index, repr(result))
+                    continue
+                raise result
+            times.append(result)
+        return times
+
+    async def _pause(self, targets: list[int], step: int) -> list[float]:
+        """Pause the engines, waiting for in-flight requests to drain. Returns each engine's pause time.
+
+        Prefill engines pause first. A prefill engine's pause waits until decode has pulled the KV
+        blocks it still holds, and a paused decode engine never pulls them: the prefill would wait
+        for vLLM's NIXL KV lease to expire (30 s by default) and decode would later read the
+        released blocks."""
+        get_logger().debug(f"Pausing inference engines to update weights to policy v{step}")
+        roles = self.roles or [None] * len(self.clients)
+        prefill = [index for index in targets if roles[index] == "prefill"]
+        rest = [index for index in targets if roles[index] != "prefill"]
+        pause_times: list[float] = []
+        for indices in (prefill, rest):
+            pause_times += await self._post(indices, "/pause", params={"mode": "keep", "clear_cache": "false"})
+        get_logger().debug("Inference engines paused")
+        return pause_times
+
+    async def _resume(self, targets: list[int]) -> list[float]:
+        """Resume the engines (idempotent, so retried on transient failures; a dropped /resume would
+        leave an engine paused indefinitely). Returns each engine's resume time."""
+        resume_times = await self._post([index for index in targets if index not in self.down], "/resume")
+        get_logger().debug("Inference engines resumed")
+        return resume_times
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -239,21 +386,24 @@ class AdminPlane:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport."""
+        """Update every inference engine that is up through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
-        try:
-            if on_paused is not None:
-                on_paused()
-            transfer_times = await _post_all(
-                self.clients,
-                "/update_weights",
-                json={"weight_dir": weight_dir_posix, "weight_version": step},
-                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            )
-        finally:
-            resume_times = await _resume_engines(self.clients)
+        async with self._update_lock:
+            targets = self.up()
+            pause_times = await self._pause(targets, step)
+            try:
+                if on_paused is not None:
+                    on_paused()
+                transfer_times = await self._post(
+                    targets,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix, "weight_version": step},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+            finally:
+                resume_times = await self._resume(targets)
+            await self._admit(targets)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def update_modelexpress_weights(
@@ -263,30 +413,25 @@ class AdminPlane:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        """Install an exact MX version; keep inference paused if installation is uncertain."""
-        async with self._modelexpress_lock:
+        """Install an exact MX version on every engine that is up; keep inference paused if
+        installation is uncertain."""
+        async with self._update_lock:
             if not version_uid:
                 raise ValueError("modelexpress requires version_uid")
-            pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
+            targets = self.up()
+            pause_times = await self._pause(targets, step)
             if on_paused is not None:
                 on_paused()
-
-            async def install(client) -> float:
-                start = time.perf_counter()
-                response = await client.post(
-                    "/update_weights_from_modelexpress",
-                    json={"version_uid": version_uid, "weight_version": step},
-                    timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
-                )
-                response.raise_for_status()
-                return time.perf_counter() - start
-
-            results = await asyncio.gather(*(install(client) for client in self.clients), return_exceptions=True)
-            for result in results:
-                if isinstance(result, BaseException):
-                    raise result
-            resume_times = await _resume_engines(self.clients)
-            self.update_times = {"pause": pause_times, "transfer": results, "resume": resume_times}
+            transfer_times = await self._post(
+                targets,
+                "/update_weights_from_modelexpress",
+                retry=False,
+                json={"version_uid": version_uid, "weight_version": step},
+                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+            )
+            resume_times = await self._resume(targets)
+            await self._admit(targets)
+            self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def initialize_modelexpress(
         self,
@@ -296,7 +441,9 @@ class AdminPlane:
         inference_world_size: int,
         staging_buffer_bytes: int | None,
         staging_buffers_count: int,
+        indices: list[int] | None = None,
     ) -> None:
+        """Start the ModelExpress clients of the ``indices`` engines (all by default) under a new session."""
         workers_per_server = inference_world_size // len(self.clients)
         if workers_per_server < 1 or inference_world_size % len(self.clients):
             raise ValueError("modelexpress requires an equal number of workers per inference server")
@@ -319,7 +466,8 @@ class AdminPlane:
             )
             response.raise_for_status()
 
-        await asyncio.gather(*(initialize(index, client) for index, client in enumerate(self.clients)))
+        targets = range(len(self.clients)) if indices is None else indices
+        await asyncio.gather(*(initialize(index, self.clients[index]) for index in targets))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -327,14 +475,17 @@ class AdminPlane:
 
 
 def setup_admin_plane(
-    client_config: PolicyClientConfig, model_name: str, roles: list[str | None] | None = None
+    client_config: PolicyClientConfig,
+    model_name: str,
+    roles: list[str | None] | None = None,
+    tolerate_restarts: bool = False,
 ) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
         return DynamoAdminPlane(client_config, model_name)
-    return AdminPlane(client_config, roles)
+    return AdminPlane(client_config, roles, tolerate_restarts)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -509,14 +660,27 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
-    """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
+async def _admin_post(
+    client: AsyncClient,
+    path: str,
+    *,
+    timeout_s: float = ADMIN_TIMEOUT_S,
+    attempts: int = 10,
+    retry_connect: bool = True,
+    **kwargs,
+) -> None:
+    """POST an admin op with a bounded per-attempt timeout, retrying transient errors. Without
+    ``retry_connect``, a refused connection (a dead engine) fails at once.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
+
+    def retryable(error: BaseException) -> bool:
+        return _is_retryable_admin_error(error) and (retry_connect or not isinstance(error, httpx.ConnectError))
+
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
-        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
+        retry=retry_if_exception(retryable),
+        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(attempts),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     ):
@@ -529,48 +693,13 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _post_all(admin_clients: list[AsyncClient], path: str, **kwargs) -> list[float]:
-    """POST ``path`` to every engine concurrently; returns each engine's request time."""
-
-    async def post(client: AsyncClient) -> float:
-        start = time.perf_counter()
-        await _admin_post(client, path, **kwargs)
-        return time.perf_counter() - start
-
-    return await asyncio.gather(*[post(client) for client in admin_clients])
-
-
-async def _pause_engines(
-    admin_clients: list[AsyncClient], *, step: int, roles: list[str | None] | None = None
-) -> list[float]:
-    """Pause all inference engines, waiting for in-flight requests to drain.
-    Returns each engine's pause time.
-
-    Prefill engines pause first. A prefill engine's pause waits until decode has pulled the KV
-    blocks it still holds, and a paused decode engine never pulls them: the prefill would wait
-    for vLLM's NIXL KV lease to expire (30 s by default) and decode would later read the
-    released blocks."""
-    logger = get_logger()
-    logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    roles = roles or [None] * len(admin_clients)
-    prefill = [client for client, role in zip(admin_clients, roles, strict=True) if role == "prefill"]
-    rest = [client for client, role in zip(admin_clients, roles, strict=True) if role != "prefill"]
-    pause_times: list[float] = []
-    for clients in (prefill, rest):
-        pause_times += await _post_all(clients, "/pause", params={"mode": "keep", "clear_cache": "false"})
-    logger.debug(f"All inference engines paused in {min(pause_times):.2f}-{max(pause_times):.2f}s")
-    return pause_times
-
-
-async def _resume_engines(admin_clients: list[AsyncClient]) -> list[float]:
-    """Resume all inference engines after weight update. Returns each engine's resume time.
-
-    Resuming is idempotent (it just clears the paused flag), so retrying transient
-    failures is safe; a dropped /resume would leave engines paused indefinitely.
-    """
-    resume_times = await _post_all(admin_clients, "/resume")
-    get_logger().debug("All inference engines resumed")
-    return resume_times
+async def _answers(client: AsyncClient) -> bool:
+    """Whether the engine's /health answers OK within 10 s."""
+    try:
+        response = await client.get("/health", timeout=10)
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

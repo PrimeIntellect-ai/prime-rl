@@ -222,7 +222,10 @@ class Orchestrator:
             renderer_config=config.renderer,
         )
         self.admin_plane = setup_admin_plane(
-            config.model.client, config.model.name, roles=config.inference_metrics_roles
+            config.model.client,
+            config.model.name,
+            roles=config.inference_metrics_roles,
+            tolerate_restarts=config.tolerate_restarts,
         )
 
         await monitors.setup(
@@ -361,6 +364,9 @@ class Orchestrator:
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
         )
+        self.admin_plane.on_down = lambda up_before, up_after: self.concurrency.engines_lost(
+            up_before, up_after, self.dispatcher.current_inflight
+        )
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
@@ -389,6 +395,7 @@ class Orchestrator:
             policy=self.policy,
             observers=[self.dispatcher],
             ckpt_step=sync_version,
+            tolerate_failures=config.tolerate_restarts,
         )
         if self.eval_source is not None:
             self.watcher.on_update(self.trigger_eval)
@@ -431,6 +438,8 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        if config.tolerate_restarts:
+            self.component_tasks.append(asyncio.create_task(self.admin_plane.watch(), name="inference_watch"))
         if config.control is not None:
             loop = asyncio.get_running_loop()
             self.controller = Controller(

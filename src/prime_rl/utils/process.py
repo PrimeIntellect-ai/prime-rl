@@ -33,6 +33,9 @@ DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
     "TORCH_FR_BUFFER_SIZE": "2000",
     "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
     "TORCH_FR_DUMP_TEMP_FILE": f"/tmp/nccl_trace_{os.getuid()}_rank_",
+    # A torchrun restart needs a fresh rendezvous store: on a store shared across attempts, restarted
+    # workers can read the previous attempt's NCCL ids and fail to connect.
+    "TORCH_DISABLE_SHARE_RDZV_TCP_STORE": "1",
 }
 
 DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
@@ -70,7 +73,12 @@ def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int], list[int]
 
 
 def torchrun_cmd(
-    module: str, config_path: Path, nproc_per_node: int, log_dir: Path, ranks_filter: list[int]
+    module: str,
+    config_path: Path,
+    nproc_per_node: int,
+    log_dir: Path,
+    ranks_filter: list[int],
+    max_restarts: int = 0,
 ) -> list[str]:
     """Single-node torchrun command for a trainer module."""
     from prime_rl.utils.utils import get_free_port
@@ -78,6 +86,9 @@ def torchrun_cmd(
     return [
         "torchrun",
         "--role=trainer",
+        f"--max-restarts={max_restarts}",
+        # The static rendezvous keeps its store across restarts (see DEFAULT_TRAINER_ENV_VARS)
+        *(["--rdzv-backend=c10d"] if max_restarts else []),
         f"--rdzv-endpoint=localhost:{get_free_port()}",
         f"--rdzv-id={uuid.uuid4().hex}",
         # Pipe all logs to file, and only master rank logs to stdout

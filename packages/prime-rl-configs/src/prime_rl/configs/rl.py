@@ -141,6 +141,18 @@ DeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+class RestartsConfig(BaseConfig):
+    """Restart failed components in place instead of ending the run. The trainer resumes from
+    its latest checkpoint and replays the batches it trained since; a restarted inference
+    server takes traffic again once the next weight update has reached it."""
+
+    trainer: int = Field(3, ge=0)
+    """Times torchrun restarts the trainer's workers after one fails (OOM, NCCL error or timeout)."""
+
+    inference: int = Field(3, ge=0)
+    """Times each inference server restarts. The ranks of an expert-parallel group restart together."""
+
+
 class RLConfig(BaseConfig):
     mode: Literal["rl"] | None = None
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run rl`` accepts only
@@ -211,6 +223,9 @@ class RLConfig(BaseConfig):
     rollout_transport: TransportConfig | None = None
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
+
+    restarts: RestartsConfig | None = None
+    """Restart failed components in place. If None, any failed component ends the run."""
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. If None, runs locally."""
@@ -538,6 +553,25 @@ class RLConfig(BaseConfig):
     def validate_multi_node_requires_router(self):
         if self.deployment.type == "multi_node" and self.inference is not None and self.inference.router is None:
             raise ValueError("Multi-node deployments require inference.router to front the per-rank engines.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_restarts(self):
+        if self.restarts is None:
+            return self
+        if self.restarts.trainer > 0 and self.trainer.ckpt is None:
+            raise ValueError("restarts.trainer resumes the trainer from its checkpoints; set [ckpt].")
+        if self.weight_broadcast.type not in ("filesystem", "modelexpress"):
+            raise ValueError(
+                f"[restarts] needs weight_broadcast.type 'filesystem' or 'modelexpress': {self.weight_broadcast.type} "
+                "fixes its transfer group at startup, so a restarted trainer or inference server cannot rejoin it."
+            )
+        if self.restarts.inference > 0 and self.inference is not None:
+            if self.inference.deployment.type == "disaggregated" or (
+                self.deployment.type == "multi_node" and self.deployment.infer_nodes_per_replica > 1
+            ):
+                raise ValueError("restarts.inference supports inference replicas of one node.")
+        self.orchestrator = self.orchestrator.model_copy(update={"tolerate_restarts": True})
         return self
 
     @model_validator(mode="after")

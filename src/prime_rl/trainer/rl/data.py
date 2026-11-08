@@ -1,11 +1,14 @@
+import shutil
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+import msgspec
 import numpy as np
 import torch
+import torch.distributed as dist
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
@@ -18,9 +21,10 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, encode_array
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_replay_dir, get_step_path
 
 
 class TensorMicroBatch(TypedDict):
@@ -221,6 +225,52 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
                 micro_batch[name] = torch.zeros_like(micro_batch[name])
 
 
+class ReplayLog:
+    """The micro batches the trainer received since its last checkpoint, with their fetched
+    arrays, on disk at ``<output_dir>/replay/step_<N>/rank_<data rank>.bin``. A restarted
+    trainer replays them instead of asking the orchestrator, which has moved on, and the env
+    workers, which freed the arrays."""
+
+    def __init__(self, output_dir: Path, dp_rank: int, writer: bool):
+        self.dir = get_replay_dir(output_dir)
+        self.dp_rank = dp_rank
+        self.writer = writer
+        """One rank per data rank writes; the ranks sharing it read the same file."""
+        self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
+        self.decoder = msgspec.msgpack.Decoder(type=tuple[list[int], list[MicroBatch]])
+        self.executor = ThreadPoolExecutor(1, thread_name_prefix="replay")
+
+    def path(self, step: int) -> Path:
+        return get_step_path(self.dir, step) / f"rank_{self.dp_rank}.bin"
+
+    def save(self, step: int, failed: list[int], micro_batches: list[MicroBatch]) -> None:
+        """Write the step's micro batches (and the ones whose arrays could not be fetched) in the background."""
+        if not self.writer:
+            return
+        saved = [msgspec.structs.replace(micro_batch, payloads=None) for micro_batch in micro_batches]
+        self.executor.submit(self._write, self.path(step), self.encoder.encode((failed, saved)))
+
+    @staticmethod
+    def _write(path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_bytes(data)
+        tmp_path.rename(path)
+
+    def load(self, step: int) -> tuple[list[int], list[MicroBatch]] | None:
+        path = self.path(step)
+        if not path.exists():
+            return None
+        return self.decoder.decode(path.read_bytes())
+
+    def prune(self, step: int) -> None:
+        """Delete the steps up to ``step`` (call on the master once a checkpoint covers them)."""
+        self.executor.submit(lambda: None).result()
+        for old_step in get_all_ckpt_steps(self.dir):
+            if old_step <= step:
+                shutil.rmtree(get_step_path(self.dir, old_step), ignore_errors=True)
+
+
 class DataLoader:
     """Receives packed micro batches from the orchestrator, one stream per DP rank."""
 
@@ -230,6 +280,7 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        replay: bool = False,
     ):
         self.world = get_world()
 
@@ -251,17 +302,54 @@ class DataLoader:
             current_step=start_step,
             transport=config,
         )
+        self.replay_log = (
+            ReplayLog(output_dir, dp_rank, writer=self.world.rank % non_dp_world_size == 0) if replay else None
+        )
+        self.replayed: tuple[list[int], list[MicroBatch]] | None = None
 
-    def wait_for_batch(self) -> None:
-        self.receiver.wait()
+    def wait_for_batch(self, peer_timeout: float | None = None) -> None:
+        """Wait for the current step's micro batches. With ``peer_timeout``, raise once a trainer
+        rank has not asked for the step that long after this one did: it hangs outside a
+        collective, where the NCCL watchdog cannot see it, and torchrun restarts the trainer."""
+        step = self.receiver.current_step
+        self.replayed = self.replay_log.load(step) if self.replay_log is not None else None
+        if self.replayed is not None:
+            get_logger().info(f"Replaying step {step} from the replay log")
+            return
+        self.receiver.request()
+        if peer_timeout is None:
+            while not self.receiver.poll(60):
+                pass
+            return
+        store = dist.distributed_c10d._get_default_store()
+        key = f"batch_requests/{step}"
+        store.add(key, 1)
+        waiting_since = time.monotonic()
+        while not self.receiver.poll(10):
+            requested = store.add(key, 0)
+            if requested == self.world.world_size:
+                waiting_since = time.monotonic()
+            elif time.monotonic() - waiting_since > peer_timeout:
+                raise RuntimeError(
+                    f"Only {requested}/{self.world.world_size} trainer ranks asked for step {step} within "
+                    f"{peer_timeout:.0f}s: a trainer rank hangs"
+                )
 
     def get_batch(self) -> list[TensorMicroBatch]:
+        if self.replayed is not None:
+            self.failed_micro_batches, micro_batches = self.replayed
+            self.payload_urls = []
+            self.receiver.current_step += 1
+            return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        step = self.receiver.current_step
         micro_batches = self.receiver.receive()
         start = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
         get_logger().debug(
             f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
         )
+        if self.replay_log is not None:
+            self.replay_log.save(step, self.failed_micro_batches, micro_batches)
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def release_payloads(self) -> None:
