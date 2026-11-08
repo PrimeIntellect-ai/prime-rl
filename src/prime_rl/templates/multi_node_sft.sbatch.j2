@@ -196,7 +196,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
         mkdir -p $LOG_DIR/envs/eval
 {%- for name in eval_env_names %}
-        uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.json \
+        uv run env-worker-pool @ $CONFIG_DIR/envs/eval/{{ name }}.json \
             > $LOG_DIR/envs/eval/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- endif %}

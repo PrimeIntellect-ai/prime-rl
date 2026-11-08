@@ -218,7 +218,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
-            # env servers, and evals process.
+            # env worker pools, and evals process.
             if self.inference is None:
                 raise ValueError(
                     "Multi-node online evals require an [inference] block - dedicated nodes in the "

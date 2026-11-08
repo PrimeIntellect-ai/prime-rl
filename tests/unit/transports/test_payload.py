@@ -1,4 +1,4 @@
-"""Training arrays kept by env servers: the trainer must assemble each branch's arrays,
+"""Training arrays kept by env worker pools: the trainer must assemble each branch's arrays,
 cut, packed and padded like its tokens, and the store must serve and free them."""
 
 import base64
@@ -336,7 +336,7 @@ def test_short_routing_rows_fail_the_alignment_check():
         payload._assert_aligned(mb, num_tokens=4)
 
 
-def test_payload_server_binds_the_env_server_host():
+def test_payload_server_binds_the_env_worker_pool_host():
     assert payload_host(None) == ("127.0.0.1", "127.0.0.1")
     assert payload_host("tcp://10.1.2.3:0") == ("10.1.2.3", "10.1.2.3")
     bind, url = payload_host("tcp://*:5000")
