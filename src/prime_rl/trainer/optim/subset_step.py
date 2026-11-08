@@ -21,8 +21,9 @@ The contract:
   GPU copies), enqueues its work on the current stream without syncing the host, and is called at
   most once per unit. Every rank calls it with the same units in the same order.
 - The streamed state is every tensor in ``optimizer.state[param]`` with at least one dimension (a
-  DTensor's local tensor); scalar step counters stay where they are. ``step_params`` never creates
-  state: the caller runs a plain ``step()`` while a parameter with a gradient has none.
+  DTensor's local tensor); scalar step counters stay where they are. The offload wrapper streams only
+  existing state: it runs a step on the GPU (``step()``, or ``step_with_hook``, whose partial updates
+  create the missing state as ``step()`` would) while a parameter with a gradient has none.
 """
 
 import math
