@@ -134,7 +134,7 @@ def format_log_message(
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
-    # Env servers, by split (``envs/<split>/<name>.log``); one split lists its envs
+    # Env worker pools, by split (``envs/<split>/<name>.log``); one split lists its envs
     # directly, several list them under the split.
     splits = {split: names for split, names in (env_names or {}).items() if names}
     if splits:
@@ -229,7 +229,7 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     launch_toml = attempt_dir / f"{name}.toml"
     if launch_toml.is_file():
         lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
-    # A label starting with a space is a sub-entry (an env server under its split), cut
+    # A label starting with a space is a sub-entry (an env worker pool under its split), cut
     # to the column like the Logs block cuts env names.
     for label, path in components:
         if label.startswith(" "):
@@ -245,31 +245,31 @@ def write_launch_artifacts(config_dir: Path, name: str) -> None:
 
 
 def env_address_file(config_dir: Path, split: str, name: str, replica: int | None = None) -> Path:
-    """Where a launcher-managed env server publishes the address it bound
+    """Where a launcher-managed env worker pool publishes the address it bound
     (``envs/<split>/<name>.address``, next to its config, or ``<name>.<replica>.address``
-    for one of several replicas). The server binds an OS-assigned port, so two runs on one
+    for one of several replicas). The pool's broker binds an OS-assigned port, so two runs on one
     host never race for the same one; a client waits for this file instead of assuming a
     port."""
     stem = name if replica is None else f"{name}.{replica}"
     return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
-    """Write the ``EnvServerConfig`` of a launcher-managed source
+def write_env_worker_pool_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
+    """Write the ``EnvWorkerPoolConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
-    server publishes the OS-assigned port it binds to the address file next to it."""
+    broker publishes the OS-assigned port it binds to the address file next to it."""
     env_dir = config_dir / "envs" / split
     env_dir.mkdir(parents=True, exist_ok=True)
     source_dict = dump_resolved_config(source)
-    server_config = {
+    pool_config = {
         "env": source_dict["env"],
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
-        "log": {"level": log.vf_level, "json_logging": log.json_logging},
+        "log": {"level": log.level, "json_logging": log.json_logging},
     }
     path = env_dir / f"{source.resolved_name}.json"
-    path.write_text(json.dumps(server_config, indent=2))
+    path.write_text(json.dumps(pool_config, indent=2))
     return path
 
 
@@ -325,31 +325,38 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+def is_ckpt_step_complete(step_dir: Path, with_orchestrator: bool) -> bool:
+    """Whether a run can resume from this step. DCP writes the trainer's ``.metadata`` after every rank's shards, so
+    a trainer checkpoint without it was interrupted mid-write. ``with_orchestrator`` (RL) also needs the
+    orchestrator's ``progress.pt`` (written by atomic rename): a step dir with only one of the two is a step that one
+    component saved and the other never reached."""
+    trainer_complete = (step_dir / "trainer" / ".metadata").exists()
+    return trainer_complete and (not with_orchestrator or (step_dir / "orchestrator" / "progress.pt").exists())
+
+
 def get_complete_ckpt_steps(ckpt_dir: Path, with_orchestrator: bool) -> list[int]:
-    """Steps whose trainer checkpoint is complete (DCP writes ``.metadata`` last, after every
-    rank's shards) and, ``with_orchestrator``, whose orchestrator checkpoint exists (written by
-    atomic rename)."""
+    """The steps in ``ckpt_dir`` that ``is_ckpt_step_complete``, in ascending order."""
     return [
         step
         for step in get_all_ckpt_steps(ckpt_dir)
-        if (get_step_path(ckpt_dir, step) / "trainer" / ".metadata").exists()
-        and (not with_orchestrator or (get_step_path(ckpt_dir, step) / "orchestrator" / "progress.pt").exists())
+        if is_ckpt_step_complete(get_step_path(ckpt_dir, step), with_orchestrator)
     ]
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path, with_orchestrator: bool) -> int | None:
-    """Gets the latest complete checkpoint step (``get_complete_ckpt_steps``). Incomplete steps
-    (a save killed mid-write, or the orchestrator checkpoint of a step the trainer never reached)
-    are skipped. Returns None if there are no checkpoints; raises if there are checkpoints but
-    none is complete."""
+    """Gets the latest complete checkpoint step (``is_ckpt_step_complete``), skipping newer incomplete steps.
+    Returns None if there are no checkpoints; raises if there are checkpoints but none is complete."""
     logger = get_logger()
     all_steps = get_all_ckpt_steps(ckpt_dir)
     if len(all_steps) == 0:
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
         return None
     steps = get_complete_ckpt_steps(ckpt_dir, with_orchestrator)
+    parts = "trainer/.metadata" + (" and orchestrator/progress.pt" if with_orchestrator else "")
+    for step in all_steps:
+        if not steps or step > steps[-1]:
+            logger.warning(f"Skipping checkpoint step {step} in {ckpt_dir}: it is incomplete (needs {parts})")
     if len(steps) == 0:
-        parts = "trainer/.metadata" + (" and orchestrator/progress.pt" if with_orchestrator else "")
         raise FileNotFoundError(
             f"No checkpoint step in {ckpt_dir} ({all_steps}) is complete: each lacks {parts}. "
             "Pass --resume.step explicitly to resume from one anyway. If this run set ckpt.output_dir before "

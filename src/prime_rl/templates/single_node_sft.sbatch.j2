@@ -48,4 +48,4 @@ uv sync --all-extras --all-packages
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
-launch uv run sft @ {{ config_path }} $RESUME_ARGS
+launch uv run {{ entrypoint }} @ {{ config_path }} $RESUME_ARGS

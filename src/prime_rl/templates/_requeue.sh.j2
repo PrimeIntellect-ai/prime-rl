@@ -23,19 +23,18 @@ job_state() {
 # than any seen before exists (a resume can move newer checkpoints to abandoned/). A job
 # that is already ending (scancel, time limit) is not requeued.
 requeue() {
-    local kind=$1 latest="" last=-1 count=0 excluded dir
+    local kind=$1 latest="" last=-1 count=0 excluded
     shift
     if [ "$(job_state)" != RUNNING ]; then
         return
     fi
     if [ "$kind" = failure ]; then
 {%- if ckpt_dir %}
-        for dir in $(ls -d {{ ckpt_dir }}/step_* 2>/dev/null | sort -rV); do
-            if [ -f "$dir/trainer/.metadata" ]{% if ckpt_with_orchestrator %} && [ -f "$dir/orchestrator/progress.pt" ]{% endif %}; then
-                latest=${dir##*_}
-                break
-            fi
-        done
+        latest=$(python -c "
+from pathlib import Path
+from prime_rl.utils.pathing import get_complete_ckpt_steps
+print(*get_complete_ckpt_steps(Path('{{ ckpt_dir }}'), with_orchestrator={{ ckpt_with_orchestrator }})[-1:])
+" || true)
 {%- endif %}
         latest=${latest:--1}
         [ ! -f {{ launcher_dir }}/requeue_$SLURM_JOB_ID ] || read -r last count < {{ launcher_dir }}/requeue_$SLURM_JOB_ID
