@@ -1,3 +1,4 @@
+import copy
 import math
 
 import pytest
@@ -127,3 +128,34 @@ def test_subset_steps_match_the_full_step():
 
     for reference, chunked in zip(train(False), train(True)):
         assert torch.equal(reference, chunked)
+
+
+def test_resume_from_state_dict_matches_continuous_training():
+    """load_state_dict replaces the param group dicts: the optimizer must keep working on the new ones."""
+
+    def make():
+        torch.manual_seed(0)
+        params = [torch.nn.Parameter(torch.randn(shape)) for shape in [(16, 48), (3, 32, 16), (24,)]]
+        groups = [dict(params=params[:2], algorithm="muon"), dict(params=params[2:], algorithm="adamw")]
+        return params, Muon(groups, lr=0.02, matrix_partitions={params[1]: (16, 16)})
+
+    def train(params, optimizer, steps):
+        for step in steps:
+            torch.manual_seed(step)
+            for p in params:
+                p.grad = torch.randn(p.shape)
+            optimizer.step()
+
+    params, optimizer = make()
+    train(params, optimizer, range(2))
+    saved = ([p.detach().clone() for p in params], copy.deepcopy(optimizer.state_dict()))
+    train(params, optimizer, range(2, 4))
+
+    resumed_params, resumed = make()
+    with torch.no_grad():
+        for p, value in zip(resumed_params, saved[0]):
+            p.copy_(value)
+    resumed.load_state_dict(saved[1])
+    train(resumed_params, resumed, range(2, 4))
+    for p, q in zip(params, resumed_params):
+        assert torch.equal(p, q)

@@ -292,7 +292,7 @@ class _Matrix:
     """A Muon parameter: its matrix partitions along dim -2, sharding and update scale."""
 
     param: Tensor
-    group: dict
+    group: int  # index into param_groups, whose dicts load_state_dict replaces
     partitions: tuple[int, ...]
     sharding: _Sharding | None
     lr_ratio: float | Tensor  # per local row for packed parameters
@@ -329,7 +329,7 @@ class _Plan:
 
     buckets: list[_Bucket]
     local: list[list[_Matrix]]
-    adamw: list[tuple[dict, list[Tensor]]]
+    adamw: list[tuple[int, list[Tensor]]]  # (param group index, params)
 
     @property
     def units(self) -> list[list[Tensor]]:
@@ -356,7 +356,7 @@ class _Step:
 
     optimizer: "Muon"
     plan: _Plan
-    hyperparameters: dict[int, dict]
+    hyperparameters: list[dict]  # per param group
     grads: dict[Tensor, Tensor]
 
     @property
@@ -479,16 +479,16 @@ class Muon(Optimizer):
 
         partitions = {param: tuple(sizes) for param, sizes in (matrix_partitions or {}).items()}
         self._matrices: dict[Tensor, _Matrix] = {}
-        for group in self.param_groups:
+        for index, group in enumerate(self.param_groups):
             if group["algorithm"] not in ("muon", "adamw"):
                 raise ValueError(f"Unknown algorithm {group['algorithm']}")
             if group["algorithm"] == "muon":
                 for param in group["params"]:
-                    self._matrices[param] = self._matrix(param, group, partitions.pop(param, (param.size(-2),)))
+                    self._matrices[param] = self._matrix(param, index, partitions.pop(param, (param.size(-2),)))
         if partitions:
             raise ValueError("matrix_partitions has parameters that are not Muon parameters of this optimizer")
 
-    def _matrix(self, param: Tensor, group: dict, partitions: tuple[int, ...]) -> _Matrix:
+    def _matrix(self, param: Tensor, group: int, partitions: tuple[int, ...]) -> _Matrix:
         if param.ndim < 2:
             raise ValueError(f"Muon parameters must be matrices, got shape {tuple(param.shape)}")
         if sum(partitions) != param.size(-2) or min(partitions) <= 0:
@@ -523,7 +523,7 @@ class Muon(Optimizer):
         key = tuple(map(id, params))
         if key not in self._plans:
             self._plans[key] = self._plan(params)
-        hyperparameters = {id(group): _hyperparameters(group) for group in self.param_groups}
+        hyperparameters = [_hyperparameters(group) for group in self.param_groups]
         return _Step(self, self._plans[key], hyperparameters, {param: _local(param.grad) for param in params})
 
     def _plan(self, params: list[Tensor]) -> _Plan:
@@ -561,14 +561,14 @@ class Muon(Optimizer):
 
         selected = set(map(id, params))
         adamw = [
-            (group, [param for param in group["params"] if id(param) in selected])
-            for group in self.param_groups
+            (index, [param for param in group["params"] if id(param) in selected])
+            for index, group in enumerate(self.param_groups)
             if group["algorithm"] == "adamw"
         ]
         return _Plan(buckets, local, [(group, params) for group, params in adamw if params])
 
     @torch.no_grad()
-    def _run(self, plan: _Plan, hyperparameters: dict[int, dict], grads: dict[Tensor, Tensor]) -> None:
+    def _run(self, plan: _Plan, hyperparameters: list[dict], grads: dict[Tensor, Tensor]) -> None:
         # Bucket k+1 gathers and bucket k-1 scatters while bucket k is orthogonalized. Local chunks fill in.
         slots = len(plan.buckets) + 1
         local = [plan.local[i * len(plan.local) // slots : (i + 1) * len(plan.local) // slots] for i in range(slots)]
@@ -590,7 +590,7 @@ class Muon(Optimizer):
             self._apply(*scattering, hyperparameters)
 
         for group, params in plan.adamw:
-            self._adamw(params, hyperparameters[id(group)], grads)
+            self._adamw(params, hyperparameters[group], grads)
 
     def _state(self, param: Tensor, *keys: str) -> list[Tensor]:
         """State tensors, read at every use: an offloaded step swaps them for GPU copies between updates."""
@@ -601,25 +601,25 @@ class Muon(Optimizer):
         return [_local(state[key]) for key in keys]
 
     def _momentum(
-        self, matrices: list[_Matrix], updates: list[Tensor], hyperparameters: dict, grads: dict[Tensor, Tensor]
+        self, matrices: list[_Matrix], updates: list[Tensor], hyperparameters: list[dict], grads: dict[Tensor, Tensor]
     ) -> None:
         """M <- μM + G, and the input of the orthogonalization into ``updates``."""
         for matrix, U in zip(matrices, updates):
             if U.numel():
                 (M,) = self._state(matrix.param, "momentum")
-                h = hyperparameters[id(matrix.group)]
+                h = hyperparameters[matrix.group]
                 _momentum_(M.view(-1), grads[matrix.param].reshape(-1), U.view(-1), h["mu"], h["nesterov"])
 
-    def _update(self, matrices: list[_Matrix], updates: list[Tensor], hyperparameters: dict) -> None:
+    def _update(self, matrices: list[_Matrix], updates: list[Tensor], hyperparameters: list[dict]) -> None:
         for matrix, U in zip(matrices, updates):
             if U.numel():
-                X, h = _local(matrix.param), hyperparameters[id(matrix.group)]
+                X, h = _local(matrix.param), hyperparameters[matrix.group]
                 if isinstance(matrix.lr_ratio, Tensor):  # per row
                     _muon_update_(X, U, h["lr"], matrix.lr_ratio * h["lr"], h["weight_decay"])
                 else:
                     _muon_update_(X.view(-1), U.reshape(-1), h["lr"], matrix.lr_ratio * h["lr"], h["weight_decay"])
 
-    def _update_local(self, chunk: list[_Matrix], hyperparameters: dict, grads: dict[Tensor, Tensor]) -> None:
+    def _update_local(self, chunk: list[_Matrix], hyperparameters: list[dict], grads: dict[Tensor, Tensor]) -> None:
         """Orthogonalize matrices that every rank holds whole, as one batch per matrix shape. The chunk's inputs
         share one buffer in which matrices of one shape lie back to back, so each batch is a view of it."""
         matrices = sorted((m for m in chunk if _local(m.param).numel()), key=_shape_class)
@@ -629,12 +629,12 @@ class Muon(Optimizer):
         buffer = torch.empty(sum(_local(m.param).numel() for m in matrices), dtype=torch.bfloat16, device=device)
         updates = self._shard_views(buffer, matrices)
         self._momentum(matrices, updates, hyperparameters, grads)
-        epsilons = [m.group["epsilon"] for m in matrices]
+        epsilons = [self.param_groups[m.group]["epsilon"] for m in matrices]
         updates = orthogonalize(updates, [m.partitions for m in matrices], self.schedule, epsilons)
         self._update(matrices, updates, hyperparameters)
 
     def _gather(
-        self, bucket: _Bucket, hyperparameters: dict, grads: dict[Tensor, Tensor]
+        self, bucket: _Bucket, hyperparameters: list[dict], grads: dict[Tensor, Tensor]
     ) -> tuple[dist.Work, Tensor, Tensor]:
         """Momentum into this rank's shards, sent to their owners."""
         device = _local(bucket.sent[0].param).device
@@ -660,7 +660,7 @@ class Muon(Optimizer):
         matrices = [piece.view(shape) for piece, shape in zip(buffer.split([math.prod(s) for s in shapes]), shapes)]
         for j, (m, matrix) in enumerate(zip(bucket.owned, matrices)):
             torch.cat([shards[q][j].view(m.local_shape(q)) for q in range(world_size)], dim=m.sharding.dim, out=matrix)
-        epsilons = [m.group["epsilon"] for m in bucket.owned]
+        epsilons = [self.param_groups[m.group]["epsilon"] for m in bucket.owned]
         outputs = orthogonalize(matrices, [m.partitions for m in bucket.owned], self.schedule, epsilons)
         scattered = [
             output.narrow(m.sharding.dim, m.sharding.offsets[q], m.sharding.sizes[q]).reshape(-1)
@@ -674,7 +674,7 @@ class Muon(Optimizer):
         )
         return work, recv, send
 
-    def _apply(self, bucket: _Bucket, work: dist.Work, recv: Tensor, send: Tensor, hyperparameters: dict) -> None:
+    def _apply(self, bucket: _Bucket, work: dist.Work, recv: Tensor, send: Tensor, hyperparameters: list[dict]) -> None:
         work.wait()
         self._update(bucket.sent, self._shard_views(recv, bucket.sent), hyperparameters)
 
