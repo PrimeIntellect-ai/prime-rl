@@ -178,3 +178,52 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
+
+
+def _admin_plane(fail: set[int], hang: set[int], calls: list) -> AdminPlane:
+    plane = AdminPlane(ClientConfig(), tolerate_restarts=True)
+
+    def engine(index):
+        async def post(path, **kwargs):
+            calls.append((index, path))
+            if index in fail:
+                raise httpx.ConnectError("refused")
+            if index in hang:
+                await asyncio.sleep(1000)
+            return MagicMock()
+
+        return MagicMock(base_url=f"http://engine{index}:8000", post=post)
+
+    plane.clients = [engine(index) for index in range(3)]
+    plane._router_clients = [MagicMock(post=AsyncMock(return_value=MagicMock()))]
+    return plane
+
+
+def test_dead_engine_skips_updates_and_router_until_an_update_reaches_it_again():
+    calls = []
+    plane = _admin_plane(fail={1}, hang=set(), calls=calls)
+    router = plane._router_clients[0].post
+    asyncio.run(plane.update_weights(Path("/w"), transport="filesystem", step=1))
+    assert plane.down == {1} and (1, "/resume") not in calls and (2, "/resume") in calls
+    router.assert_awaited_with("/remove_worker", params={"url": "http://engine1:8000"}, timeout=60)
+
+    plane.clients[1] = _admin_plane(fail=set(), hang=set(), calls=calls).clients[1]
+    asyncio.run(plane._rejoin([1]))
+    assert plane.rejoining == {1} and router.await_count == 1  # no traffic before the next update
+    asyncio.run(plane.update_weights(Path("/w"), transport="filesystem", step=2))
+    assert plane.rejoining == set() and (1, "/update_weights") in calls
+    router.assert_awaited_with("/add_worker", params={"url": "http://engine1:8000"}, timeout=60)
+
+
+def test_update_stops_waiting_for_an_engine_that_goes_down():
+    calls = []
+    plane = _admin_plane(fail=set(), hang={1}, calls=calls)
+
+    async def run():
+        update = asyncio.create_task(plane.update_weights(Path("/w"), transport="filesystem", step=1))
+        await asyncio.sleep(0.5)
+        await plane.mark_down(1, "missed two health checks")
+        await asyncio.wait_for(update, 5)
+
+    asyncio.run(run())
+    assert (1, "/resume") not in calls and (0, "/resume") in calls
