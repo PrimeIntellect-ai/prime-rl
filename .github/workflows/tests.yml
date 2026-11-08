@@ -82,7 +82,7 @@ jobs:
           from prime_rl.configs.inference import InferenceConfig
           from prime_rl.configs.orchestrator import OrchestratorConfig
           from prime_rl.configs.trainer import TrainerConfig
-          from prime_rl.configs.env_server import EnvServerConfig
+          from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
           from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
           from prime_rl.utils.validation import propagate_shared_fields
 
@@ -142,9 +142,9 @@ jobs:
                 - 'src/prime_rl/{trainer,multimodal,transports,utils}/**'
                 - 'tests/{__init__.py,conftest.py,utils.py}'
                 - 'tests/integration/{__init__.py,conftest.py}'
-              - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_server,algorithm,monitors}.py'
+              - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_worker_pool,algorithm,monitors}.py'
               - 'src/prime_rl/{control,eval,orchestrator,monitors}/**'
-              - 'src/prime_rl/entrypoints/{eval,env_server}.py'
+              - 'src/prime_rl/entrypoints/{eval,env_worker_pool}.py'
               - 'tests/integration/test_gsm8k_eval.py'
               - 'configs/ci/integration/gsm8k-eval.toml'
 

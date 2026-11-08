@@ -11,7 +11,9 @@ class AdmissionGate:
     """Base class for user-authored training-sample admission policies."""
 
     def admit(self, group: list[vf.Episode]) -> bool:
-        """Return whether a finalized group should enter the training batch."""
+        """Return whether a finalized group should enter the training batch. A resume
+        re-runs the groups that had not shipped, so a group admitted before the
+        checkpoint can come back once more, with new rollouts."""
         return True
 
     def state_dict(self) -> dict[str, Any]:

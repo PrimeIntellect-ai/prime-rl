@@ -107,7 +107,7 @@ async def test_interleaved_runs_see_their_deltas_in_order_before_the_reply():
             await router.send_multipart([identity, request_id, b"reply", REPLY])
         assert await asyncio.gather(*runs) == [list(range(n_deltas))] * n_runs
     get_logger().remove(sink)
-    assert warnings.count("Dropping a malformed env-server frame") == 2
+    assert warnings.count("Dropped malformed env worker pool frame") == 2
 
 
 @pytest.mark.asyncio

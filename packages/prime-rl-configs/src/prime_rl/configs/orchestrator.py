@@ -14,7 +14,7 @@ from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
 )
 from prime_rl.configs.diff import Frozen, Live
-from prime_rl.configs.env_server import ServeConfig
+from prime_rl.configs.env_worker_pool import ServeConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -97,7 +97,10 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: ServeConfig = ServeConfig()
-    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config; an unset ``address`` means the spawned server binds an OS-assigned port and publishes it for the orchestrator. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
+    """How this source's env worker pool is hosted. Each replica has a broker endpoint
+    and workers running the source's env configuration. An unset ``address`` lets the
+    launcher start the pool and discover its bound address. Setting ``address`` selects
+    one externally managed pool; the launcher neither writes its config nor starts it."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -522,11 +525,11 @@ class OrchestratorConfig(BaseConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
-    env_server_replicas: int | None = Field(None, ge=1)
-    """Replicas of each launcher-managed env server, each publishing its address to
+    env_worker_pool_replicas: int | None = Field(None, ge=1)
+    """Replicas of each launcher-managed env worker pool, each publishing its address to
     ``<name>.<replica>.address``; the orchestrator spreads each source's episodes over them,
-    least loaded first. None means one server publishing to ``<name>.address``. Set by the
-    ``rl`` launcher: multi-node runs start one replica per inference node, so env-server
+    least loaded first. None means one pool publishing to ``<name>.address``. Set by the
+    ``rl`` launcher: multi-node runs start one replica per inference node, so pool
     memory spreads over all of them."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
@@ -569,8 +572,8 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: OrchestratorControlConfig | None = None
-    """Serve the orchestrator's control API (pause at a step the trainer accepted, update the
-    config live). If None, it takes no control requests."""
+    """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
+    accepted, update the config live). If None, it takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
@@ -769,7 +772,7 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_sources(self) -> list[tuple[str, EnvConfig]]:
         """Every ``(split, source)`` this run pulls from, train first then eval — the
-        order that fixes each source's deterministic env-server port."""
+        order used by the launcher to write per-source pool configs."""
         sources: list[tuple[str, EnvConfig]] = [("train", source) for source in self.train.source]
         if self.eval is not None:
             sources += [("eval", source) for source in self.eval.source]
@@ -777,8 +780,8 @@ class OrchestratorConfig(BaseConfig):
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
-        """Where each source's env server lives, keyed by ``(split, resolved_name)``: the
-        source's own ``serve.address`` when set (an externally managed server), else None —
-        the launcher spawns the server, which binds an OS-assigned port and publishes it
+        """Where each source's env worker pool lives, keyed by ``(split, resolved_name)``: the
+        source's own ``serve.address`` when set (an externally managed pool), else None —
+        the launcher starts the pool, whose broker binds an OS-assigned port and publishes it
         to the source's address file for the orchestrator to pick up."""
         return {(split, source.resolved_name): source.serve.address for split, source in self.env_sources}

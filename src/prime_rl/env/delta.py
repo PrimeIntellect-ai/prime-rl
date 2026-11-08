@@ -37,8 +37,8 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
-HEADER_FIELDS = ("version", "id", "verifiers", "task", "run")
-"""Sent once, when a trace first appears."""
+HEADER_FIELDS = ("version", "id", "attempt", "verifiers", "task", "run")
+"""Sent once, when a trace (or a retry of its agent run) first appears."""
 
 LIST_FIELDS = (
     "nodes",
@@ -67,6 +67,14 @@ SCALAR_FIELDS = (
     "num_input_tokens",
     "num_output_tokens",
     "num_total_tokens",
+    "reward",
+    "usage",
+    "is_truncated",
+    "num_turns",
+    "num_branches",
+    "last_reply",
+    "has_error",
+    "is_format_violation",
 )
 """Re-sent whole whenever their dumped value changes."""
 
@@ -93,7 +101,8 @@ def dump(model: BaseModel, **kwargs: Any) -> dict:
 class TraceCursor:
     """What of one trace has been sent."""
 
-    def __init__(self) -> None:
+    def __init__(self, attempt: int) -> None:
+        self.attempt = attempt
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
@@ -159,7 +168,7 @@ class DeltaStreamer:
                 try:
                     await self.send(delta)
                 except Exception:  # the cursor stays put: the next flush diffs it again
-                    get_logger().opt(exception=True).warning(f"Failed to send delta for {trace_id}")
+                    get_logger().opt(exception=True).warning(f"Failed to send trace delta trace={trace_id}")
                     continue
                 if cursor is None:
                     self.cursors.pop(trace_id, None)
@@ -179,7 +188,12 @@ class DeltaStreamer:
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
-            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor()
+            if sent is not None and sent.attempt != trace.attempt:
+                # A retried agent run replaces its trace under the same id: the client
+                # drops the abandoned attempt, then the new one opens from scratch.
+                deltas.append((trace.id, {"trace": trace.id, "discard": True}, None))
+                sent = None
+            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor(trace.attempt)
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links: dict[int, list[dict]] = {}
@@ -266,7 +280,7 @@ class EpisodeAssembly:
 
     def finish(self, head: dict, summaries: list[TraceSummary]) -> dict:
         """The full episode record: `head` (the episode without its traces) joined with
-        the assembled traces in the server's order. A count mismatch means a delta was
+        the assembled traces in the worker's order. A count mismatch means a delta was
         lost, which the wire never does in a live connection — fail loudly."""
         traces = []
         for summary in summaries:
@@ -277,7 +291,7 @@ class EpisodeAssembly:
             if len(trace["nodes"]) != summary.nodes or len(trace["calls"]) != summary.calls:
                 raise RuntimeError(
                     f"served trace {summary.id} assembled {len(trace['nodes'])} nodes / "
-                    f"{len(trace['calls'])} calls, server reports {summary.nodes} / {summary.calls}"
+                    f"{len(trace['calls'])} calls, worker reports {summary.nodes} / {summary.calls}"
                 )
             traces.append(trace)
         return {**head, "traces": traces}
