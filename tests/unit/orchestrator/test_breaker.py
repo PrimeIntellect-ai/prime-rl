@@ -1,9 +1,10 @@
+import time
 import uuid
 from types import SimpleNamespace
 
 from prime_rl.configs.orchestrator import CircuitBreakerConfig
 from prime_rl.orchestrator.breaker import CircuitBreaker
-from prime_rl.orchestrator.dispatcher import INFRA_ERRORS, infra_failure
+from prime_rl.orchestrator.dispatcher import INFRA_ERRORS, Dispatcher, infra_failure
 
 
 def test_circuit_breaker_opens_probes_and_recovers():
@@ -66,3 +67,18 @@ def test_infra_failure_skips_recovered_traces():
     assert infra_failure(SimpleNamespace(errors=[], traces=[recovered, failed]), INFRA_ERRORS) is None
     failed.errors.append(sandbox)
     assert infra_failure(SimpleNamespace(errors=[], traces=[recovered, failed]), INFRA_ERRORS) is sandbox
+
+
+def test_cancelled_probe_frees_the_breaker_while_older_episodes_run():
+    breaker = CircuitBreaker(CircuitBreakerConfig(failures=1, cooldown=10))
+    opened_at = time.monotonic() - 100
+    breaker.trip("SandboxError: 503", opened_at)
+    breaker.on_dispatch()
+    older = SimpleNamespace(kind="train", env_name="e", started_at=opened_at - 5)
+    probe = SimpleNamespace(kind="train", env_name="e", started_at=opened_at + 50)
+    d = Dispatcher.__new__(Dispatcher)
+    d.breakers, d.inflight = {"e": breaker}, {"older": older, "probe": probe}
+    assert not d.env_allowed("e")
+    # Overload shedding cancels the probe's group before it reports.
+    del d.inflight["probe"]
+    assert d.env_allowed("e") and not breaker.probing

@@ -802,8 +802,11 @@ class Dispatcher:
         breaker = self.breakers.get(env_name)
         if breaker is None:
             return True
+        # While the breaker is open only the probe starts, so the probe is the env's one in-flight episode started
+        # since it opened; episodes from before the trip may still be running.
         if breaker.probing and not any(
-            meta.kind == "train" and meta.env_name == env_name for meta in self.inflight.values()
+            meta.kind == "train" and meta.env_name == env_name and meta.started_at >= breaker.opened_at
+            for meta in self.inflight.values()
         ):
             breaker.probing = False  # the probe was cancelled before it reported
         return breaker.allows(time.monotonic())
