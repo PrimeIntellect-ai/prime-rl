@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from prime_rl.trainer.models.kernels.qwen3_8_hyper_connection import fused_hc_mix
+from prime_rl.trainer.models.kernels.qwen3_8_hyper_connection.ops import fused_hc_combine_mix, fused_hc_mix
 
 
 class ExpandedRMSNorm(nn.Module):
@@ -50,19 +50,34 @@ class HyperConnection(nn.Module):
             nn.Linear(expanded_size, stream_count, bias=False) if with_residual_injection else None
         )
 
-    def mix(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None]]:
+    def mix(
+        self,
+        expanded_states: torch.Tensor,
+        pending_combine: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None]]:
+        """The block input, and what ``combine`` needs: the streams and the injection weights. ``pending_combine`` is
+        the previous sublayer's block output and injection weights, not yet combined: the mix applies it first and
+        returns the combined streams."""
+        weights = (
+            self.hc_norm.weight,
+            self.input_mix_weight_down.weight,
+            self.input_mix_weight_up.weight,
+            None if self.block_inject_weight is None else self.block_inject_weight.weight,
+            self.stream_count,
+            self.hc_norm.eps,
+        )
         if expanded_states.is_cuda:
-            block_input, injection_weights = fused_hc_mix(
-                expanded_states,
-                self.hc_norm.weight,
-                self.input_mix_weight_down.weight,
-                self.input_mix_weight_up.weight,
-                None if self.block_inject_weight is None else self.block_inject_weight.weight,
-                self.stream_count,
-                self.hc_norm.eps,
-            )
+            if pending_combine is None:
+                block_input, injection_weights = fused_hc_mix(expanded_states, *weights)
+            else:
+                expanded_states, block_input, injection_weights = fused_hc_combine_mix(
+                    expanded_states, *pending_combine, *weights
+                )
             return block_input, (expanded_states, injection_weights)
 
+        if pending_combine is not None:
+            block_output, pending_injection_weights = pending_combine
+            expanded_states = self.combine(block_output, (expanded_states, pending_injection_weights))
         normalized_states = self.hc_norm(expanded_states)
         mixing_weights = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
         mixing_weights = torch.sigmoid(self.input_mix_weight_up(mixing_weights))
@@ -74,8 +89,12 @@ class HyperConnection(nn.Module):
             injection_weights = 2.0 * torch.sigmoid(self.block_inject_weight(normalized_states) / self.stream_count)
         return block_input.to(expanded_states.dtype), (expanded_states, injection_weights)
 
-    def forward(self, expanded_states: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None]]:
-        return self.mix(expanded_states)
+    def forward(
+        self,
+        expanded_states: torch.Tensor,
+        pending_combine: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor | None]]:
+        return self.mix(expanded_states, pending_combine)
 
     def combine(
         self,

@@ -1,7 +1,7 @@
 """Dispatcher: schedules rollouts under a shared permit counter.
 
 - Capacity (``max_inflight``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server. The cap is dynamic —
+  one episode: one ``run`` request against an env worker pool. The cap is dynamic —
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
@@ -34,6 +34,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
+from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import CircuitBreakerConfig
@@ -64,11 +65,11 @@ LIVE_EVENT_CAP = 20_000
 ENV_HEALTH_INTERVAL_S = 10.0
 ENV_HEALTH_TIMEOUT_S = 10.0
 ENV_HEALTH_FAILURES = 3
-"""Consecutive missed health checks after which an env server's in-flight episodes are failed."""
+"""Consecutive missed health checks after which an env worker pool's in-flight episodes are failed."""
 
 
-class EnvServerUnresponsive(RuntimeError):
-    """An episode failed because its env server stopped answering health checks."""
+class EnvWorkerPoolUnresponsive(RuntimeError):
+    """An episode failed because its env worker pool stopped answering health checks."""
 
 
 INFRA_ERRORS = frozenset({"SandboxError", "InterceptionError", "TunnelError", "ToolsetError"})
@@ -235,7 +236,7 @@ class Dispatcher:
         self.breakers: dict[str, CircuitBreaker] = (
             {env.name: CircuitBreaker(circuit_breaker) for env in train_envs or ()} if circuit_breaker else {}
         )
-        # In-flight tasks cancelled because their env server stopped answering,
+        # In-flight tasks cancelled because their env worker pool stopped answering,
         # mapped to the failure they report
         self.aborted: dict[asyncio.Task, str] = {}
         self.health_task: asyncio.Task | None = None
@@ -582,6 +583,10 @@ class Dispatcher:
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            # A recursive harness's sub-agents are routed as sessions of their own.
+            for call in delta.get("calls", ()):
+                if (acp := call.get("acp")) is not None:
+                    session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
@@ -620,7 +625,7 @@ class Dispatcher:
         return True
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
-        """Delete the training arrays env servers kept for episodes no sink will see."""
+        """Delete the training arrays env workers kept for episodes no sink will see."""
         delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
 
     async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:
@@ -660,7 +665,7 @@ class Dispatcher:
         if task.cancelled():
             if aborted is None:
                 return
-            exc = EnvServerUnresponsive(aborted)
+            exc = EnvWorkerPoolUnresponsive(aborted)
         else:
             # Read the exception rather than re-raise it with ``task.result()``: re-raising adds this
             # frame, which holds ``task``, to the exception's traceback, a reference cycle that keeps
@@ -799,7 +804,7 @@ class Dispatcher:
         return aborted
 
     async def monitor_env_health(self) -> None:
-        """Probe every replica of every env server. A replica that misses
+        """Probe every replica of every env worker pool. A replica that misses
         ``ENV_HEALTH_FAILURES`` checks in a row gets its in-flight episodes failed and
         takes no new ones while another replica is up; a train env whose replicas are all
         down is paused until one answers again."""
@@ -820,23 +825,23 @@ class Dispatcher:
                 if result is True:
                     if replica in env.down:
                         get_logger().info(
-                            f"Env server of {kind} env {env.name} at {address} answers health checks again"
+                            f"Env worker pool of {kind} env {env.name} at {address} answers health checks again"
                         )
                         env.down.discard(replica)
                     misses[key] = 0
                     if breaker is not None:
-                        breaker.server_down = False
+                        breaker.pool_down = False
                     continue
                 misses[key] += 1
                 if misses[key] < ENV_HEALTH_FAILURES:
                     continue
                 env.down.add(replica)
-                reason = f"env server at {address} missed {misses[key]} health checks"
+                reason = f"env worker pool at {address} missed {misses[key]} health checks"
                 aborted = self.abort_episodes(env.running_on(replica), reason)
                 if misses[key] == ENV_HEALTH_FAILURES or aborted:
                     get_logger().warning(f"{kind} env {env.name}: {reason}; failing {aborted} in-flight episodes")
                 if breaker is not None and len(env.down) == len(env.env_clients):
-                    breaker.server_down = True
+                    breaker.pool_down = True
                     if breaker.state != "open":
                         breaker.trip(reason, time.monotonic())
                         await self.fail_paused_groups(env.name)

@@ -1,12 +1,11 @@
 """Compare two configs for a live update: what changed, and which changes are frozen.
 
-A field is frozen unless it is marked ``Field(json_schema_extra=LIVE)``. A LIVE field
-changes freely with everything below it, including swapping its value for None or for
-another config class. An unmarked sub-config is compared field by field, and so is an
-unmarked list of sub-configs of the same length, by position: LIVE fields below them stay
-live. Any other change to an unmarked field is frozen. A sub-config marked
-``Field(json_schema_extra=FROZEN)`` is frozen with everything below it, LIVE fields
-included."""
+A field is frozen unless it is ``Annotated`` with ``Live()``. A live field changes freely
+with everything below it, including swapping its value for None or for another config
+class. An unmarked sub-config is compared field by field, and so is an unmarked list of
+sub-configs of the same length, by position: live fields below them stay live. Any other
+change to an unmarked field is frozen. A sub-config annotated with ``Frozen()`` is frozen
+with everything below it, live fields included."""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,20 +14,32 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
-LIVE = {"live": True}
-"""``json_schema_extra`` marker for a field that may change while a run is going."""
 
-FROZEN = {"live": False}
-"""``json_schema_extra`` marker for a sub-config whose fields stay frozen, LIVE ones
-included: e.g. a default that only seeds other fields when the config loads."""
+@dataclass(frozen=True)
+class Live:
+    """``Annotated`` marker for a field that may change while a run is going."""
+
+    live: bool = True
+
+
+@dataclass(frozen=True)
+class Frozen:
+    """``Annotated`` marker for a sub-config whose fields stay frozen, live ones included:
+    e.g. a default that only seeds other fields when the config loads."""
+
+    live: bool = False
 
 
 def _live(info: FieldInfo, live: bool | None) -> bool | None:
     """Whether a field below a field whose state is ``live`` is live: True, False, or
     None while no marker has decided it."""
-    if live is not None or not isinstance(info.json_schema_extra, dict):
+    if live is not None:
         return live
-    return info.json_schema_extra.get("live")
+    for metadata in info.metadata:
+        marked = getattr(metadata, "live", None)
+        if marked is not None:
+            return marked
+    return None
 
 
 class ConfigChange(BaseModel):
@@ -107,7 +118,8 @@ def merge_resumed_config(base: Any, applied: Any, launch: Any) -> Any:
     """Merge dumped configs on resume: ``base`` is what the checkpointed run was launched
     with, ``applied`` what was live at the checkpoint, ``launch`` what this run is launched
     with. A value the launch config left as it was in ``base`` resumes from ``applied``; any
-    value the launch config changed wins."""
+    value the launch config changed wins. Sources match by name, so a source that the
+    launch config adds is used as launched."""
     if launch == base:
         return applied
     if isinstance(launch, dict) and isinstance(base, dict) and isinstance(applied, dict):
@@ -115,14 +127,35 @@ def merge_resumed_config(base: Any, applied: Any, launch: Any) -> Any:
             key: merge_resumed_config(base.get(key, _MISSING), applied.get(key, value), value)
             for key, value in launch.items()
         }
-    if (
-        isinstance(launch, list)
-        and isinstance(base, list)
-        and isinstance(applied, list)
-        and len(launch) == len(base) == len(applied)
-    ):
-        return [merge_resumed_config(*values) for values in zip(base, applied, launch)]
+    if isinstance(launch, list) and isinstance(base, list) and isinstance(applied, list) and len(base) == len(applied):
+        keys = [_source_key(item) for item in base]
+        if None not in keys:
+            # Sources merge by identity, not position, so a source added, removed or moved on
+            # resume never takes the live values of another source.
+            resumed = dict(zip(keys, zip(base, applied)))
+            return [
+                merge_resumed_config(*resumed[key], item) if (key := _source_key(item)) in resumed else item
+                for item in launch
+            ]
+        if len(launch) == len(base):
+            return [merge_resumed_config(*values) for values in zip(base, applied, launch)]
     return launch
+
+
+def _source_key(item: Any) -> str | None:
+    """The identity of a dumped source config: its `resolved_name` (its name, else its env
+    id), the key `TrainSource` restores curricula by. None for anything that is not a source."""
+    if not isinstance(item, dict) or "name" not in item or not isinstance(item.get("env"), dict):
+        return None
+    if item["name"]:
+        return item["name"]
+    env = item["env"]
+    taskset = env.get("taskset")
+    taskset_id = taskset.get("id") if isinstance(taskset, dict) else None
+    # As `vf.EnvConfig.env_id`.
+    if taskset_id and env.get("id"):
+        return f"{env['id']}+{taskset_id}"
+    return taskset_id or env.get("id")
 
 
 _MISSING = object()

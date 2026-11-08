@@ -1,7 +1,7 @@
 """Per-env circuit breaker for train dispatch.
 
 An env whose episodes keep failing on infrastructure (sandbox API down, model
-interception broken, env server unresponsive) is paused so the other envs fill
+interception broken, env worker pool unresponsive) is paused so the other envs fill
 the batch. After a cooldown the breaker lets one probe episode through: a clean
 probe closes it, a failed one reopens it with a doubled cooldown."""
 
@@ -28,14 +28,14 @@ class CircuitBreaker:
         self.opened_at = 0.0
         self.probing = False
         """Whether the probe episode of an open breaker is in flight."""
-        self.server_down = False
-        """Set while the env server misses health probes; no probe goes out until it answers."""
+        self.pool_down = False
+        """Set while the env worker pool misses health probes; no probe goes out until it answers."""
 
     def allows(self, now: float) -> bool:
         """Whether one more episode of this env may start now."""
         if self.state == "closed":
             return True
-        if self.server_down or self.probing:
+        if self.pool_down or self.probing:
             return False
         return now - self.opened_at >= self.cooldown
 
@@ -54,7 +54,7 @@ class CircuitBreaker:
             self.failed_groups.clear()
             if self.state == "closed":
                 return None
-            if self.server_down:  # a probe that outlived its env server must not resume dispatch
+            if self.pool_down:  # a probe that outlived its env worker pool must not resume dispatch
                 self.probing = False
                 return None
             self.state, self.probing, self.cooldown = "closed", False, self.config.cooldown

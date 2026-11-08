@@ -545,7 +545,7 @@ class MegaMoEExpertCompute:
         top_scores: torch.Tensor,
         selected_experts_indices: torch.Tensor,
     ) -> torch.Tensor:
-        # The trainer configs reject a max_tokens_per_rank below the micro batch, so every rank fits;
+        # The trainer configs reject a max_tokens_per_rank below a rank's share of the micro batch, so every rank fits;
         # this only catches direct use with a smaller buffer
         num_tokens = x.shape[0]
         if num_tokens > self.max_tokens_per_rank:

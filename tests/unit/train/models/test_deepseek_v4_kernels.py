@@ -885,12 +885,14 @@ def _mhc_pre_reference(x, fn, scale, base, norm_eps, hc_eps):
 
 @pytest.mark.parametrize("num_tokens", [1, 37, 130])
 @pytest.mark.parametrize("outputs", [4, 24])
-def test_fused_mhc_pre_matches_reference(num_tokens, outputs):
+@pytest.mark.parametrize("fn_dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("hidden", [96, 128, 512])
+def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
     """Outputs and every gradient of the fused mHC input side, across token-block and hidden-block boundaries."""
-    hc, hidden = 4, 96
+    hc = 4
     x = torch.randn(1, num_tokens, hc, hidden, device="cuda") * torch.rand(1, num_tokens, 1, 1, device="cuda") * 4
     x = x.to(torch.bfloat16)
-    fn = torch.randn(outputs, hc * hidden, device="cuda") * 0.05
+    fn = (torch.randn(outputs, hc * hidden, device="cuda") * 0.05).to(fn_dtype)
     scale = torch.rand(outputs, device="cuda") + 0.5
     base = torch.randn(outputs, device="cuda") * 0.5
     fused_inputs = _leaves(x, fn, scale, base)

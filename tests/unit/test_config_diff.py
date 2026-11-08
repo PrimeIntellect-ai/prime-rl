@@ -1,7 +1,9 @@
-import pytest
-from pydantic import BaseModel, Field
+from typing import Annotated
 
-from prime_rl.configs.diff import FROZEN, LIVE, diff_config, frozen_raw_changes, merge_resumed_config
+import pytest
+from pydantic import BaseModel
+
+from prime_rl.configs.diff import Frozen, Live, diff_config, frozen_raw_changes, merge_resumed_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import ResumeConfig
 
@@ -17,23 +19,23 @@ class OtherLeaf(BaseModel):
 
 class Source(BaseModel):
     name: str
-    weight: float = Field(1.0, json_schema_extra=LIVE)
+    weight: Annotated[float, Live()] = 1.0
 
 
 class Algo(BaseModel):
     kind: str = "grpo"
-    penalty: Leaf | None = Field(None, json_schema_extra=LIVE)
+    penalty: Annotated[Leaf | None, Live()] = None
 
 
 class Root(BaseModel):
-    live: Leaf = Field(Leaf(), json_schema_extra=LIVE)
+    live: Annotated[Leaf, Live()] = Leaf()
     frozen: Leaf = Leaf()
     swappable: Leaf | OtherLeaf = Leaf()
     optional: Leaf | None = None
-    live_optional: Leaf | None = Field(None, json_schema_extra=LIVE)
+    live_optional: Annotated[Leaf | None, Live()] = None
     source: list[Source] = [Source(name="math"), Source(name="code")]
     algo: Algo = Algo()
-    default_algo: Algo = Field(Algo(), json_schema_extra=FROZEN)
+    default_algo: Annotated[Algo, Frozen()] = Algo()
 
 
 @pytest.mark.parametrize(
@@ -99,6 +101,15 @@ def test_frozen_raw_changes_skips_live_fields(field, algo, frozen):
     assert frozen_raw_changes(root, root.model_dump(), raw) == frozen
 
 
+def test_markers_are_value_objects():
+    """Markers compare by value and a copy of a field's metadata still decides live/frozen."""
+    from dataclasses import replace
+
+    assert Live() == Live() and Frozen() == Frozen() and Live() != Frozen()
+    assert replace(Live()).live is True
+    assert replace(Frozen()).live is False
+
+
 def test_frozen_fields_accept_assignment():
     """A launcher may fill in a field that cannot change live, e.g. hosted training
     sets ``resume`` on the parsed config."""
@@ -125,3 +136,35 @@ A_LIVE = {"batch_size": 128, "max_staleness": 8, "source": [{"ratio": 2.0}, {"ra
 )
 def test_merge_resumed_config(launch, expected):
     assert merge_resumed_config(A, A_LIVE, launch) == expected
+
+
+def source(name: str | None, ratio: float, taskset: str = "math") -> dict:
+    return {"name": name, "env": {"id": "", "taskset": {"id": taskset}}, "ratio": ratio}
+
+
+SOURCES = {"source": [source("math", 1.0), source(None, 1.0, taskset="code")]}
+SOURCES_LIVE = {"source": [source("math", 2.0), source(None, 3.0, taskset="code")]}
+
+
+@pytest.mark.parametrize(
+    ("launch", "expected"),
+    [
+        (
+            [source(None, 1.0, taskset="code"), source("math", 1.0)],
+            [source(None, 3.0, taskset="code"), source("math", 2.0)],
+        ),
+        ([source("math", 1.0), source("logic", 1.0)], [source("math", 2.0), source("logic", 1.0)]),
+        ([source(None, 1.0, taskset="code")], [source(None, 3.0, taskset="code")]),
+        (
+            [source("math", 1.0, taskset="math-v2"), source(None, 1.0, taskset="code"), source("new", 5.0)],
+            [source("math", 2.0, taskset="math-v2"), source(None, 3.0, taskset="code"), source("new", 5.0)],
+        ),
+        (
+            [source("math", 1.0), source("code", 1.0, taskset="code")],
+            [source("math", 2.0), source("code", 3.0, taskset="code")],
+        ),
+    ],
+    ids=["reordered", "replaced", "removed", "updated_and_added", "named_as_resolved"],
+)
+def test_merge_resumed_config_matches_sources_by_name(launch, expected):
+    assert merge_resumed_config(SOURCES, SOURCES_LIVE, {"source": launch}) == {"source": expected}

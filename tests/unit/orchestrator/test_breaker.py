@@ -27,24 +27,24 @@ def test_circuit_breaker_opens_probes_and_recovers():
     assert breaker.cooldown == 15
     assert not breaker.allows(now=26)
 
-    # An unresponsive env server holds the probe back until it answers again.
-    breaker.server_down = True
+    # An unresponsive env worker pool holds the probe back until it answers again.
+    breaker.pool_down = True
     assert not breaker.allows(now=32)
-    breaker.server_down = False
+    breaker.pool_down = False
     assert breaker.allows(now=32)
     breaker.on_dispatch()
     assert breaker.record(True, None, 33, uuid.uuid4(), 32) == "closed"
     assert breaker.allows(now=33) and breaker.cooldown == 10 and not breaker.failed_groups
 
 
-def test_probe_success_does_not_close_while_server_down():
+def test_probe_success_does_not_close_while_pool_down():
     breaker = CircuitBreaker(CircuitBreakerConfig(failures=1, cooldown=10))
     assert breaker.record(False, "SandboxError: 503", 0, uuid.uuid4(), 0) == "open"
     breaker.on_dispatch()
-    breaker.server_down = True
+    breaker.pool_down = True
     assert breaker.record(True, None, 12, uuid.uuid4(), 11) is None
     assert breaker.state == "open" and not breaker.allows(now=13)
-    breaker.server_down = False
+    breaker.pool_down = False
     assert breaker.allows(now=13)
 
 
