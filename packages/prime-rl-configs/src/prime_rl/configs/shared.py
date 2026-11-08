@@ -281,10 +281,8 @@ class PolicyClientConfig(VLLMClientConfig):
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
-    """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
-
-    vf_level: str = Field(default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"))
-    """Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
+    """Log level for the process and the verifiers library it runs, env worker pools included.
+    Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
