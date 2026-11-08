@@ -25,7 +25,7 @@ class EvalSink:
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
-        # Env servers keep every episode's training arrays; eval never trains on them.
+        # Env workers keep every episode's training arrays; eval never trains on them.
         delete_payloads(url for trace in episode.traces for url in trace_payload_urls(trace))
         key = (episode_env_name(episode), eval_work(episode).step)
         self.pending_batches[key].append(episode)

@@ -127,11 +127,11 @@ def main():
         format_log_message,
         prepare_attempt_dirs,
         prepare_run,
-        write_env_server_config,
+        write_env_worker_pool_config,
         write_launch_artifacts,
     )
 
-    # The run identity is stamped on every episode and inherited by the env servers.
+    # The run identity is stamped on every episode and inherited by the env worker pools.
     prepare_run(config)
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
@@ -143,16 +143,16 @@ def main():
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     components: list[tuple[str, Path | str]] = [("Eval", config_dir / "eval.json")]
-    # One env server per source without an explicit `serve.address`, like the rl launcher's:
-    # `env-server @ <path>` binds an OS-assigned port and publishes it to the source's
+    # One env worker pool per source without an explicit `serve.address`, like the rl launcher's:
+    # `env-worker-pool @ <path>` binds an OS-assigned port and publishes it to the source's
     # address file, where the eval picks it up.
-    env_servers = [source for source in config.source if source.serve.address is None]
-    env_names = [source.resolved_name for source in env_servers]
-    if env_servers:
+    env_worker_pools = [source for source in config.source if source.serve.address is None]
+    env_names = [source.resolved_name for source in env_worker_pools]
+    if env_worker_pools:
         components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
-        for source in env_servers:
+        for source in env_worker_pools:
             components.append(
-                (f" {source.resolved_name}", write_env_server_config(config_dir, "eval", source, config.log))
+                (f" {source.resolved_name}", write_env_worker_pool_config(config_dir, "eval", source, config.log))
             )
     if config.dry_run:
         logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
@@ -163,15 +163,15 @@ def main():
     from prime_rl.eval.eval import run_eval
 
     processes: list[Popen] = []
-    for source in env_servers:
+    for source in env_worker_pools:
         name = source.resolved_name
-        logger.info(f"Starting {name} server")
-        env_server_log = log_dir / "envs" / "eval" / f"{name}.log"
-        env_server_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_server_log, "w") as log_file_handle:
+        logger.info(f"Starting {name} env worker pool")
+        env_worker_pool_log = log_dir / "envs" / "eval" / f"{name}.log"
+        env_worker_pool_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(env_worker_pool_log, "w") as log_file_handle:
             processes.append(
                 Popen(
-                    ["env-server", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
+                    ["env-worker-pool", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
                     env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
                     stdout=log_file_handle,
                     stderr=log_file_handle,

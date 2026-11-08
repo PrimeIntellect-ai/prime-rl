@@ -17,26 +17,19 @@ if TYPE_CHECKING:
 
 def index_record(episode: vf.Episode) -> dict[str, Any]:
     """The part of the episode's record (`to_record`) that `summarize_episode` reads:
-    everything but the nodes' payloads. Built one trace at a time, so no single call
-    holds the GIL for a whole long episode."""
+    everything but the nodes and model calls. Built one trace at a time, so no single
+    call holds the GIL for a whole long episode."""
     record = episode.model_dump(mode="json", exclude={"traces"}, exclude_none=True)
-    record["traces"] = []
-    for trace in episode.traces:
-        head = trace.model_dump(mode="json", exclude={"nodes"}, exclude_none=True)
-        head["nodes"] = [
-            {"sampled": node.sampled} if node.parent is None else {"parent": node.parent, "sampled": node.sampled}
-            for node in trace.nodes
-        ]
-        record["traces"].append(head)
+    record["traces"] = [
+        trace.model_dump(mode="json", exclude={"nodes", "calls"}, exclude_none=True) for trace in episode.traces
+    ]
     return record
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
-    """Flatten a trace timing tree to phase -> seconds (same walk as the viewer)."""
+    """Flatten a trace timing tree to phase -> seconds."""
     if isinstance(obj.get("duration"), (int, float)):
         out[prefix] = out.get(prefix, 0.0) + obj["duration"]
-    elif isinstance(obj.get("start"), (int, float)) and isinstance(obj.get("end"), (int, float)):
-        out[prefix] = out.get(prefix, 0.0) + (obj["end"] - obj["start"])
     for key, value in obj.items():
         if isinstance(value, dict):
             walk_timing(value, f"{prefix}/{key}" if prefix else key, out)
@@ -52,21 +45,6 @@ def episode_kind(rec: dict) -> str:
     return (run.get("work") or {}).get("type") or run.get("type") or "eval"
 
 
-TRUNCATING_STOPS = frozenset(
-    {"max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"}
-)
-"""The stop conditions ``verifiers.v1.Trace.is_truncated`` counts as truncation."""
-
-
-def trace_truncated(trace: dict) -> bool:
-    """``Trace.is_truncated`` for a dumped trace: a framework limit stopped it, or its
-    last successful model call ran out of length."""
-    if trace.get("stop_condition") in TRUNCATING_STOPS:
-        return True
-    last = next((call for call in reversed(trace.get("calls") or []) if call.get("error") is None), None)
-    return bool(last and last.get("finish_reason") == "length")
-
-
 def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     """One index row: what the table, the filters, the chart and the sort need.
 
@@ -75,31 +53,18 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     rewards, advantages = [], []
     input_tokens = rec.get("num_input_tokens")
     output_tokens = rec.get("num_output_tokens")
-    turns = branches = 0
+    branches = 0
     stop_condition = None
     truncated = False
     timeout = bool(rec.get("is_timeout"))
     reward_parts: dict[str, list[float]] = {}
     metric_parts: dict[str, list[float]] = {}
     timing: dict[str, float] = {}
-    costs: list[float] = []
     for trace in rec.get("traces") or []:
-        costs.extend(
-            usage["cost"]
-            for call in trace.get("calls") or []
-            if isinstance(usage := call.get("usage") or {}, dict) and isinstance(usage.get("cost"), (int, float))
-        )
-        nodes = trace.get("nodes") or []
-        parents = {node.get("parent") for node in nodes if "parent" in node}
-        branches += max(0, len(nodes) - len(parents))
-        if trace.get("rewards"):  # skip reward-less seats (e.g. a judge) in the episode mean
-            rewards.append(
-                sum(
-                    (r.get("score") or 0) * (r.get("weight") if r.get("weight") is not None else 1)
-                    for r in trace["rewards"].values()
-                    if isinstance(r, dict)
-                )
-            )
+        branches += trace.get("num_branches") or 0
+        # skip reward-less seats (e.g. a judge) in the episode mean
+        if trace.get("rewards") and isinstance(trace.get("reward"), (int, float)):
+            rewards.append(trace["reward"])
         for name, r in (trace.get("rewards") or {}).items():
             if isinstance(r, dict) and isinstance(r.get("score"), (int, float)):
                 reward_parts.setdefault(name, []).append(r["score"])
@@ -111,18 +76,15 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         advantage = (trace.get("info") or {}).get("advantage")
         if advantage is not None:
             advantages.append(advantage)
-        for node in nodes:
-            if node.get("sampled"):
-                turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
-        truncated = truncated or trace_truncated(trace)
+        truncated = truncated or bool(trace.get("is_truncated"))
         timeout = timeout or bool(trace.get("is_timeout"))
     first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
         "metrics": {name: sum(v) / len(v) for name, v in metric_parts.items()},
         "timing": timing,
-        "cost": sum(costs) if costs else None,
+        "cost": (rec.get("usage") or {}).get("cost"),
         "line": line,
         "offset": offset,
         "id": rec.get("id"),
@@ -138,7 +100,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "advantage": sum(advantages) / len(advantages) if advantages else None,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "turns": turns,
+        "turns": rec.get("num_turns"),
         "branches": branches,
         "stop_condition": stop_condition,
         "truncated": truncated,

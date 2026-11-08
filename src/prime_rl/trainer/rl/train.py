@@ -325,12 +325,12 @@ def train(config: TrainerConfig):
             if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
                 dataloader.release_payloads()
             # A step where no micro batch's arrays could be fetched anywhere is not a
-            # transient failure (unreachable or mismatched env servers): stop instead of
+            # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
                     "Could not fetch the training arrays of any micro batch this step; check that "
-                    "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
+                    "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)

@@ -49,7 +49,7 @@ class ServedEvalConfig(EvalSourcesConfig):
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
-        """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
+        """Where each eval source's env worker pool lives, keyed by ``("eval", resolved_name)``.
         Same contract as ``OrchestratorConfig.env_addresses``: an explicit ``serve.address``
         is an externally managed server; None means the launcher spawns the server and the
         eval learns its address from the file it publishes."""
@@ -63,7 +63,7 @@ class EvalResumeConfig(BaseConfig):
 
 class EvalConfig(ServedEvalConfig):
     """``uv run eval``: evaluate the configured sources once against a live inference
-    server, then exit. Every source's env server is spawned by the eval process unless
+    pool, then exit. Every source's env worker pool is spawned by the eval process unless
     the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
     ``prime login``) with the concurrency pinned at 128."""
 

@@ -10,7 +10,7 @@ from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
-from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import (
@@ -39,7 +39,7 @@ CONFIG_CLASSES = [
     PretrainConfig,
     OrchestratorConfig,
     InferenceConfig,
-    EnvServerConfig,
+    EnvWorkerPoolConfig,
     EvalConfig,
 ]
 

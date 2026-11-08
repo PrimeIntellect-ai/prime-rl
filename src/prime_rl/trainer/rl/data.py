@@ -265,7 +265,7 @@ class DataLoader:
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def release_payloads(self) -> None:
-        """Free the last batch's arrays on the env servers. Call once every rank that may
+        """Free the last batch's arrays on the env workers. Call once every rank that may
         read them has fetched them."""
         delete_payloads(self.payload_urls)
         self.payload_urls = []

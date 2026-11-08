@@ -86,7 +86,9 @@ class _Keeping:
             self.hook.discard(self.episode)
 
 
-class EnvServer:
+class EnvWorker:
+    """Execute episodes through one Verifiers env and stream their traces over ZMQ."""
+
     def __init__(
         self,
         config: EnvConfig,
@@ -130,7 +132,7 @@ class EnvServer:
         """Rebuild a request's task from its wire data: validate into the taskset's
         declared `TaskData` type and wrap it in the declared `Task` with the config's
         task subtree — the same construction the taskset's own `load()` performs. The
-        client owns the taskset; this server never `load()`s data, so pool workers
+        client owns the taskset; this worker never `load()`s data, so pool workers
         don't each pull the dataset."""
         data = self.data_cls.model_validate(task_data)
         return self.task_cls(data, self.env.config.taskset.task)
@@ -183,7 +185,7 @@ class EnvServer:
                 running = self._running.get(target)
                 if running is not None:
                     running.cancel()
-                    get_logger().info(f"Cancelled run {target} on client request")
+                    get_logger().info(f"Cancelled run on client request request_id={target}")
                 # The client dropped the reply, or will: nothing will take the arrays.
                 self._expire_delivered()
                 kept = self._kept.pop(target.encode(), None)
@@ -200,7 +202,9 @@ class EnvServer:
             # exact; the requesting client has already given up on the result
             response = BaseResponse(success=False, error="Cancelled: rollout aborted")
         except Exception as e:  # a failed request is data, not a crash — report and keep serving
-            get_logger().opt(exception=True).warning(f"Request failed - {e}")
+            get_logger().opt(exception=True).warning(
+                f"Failed request method={method.decode(errors='replace')} - {type(e).__name__}: {e}"
+            )
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
         try:
             data = msgpack.packb(
@@ -210,7 +214,7 @@ class EnvServer:
             )
         except Exception as e:
             # Encoding failures must also reply so clients don't wait indefinitely.
-            get_logger().opt(exception=True).warning(f"Response encoding failed - {e}")
+            get_logger().opt(exception=True).warning(f"Failed to encode response - {type(e).__name__}: {e}")
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
             data = msgpack.packb(response.model_dump(), use_bin_type=True)
         delivered = False
@@ -218,7 +222,7 @@ class EnvServer:
             await self.frontend.send_multipart([client_id, request_id, b"reply", data], copy=False)
             delivered = response.success
         except zmq.ZMQError as e:
-            get_logger().warning(f"Failed to send response - {e}")
+            get_logger().warning(f"Failed to send response - {type(e).__name__}: {e}")
         finally:
             # Also on a cancel (shutdown) while the reply is sending.
             kept = self._kept.pop(request_id, None)
@@ -241,7 +245,7 @@ class EnvServer:
             del self._delivered[request_id]
 
     async def run(self) -> None:
-        get_logger().info(f"EnvServer up (taskset={self.taskset_id}, address={self.address})")
+        get_logger().info(f"Started env worker taskset={self.taskset_id} address={self.address}")
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
@@ -254,7 +258,7 @@ class EnvServer:
                         continue
                     frames = await self.frontend.recv_multipart()
                     if len(frames) != 4:
-                        get_logger().warning(f"Invalid message - expected 4 frames, got {len(frames)}")
+                        get_logger().warning(f"Dropped malformed request frames={len(frames)} expected=4")
                         continue
                     client_id, request_id, method, payload = frames
                     task = asyncio.create_task(self._handle(client_id, request_id, method, payload))
@@ -273,4 +277,4 @@ class EnvServer:
                     task.cancel()
                 self.frontend.close()
                 self.ctx.term()
-                get_logger().info(f"EnvServer down (taskset={self.taskset_id})")
+                get_logger().info(f"Stopped env worker taskset={self.taskset_id} address={self.address}")
