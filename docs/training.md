@@ -357,7 +357,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` (an HF model or a folder with a `config.json`) only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
 **Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
 
@@ -380,21 +380,26 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Model.** The default model is nanochat d12 (12 layers, 768 wide), shipped with prime-rl as a folder with only its `config.json` ([`packages/prime-rl-configs/src/prime_rl/configs/models/nanochat-d12`](../packages/prime-rl-configs/src/prime_rl/configs/models/nanochat-d12/config.json)), with Qwen3's tokenizer (`Qwen/Qwen3-30B-A3B`). To train another shape, write a folder with your own `config.json`, for example a copy of the default's with more layers, and point `model.name` at it. Its tokenizer is `tokenizer.name`:
+**Model.** `model.name` is required: an HF model or a folder with a `config.json`, of which only the config is read. The tokenizer is `model.name`'s unless `[tokenizer] name` sets another, and the shards must be tokenized with it; a folder with only a `config.json` needs `[tokenizer] name`. [`examples/extra/pretrain`](../examples/extra/pretrain/pretrain.toml) trains nanochat d12 (12 layers, 768 wide) from such a folder, with GPT-2's tokenizer:
 
 ```toml
 [model]
-name = "models/nanochat-d20"     # a folder with a config.json
+name = "examples/extra/pretrain/nanochat-d12"   # a folder with only a config.json
 
 [tokenizer]
-name = "Qwen/Qwen3-30B-A3B"
+name = "openai-community/gpt2"
 ```
 
-**Configure.** Only `data.paths` is required:
+To train another shape, copy that folder and edit its `config.json`, or point `model.name` at an existing model.
+
+**Configure.** `model.name` and `data.paths` are required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
 max_steps = 1000
+
+[model]
+name = "Qwen/Qwen3-0.6B"   # only the architecture is read; the tokenizer matches the data above
 
 [data]
 paths = ["data/fineweb-edu"]

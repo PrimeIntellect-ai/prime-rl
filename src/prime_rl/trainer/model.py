@@ -443,6 +443,16 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
+def check_vocab_size(model_config: PretrainedConfig, tokenizer: PreTrainedTokenizer) -> None:
+    """Fail when the tokenizer has more tokens than the model has embeddings."""
+    vocab_size = getattr(model_config, "vocab_size", None) or model_config.text_config.vocab_size
+    if len(tokenizer) > vocab_size:
+        raise ValueError(
+            f"The tokenizer {tokenizer.name_or_path} has {len(tokenizer)} tokens, more than the model's vocab_size "
+            f"({vocab_size})"
+        )
+
+
 def _expert_shard_placement_fn(
     experts: nn.Module,
     expert_mesh_info: FSDPMeshInfo,

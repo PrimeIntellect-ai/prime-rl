@@ -1,21 +1,22 @@
-import torch
-from transformers import AutoConfig
+from pathlib import Path
 
-from prime_rl.configs.pretrain import DEFAULT_MODEL, DEFAULT_TOKENIZER, PretrainConfig
+import pytest
+import torch
+from tokenizers import Tokenizer, models
+from transformers import AutoConfig, PreTrainedTokenizerFast
+
+from prime_rl.trainer.model import check_vocab_size
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nanochat import NanochatConfig, NanochatForCausalLM
 
+EXAMPLE_MODEL = Path(__file__).parents[4] / "examples" / "extra" / "pretrain" / "nanochat-d12"
 
-def test_pretraining_defaults_to_nanochat(tmp_path):
-    """The default pretraining model is the nanochat config shipped with prime-rl, with Qwen3's tokenizer."""
-    config = PretrainConfig(data={"paths": [tmp_path]}, output_dir=tmp_path)
-    assert (config.model.name, config.tokenizer.name) == (DEFAULT_MODEL, DEFAULT_TOKENIZER)
-    assert config.run.name.startswith("nanochat-d12--")
-    model_config = AutoConfig.from_pretrained(config.model.name)
+
+def test_nanochat_builds_from_the_example_config():
     with torch.device("meta"):
-        model = NanochatForCausalLM(model_config)
+        model = NanochatForCausalLM(AutoConfig.from_pretrained(EXAMPLE_MODEL))
     assert len(model.model.layers) == 12
-    assert model.model.embed_tokens.weight.shape == (151936, 768)
+    assert model.model.embed_tokens.weight.shape == (50304, 768)
 
 
 def test_nanochat_trains_on_cpu():
@@ -37,3 +38,11 @@ def test_nanochat_trains_on_cpu():
     assert loss.isfinite()
     assert all(p.grad is not None and p.grad.isfinite().all() for p in model.parameters())
     assert model.model.embed_tokens.weight.grad.abs().sum() > 0
+
+
+def test_a_tokenizer_larger_than_the_vocabulary_fails():
+    tokens = {f"t{i}": i for i in range(64)}
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(models.WordLevel(tokens, unk_token="t0")))
+    check_vocab_size(NanochatConfig(vocab_size=64), tokenizer)
+    with pytest.raises(ValueError, match="64 tokens, more than the model's vocab_size \\(32\\)"):
+        check_vocab_size(NanochatConfig(vocab_size=32), tokenizer)

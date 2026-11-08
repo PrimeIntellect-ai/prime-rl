@@ -1,0 +1,18 @@
+# nanochat d12 (12 layers, 768 wide) trained from scratch, with GPT-2's tokenizer. Tokenize the data with
+# openai-community/gpt2 and eos_token "<|endoftext|>" (see docs/training.md#pretraining), then run from the repo root:
+#
+#   uv run pretrain @ examples/extra/pretrain/pretrain.toml
+
+mode = "pretrain"
+max_steps = 1000
+
+[model]
+name = "examples/extra/pretrain/nanochat-d12"  # a folder with only a config.json
+
+[tokenizer]
+name = "openai-community/gpt2"
+
+[data]
+paths = ["data/fineweb-edu-gpt2"]
+seq_len = 2048
+batch_size = 256

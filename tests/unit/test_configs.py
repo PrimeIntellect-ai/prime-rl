@@ -157,13 +157,15 @@ def test_rl_launcher_config_roundtrip(tmp_path):
 
 
 def test_pretrain_config_roundtrip(tmp_path):
-    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config, which
-    `uv run sft` rejects."""
+    """A minimal pretrain TOML (a model and data) gets the pretraining defaults and survives the launcher's resolved
+    config, which `uv run sft` rejects. The tokenizer is the model's."""
     from prime_rl.entrypoints.launcher import write_config
 
-    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    model = {"name": "examples/extra/pretrain/nanochat-d12"}
+    write_toml(tmp_path / "pretrain.toml", {"model": model, "data": {"paths": [str(tmp_path / "tokens")]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
     assert config.data.type == "datatrove"
+    assert config.tokenizer.name == model["name"]
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
     assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
 

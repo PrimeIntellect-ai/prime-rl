@@ -1,6 +1,6 @@
 {
   "model_type": "nanochat",
-  "vocab_size": 151936,
+  "vocab_size": 50304,
   "hidden_size": 768,
   "num_hidden_layers": 12,
   "num_attention_heads": 6,
