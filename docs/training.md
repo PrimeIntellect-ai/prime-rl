@@ -403,7 +403,7 @@ paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. With `data.packed_rows = true`, every document is one pre-packed row of `seq_len + 1` tokens; rows are read consecutively and unshuffled, with row `r` going to data rank `r % data_world_size`. `data.mask_target_id` excludes a target token from the loss, which `[val.data]` can use to skip a separator token. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
 **Launch.**
 

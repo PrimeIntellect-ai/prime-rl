@@ -10,6 +10,7 @@ from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.nanochat import create_nanochat_optimizer
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -127,6 +128,8 @@ def _create_optimizer(
             )
         case "muon":
             return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
+        case "nanochat_muon":
+            return create_nanochat_optimizer(config, named_params)
         case "sign_sgd":
             return SignSGD(
                 params=trainable_params,

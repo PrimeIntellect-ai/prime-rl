@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
+from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LambdaLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.configs.trainer import SchedulerConfig
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
@@ -85,6 +85,24 @@ def setup_cosine_scheduler(
     return SequentialLR(optimizer, schedulers, milestones=milestones)
 
 
+def setup_warmdown_scheduler(
+    optimizer: Optimizer, max_steps: int, warmup_ratio: float, warmdown_ratio: float, final_lr_frac: float
+) -> LRScheduler:
+    """Nanochat's schedule: linear warmup, flat, linear warmdown to ``final_lr_frac``."""
+    warmup_steps = round(warmup_ratio * max_steps)
+    warmdown_steps = round(warmdown_ratio * max_steps)
+
+    def multiplier(step: int) -> float:
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        if step <= max_steps - warmdown_steps:
+            return 1.0
+        progress = (max_steps - step) / warmdown_steps
+        return progress + (1 - progress) * final_lr_frac
+
+    return LambdaLR(optimizer, multiplier)
+
+
 def setup_scheduler(
     optimizer: OptimizerLike,
     scheduler_config: SchedulerConfig,
@@ -108,6 +126,14 @@ def setup_scheduler(
                 decay_steps=scheduler_config.decay_steps,
                 lr=lr,
                 min_lr=scheduler_config.min_lr,
+            )
+        case "warmdown":
+            return setup_warmdown_scheduler(
+                base_optimizer,
+                max_steps=max_steps,
+                warmup_ratio=scheduler_config.warmup_ratio,
+                warmdown_ratio=scheduler_config.warmdown_ratio,
+                final_lr_frac=scheduler_config.final_lr_frac,
             )
         case "cosine":
             return setup_cosine_scheduler(
