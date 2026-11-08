@@ -25,6 +25,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen3_8Flash
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
 from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel, materialize_qwen_vl_images
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -220,12 +221,12 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
 
 class Qwen3_8FlashNextVLMModel(nn.Module):
     """Composite (``qwen4_exp``) model: image embeddings replace the image placeholder embeddings, while PLE keeps
-    hashing the raw placeholder ids."""
+    hashing the raw placeholder ids. ``language_model_only`` configs build no ``visual``."""
 
     def __init__(self, config: Qwen3_8FlashNextConfig) -> None:
         super().__init__()
         self.config = config
-        self.visual = Qwen3_8FlashNextVisionModel(config.vision_config)
+        self.visual = None if config.language_model_only else Qwen3_8FlashNextVisionModel(config.vision_config)
         self.language_model = Qwen3_8FlashNextTextModel(config.text_config)
         self.cp_context = CPContext()
 
@@ -293,6 +294,14 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
+        if self.visual is None:
+            return self.language_model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                routed_experts=routed_experts,
+                seq_lens=seq_lens,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
         inputs_embeds, position_ids = self.prepare_inputs(
             input_ids,
             position_ids,
@@ -323,9 +332,10 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
 class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
     def __init__(self, config: Qwen3_8FlashNextConfig) -> None:
         super().__init__(config)
-        self.is_vlm = hasattr(config, "vision_config")
-        text_config = config.text_config if self.is_vlm else config
-        self.model = Qwen3_8FlashNextVLMModel(config) if self.is_vlm else Qwen3_8FlashNextTextModel(config)
+        composite = hasattr(config, "vision_config")
+        self.is_vlm = composite and not config.language_model_only
+        text_config = config.text_config if composite else config
+        self.model = Qwen3_8FlashNextVLMModel(config) if composite else Qwen3_8FlashNextTextModel(config)
         self.supports_packed_multimodal_training = self.is_vlm
         self.vocab_size = text_config.vocab_size
         self.num_experts = text_config.num_experts
@@ -394,7 +404,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         )
 
     def init_buffers_post_meta(self) -> None:
-        language_model = self.model.language_model if self.is_vlm else self.model
+        language_model = get_language_model(self)
         language_model.rotary_emb.reset_parameters()
         if self.is_vlm:
             self.model.visual.rotary_pos_emb.reset_parameters()

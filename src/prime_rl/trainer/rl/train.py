@@ -69,7 +69,7 @@ from prime_rl.trainer.utils import (
     STALENESS_BINS,
     TensorStats,
     begin_backward,
-    broadcast_pause,
+    broadcast_step_action,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
@@ -110,6 +110,7 @@ def train(config: TrainerConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,
@@ -272,16 +273,15 @@ def train(config: TrainerConfig):
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
     control_server.start()
-    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
-        if config.control is not None:
-            paused = broadcast_pause(controller, progress.step)
-            is_last_step = is_last_step or paused
+        step_action = broadcast_step_action(controller, progress.step) if config.control is not None else None
+        paused = step_action == "pause"
+        is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -325,12 +325,12 @@ def train(config: TrainerConfig):
             if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
                 dataloader.release_payloads()
             # A step where no micro batch's arrays could be fetched anywhere is not a
-            # transient failure (unreachable or mismatched env servers): stop instead of
+            # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
                     "Could not fetch the training arrays of any micro batch this step; check that "
-                    "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
+                    "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
@@ -686,17 +686,24 @@ def train(config: TrainerConfig):
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
+        # Count the step before checkpointing it, so a resume continues the counters from here.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
+        progress.total_tokens += num_tokens
+        progress.total_samples += batch_size
+
         # Checkpoint the step we just finished (model = policy v{progress.step}).
-        if (
-            (config.ckpt and config.ckpt.interval)
-            # the last step is written once after the loop (final ckpt), so skip it here
-            and not is_last_step
-            and progress.step % config.ckpt.interval == 0
-        ):
+        is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
+        # The last step is written once after the loop (final ckpt), so skip it here.
+        if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            if step_action == "checkpoint":
+                controller.mark_saved(progress.step)
 
             ckpt_manager.maybe_clean()
         else:
@@ -716,12 +723,6 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
-        progress.total_tokens += num_tokens
-        progress.total_samples += batch_size
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_flops, forward_backward_time)
         mfu_6dn = perf_counter.get_step_mfu(
@@ -747,6 +748,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
+        if "ep_imbalance/rank/mean" in tensor_metrics:
+            step_message += f" | EP Imbalance {tensor_metrics['ep_imbalance/rank/mean']:.4f}"
         if "routing_confidence/mean" in tensor_metrics:
             step_message += f" | Routing Conf. {tensor_metrics['routing_confidence/mean']:.4f}"
         logger.success(step_message)
@@ -816,12 +819,12 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None or paused:
+    if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        if paused:
+        if step_action is not None:
             controller.mark_saved(progress.step)
-        else:
+        if not paused:
             ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:
