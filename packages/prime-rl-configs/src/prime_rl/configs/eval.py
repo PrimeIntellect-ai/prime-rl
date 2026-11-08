@@ -4,7 +4,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import (
     ClientConfig,
@@ -49,7 +49,7 @@ class ServedEvalConfig(EvalSourcesConfig):
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
-        """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
+        """Where each eval source's env worker pool lives, keyed by ``("eval", resolved_name)``.
         Same contract as ``OrchestratorConfig.env_addresses``: an explicit ``serve.address``
         is an externally managed server; None means the launcher spawns the server and the
         eval learns its address from the file it publishes."""
@@ -63,7 +63,7 @@ class EvalResumeConfig(BaseConfig):
 
 class EvalConfig(ServedEvalConfig):
     """``uv run eval``: evaluate the configured sources once against a live inference
-    server, then exit. Every source's env server is spawned by the eval process unless
+    pool, then exit. Every source's env worker pool is spawned by the eval process unless
     the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
     ``prime login``) with the concurrency pinned at 128."""
 
@@ -108,7 +108,7 @@ class EvalConfig(ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
+    monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     @property
@@ -172,14 +172,9 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
-
-    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
-    converts the trainer's ``[monitors.prime]`` into a
-    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
-    type would drop (or forbid) the prime block at the eval.json
-    dump/re-parse boundary."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``): the
+    trainer's, so the process logs to the trainer's W&B and Prime runs."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):

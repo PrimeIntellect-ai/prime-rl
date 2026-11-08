@@ -1,4 +1,4 @@
-"""Turn a v1 `Trace` (the env server's native, typed output) into training data.
+"""Turn a v1 `Trace` (the env worker's native, typed output) into training data.
 
 The orchestrator holds a real `vf.Trace` (validated in `envs.py`), so everything here is
 attribute access — no dicts. The trace is a message graph (`trace.nodes`); each `trace.branches`
@@ -126,7 +126,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
     """
     samples: list[TrainingSample] = []
-    # Set by the env server when it keeps the arrays (`prime_rl.transports.payload`).
+    # Set by the env worker when it keeps the arrays (`prime_rl.transports.payload`).
     references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
