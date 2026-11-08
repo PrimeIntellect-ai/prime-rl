@@ -58,7 +58,10 @@ def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
     """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``."""
     path = directory / "config.json"
     if not path.exists():
-        return
+        raise ValueError(
+            f"The checkpoint at {directory} has no config.json, so its architecture can't be checked. For a checkpoint "
+            "saved without one, copy the config.json of the architecture it was trained with into that directory."
+        )
     saved = json.loads(path.read_text())
     current = json.loads(model_config.to_json_string(use_diff=False))
     # Fields only one side has come from another transformers version.

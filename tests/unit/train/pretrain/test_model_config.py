@@ -41,8 +41,10 @@ def test_cli_overrides_take_the_field_types():
         get_model_config(PretrainModelConfig(config={"model_type": "qwen3", "num_hidden_layers": "three"}))
 
 
-def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path):
+def test_a_checkpoint_with_another_or_no_architecture_does_not_load(tmp_path):
     config = Qwen3Config(**FIELDS)
+    with pytest.raises(ValueError, match="no config.json"):
+        check_model_config(config, tmp_path)
     write_model_config(config, tmp_path)
     check_model_config(config, tmp_path)
     with pytest.raises(ValueError, match="num_hidden_layers"):
