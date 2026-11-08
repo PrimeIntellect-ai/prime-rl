@@ -8,6 +8,11 @@ the sublayer input and any context ``write`` needs, ``write`` folds the sublayer
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.distributed.tensor import DTensor
+
+
+def local(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
 def rms_norm(x: torch.Tensor) -> torch.Tensor:
@@ -73,10 +78,10 @@ class GatedConnection(Connection):
         self.collapses_streams = not injection
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.norm_weight.zero_()
+        local(self.norm_weight).zero_()
         for module in (self.down, self.up, self.inject):
             if module is not None:
-                module.weight.normal_(0.0, 0.02, generator=generator)
+                local(module.weight).normal_(0.0, 0.02, generator=generator)
 
     def _normalized(self, state: torch.Tensor) -> torch.Tensor:
         streams = split_streams(state.float(), self.streams, self.hidden_size)
@@ -129,8 +134,8 @@ class HighwayConnection(Connection):
         self.up = nn.Linear(low_rank, hidden_size, bias=False)
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.down.weight.normal_(0.0, 0.02, generator=generator)
-        self.up.weight.zero_()
+        local(self.down.weight).normal_(0.0, 0.02, generator=generator)
+        local(self.up.weight).zero_()
 
     def read(self, state: torch.Tensor, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         inputs = rms_norm(state)
@@ -151,7 +156,7 @@ class RenormConnection(Connection):
         self.scale = nn.Parameter(torch.ones(1))
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.scale.fill_(1.0)
+        local(self.scale).fill_(1.0)
 
     def write(self, state, output, context, hidden=None) -> torch.Tensor:
         return rms_norm(state + output) * self.scale.to(state.dtype)
@@ -188,9 +193,9 @@ class DepthAttentionConnection(Connection):
         return torch.cat([stream.unsqueeze(-2), streams[..., 1:, :]], dim=-2).flatten(-2)
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.query.weight.normal_(0.0, 0.02, generator=generator)
-        self.key.weight.normal_(0.0, 0.02, generator=generator)
-        self.beta.fill_(0.1)
+        local(self.query.weight).normal_(0.0, 0.02, generator=generator)
+        local(self.key.weight).normal_(0.0, 0.02, generator=generator)
+        local(self.beta).fill_(0.1)
 
     def read(self, state: torch.Tensor, positions: torch.Tensor) -> tuple[torch.Tensor, None]:
         streams = split_streams(state, self.streams, self.hidden_size)
@@ -229,9 +234,9 @@ class StaticStreamsConnection(Connection):
         self.write_scale = nn.Parameter(torch.ones(streams))
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.norm_weight.zero_()
-        self.read_gain.zero_()
-        self.write_scale.copy_(torch.empty_like(self.write_scale).normal_(1.0, 0.05, generator=generator))
+        local(self.norm_weight).zero_()
+        local(self.read_gain).zero_()
+        local(self.write_scale).normal_(1.0, 0.05, generator=generator)
 
     def _read_streams(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         streams = split_streams(state, self.streams, self.hidden_size)
@@ -280,8 +285,8 @@ class RecycledGateConnection(Connection):
 
     def reset_parameters(self, generator: torch.Generator) -> None:
         for parameter in (self.norm_weight, self.gate_a, self.gate_b, self.write_alpha):
-            parameter.zero_()
-        self.write_beta.copy_(torch.empty_like(self.write_beta).normal_(0.0, 0.1, generator=generator))
+            local(parameter).zero_()
+        local(self.write_beta).normal_(0.0, 0.1, generator=generator)
 
     def initial_state(self, x0: torch.Tensor) -> torch.Tensor:
         zeros = torch.zeros(*x0.shape[:-1], self.num_streams * self.hidden_size, dtype=x0.dtype, device=x0.device)
@@ -344,9 +349,9 @@ class DepthReplayConnection(Connection):
         self.tau = nn.Parameter(torch.ones(1))
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.theta.zero_()
-        self.beta.zero_()
-        self.tau.fill_(1.0)
+        local(self.theta).zero_()
+        local(self.beta).zero_()
+        local(self.tau).fill_(1.0)
 
     def initial_state(self, x0: torch.Tensor) -> torch.Tensor:
         zeros = torch.zeros(*x0.shape[:-1], self.window * self.hidden_size, dtype=x0.dtype, device=x0.device)
@@ -383,7 +388,7 @@ class CausalFirConnection(Connection):
         self.coefficients = nn.Parameter(torch.zeros(taps * hidden_size))
 
     def reset_parameters(self, generator: torch.Generator) -> None:
-        self.coefficients.zero_()
+        local(self.coefficients).zero_()
 
     def read(self, state: torch.Tensor, positions: torch.Tensor) -> tuple[torch.Tensor, None]:
         taps = self.coefficients.to(state.dtype).view(self.taps, self.hidden_size)
