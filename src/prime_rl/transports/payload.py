@@ -1,7 +1,7 @@
 """Per-token training arrays passed by reference.
 
-Training arrays (routing rows, sampling masks, top-k heads) never leave an env server
-inline. When a train episode finishes, each env-server worker (`PayloadHook`) encodes every
+Training arrays (routing rows, sampling masks, top-k heads) never leave an env worker
+inline. When a train episode finishes, each env worker (`PayloadHook`) encodes every
 trainable branch's arrays, keeps the blob and serves it over HTTP; the trace carries only
 references in `trace.info[PAYLOAD_INFO_KEY]`. The orchestrator packs one `PayloadSlice` per
 sample, and each trainer rank fetches its micro batches' blobs before the step and assembles
@@ -9,10 +9,10 @@ them into the micro batch's array fields.
 
 Every kept blob is deleted exactly once, by whoever holds it last: the trainer deletes a
 step's blobs once every rank fetched them; the orchestrator deletes the blobs of samples
-and traces it drops without shipping; the env server deletes the blobs of episodes it
+and traces it drops without shipping; the env worker deletes the blobs of episodes it
 kept but did not deliver (`PayloadHook.discard`).
 
-Nothing here imports torch: every env-server worker imports this module.
+Nothing here imports torch: every env worker imports this module.
 """
 
 from __future__ import annotations
@@ -303,7 +303,7 @@ class _HTTPServer(ThreadingHTTPServer):
 
 
 class PayloadServer:
-    """One env-server worker's arrays, served at `GET <url>/<id>` and freed by
+    """One env worker's arrays, served at `GET <url>/<id>` and freed by
     `DELETE <url>/<id>`."""
 
     def __init__(self, bind_host: str, url_host: str | None = None):
@@ -353,7 +353,7 @@ def _fields(arrays: BranchArrays) -> set[str]:
 
 
 class PayloadHook:
-    """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
+    """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's arrays."""
 
     def __init__(self, bind_address: str | None = None):
         self._hosts = payload_host(bind_address)
@@ -419,7 +419,7 @@ class PayloadHook:
 
 
 def trace_payload_urls(trace: vf.Trace) -> list[str]:
-    """URLs of every blob an env server kept for the trace."""
+    """URLs of every blob an env worker kept for the trace."""
     payload = trace.info.get(PAYLOAD_INFO_KEY)
     return [f"{payload['url']}/{reference['id']}" for reference in payload["branches"].values()] if payload else []
 
@@ -450,7 +450,7 @@ def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
 
 class _Deleter:
     """Fire-and-forget DELETEs on daemon threads, so DELETEs still queued at exit (say,
-    to an env server that is gone) never hold the process up."""
+    to an env worker that is gone) never hold the process up."""
 
     def __init__(self, num_threads: int = 8) -> None:
         self.num_threads = num_threads
@@ -482,7 +482,7 @@ _deleter = _Deleter()
 
 
 def delete_payloads(urls: Iterable[str]) -> None:
-    """Free kept arrays on their env servers, without waiting. Call only once nothing will
+    """Free kept arrays on their env workers, without waiting. Call only once nothing will
     read them again."""
     _deleter.submit(urls)
 

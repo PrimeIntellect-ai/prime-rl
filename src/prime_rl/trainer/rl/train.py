@@ -53,7 +53,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -62,11 +61,11 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
-    setup_processor,
     take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -75,11 +74,12 @@ from prime_rl.trainer.utils import (
     STALENESS_BINS,
     TensorStats,
     begin_backward,
-    broadcast_pause,
+    broadcast_step_action,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
     get_ckpt_disk_metrics,
+    get_peak_memory_across_ranks,
     prepare_gradient_offload,
     scale_gradients_,
     setup_full_cpu_optimizer_offload,
@@ -115,6 +115,7 @@ def train(config: TrainerConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,
@@ -166,18 +167,16 @@ def train(config: TrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
-    processor = None
-    mm_adapter = None
+    materialize_images = None
     if config.model.vlm is not None:
+        if not getattr(model, "supports_packed_multimodal_training", False):
+            raise ValueError("Packed multimodal training requires model support")
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
-        mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+        materialize_images = partial(model.materialize_images, processor=processor)
+    prepare = partial(prepare_micro_batch, materialize_images=materialize_images)
     micro_batch_workers = WorkerPool(config.data.num_workers)
-
-    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
-        raise ValueError("Packed multimodal training requires model support")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
@@ -211,6 +210,7 @@ def train(config: TrainerConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            model_name=config.model.name,
         )
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
@@ -278,16 +278,15 @@ def train(config: TrainerConfig):
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
     control_server.start()
-    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
-        if config.control is not None:
-            paused = broadcast_pause(controller, progress.step)
-            is_last_step = is_last_step or paused
+        step_action = broadcast_step_action(controller, progress.step) if config.control is not None else None
+        paused = step_action == "pause"
+        is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -331,12 +330,12 @@ def train(config: TrainerConfig):
             if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
                 dataloader.release_payloads()
             # A step where no micro batch's arrays could be fetched anywhere is not a
-            # transient failure (unreachable or mismatched env servers): stop instead of
+            # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
                     "Could not fetch the training arrays of any micro batch this step; check that "
-                    "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
+                    "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
@@ -466,7 +465,6 @@ def train(config: TrainerConfig):
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
                 mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
-            mm_forward_policy = micro_batch.pop("mm_forward_policy")
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -487,9 +485,8 @@ def train(config: TrainerConfig):
 
             if cp_enabled:
                 validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
-                defer_vlm_cp_to_model = bool(
-                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
-                )
+                # The VLM shards image inputs itself, after building their positions.
+                defer_vlm_cp_to_model = mm_kwargs is not None
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
                 seq_lens_are_pre_shard = True
@@ -527,7 +524,6 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
-                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
@@ -695,17 +691,24 @@ def train(config: TrainerConfig):
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
+        # Count the step before checkpointing it, so a resume continues the counters from here.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
+        progress.total_tokens += num_tokens
+        progress.total_samples += batch_size
+
         # Checkpoint the step we just finished (model = policy v{progress.step}).
-        if (
-            (config.ckpt and config.ckpt.interval)
-            # the last step is written once after the loop (final ckpt), so skip it here
-            and not is_last_step
-            and progress.step % config.ckpt.interval == 0
-        ):
+        is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
+        # The last step is written once after the loop (final ckpt), so skip it here.
+        if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            if step_action == "checkpoint":
+                controller.mark_saved(progress.step)
 
             ckpt_manager.maybe_clean()
         else:
@@ -725,18 +728,12 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
-        progress.total_tokens += num_tokens
-        progress.total_samples += batch_size
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_flops, forward_backward_time)
         mfu_6dn = perf_counter.get_step_mfu(
             perf_counter.flop_counter.flops_per_token_6dn * num_tokens, forward_backward_time
         )
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
@@ -756,6 +753,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
+        if "ep_imbalance/rank/mean" in tensor_metrics:
+            step_message += f" | EP Imbalance {tensor_metrics['ep_imbalance/rank/mean']:.4f}"
         if "routing_confidence/mean" in tensor_metrics:
             step_message += f" | Routing Conf. {tensor_metrics['routing_confidence/mean']:.4f}"
         logger.success(step_message)
@@ -767,6 +766,7 @@ def train(config: TrainerConfig):
             "perf/mfu": mfu,
             "perf/mfu_6dn": mfu_6dn,
             "perf/peak_memory": peak_memory,
+            "perf/non_torch_memory": non_torch_memory,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
@@ -824,12 +824,12 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None or paused:
+    if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        if paused:
+        if step_action is not None:
             controller.mark_saved(progress.step)
-        else:
+        if not paused:
             ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:

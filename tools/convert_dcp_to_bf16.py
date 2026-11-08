@@ -6,7 +6,7 @@ the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
 The model and tokenizer configs are read from the run's resolved config
-(``<run>/configs/latest/resolved/trainer.json`` or ``sft.json``). LoRA checkpoints are not
+(``<run>/configs/latest/resolved/trainer.json``, ``sft.json`` or ``pretrain.json``). LoRA checkpoints are not
 supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
@@ -33,9 +33,10 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
-from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
+from prime_rl.trainer.model import setup_model, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
@@ -57,7 +58,7 @@ CONVERSION_OVERRIDES = {
     "attn": "flash_attention_2",
 }
 
-RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
+RUN_CONFIG_NAMES = ("trainer.json", "sft.json", "pretrain.json")
 
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:
