@@ -11,7 +11,7 @@ from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.env import run_env_worker_pool, set_episode_hook
 from prime_rl.orchestrator.utils import setup_env_worker_pool_logging
 from prime_rl.transports.payload import PayloadHook
-from prime_rl.utils.config import cli
+from prime_rl.utils.config import check_mode, cli
 from prime_rl.utils.utils import clean_exit
 
 
@@ -64,6 +64,7 @@ def main():
     # the Python entrypoints and the SLURM templates alike, hands env worker pools $PRL_RUN_ID;
     # a standalone pool is a run of its own.
     os.environ.setdefault("VF_RUN_ID", os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex)
+    check_mode("env-worker-pool")
     run_pool(cli(EnvWorkerPoolConfig))
 
 

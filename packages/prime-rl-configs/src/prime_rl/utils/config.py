@@ -1,4 +1,7 @@
+import json
 import os
+import sys
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -75,3 +78,45 @@ def rsetattr(obj: Any, attr_path: str, value: Any) -> None:
         return setattr(obj, attr_path, value)
     parent_path, attr = attr_path.rsplit(".", 1)
     setattr(rgetattr(obj, parent_path), attr, value)
+
+
+MODES = ("rl", "sft", "pretrain", "eval")
+"""Run kinds a config can name with its top-level ``mode``. ``uv run launch`` runs the entrypoint of the same name."""
+
+
+def config_files(args: list[str]) -> list[Path]:
+    """Root ``@ file`` references in ``args`` (a ``--flag @ file`` is a nested reference)."""
+    return [
+        Path(args[i + 1])
+        for i, arg in enumerate(args[:-1])
+        if arg == "@" and (i == 0 or not args[i - 1].startswith("--"))
+    ]
+
+
+def config_mode(args: list[str]) -> str | None:
+    """The ``mode`` that the root config files in ``args`` set, or None. Files that set different modes are an
+    error."""
+    modes = {}
+    for path in config_files(args):
+        # Hand-written configs are TOML; resolved configs that the launchers write and re-run are JSON.
+        if path.suffix not in (".toml", ".json") or not path.is_file():
+            continue
+        with path.open("rb") as f:
+            mode = (tomllib.load(f) if path.suffix == ".toml" else json.load(f)).get("mode")
+        if mode is not None:
+            modes[path] = mode
+    if len(set(modes.values())) > 1:
+        listed = ", ".join(dict.fromkeys(modes.values()))
+        files = "".join(f"\n  {path}: {mode}" for path, mode in modes.items())
+        raise SystemExit(f"config files set conflicting modes ({listed}):{files}")
+    mode = next(iter(modes.values()), None)
+    if mode is not None and mode not in MODES:
+        raise SystemExit(f'unknown mode "{mode}": use one of {", ".join(MODES)}')
+    return mode
+
+
+def check_mode(entrypoint: str, args: list[str] | None = None) -> None:
+    """Stop before parsing when the config files set conflicting modes or a mode other than ``entrypoint``."""
+    mode = config_mode(sys.argv[1:] if args is None else args)
+    if mode is not None and mode != entrypoint:
+        raise SystemExit(f'this is a `mode = "{mode}"` config: run it with `uv run {mode}` or `uv run launch`')
