@@ -95,7 +95,7 @@ def setup_optimizer(
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        overlap_model = model if offload_overlap_forward and config.type == "adamw" else None
+        overlap_model = model if offload_overlap_forward else None
         return CPUOffloadOptimizer(optimizer, overlap_model=overlap_model), None
 
     return optimizer, None

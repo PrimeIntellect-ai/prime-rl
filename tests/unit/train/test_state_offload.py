@@ -8,6 +8,7 @@ from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
 
 from prime_rl.trainer.ckpt import AppState
+from prime_rl.trainer.optim import state_offload
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 
 pytestmark = [pytest.mark.gpu]
@@ -159,3 +160,28 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
     assert [group["step"] for group in resumed_optimizer.param_groups] == [3, 3]
     run_steps(resumed_model, resumed_optimizer, num_steps=2, seed=2)
     assert_params_equal(model, resumed_model)
+
+
+@pytest.mark.parametrize("chunk_bytes", [1 << 30, 1 << 12])
+def test_chunked_muon_matches_plain_muon(monkeypatch, chunk_bytes: int) -> None:
+    """dion's Muon steps chunk by chunk (a Muon batch or a whole AdamW group per unit) and advances its
+    param-group step counters once per step."""
+    monkeypatch.setattr(state_offload, "CHUNK_BYTES", chunk_bytes)
+
+    def train(wrap: bool) -> tuple[torch.nn.Module, Optimizer]:
+        model = make_model(0)
+        groups = [
+            dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
+            dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
+        ]
+        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        if wrap:
+            optimizer = CPUOffloadOptimizer(optimizer)
+        run_steps(model, optimizer, num_steps=4, seed=1)
+        return model, optimizer
+
+    reference_model, _ = train(False)
+    offloaded_model, offloaded_optimizer = train(True)
+    assert_params_equal(reference_model, offloaded_model)
+    assert_states_offloaded(offloaded_optimizer)
+    assert [group["step"] for group in offloaded_optimizer.param_groups] == [4, 4]

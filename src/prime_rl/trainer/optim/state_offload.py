@@ -1,13 +1,15 @@
 import copy
+import math
 
 import torch
 from torch import nn
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
 from torch.distributed.tensor import DTensor
-from torch.optim import AdamW, Optimizer
+from torch.optim import Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
+from prime_rl.trainer.optim.subset_step import SubsetStep, subset_step_for
 from prime_rl.utils.logger import get_logger
 
 # Byte budget of one staging chunk. A single state larger than this gets a chunk of its own.
@@ -33,24 +35,37 @@ def _with_local(value: torch.Tensor, local: torch.Tensor) -> torch.Tensor:
     return new_dtensor
 
 
+def _nominal_bytes(value: torch.Tensor) -> int:
+    """Size of a tensor's local shard, the same on every rank: an even split of each sharded mesh dim."""
+    numel = value.numel()
+    if isinstance(value, DTensor):
+        shards = math.prod(
+            value.device_mesh.size(dim) for dim, placement in enumerate(value.placements) if placement.is_shard()
+        )
+        numel = -(-numel // shards)
+    return numel * value.element_size()
+
+
 class _ChunkedStep:
-    """One chunked AdamW step. Chunks stream through two GPU staging buffers: while chunk i updates,
+    """One chunked optimizer step. Chunks stream through two GPU staging buffers: while chunk i updates,
     chunk i+1 loads on the h2d stream and chunk i-1 writes back to pinned memory on the d2h stream.
 
-    Chunks are enqueued on demand by ``advance``. The step's hyperparameters and gradients are
-    captured up front, so a chunk enqueued after the scheduler step or ``zero_grad`` updates
+    Chunks are enqueued on demand by ``advance``. ``subset_step`` captured the step's hyperparameters
+    and gradients up front, so a chunk enqueued after the scheduler step or ``zero_grad`` updates
     exactly as it would have at step time."""
 
     def __init__(
         self,
         optimizer: Optimizer,
-        chunks: list[tuple[set[torch.Tensor], list[tuple[torch.Tensor, str, int]]]],
+        subset_step: SubsetStep,
+        chunks: list[tuple[list[torch.Tensor], list[tuple[torch.Tensor, str, int]]]],
         buffer_bytes: int,
         h2d: torch.cuda.Stream,
         d2h: torch.cuda.Stream,
         update: torch.cuda.Stream,
     ):
         self.optimizer = optimizer
+        self.subset_step = subset_step
         self.chunks = chunks
         self.h2d, self.d2h, self.update = h2d, d2h, update
         compute = torch.cuda.current_stream()
@@ -61,7 +76,6 @@ class _ChunkedStep:
         # The previous step's writebacks must land before the loads read the CPU states again.
         h2d.wait_stream(d2h)
         update.wait_stream(compute)
-        self.hyperparams = [{k: v for k, v in group.items() if k != "params"} for group in optimizer.param_groups]
         self.grads = {param: param.grad for params, _ in chunks for param in params}
         self.written_back: list[torch.cuda.Event | None] = [None, None]
         self.cpu_values: list[dict[tuple[torch.Tensor, str], torch.Tensor]] = [{}, {}]
@@ -89,23 +103,6 @@ class _ChunkedStep:
                 state[param][key] = _with_local(cpu_value, gpu_local)
             return self.h2d.record_event()
 
-    def _step_params(self, params: set[torch.Tensor]):
-        groups = self.optimizer.param_groups
-        current = [dict(group) for group in groups]
-        current_grads = {param: param.grad for param in params}
-        for group, hyperparams in zip(groups, self.hyperparams):
-            group.update(hyperparams)
-            group["params"] = [param for param in group["params"] if param in params]
-        for param in params:
-            param.grad = self.grads[param]
-        try:
-            self.optimizer.step()
-        finally:
-            for param in params:
-                param.grad = current_grads[param]
-            for group, values in zip(groups, current):
-                group.update(values)
-
     def advance(self, until: int) -> None:
         """Enqueue every chunk up to and including chunk ``until``."""
         state = self.optimizer.state
@@ -115,7 +112,7 @@ class _ChunkedStep:
             next_loaded = self._load(i + 1) if i + 1 < len(self.chunks) else None
             self.update.wait_event(self.loaded)
             with torch.cuda.stream(self.update):
-                self._step_params(params)
+                self.subset_step.step_params(params)
                 self.updated.append(self.update.record_event())
             self.d2h.wait_stream(self.update)
             with torch.cuda.stream(self.d2h):
@@ -146,27 +143,34 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     """
 
     def __init__(self, optimizer: Optimizer, overlap_model: nn.Module | None = None):
-        """With ``overlap_model`` (FSDP-sharded), a chunked AdamW step returns before its chunks
+        """The step is chunked for optimizers that can update a subset of their parameters at a time
+        (``subset_step.SupportsSubsetStep``, e.g. AdamW and Muon); others move all states at once.
+
+        With ``overlap_model`` (FSDP-sharded), a chunked step returns before its chunks
         run: they update on a side stream alongside the next forward, enqueued as the forward reaches
         them, and each FSDP parameter group waits only for the chunks holding its parameters before
         its all-gather. Anything else that reads the parameters must call ``wait()`` first."""
         self.optimizer = optimizer
+        self._subset_step = subset_step_for(optimizer)
         self._initialized = False
         self._cpu_buffers: dict[tuple[torch.Tensor, str], torch.Tensor] = {}
         self._streams: tuple[torch.cuda.Stream, torch.cuda.Stream, torch.cuda.Stream] | None = None
         self._fsdp_groups: dict[torch.Tensor, FSDPParamGroup] = {}
+        # Forward order of the FSDP groups.
+        self._group_order: dict[FSDPParamGroup, int] = {}
         self._in_flight: _ChunkedStep | None = None
         # Last chunk of the in-flight step holding each FSDP group's parameters.
         self._group_chunks: dict[FSDPParamGroup, int] = {}
-        if overlap_model is not None:
+        if overlap_model is not None and self._subset_step is not None:
             self._install_unshard_waits(overlap_model)
 
     def _install_unshard_waits(self, model: nn.Module) -> None:
-        fsdp_groups = {}
+        fsdp_groups, group_order = {}, {}
         for module in model.modules():
             if isinstance(module, FSDPModule):
                 # A module holds one group per mesh (e.g. experts on the EP mesh next to dense weights).
                 for group in module._get_fsdp_state()._fsdp_param_groups:
+                    group_order.setdefault(group, len(group_order))
                     for fsdp_param in group.fsdp_params:
                         fsdp_groups[fsdp_param.sharded_param] = group
         params = [p for group in self.optimizer.param_groups for p in group["params"]]
@@ -177,7 +181,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                 "the offloaded optimizer step will not overlap the next forward"
             )
             return
-        self._fsdp_groups = fsdp_groups
+        self._fsdp_groups, self._group_order = fsdp_groups, group_order
         for group in set(fsdp_groups.values()):
             group.unshard = self._unshard_after_step(group, group.unshard)
             group.wait_for_unshard = self._wait_for_unshard_after_step(group, group.wait_for_unshard)
@@ -262,7 +266,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return result
 
         # A parameter without state yet (no grad on any earlier step) is initialized by the full path below.
-        if isinstance(self.optimizer, AdamW) and all(
+        if self._subset_step is not None and all(
             p in self.state for group in self.param_groups for p in group["params"] if p.grad is not None
         ):
             return self._chunked_step()
@@ -278,23 +282,31 @@ class CPUOffloadOptimizer(OffloadOptimizer):
 
         return result
 
-    def _plan_chunks(self) -> tuple[list[tuple[set[torch.Tensor], list[tuple[torch.Tensor, str, int]]]], int]:
-        """Group whole parameters into chunks; each state except the CPU step counter gets an offset into a staging buffer."""
-        chunks, params, entries, used, max_used = [], set(), [], 0, 0
-        for param, state in self.optimizer.state.items():
-            param_entries, param_bytes = [], 0
-            for key, value in state.items():
-                if key == "step":
-                    continue
-                local = _local(value)
-                param_entries.append((param, key, param_bytes))
-                param_bytes += -(-local.numel() * local.element_size() // ALIGN_BYTES) * ALIGN_BYTES
-            if params and used + param_bytes > CHUNK_BYTES:
+    def _plan_chunks(
+        self, units: list[list[torch.Tensor]]
+    ) -> tuple[list[tuple[list[torch.Tensor], list[tuple[torch.Tensor, str, int]]]], int]:
+        """Pack whole units into chunks; each streamed state gets an offset into a staging buffer.
+
+        Chunk boundaries follow ``_nominal_bytes``, so every rank cuts the same chunks and a step that
+        communicates runs the same collectives everywhere."""
+        chunks, params, entries, used, nominal, max_used = [], [], [], 0, 0, 0
+        for unit in units:
+            unit_entries, unit_bytes, unit_nominal = [], 0, 0
+            for param in unit:
+                for key, value in self.optimizer.state[param].items():
+                    if not isinstance(value, torch.Tensor) or value.ndim == 0:
+                        continue
+                    local = _local(value)
+                    unit_entries.append((param, key, unit_bytes))
+                    unit_bytes += -(-local.numel() * local.element_size() // ALIGN_BYTES) * ALIGN_BYTES
+                    unit_nominal += _nominal_bytes(value)
+            if params and nominal + unit_nominal > CHUNK_BYTES:
                 chunks.append((params, entries))
-                params, entries, used = set(), [], 0
-            params.add(param)
-            entries.extend((param, key, used + offset) for param, key, offset in param_entries)
-            used += param_bytes
+                params, entries, used, nominal = [], [], 0, 0
+            params.extend(unit)
+            entries.extend((param, key, used + offset) for param, key, offset in unit_entries)
+            used += unit_bytes
+            nominal += unit_nominal
             max_used = max(max_used, used)
         if params:
             chunks.append((params, entries))
@@ -302,23 +314,30 @@ class CPUOffloadOptimizer(OffloadOptimizer):
 
     def _chunked_step(self):
         """Step chunk by chunk (see ``_ChunkedStep``). Without an overlap model the chunks update on
-        the compute stream and the step waits for the GPU; with one they update on a side stream,
-        enqueued as the next forward reaches their parameters.
+        the compute stream and the step waits for the GPU; with one they update on a side stream in
+        the forward order of their FSDP groups, enqueued as the next forward reaches them.
 
-        The step counters stay on CPU, as in plain torch AdamW, so the update never syncs the device."""
+        Scalar step counters stay where they are (on CPU for torch AdamW), so the update never syncs
+        the device."""
         self._finish_in_flight()
         if self._streams is None:
             self._streams = (torch.cuda.Stream(), torch.cuda.Stream(), torch.cuda.Stream())
         h2d, d2h, side = self._streams
-        chunks, buffer_bytes = self._plan_chunks()
+        subset_step = self._subset_step.begin_subset_step()
+        units = subset_step.units
+        if self._fsdp_groups:
+            units = sorted(units, key=lambda unit: min(self._group_order[self._fsdp_groups[p]] for p in unit))
+        chunks, buffer_bytes = self._plan_chunks(units)
         if not chunks:
             return
         if not self._fsdp_groups:
-            step = _ChunkedStep(self.optimizer, chunks, buffer_bytes, h2d, d2h, torch.cuda.current_stream())
+            step = _ChunkedStep(
+                self.optimizer, subset_step, chunks, buffer_bytes, h2d, d2h, torch.cuda.current_stream()
+            )
             step.advance(len(chunks))
             torch.cuda.synchronize()
             return
-        self._in_flight = _ChunkedStep(self.optimizer, chunks, buffer_bytes, h2d, d2h, side)
+        self._in_flight = _ChunkedStep(self.optimizer, subset_step, chunks, buffer_bytes, h2d, d2h, side)
         for i, (params, _) in enumerate(chunks):
             for param in params:
                 self._group_chunks[self._fsdp_groups[param]] = i
