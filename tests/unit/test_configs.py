@@ -10,7 +10,7 @@ from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
-from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import (
@@ -24,6 +24,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
 )
+from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -35,9 +36,10 @@ CONFIG_CLASSES = [
     RLConfig,
     TrainerConfig,
     SFTConfig,
+    PretrainConfig,
     OrchestratorConfig,
     InferenceConfig,
-    EnvServerConfig,
+    EnvWorkerPoolConfig,
     EvalConfig,
 ]
 
@@ -149,6 +151,27 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.vllm.max_logprobs >= 6
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
+def test_pretrain_config_roundtrip(tmp_path):
+    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config, which
+    `uv run sft` rejects."""
+    from prime_rl.entrypoints.launcher import write_config
+
+    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
+    assert config.data.type == "datatrove"
+    assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
+    assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
+
+    write_config(config, tmp_path / "pretrain.json")
+    assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
+    assert not can_parse(SFTConfig, ["@", str(tmp_path / "pretrain.json")])
+
+    muon = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--optim.type", "muon"])
+    assert muon.optim.lr == 1e-3
+    warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
+    assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
 
 
 def test_toml_partial_nested_override(tmp_path):

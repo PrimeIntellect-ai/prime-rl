@@ -18,6 +18,7 @@ dependencies = [
     "wandb-workspaces>=0.4.3",
     "prime-runs[train]>=0.1.6",
     "pyzmq>=27.1.0",
+    "msgpack>=1.1.2",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
@@ -28,8 +29,8 @@ dependencies = [
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
-    "verifiers[harbor]>=0.4.0",
-    "renderers[multimodal]>=0.1.12",
+    "verifiers[harbor]>=0.4.1",
+    "renderers[multimodal]>=0.2.0",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
     "fastapi>=0.115",
@@ -39,11 +40,12 @@ dependencies = [
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
+pretrain = "prime_rl.entrypoints.pretrain:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
 eval = "prime_rl.entrypoints.eval:main"
-env-server = "prime_rl.entrypoints.env_server:main"
+env-worker-pool = "prime_rl.entrypoints.env_worker_pool:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
 
 [project.entry-points."vllm.general_plugins"]
@@ -58,7 +60,6 @@ gpu = [
     "vllm>=0.33.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
-    "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     # DSA sparse MLA backward kernel (CuTe DSL); >=1.29 matches the pinned CUTLASS DSL 4.7.
     "nvidia-cudnn-frontend>=1.31.0 ; sys_platform == 'linux'",
@@ -243,7 +244,6 @@ renderers = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
-dion = false
 deep-ep = false
 deep-gemm = false
 nixl-cu13 = false
@@ -266,13 +266,12 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.3/vllm_router-0.2.3-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.3/vllm_router-0.2.3-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
@@ -351,12 +350,12 @@ select = ["F", "I"]
 # jaxtyping writes shapes as string annotations (`Int[Tensor, "batch seq"]`), which ruff reads as
 # forward references and reports as syntax errors / undefined names.
 [tool.ruff.lint.per-file-ignores]
+"src/prime_rl/trainer/data.py" = ["F722", "F821"]
 "src/prime_rl/trainer/distributed/ngram_lookup.py" = ["F722", "F821"]
 "src/prime_rl/trainer/models/layers/ngram.py" = ["F722", "F821"]
 "src/prime_rl/trainer/model.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/data.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/loss.py" = ["F722", "F821"]
-"src/prime_rl/trainer/sft/data.py" = ["F722", "F821"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["prime_rl"]

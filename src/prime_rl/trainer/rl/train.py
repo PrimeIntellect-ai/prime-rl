@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer, wait_for_optimizer_step
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import (
@@ -69,7 +69,7 @@ from prime_rl.trainer.utils import (
     STALENESS_BINS,
     TensorStats,
     begin_backward,
-    broadcast_pause,
+    broadcast_step_action,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
@@ -185,6 +185,7 @@ def train(config: TrainerConfig):
         list(model.named_parameters()),
         parallel_dims,
         offload=config.model.offload,
+        offload_overlap_forward=config.model.offload_overlap_forward,
         model=model,
         full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
     )
@@ -275,16 +276,15 @@ def train(config: TrainerConfig):
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
     control_server.start()
-    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
-        if config.control is not None:
-            paused = broadcast_pause(controller, progress.step)
-            is_last_step = is_last_step or paused
+        step_action = broadcast_step_action(controller, progress.step) if config.control is not None else None
+        paused = step_action == "pause"
+        is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -328,12 +328,12 @@ def train(config: TrainerConfig):
             if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
                 dataloader.release_payloads()
             # A step where no micro batch's arrays could be fetched anywhere is not a
-            # transient failure (unreachable or mismatched env servers): stop instead of
+            # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
                     "Could not fetch the training arrays of any micro batch this step; check that "
-                    "trainer ranks reach the env servers' payload URLs (see the trainer and env-server logs)"
+                    "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
@@ -681,6 +681,7 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
+            wait_for_optimizer_step(optimizer)
             if weight_sender.gathers_full_weights:
                 # The per-layer gather + fp8 conversion peaks ~50 GiB above the
                 # resident weights; release cached blocks (incl. offload-stream
@@ -703,16 +704,15 @@ def train(config: TrainerConfig):
         progress.total_samples += batch_size
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
-        if (
-            (config.ckpt and config.ckpt.interval)
-            # the last step is written once after the loop (final ckpt), so skip it here
-            and not is_last_step
-            and progress.step % config.ckpt.interval == 0
-        ):
+        is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
+        # The last step is written once after the loop (final ckpt), so skip it here.
+        if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            if step_action == "checkpoint":
+                controller.mark_saved(progress.step)
 
             ckpt_manager.maybe_clean()
         else:
@@ -828,12 +828,12 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None or paused:
+    if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        if paused:
+        if step_action is not None:
             controller.mark_saved(progress.step)
-        else:
+        if not paused:
             ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:

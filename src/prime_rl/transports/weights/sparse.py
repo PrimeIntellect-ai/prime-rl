@@ -1053,7 +1053,7 @@ class SparseFileSystemWeightSender(WeightSender):
 
     def _bind(self) -> None:
         """Hook the encoder into the optimizer's parameter updates."""
-        from prime_rl.trainer.optim import FullCPUOffloadOptimizer, OffloadOptimizer
+        from prime_rl.trainer.optim import FullCPUOffloadOptimizer
 
         optimizer, encoder = self.optimizer, self.encoder
         if isinstance(optimizer, FullCPUOffloadOptimizer):
@@ -1061,12 +1061,15 @@ class SparseFileSystemWeightSender(WeightSender):
             encoder.bind(self.model, self.world.is_master, params, full_offload=True)
             optimizer.weight_hook = encoder.optimizer_hook
             return
-        base = optimizer.base_optimizer if isinstance(optimizer, OffloadOptimizer) else optimizer
-        if not hasattr(base, "update_hook"):
-            raise NotImplementedError(f"Sparse weight broadcast cannot hook into {type(base).__name__} updates")
-        params = [p.to_local() if isinstance(p, DTensor) else p for group in base.param_groups for p in group["params"]]
+        # Optimizers on the GPU and CPUOffloadOptimizer run their updates as partial steps
+        # (``optim.subset_step``) between the calls of their ``update_hook``
+        if not hasattr(optimizer, "update_hook"):
+            raise NotImplementedError(f"Sparse weight broadcast cannot hook into {type(optimizer).__name__} updates")
+        params = [
+            p.to_local() if isinstance(p, DTensor) else p for group in optimizer.param_groups for p in group["params"]
+        ]
         encoder.bind(self.model, self.world.is_master, params, full_offload=False)
-        base.update_hook = encoder.update_hook
+        optimizer.update_hook = encoder.update_hook
 
     def wait_for_weight_reads(self) -> None:
         self._wait_for_encode()
