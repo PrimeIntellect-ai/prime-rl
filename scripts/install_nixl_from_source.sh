@@ -28,7 +28,8 @@ mkdir -p "$WORKSPACE"
 UCX_SRC="$WORKSPACE/ucx_source"
 UCX_INSTALL="$PROJECT_DIR/third_party/ucx"
 NIXL_SRC="$WORKSPACE/nixl_source"
-NIXL_VERSION="${NIXL_VERSION:-0.10.1}"
+# Git tag; NIXL tags carry a `v` prefix from 1.0 on, the wheel version does not.
+NIXL_VERSION="${NIXL_VERSION:-v1.5.0}"
 CUDA_PATH="${CUDA_HOME:-/usr/local/cuda}"
 NPROC=$(nproc)
 
@@ -102,5 +103,5 @@ printf 'meson-python==0.21.1\n' > "$WORKSPACE/nixl-build-constraints.txt"
 "$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR" \
     --build-constraint "$WORKSPACE/nixl-build-constraints.txt"
 
-WHEEL=$(ls "$WHEEL_DIR"/nixl_cu13-"$NIXL_VERSION"-*.whl | head -1)
+WHEEL=$(ls "$WHEEL_DIR"/nixl_cu13-"${NIXL_VERSION#v}"-*.whl | head -1)
 echo "=== NIXL wheel built at: $WHEEL ==="

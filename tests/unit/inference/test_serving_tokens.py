@@ -244,3 +244,41 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
     logprobs.append({3: Logprob(float("-inf"), 9, None)})
 
     np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
+
+
+@pytest.mark.asyncio
+async def test_flat_sampled_logprobs_are_packed():
+    """The default RL path (flat logprobs, logprobs<=1): upstream reads ``logprobs`` before it
+    consumes the outputs, so the override must turn them off up front."""
+    serving = object.__new__(PrimeRlServingTokens)
+    serving.engine_client = SimpleNamespace(
+        vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=False))
+    )
+    serving.enable_prompt_tokens_details = False
+    serving.enable_log_outputs = False
+    logprobs = FlatLogprobs()
+    for sampled, value in [(2, -0.25), (7, -20000.0)]:
+        logprobs.append_fast([sampled], [value], iter(range(1)), [None])
+    output = RequestOutput(
+        "test",
+        None,
+        [10, 11],
+        None,
+        [CompletionOutput(0, "", [2, 7], None, logprobs, finish_reason="length")],
+        True,
+    )
+
+    async def generate_outputs():
+        yield output
+
+    params = SamplingParams(logprobs=1, flat_logprobs=True)
+    request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params, return_token_ids=True)
+    metadata = RequestResponseMetadata(request_id="test")
+    response = await serving.serve_tokens_full_generator(request, generate_outputs(), "test", "test", metadata)
+    assert isinstance(response, GenerateTokensResponse)
+    assert params.logprobs == 1
+    [choice] = response.model_dump()["choices"]
+    assert choice["logprobs"] is None
+    packed = choice["completion_logprobs"]
+    values = np.frombuffer(pybase64.b64decode(packed["data"]), dtype=packed["dtype"])
+    np.testing.assert_array_equal(values, np.array([-0.25, -9999.0], dtype=np.float32))

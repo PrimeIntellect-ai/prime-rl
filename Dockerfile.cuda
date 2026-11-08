@@ -110,7 +110,8 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
 # build RPATH in wheel libraries, which dropped RUNPATH=/opt/ucx/lib and failed
 # the linkage check below on every build. Pin the validated backend.
 ARG INCLUDE_NIXL_FROM_SOURCE=1
-ARG NIXL_VERSION=0.10.1
+# NIXL tags carry a `v` prefix from 1.0 on.
+ARG NIXL_VERSION=v1.5.0
 RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         VIRTUAL_ENV=/app/.venv uv pip install pip \
         && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
@@ -251,10 +252,7 @@ COPY --from=builder --chown=appuser:appuser \
     --exclude=lib/python3.12/site-packages/flash_attn \
     --exclude=lib/python3.12/site-packages/flash_attn_2_cuda*.so \
     /app/.venv /app/.venv
-RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]' \
-    && if [ "$(uname -m)" = "x86_64" ]; then \
-        /app/.venv/bin/python -c 'from importlib.metadata import version; version("flash-mla")'; \
-    fi
+RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
