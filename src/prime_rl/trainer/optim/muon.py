@@ -93,10 +93,10 @@ def _quack_gemm_symmetric():
 
 
 @torch.compile(fullgraph=True, dynamic=True)
-def _normalize(G: Tensor, safety: float, epsilon: float) -> Tensor:
-    """G / (safety·‖G‖_F + epsilon) per matrix, in bf16, as one fused reduction."""
-    X = G.to(torch.bfloat16)
-    return X / (X.norm(dim=(-2, -1), keepdim=True) * safety + epsilon)
+def _normalize(X: Tensor, safety: float, epsilon: float) -> Tensor:
+    """X / (safety·‖X‖ + epsilon) per row of X [B, m·n], as one fused reduction. Flat rows keep the compiled
+    graphs few: one per device and batch size class."""
+    return X / (X.norm(dim=-1, keepdim=True) * safety + epsilon)
 
 
 def newton_schulz(G: Tensor, schedule: NewtonSchulz, epsilon: float) -> Tensor:
@@ -104,7 +104,8 @@ def newton_schulz(G: Tensor, schedule: NewtonSchulz, epsilon: float) -> Tensor:
 
     The Gram matrix A is the smaller of XXᵀ and XᵀX. For tall matrices this iterates X <- aX + X(bA + cA²) on
     A = XᵀX, the transpose of the wide iteration, without transposing X."""
-    X = _normalize(G, schedule.safety, epsilon).to(schedule.dtype).contiguous()
+    X = G.to(torch.bfloat16).reshape(G.size(0), -1)
+    X = _normalize(X, schedule.safety, epsilon).reshape(G.shape).to(schedule.dtype)
     tall = X.size(-2) > X.size(-1)
     # QuACK needs 16-byte aligned rows
     gemm_symmetric = _quack_gemm_symmetric() if X.is_cuda and X.size(-1) % 8 == 0 and X.size(-2) % 8 == 0 else None
@@ -209,15 +210,6 @@ def _offsets(sizes: Sequence[int]) -> list[int]:
 def _local(tensor: Tensor) -> Tensor:
     # The attribute, not to_local(): that is an autograd function, and the step reads thousands of local tensors
     return tensor._local_tensor if isinstance(tensor, DTensor) else tensor
-
-
-def _by_group(matrices: list["_Matrix"], tensors: list[Tensor]) -> list[tuple[dict, list[tuple["_Matrix", Tensor]]]]:
-    """Pair matrices with their tensors, per param group, leaving out empty shards."""
-    groups = {}
-    for matrix, tensor in zip(matrices, tensors):
-        if tensor.numel():
-            groups.setdefault(id(matrix.group), (matrix.group, []))[1].append((matrix, tensor))
-    return list(groups.values())
 
 
 def _shape_class(matrix: "_Matrix") -> tuple:
@@ -375,23 +367,20 @@ class _Step:
         self.optimizer._run(self.plan.restrict(params), self.hyperparameters, self.grads)
 
 
-# The element-wise updates take a whole unit's tensors per call: one compiled call costs ~50 µs of host time.
+# One tensor per call, flattened where the arithmetic allows: a compiled function recompiles for every new list
+# length or tensor rank, and with fullgraph=True running out of recompiles is an error.
 @torch.compile(fullgraph=True, dynamic=True)
-def _momentum_(M: list[Tensor], G: list[Tensor], U: list[Tensor], mu: Tensor, nesterov: bool) -> None:
+def _momentum_(M: Tensor, G: Tensor, U: Tensor, mu: Tensor, nesterov: bool) -> None:
     """M <- μM + G and U <- μM + G (Nesterov) or M."""
-    for m, g, u in zip(M, G, U):
-        g = g.to(m.dtype)
-        m.mul_(mu).add_(g)
-        u.copy_(m * mu + g if nesterov else m)
+    G = G.to(M.dtype)
+    M.mul_(mu).add_(G)
+    U.copy_(M * mu + G if nesterov else M)
 
 
 @torch.compile(fullgraph=True, dynamic=True)
-def _muon_update_(
-    X: list[Tensor], U: list[Tensor], lr: Tensor, adjusted_lr: list[Tensor], weight_decay: Tensor
-) -> None:
-    for x, u, a in zip(X, U, adjusted_lr):
-        x.mul_(1 - lr * weight_decay)
-        x.sub_(u * a)
+def _muon_update_(X: Tensor, U: Tensor, lr: Tensor, adjusted_lr: Tensor, weight_decay: Tensor) -> None:
+    X.mul_(1 - lr * weight_decay)
+    X.sub_(U * adjusted_lr)
 
 
 @torch.compile(fullgraph=True, dynamic=True)
@@ -614,19 +603,21 @@ class Muon(Optimizer):
     def _momentum(
         self, matrices: list[_Matrix], updates: list[Tensor], hyperparameters: dict, grads: dict[Tensor, Tensor]
     ) -> None:
-        """M <- μM + G, and the input of the orthogonalization into ``updates``, one call per param group."""
-        for group, members in _by_group(matrices, updates):
-            h = hyperparameters[id(group)]
-            M = [self._state(m.param, "momentum")[0] for m, _ in members]
-            G = [grads[m.param] for m, _ in members]
-            _momentum_(M, G, [U for _, U in members], h["mu"], h["nesterov"])
+        """M <- μM + G, and the input of the orthogonalization into ``updates``."""
+        for matrix, U in zip(matrices, updates):
+            if U.numel():
+                (M,) = self._state(matrix.param, "momentum")
+                h = hyperparameters[id(matrix.group)]
+                _momentum_(M.view(-1), grads[matrix.param].reshape(-1), U.view(-1), h["mu"], h["nesterov"])
 
     def _update(self, matrices: list[_Matrix], updates: list[Tensor], hyperparameters: dict) -> None:
-        for group, members in _by_group(matrices, updates):
-            h = hyperparameters[id(group)]
-            X = [_local(m.param) for m, _ in members]
-            adjusted_lr = [m.lr_ratio * h["lr"] for m, _ in members]
-            _muon_update_(X, [U for _, U in members], h["lr"], adjusted_lr, h["weight_decay"])
+        for matrix, U in zip(matrices, updates):
+            if U.numel():
+                X, h = _local(matrix.param), hyperparameters[id(matrix.group)]
+                if isinstance(matrix.lr_ratio, Tensor):  # per row
+                    _muon_update_(X, U, h["lr"], matrix.lr_ratio * h["lr"], h["weight_decay"])
+                else:
+                    _muon_update_(X.view(-1), U.reshape(-1), h["lr"], matrix.lr_ratio * h["lr"], h["weight_decay"])
 
     def _update_local(self, chunk: list[_Matrix], hyperparameters: dict, grads: dict[Tensor, Tensor]) -> None:
         """Orthogonalize matrices that every rank holds whole, as one batch per matrix shape. The chunk's inputs
