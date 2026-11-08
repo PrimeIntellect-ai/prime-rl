@@ -92,7 +92,7 @@ def _quack_gemm_symmetric():
     return gemm_symmetric
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(dynamic=True)
 def _normalize(X: Tensor, safety: float, epsilon: float) -> Tensor:
     """X / (safety·‖X‖ + epsilon) per row of X [B, m·n], as one fused reduction. Flat rows keep the compiled
     graphs few: one per device and batch size class."""
@@ -367,9 +367,9 @@ class _Step:
         self.optimizer._run(self.plan.restrict(params), self.hyperparameters, self.grads)
 
 
-# One tensor per call, flattened where the arithmetic allows: a compiled function recompiles for every new list
-# length or tensor rank, and with fullgraph=True running out of recompiles is an error.
-@torch.compile(fullgraph=True, dynamic=True)
+# The compiled helpers take one tensor each, flattened where the arithmetic allows, so they compile few graphs. They
+# have no graph breaks, but are not fullgraph: past dynamo's recompile limit they run eagerly instead of raising.
+@torch.compile(dynamic=True)
 def _momentum_(M: Tensor, G: Tensor, U: Tensor, mu: Tensor, nesterov: bool) -> None:
     """M <- μM + G and U <- μM + G (Nesterov) or M."""
     G = G.to(M.dtype)
@@ -377,13 +377,13 @@ def _momentum_(M: Tensor, G: Tensor, U: Tensor, mu: Tensor, nesterov: bool) -> N
     U.copy_(M * mu + G if nesterov else M)
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(dynamic=True)
 def _muon_update_(X: Tensor, U: Tensor, lr: Tensor, adjusted_lr: Tensor, weight_decay: Tensor) -> None:
     X.mul_(1 - lr * weight_decay)
     X.sub_(U * adjusted_lr)
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(dynamic=True)
 def _adamw_(
     X: list[Tensor],
     G: list[Tensor],
