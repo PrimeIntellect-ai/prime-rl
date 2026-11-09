@@ -291,45 +291,49 @@ def cudnn_flashmla_backward(
     sm_scale: float | None,
     max_slots: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
-        flash_attn_bwd_sm100_workspace_size,
-    )
-
     from prime_rl.trainer.models.kernels.cudnn_dsa_patch import flash_attn_bwd_sm90, flash_attn_bwd_sm100
+
+    if torch.cuda.get_device_capability(q.device)[0] == 9:
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import (
+            flash_attn_bwd_sm90_workspace_size as workspace_size,
+        )
+
+        backward = flash_attn_bwd_sm90
+    else:
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+            flash_attn_bwd_sm100_workspace_size as workspace_size,
+        )
+
+        backward = flash_attn_bwd_sm100
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]
     flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
-    flat_tensors = (
-        q.view(batch * seq_len, heads, dim),
-        kv.view(batch * n_positions, dim),
+    q_flat = q.view(batch * seq_len, heads, dim)
+    kv_flat = kv.view(batch * n_positions, dim)
+    # Both kernels fold `attn_sink` into the LSE, and a -inf sink folds in nothing.
+    no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
+    dq, dkv = torch.empty_like(q_flat), torch.empty_like(kv_flat)
+    backward(
+        q_flat,
+        kv_flat,
         out.view(batch * seq_len, heads, dim),
-        grad_out.view(batch * seq_len, heads, dim),
+        grad_out.contiguous().view(batch * seq_len, heads, dim),
         # A sink-inclusive natural-log LSE with no sink makes cuDNN's `exp(s - lse)` exactly the
         # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
         (lse * math.log(2.0)).view(batch * seq_len, heads),
+        no_sink,
+        flat_indices,
+        softmax_scale=sm_scale,
+        topk_length=topk_length,
+        dq=dq,
+        dkv=dkv,
+        d_sink=torch.empty_like(no_sink),
+        workspace=torch.empty(
+            workspace_size(batch * seq_len, batch * n_positions, dim, heads), dtype=torch.uint8, device=q.device
+        ),
+        max_slots=cudnn_flashmla_slot_width(max_slots),
     )
-    if torch.cuda.get_device_capability(q.device)[0] == 9:
-        dq, dkv = flash_attn_bwd_sm90(
-            *flat_tensors,
-            softmax_scale=sm_scale,
-            topk_idxs=flat_indices,
-            topk_length=topk_length,
-            max_slots=cudnn_flashmla_slot_width(max_slots),
-        )
-    else:
-        # The SM100 kernel folds `attn_sink` into the LSE itself, and a -inf sink folds in nothing.
-        no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
-        workspace_bytes = flash_attn_bwd_sm100_workspace_size(batch * seq_len, batch * n_positions, dim, heads)
-        dq, dkv, _ = flash_attn_bwd_sm100(
-            *flat_tensors,
-            no_sink,
-            flat_indices,
-            softmax_scale=sm_scale,
-            topk_length=topk_length,
-            workspace=torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device),
-            max_slots=cudnn_flashmla_slot_width(max_slots),
-        )
     delta = preprocess(heads, dim)(out, grad_out)
     return dq.view_as(q), dkv.view_as(kv), delta
 

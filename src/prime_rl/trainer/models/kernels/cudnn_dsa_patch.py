@@ -3,8 +3,8 @@
 Out of the box, cuDNN compiles a new kernel for every number of key slots per query (`topk_idxs.shape[-1]`), and
 that number changes with sequence length and document packing. The kernel only uses it as an upper limit, so
 when a call passes `topk_length` we compile once with a fixed limit that covers every call. Calls without
-`topk_length` are left alone. On SM100 this applies to the `generic_m64` kernel only, and the number of key slots
-must be a multiple of 64. This patches private cuDNN frontend internals and raises if they change.
+`topk_length` are left alone. On SM100 this applies to the non-deterministic `generic_m64` kernel only, and the
+number of key slots must be a multiple of 64. This patches private cuDNN frontend internals and raises if they change.
 """
 
 import math
@@ -15,7 +15,6 @@ import cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90
 import cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 as interface_sm100
 import cudnn.deepseek_sparse_attention.sparse_attention_backward.dsa_bwd_sm90 as kernel_sm90
 import cudnn.deepseek_sparse_attention.sparse_attention_backward.dsa_bwd_sm100 as kernel_sm100
-import cudnn.deepseek_sparse_attention.sparse_attention_backward.dsa_bwd_sm100_deterministic as kernel_sm100_deterministic
 import torch
 
 from prime_rl.utils.logger import get_logger
@@ -24,10 +23,6 @@ _topk_clamp: int | None = None
 _stock_init = kernel_sm90.FlashAttentionDSABackwardSm90.__init__
 _sm100_topk_clamp: int | None = None
 _sm100_stock_init = kernel_sm100.FlashAttentionDSABackwardSm100.__init__
-_SM100_GENERIC_KERNELS = (
-    kernel_sm100.FlashAttentionDSABackwardSm100,
-    kernel_sm100_deterministic.FlashAttentionDSABackwardSm100Deterministic,
-)
 
 
 def topk_clamp(max_slots: int) -> int:
@@ -116,10 +111,12 @@ def flash_attn_bwd_sm90(*args, max_slots: int | None = None, **kwargs) -> tuple[
 
 
 def sm100_main_kernel_key(key: tuple) -> tuple:
-    backend, *static_key, max_topk, has_topk_length = key
-    if not isinstance(has_topk_length, bool) or not isinstance(max_topk, int):
-        raise RuntimeError(f"the cuDNN SM100 DSA key no longer ends in (max_topk, has_topk_length): {key}")
-    if backend != "generic_m64" or not has_topk_length:
+    backend, deterministic, *static_key, max_topk, has_topk_length = key
+    if not isinstance(deterministic, bool) or not isinstance(has_topk_length, bool) or not isinstance(max_topk, int):
+        raise RuntimeError(
+            f"the cuDNN SM100 DSA key no longer reads (backend, deterministic, ..., max_topk, has_topk_length): {key}"
+        )
+    if backend != "generic_m64" or deterministic or not has_topk_length:
         return key
     if _sm100_topk_clamp is None:
         raise RuntimeError("a cuDNN SM100 DSA backward call with topk_length must go through cudnn_dsa_patch")
@@ -129,11 +126,11 @@ def sm100_main_kernel_key(key: tuple) -> tuple:
         raise ValueError(
             f"the clamped cuDNN SM100 DSA backward needs a slot width that is a multiple of 64, got {max_topk}"
         )
-    return (backend, *static_key, _sm100_topk_clamp, has_topk_length)
+    return (backend, deterministic, *static_key, _sm100_topk_clamp, has_topk_length)
 
 
 def _sm100_init_with_clamped_max_topk(self, element_dtype, head_dim, head_dim_v, block_tile, max_topk=0) -> None:
-    if _sm100_topk_clamp is not None and type(self) in _SM100_GENERIC_KERNELS:
+    if _sm100_topk_clamp is not None and type(self) is kernel_sm100.FlashAttentionDSABackwardSm100:
         max_topk = _sm100_topk_clamp
     _sm100_stock_init(self, element_dtype, head_dim, head_dim_v, block_tile, max_topk)
 
