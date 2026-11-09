@@ -1293,13 +1293,17 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
 
 def main() -> None:
     from prime_rl.utils.config import cli
+    from prime_rl.utils.pathing import check_resume_dir_mode
     from prime_rl.utils.process import set_proc_title
 
     set_proc_title("Orchestrator")
+    config = cli(OrchestratorConfig)
+    # Fail before the checkpoint load when resume.dir forks another run kind's checkpoint.
+    check_resume_dir_mode(config.resume, "rl")
     import uvloop
 
     uvloop.install()
-    asyncio.run(run_orchestrator(cli(OrchestratorConfig)))
+    asyncio.run(run_orchestrator(config))
 
 
 if __name__ == "__main__":
