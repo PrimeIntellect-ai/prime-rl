@@ -38,14 +38,14 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
-class CallableConfig(BaseConfig):
-    """A callable of the user's own, imported from ``import_path`` at startup and called with ``kwargs``."""
+class PluginConfig(BaseConfig):
+    """User code that prime-rl imports from ``import_path`` at startup and calls with ``kwargs``."""
 
     import_path: str
-    """Import path to the callable (e.g. ``my_module.my_fn``)."""
+    """Import path to the plugin (e.g. ``my_module.my_fn``)."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the callable."""
+    """Kwargs forwarded to the plugin."""
 
 
 class BaseWeightBroadcastConfig(BaseConfig):

@@ -8,12 +8,12 @@ from pydantic import Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    CallableConfig,
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     GCConfig,
     HeartbeatConfig,
+    PluginConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
@@ -615,7 +615,7 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
-class CustomLossConfig(CallableConfig):
+class CustomLossConfig(PluginConfig):
     """A custom loss function, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.rl.loss.LossInputs``
     and returning a ``LossOutputs``."""
 
