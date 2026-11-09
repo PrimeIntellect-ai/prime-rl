@@ -350,7 +350,7 @@ class ConcurrencyController(Reconfigurable):
         # The last measurement showed growth still pays: the queue neither holds nor trims the cap
         self.paying = False
         self.elasticity: float | None = None
-        # Fast climb: the window being measured and the previous one
+        # Fast climb: the window being measured, the reference its growth is judged against, and the previous one
         self.climbing = True
         self.climb_window: Window | None = None
         self.climb_reference: Window | None = None
