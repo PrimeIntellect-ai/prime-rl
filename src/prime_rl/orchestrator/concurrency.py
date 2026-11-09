@@ -230,9 +230,14 @@ class Window:
             self.finished[role] = self.finished.get(role, 0) + load.finished
             self.latency_sum[role] = self.latency_sum.get(role, 0.0) + load.latency
 
-    def lasted(self, turnover: float, turnovers: float = DWELL_TURNOVERS) -> bool:
-        """At least ``DWELL_SECONDS`` and ``turnovers`` of pool turnover long."""
-        return self.seconds >= DWELL_SECONDS and turnover - self.start_turnover >= turnovers and self.unit_seconds > 0
+    @property
+    def timed(self) -> bool:
+        """At least ``DWELL_SECONDS`` long, with units in flight."""
+        return self.seconds >= DWELL_SECONDS and self.unit_seconds > 0
+
+    def lasted(self, turnover: float, turnovers: float) -> bool:
+        """Timed, and at least ``turnovers`` of pool turnover long."""
+        return self.timed and turnover - self.start_turnover >= turnovers
 
     @property
     def throughput(self) -> float:
@@ -289,10 +294,10 @@ class ConcurrencyController(Reconfigurable):
         self.polls: deque[Poll] = deque(maxlen=LOAD_WINDOW_POLLS)
         self.queued_share = 0.0
         self.queued_share_by_role: dict[str, float] = {}
-        # After a trim, no further queue trim until inflight has drained below the new cap, a load window was
-        # measured, and the pool turned over
+        # No queue trim before a load window was measured: at the start, and after a trim once inflight drained below
+        # the new cap (and the pool turned over)
         self.draining = False
-        self.trim_wait = 0
+        self.trim_wait = LOAD_WINDOW_POLLS
         self.trim_turnover = -math.inf
         # The last trim was a queue trim and no window since has measured the queue below the trim threshold
         self.queue_trimmed = False
@@ -319,7 +324,7 @@ class ConcurrencyController(Reconfigurable):
         self.young_context = 0.0
         self.maturity: float | None = None
         # Steps: the level being measured, the last kept level, the next step and its direction
-        self.level: Level | None = None
+        self.level = Level(cap=self.max_inflight)
         self.base: Level | None = None
         self.step = STEP_MAX
         self.direction = 1
@@ -480,12 +485,15 @@ class ConcurrencyController(Reconfigurable):
     # ── climb ────────────────────────────────────────────────────────────────
 
     @property
+    def mature(self) -> bool:
+        """The pool's calls carry ``MATURITY_MIN`` of its projected steady load."""
+        return self.maturity is not None and self.maturity >= MATURITY_MIN
+
+    @property
     def steady(self) -> bool:
-        """The pool carries its steady load: it turned over since the start or the last cancel, or its calls carry
-        ``MATURITY_MIN`` of the projected load. A younger pool runs shorter contexts, so its throughput overstates
-        what the same units sustain."""
-        mature = self.maturity is not None and self.maturity >= MATURITY_MIN
-        return self.turnover - self.fresh_turnover >= 1.0 or mature
+        """The pool carries its steady load: it is mature, or turned over since the start or the last cancel. A
+        younger pool runs shorter contexts, so its throughput overstates what the same units sustain."""
+        return self.turnover - self.fresh_turnover >= 1.0 or self.mature
 
     @property
     def headroom(self) -> float:
@@ -501,10 +509,9 @@ class ConcurrencyController(Reconfigurable):
             self.climb_window = Window(start_turnover=self.turnover, start_calls=self.call_turnover)
         window = self.climb_window
         window.add(poll)
-        mature = self.maturity is not None and self.maturity >= MATURITY_MIN
         turned = self.turnover - window.start_turnover >= DWELL_TURNOVERS
-        called = mature and self.call_turnover - window.start_calls >= WINDOW_CALLS
-        if window.seconds >= DWELL_SECONDS and window.unit_seconds > 0 and (turned or called):
+        called = self.mature and self.call_turnover - window.start_calls >= WINDOW_CALLS
+        if window.timed and (turned or called):
             self.climb_window = None
             self.log_growth()
             reference, previous = self.climb_reference, self.climb_previous
@@ -520,7 +527,7 @@ class ConcurrencyController(Reconfigurable):
                         midpoint = math.sqrt(window.inflight * reference.inflight)
                         self.end_climb(f"elasticity {self.elasticity:.2f}", int(midpoint))
                         return
-                elif previous is not None and window.inflight < STEP_MIN * previous.inflight and not window.held:
+                elif window.inflight < STEP_MIN * previous.inflight and not window.held:
                     # The queue holds the pool where it is: the knee by the queue, approached from above
                     self.end_climb("held by the queue", self.max_inflight)
                     return
@@ -605,8 +612,6 @@ class ConcurrencyController(Reconfigurable):
 
     def measure(self, poll: Poll) -> None:
         """Fold one poll into the level being measured; once its dwell is complete, keep or reject it."""
-        if self.level is None:
-            self.restart_steps()
         level = self.level
         if level.origin is not None:
             progress = (self.turnover - level.origin_turnover) / DWELL_TURNOVERS
@@ -703,7 +708,7 @@ class ConcurrencyController(Reconfigurable):
         best window's with as many units in flight trim the cap; a third with the engines the bottleneck cancels.
         Windows are timed only: past a cliff units finish too slowly for turnovers to come."""
         window = self.window
-        if window.seconds < DWELL_SECONDS or window.unit_seconds <= 0:
+        if not window.timed:
             return False
         self.window = Window(start_turnover=self.turnover)
         if not self.steady:
@@ -744,7 +749,7 @@ class ConcurrencyController(Reconfigurable):
     def queue_trim(self, inflight: int) -> bool:
         """Trim the units queued beyond the target once the pool has drained from the last trim and turned over,
         unless growth was last measured to pay; cancel them when a drained trim did not clear the queue."""
-        if self.draining or self.trim_wait > 0 or len(self.polls) < LOAD_WINDOW_POLLS:
+        if self.draining or self.trim_wait > 0:
             return False
         share = self.queued_share
         if share <= QUEUE_TRIM:
@@ -798,15 +803,17 @@ class ConcurrencyController(Reconfigurable):
         if gradual:
             self.growth_reason = reason
         else:
-            self.log_change(self.logged_cap, n_max, reason)
+            self.log_change(reason)
 
     def log_growth(self) -> None:
         """Log the gradual change since the last logged cap."""
         if self.growth_reason is not None:
-            self.log_change(self.logged_cap, self.max_inflight, self.growth_reason)
+            self.log_change(self.growth_reason)
             self.growth_reason = None
 
-    def log_change(self, old: int, new: int, reason: str | None) -> None:
+    def log_change(self, reason: str | None) -> None:
+        """Log the change since the last logged cap."""
+        old, new = self.logged_cap, self.max_inflight
         self.logged_cap = new
         if reason is None or old == new:
             return
