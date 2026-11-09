@@ -13,8 +13,9 @@ from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
 # GLM-5's sparse MLA: 64 heads over a 512-wide latent plus a 64-wide rope tail, 2048 picks per query.
 HEADS, D_V, D_QK, TOPK = 64, 512, 576, 2048
 SM_SCALE = D_QK**-0.5
-# Two bf16 backwards that accumulate in different orders.
-RTOL = 2e-2
+# Two bf16 backwards that accumulate in different orders. On H200, dq deviates by 1.2e-3 and dkv by up to
+# 4e-4. dkv's atomic adds make it vary run to run, and one bf16 step on its largest entry can reach 2**-7.
+RTOL = 1e-2
 
 pytestmark = [
     pytest.mark.gpu,
