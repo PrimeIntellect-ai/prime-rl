@@ -55,11 +55,9 @@ def patch_request_replay():
         if not hasattr(self, "_prime_capture"):
             self._prime_capture = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
             self._prime_sampler_rows = np.zeros(self.sampling_states.max_num_reqs, dtype=np.int64)
-            self._prime_draws = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
         extra_args = sampling_params.extra_args or {}
         self._prime_capture[req_idx] = wants_replay(sampling_params)
         self._prime_sampler_rows[req_idx] = extra_args.get("prl_sampler_rows", 0)
-        self._prime_draws[req_idx] = bool(extra_args.get("prl_sampler_draws"))
         return add_request(self, req_idx, sampling_params)
 
     call = Sampler.__call__
@@ -88,7 +86,6 @@ def patch_request_replay():
                 num_sampled,
                 output.sampled_token_ids,
                 sampler_rows,
-                self._prime_draws[indices],
             )
         output.sampling_mask_tensors = capture_supports(
             processed, cu_num_logits, torch.where(keep, num_sampled, 0), int(os.environ[CAPACITY_ENV]), rows
