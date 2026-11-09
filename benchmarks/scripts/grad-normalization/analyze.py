@@ -1,4 +1,4 @@
-"""Summarize gradient-normalization A/B runs: per-step parity between two runs, and the floored-encoder e_min sweep.
+"""Summarize gradient-normalization A/B runs: per-step parity between two runs, and the e_min sweep of simulated MXFP8 rounding.
 
 Each RUN is a run directory passed to launch.sh as OUT/NAME; probe records are read from RUN.gn/probes.jsonl and
 trainer/orchestrator metrics from RUN/monitors/file/metrics.jsonl. It needs only matplotlib, e.g.
@@ -139,7 +139,10 @@ def parity(args):
         down_b = param_ratio(probes_b, "routed_down", "shared", "grad_rms")
         gate_up_a = param_ratio(probes_a, "routed_gate_up", "shared", "grad_rms")
         gate_up_b = param_ratio(probes_b, "routed_gate_up", "shared", "grad_rms")
-        zeros_a, zeros_b = param_field(probes_a, "routed_down", "grad_zero_frac"), param_field(probes_b, "routed_down", "grad_zero_frac")
+        zeros_a, zeros_b = (
+            param_field(probes_a, "routed_down", "grad_zero_frac"),
+            param_field(probes_b, "routed_down", "grad_zero_frac"),
+        )
         lines += [
             "",
             "Per MoE layer, mean over steps. down/shared and gate_up/shared are the RMS of the routed expert "
@@ -158,7 +161,11 @@ def parity(args):
                 f"| {fmt(gate_up_b.get(layer))} | {fmt(zeros_a.get(layer), '.3g')} | {fmt(zeros_b.get(layer), '.3g')} |"
             )
         for name, probes in (("A", probes_a), ("B", probes_b)):
-            seeds = [r["seed"]["ratio_times_n_quantiles"]["0.5"] for r in probes if r.get("seed", {}).get("ratio_times_n_quantiles")]
+            seeds = [
+                r["seed"]["ratio_times_n_quantiles"]["0.5"]
+                for r in probes
+                if r.get("seed", {}).get("ratio_times_n_quantiles")
+            ]
             tokens = [r["global_tokens"] for r in probes]
             problems = check_once_per_micro_batch(probes)
             lines.append("")
@@ -182,10 +189,15 @@ def sweep_rows(runs: list[Path], site: str) -> list[dict]:
         p50 = layer_mean(records, site, "p50")
         for e_min in first["emin_scan"]:
             zeroed = layer_mean(
-                [{**r, "acts": [{**a, "z": a["zeroed_frac"][str(e_min)]} for a in r["acts"]]} for r in records], site, "z"
+                [{**r, "acts": [{**a, "z": a["zeroed_frac"][str(e_min)]} for a in r["acts"]]} for r in records],
+                site,
+                "z",
             )
-            floored = layer_mean(
-                [{**r, "acts": [{**a, "f": a["floor_block_frac"][str(e_min)]} for a in r["acts"]]} for r in records],
+            min_scale_blocks = layer_mean(
+                [
+                    {**r, "acts": [{**a, "f": a["min_scale_block_frac"][str(e_min)]} for a in r["acts"]]}
+                    for r in records
+                ],
                 site,
                 "f",
             )
@@ -194,14 +206,14 @@ def sweep_rows(runs: list[Path], site: str) -> list[dict]:
                     "run": run.name,
                     "placement": placement(records),
                     "e_min": e_min,
-                    "applied": first["encoder"] and e_min == first["e_min"] and site in first["encoder_sites"],
+                    "applied": first["mx_round"] and e_min == first["e_min"] and site in first["mx_round_sites"],
                     "tokens": tokens,
                     "margin": {layer: math.log2(v) - (e_min - E4M3_SUBNORMAL_BINADES) for layer, v in rms.items()},
                     "p50_margin": {
                         layer: math.log2(v) - (e_min - E4M3_SUBNORMAL_BINADES) for layer, v in p50.items() if v > 0
                     },
                     "zeroed": zeroed,
-                    "floored": floored,
+                    "min_scale_blocks": min_scale_blocks,
                     "log2_rms": {layer: math.log2(v) for layer, v in rms.items()},
                 }
             )
@@ -213,13 +225,13 @@ def sweep(args):
     rows = sweep_rows(runs, args.site)
     lines = [
         f"Site `{args.site}`. Margin = log2(rms) - (e_min - {E4M3_SUBNORMAL_BINADES}); the p50 margin uses the median "
-        "|g| instead of the rms. Encoder `applied` rows train "
-        "through the emulated encoder; the others only measure what it would zero. With power-of-two scales, a run "
+        "|g| instead of the rms. `applied` rows train "
+        "through simulated MXFP8 rounding; the others only measure what it would zero. With power-of-two scales, a run "
         f"with N tokens per step at e_min matches a `loss`-placement run with N * 2^(e_min - ({PRODUCTION_EMIN})) tokens "
         f"at e_min = {PRODUCTION_EMIN} (the equivalent N column); `grads` placement does not depend on N.",
         "",
         "| run | placement | e_min | applied | N | equivalent N at -22 | min margin | min p50 margin "
-        "| max zeroed | median zeroed | median floored blocks |",
+        "| max zeroed | median zeroed | median blocks at min scale |",
         "| --- | --- | ---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
@@ -230,7 +242,7 @@ def sweep(args):
             f"| {row['tokens']:.0f} | {fmt(equivalent, '.2e')} | {min(margins):.2f} "
             f"| {fmt(min(row['p50_margin'].values(), default=None), '.2f')} "
             f"| {max(zeroed):.3g} | {statistics.median(zeroed):.3g} "
-            f"| {statistics.median(row['floored'].values()):.3g} |"
+            f"| {statistics.median(row['min_scale_blocks'].values()):.3g} |"
         )
     seen = {}
     for row in rows:
@@ -259,17 +271,37 @@ def plot_sweep(rows: list[dict], site: str, path: Path):
         if not selected:
             continue
         e_mins = [r["e_min"] for r in selected]
-        zero_ax.plot(e_mins, [max(r["zeroed"].values()) for r in selected], color=color, lw=2, marker="o", ms=8,
-                     label=f"{place}: max over layers")
-        zero_ax.plot(e_mins, [statistics.median(r["zeroed"].values()) for r in selected], color=color, lw=2,
-                     ls="--", marker="o", ms=8, label=f"{place}: median over layers")
+        zero_ax.plot(
+            e_mins,
+            [max(r["zeroed"].values()) for r in selected],
+            color=color,
+            lw=2,
+            marker="o",
+            ms=8,
+            label=f"{place}: max over layers",
+        )
+        zero_ax.plot(
+            e_mins,
+            [statistics.median(r["zeroed"].values()) for r in selected],
+            color=color,
+            lw=2,
+            ls="--",
+            marker="o",
+            ms=8,
+            label=f"{place}: median over layers",
+        )
         log2_rms = selected[0]["log2_rms"]
         rms_ax.plot(list(log2_rms), list(log2_rms.values()), color=color, lw=2, marker="o", ms=8, label=place)
-    zero_ax.set_xlabel("e_min (block-scale exponent floor)")
+    zero_ax.set_xlabel("e_min (minimum scale exponent)")
     zero_ax.set_ylabel(f"fraction of nonzero {site} entries zeroed")
-    zero_ax.set_title(f"{site} zeroed by the floored E4M3 encoder")
-    rms_ax.axhline(PRODUCTION_EMIN - E4M3_SUBNORMAL_BINADES, color="#52514e", lw=1, ls=":",
-                   label=f"zeroing threshold at e_min = {PRODUCTION_EMIN}")
+    zero_ax.set_title(f"{site} zeroed by simulated MXFP8 rounding")
+    rms_ax.axhline(
+        PRODUCTION_EMIN - E4M3_SUBNORMAL_BINADES,
+        color="#52514e",
+        lw=1,
+        ls=":",
+        label=f"zeroing threshold at e_min = {PRODUCTION_EMIN}",
+    )
     rms_ax.set_xlabel("layer")
     rms_ax.set_ylabel(f"log2 rms {site}")
     rms_ax.set_title(f"{site} magnitude per MoE layer")
@@ -299,7 +331,7 @@ def main():
     parity_parser.add_argument("run_b")
     parity_parser.add_argument("--out", help="markdown output file (default: stdout only)")
     parity_parser.set_defaults(func=parity)
-    sweep_parser = sub.add_parser("sweep", help="margin and zeroed fraction per placement and e_min")
+    sweep_parser = sub.add_parser("sweep", help="margin and zeroed fraction per --normalize mode and e_min")
     sweep_parser.add_argument("runs", nargs="+")
     sweep_parser.add_argument("--site", default="dy", choices=["dy", "dy_rows", "dz", "sdy", "sdz", "ao", "aqkv"])
     sweep_parser.add_argument("--out-dir", required=True)

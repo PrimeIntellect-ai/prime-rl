@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Launch one gradient-normalization A/B arm with the probes and the emulated MX encoder installed.
+# Launch one gradient-normalization A/B arm with the probes and simulated MXFP8 gradient rounding installed.
 #
 # Usage: launch.sh --worktree PATH --gpus IDS --layout single|cp2|dp2|offload --out DIR --name NAME
-#                  [--normalize grads|loss] [--emin N] [--encoder 0|1] [--encoder-sites dy,dz,sdy,sdz,ao,aqkv]
+#                  [--normalize grads|loss] [--emin N] [--mx-round 0|1] [--mx-round-sites dy,dz,sdy,sdz,ao,aqkv]
 #                  [--emin-scan N,N,...] [--steps N] [--grad-dump-step N] [--fake] [-- EXTRA_ARGS...]
 #
 # Runs `uv run --no-sync rl` (or the trainer alone on seeded fake data with --fake) from the arm's worktree.
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 harness_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-worktree="" gpus="" layout="single" out="" name="" normalize="" emin="-127" encoder="0" encoder_sites="dy,dz"
+worktree="" gpus="" layout="single" out="" name="" normalize="" emin="-127" mx_round="0" mx_round_sites="dy,dz"
 emin_scan="" steps="" grad_dump_step="" fake=0
 extra=()
 while [[ $# -gt 0 ]]; do
@@ -24,8 +24,8 @@ while [[ $# -gt 0 ]]; do
         --name) name="$2"; shift 2 ;;
         --normalize) normalize="$2"; shift 2 ;;
         --emin) emin="$2"; shift 2 ;;
-        --encoder) encoder="$2"; shift 2 ;;
-        --encoder-sites) encoder_sites="$2"; shift 2 ;;
+        --mx-round) mx_round="$2"; shift 2 ;;
+        --mx-round-sites) mx_round_sites="$2"; shift 2 ;;
         --emin-scan) emin_scan="$2"; shift 2 ;;
         --steps) steps="$2"; shift 2 ;;
         --grad-dump-step) grad_dump_step="$2"; shift 2 ;;
@@ -70,8 +70,8 @@ gn_env=(
     "PYTHONPATH=$harness_dir/inject"
     "GN_OUT=$probe_dir"
     "GN_EMIN=$emin"
-    "GN_ENCODER=$encoder"
-    "GN_ENCODER_SITES=$encoder_sites"
+    "GN_MX_ROUND=$mx_round"
+    "GN_MX_ROUND_SITES=$mx_round_sites"
     "GN_EMIN_SCAN=$emin_scan"
     "GN_GRAD_DUMP_STEP=$grad_dump_step"
 )

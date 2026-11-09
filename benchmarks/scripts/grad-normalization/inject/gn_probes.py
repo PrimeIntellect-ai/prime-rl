@@ -1,4 +1,4 @@
-"""Backward probes, an emulated floored MX encoder and parameter-gradient statistics for the RL trainer (debug only)."""
+"""Backward probes, simulated MXFP8 gradient rounding and parameter-gradient statistics for the RL trainer (debug only)."""
 
 import copy
 import json
@@ -36,7 +36,7 @@ def fake_quantize(grad: torch.Tensor, e_min: int) -> torch.Tensor:
 
 
 def measure(grad: torch.Tensor, scan: list[int]) -> list[float]:
-    """Return [numel, nonzero, sum of squares, max, p50, p99, nonzero blocks, then per e_min: zeroed, floored blocks].
+    """Return [numel, nonzero, sum of squares, max, p50, p99, nonzero blocks, then per e_min: zeroed, blocks at the minimum scale].
 
     p50 and p99 come from an odd-strided subsample of at most QUANTILE_SAMPLES entries.
     """
@@ -76,7 +76,7 @@ def materialize(tensor: torch.Tensor | None) -> torch.Tensor | None:
 
 
 class Tap(torch.autograd.Function):
-    """Identity in forward, probe (and optional encoder) on the incoming gradient in backward."""
+    """Identity in forward, probe (and optional simulated MXFP8 rounding) on the incoming gradient in backward."""
 
     @staticmethod
     def forward(ctx, x, key, valid_rows):
@@ -93,8 +93,8 @@ class ProbeState:
     def __init__(self):
         self.out_dir = Path(os.environ["GN_OUT"])
         self.e_min = int(os.environ.get("GN_EMIN", "-127"))
-        self.encoder = os.environ.get("GN_ENCODER", "0") == "1"
-        self.encoder_sites = set(os.environ.get("GN_ENCODER_SITES", "dy,dz").split(","))
+        self.mx_round = os.environ.get("GN_MX_ROUND", "0") == "1"
+        self.mx_round_sites = set(os.environ.get("GN_MX_ROUND_SITES", "dy,dz").split(","))
         scan = [int(value) for value in os.environ.get("GN_EMIN_SCAN", "").split(",") if value.strip()]
         self.scan = sorted(set(scan) | {self.e_min})
         dump_step = os.environ.get("GN_GRAD_DUMP_STEP")
@@ -212,7 +212,7 @@ class ProbeState:
                     totals[i + 1] = max(totals[i + 1], value)
                 else:
                     totals[i + 1] += value
-        if self.encoder and key[1] in self.encoder_sites:
+        if self.mx_round and key[1] in self.mx_round_sites:
             return fake_quantize(grad, self.e_min)
         return grad
 
@@ -370,21 +370,23 @@ class ProbeState:
                     "zeroed_frac": {
                         str(e_min): per_emin[2 * i] / nonzero if nonzero else 0.0 for i, e_min in enumerate(self.scan)
                     },
-                    "floor_block_frac": {
+                    "min_scale_block_frac": {
                         str(e_min): per_emin[2 * i + 1] / live_blocks if live_blocks else 0.0
                         for i, e_min in enumerate(self.scan)
                     },
                 }
             )
-        params = [{"layer": index, "group": group, **stats} for (index, group), stats in sorted(self.param_stats.items())]
+        params = [
+            {"layer": index, "group": group, **stats} for (index, group), stats in sorted(self.param_stats.items())
+        ]
         record = {
             "step": self.step,
             "micro_batches": self.micro_batches,
             "global_tokens": self.global_tokens,
             "cp": self.cp,
             "normalization": self.normalization,
-            "encoder": self.encoder,
-            "encoder_sites": sorted(self.encoder_sites),
+            "mx_round": self.mx_round,
+            "mx_round_sites": sorted(self.mx_round_sites),
             "e_min": self.e_min,
             "emin_scan": self.scan,
             "grad_norm": self.grad_norm,
