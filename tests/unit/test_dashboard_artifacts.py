@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 
 from pydantic import create_model
+from verifiers.v1.delta import EpisodeAssembly
 
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.dashboard import server
-from prime_rl.env import EpisodeAssembly
 from prime_rl.monitors.file.traces.live import LiveFolds
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.pathing import (
