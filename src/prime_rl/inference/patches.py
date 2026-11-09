@@ -37,10 +37,6 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
-    if os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1":
-        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
-
-        patch_top_p_then_top_k()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -57,7 +53,9 @@ class PackedSamplingMask:
     @property
     def token_ids(self) -> list[list[int]]:
         """vLLM's nested form, which upstream's ``text`` and ``derender`` responses read."""
-        return [chunk.tolist() for chunk in np.split(self.ids, np.cumsum(self.counts)[:-1])]
+        # Captured replay supports carry each id's logprob bits above bit 32.
+        ids = self.ids.astype(np.int32, copy=False)
+        return [chunk.tolist() for chunk in np.split(ids, np.cumsum(self.counts)[:-1])]
 
 
 def monkey_patch_packed_sampling_masks():
