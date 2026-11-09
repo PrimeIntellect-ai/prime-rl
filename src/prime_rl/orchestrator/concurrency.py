@@ -502,9 +502,7 @@ class ConcurrencyController(Reconfigurable):
 
     def climb(self, poll: Poll, growth: float, calls: int) -> None:
         """Grow by up to ``GROWTH_MAX`` per turnover, or ``CALL_GROWTH_MAX`` per call turnover while the pool carries
-        ``MATURITY_MIN`` of its projected load, while the cap binds, tapered by the queue, and check every window
-        that the growth still pays. The fast climb ends at the first window that did not pay, or that did not grow
-        the pool by a smallest step although the projection did not hold it (the queue holds it)."""
+        ``MATURITY_MIN`` of its projected load, while the cap binds, tapered by the queue, and judge every window."""
         if self.climb_window is None:
             self.climb_window = Window(start_turnover=self.turnover, start_calls=self.call_turnover)
         window = self.climb_window
@@ -514,22 +512,9 @@ class ConcurrencyController(Reconfigurable):
         if window.timed and (turned or called):
             self.climb_window = None
             self.log_growth()
-            reference, previous = self.climb_reference, self.climb_previous
             if self.steady:
-                self.climb_previous = window
-                if reference is None:
-                    self.climb_reference = window
-                elif window.inflight >= (STEP_MIN if turned else STEP_MAX) * reference.inflight:
-                    self.climb_reference = window
-                    self.elasticity = elasticity(window, reference)
-                    if self.elasticity < ELASTICITY:
-                        # The knee lies between the two windows: step down from their geometric midpoint
-                        midpoint = math.sqrt(window.inflight * reference.inflight)
-                        self.end_climb(f"elasticity {self.elasticity:.2f}", int(midpoint))
-                        return
-                elif window.inflight < STEP_MIN * previous.inflight and not window.held:
-                    # The queue holds the pool where it is: the knee by the queue, approached from above
-                    self.end_climb("held by the queue", self.max_inflight)
+                self.judge_climb(window, turned)
+                if not self.climbing:
                     return
         if poll.inflight < BINDING_FRACTION * self.max_inflight or self.headroom == 0.0:
             return
@@ -546,7 +531,7 @@ class ConcurrencyController(Reconfigurable):
             # young.
             young = self.young_context / self.steady_context
             if young < MATURITY_MIN:
-                shown = min(poll.inflight for poll in self.polls)
+                shown = min(p.inflight for p in self.polls)
                 room = shown * (self.maturity - young) / (MATURITY_MIN - young)
                 if room < by_calls:
                     window.held = True
@@ -554,6 +539,25 @@ class ConcurrencyController(Reconfigurable):
             cap = max(cap, by_calls)
         self.cap = self.clamp(max(self.cap, cap))
         self.apply_limit(int(self.cap), reason="climb", gradual=True)
+
+    def judge_climb(self, window: Window, turned: bool) -> None:
+        """End the fast climb at the first window whose growth did not pay, or that did not grow the pool by a smallest
+        step although the projection did not hold it (the queue holds it). A window that only lasted its calls is
+        compared once the pool grew by a largest step."""
+        reference, previous = self.climb_reference, self.climb_previous
+        self.climb_previous = window
+        if reference is None:
+            self.climb_reference = window
+        elif window.inflight >= (STEP_MIN if turned else STEP_MAX) * reference.inflight:
+            self.climb_reference = window
+            self.elasticity = elasticity(window, reference)
+            if self.elasticity < ELASTICITY:
+                # The knee lies between the two windows: step down from their geometric midpoint
+                midpoint = math.sqrt(window.inflight * reference.inflight)
+                self.end_climb(f"elasticity {self.elasticity:.2f}", int(midpoint))
+        elif window.inflight < STEP_MIN * previous.inflight and not window.held:
+            # The queue holds the pool where it is: the knee by the queue, approached from above
+            self.end_climb("held by the queue", self.max_inflight)
 
     def project(self) -> None:
         """Project the pool's steady load from its calls' contexts: a unit's context grows call by call, so a young
@@ -724,15 +728,12 @@ class ConcurrencyController(Reconfigurable):
             self.drops = 0
             return False
         self.drops += 1
-        engine_bound = (
-            best.latency > 0 and window.latency > LATENCY_STRETCH * best.latency
-        ) or self.queued_share > QUEUE_CANCEL
-        ratio = window.throughput / best.throughput
-        cancel = self.drops >= 3 and engine_bound
         if self.drops < 2:
             return False
+        stretched = best.latency > 0 and window.latency > LATENCY_STRETCH * best.latency
+        cancel = self.drops >= 3 and (stretched or self.queued_share > QUEUE_CANCEL)
         self.trim(
-            int(self.clamp(inflight * max(DROP_TRIM_MIN, ratio))),
+            int(self.clamp(inflight * max(DROP_TRIM_MIN, window.throughput / best.throughput))),
             inflight,
             cancel=cancel,
             reason=f"throughput drop ({window.throughput:.0f} < {best.throughput:.0f} tokens/s, "
