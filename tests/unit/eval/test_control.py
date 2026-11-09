@@ -11,7 +11,6 @@ QUEUED = EngineLoadSample(
     role=None,
     kv_capacity_tokens=1_000_000,
     max_model_len=8192,
-    running=INFLIGHT // 2,
     waiting=INFLIGHT // 2,
 )
 

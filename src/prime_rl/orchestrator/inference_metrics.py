@@ -412,7 +412,6 @@ class InferenceMetricsCollector:
             role=sample.endpoint.role,
             kv_capacity_tokens=kv_capacity_tokens,
             max_model_len=self.max_model_len_by_endpoint.get(sample.endpoint.key),
-            running=int(sample.snapshot.gauges.get("num_requests_running", 0.0)),
             waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
             finished_delta=counter_delta(sample, previous, ("request_success", "request_success_total")),
             generation_tokens_delta=counter_delta(sample, previous, ("generation_tokens", "generation_tokens_total")),

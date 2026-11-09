@@ -4,7 +4,9 @@ from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.orchestrator import concurrency
 from prime_rl.orchestrator.concurrency import (
     DWELL_SECONDS,
+    GROWTH_MAX,
     LOAD_WINDOW_POLLS,
+    QUEUE_TARGET,
     RESUME_SKIP_POLLS,
     ConcurrencyController,
     EngineLoadSample,
@@ -39,7 +41,6 @@ def engine(
     engine_id: str = "e0",
     role: str | None = None,
     *,
-    running: int = 10,
     waiting: int = 0,
     finished: int = 0,
     generated: int = 0,
@@ -50,7 +51,6 @@ def engine(
         role=role,
         kv_capacity_tokens=1_000_000,
         max_model_len=32_768,
-        running=running,
         waiting=waiting,
         finished_delta=finished,
         generation_tokens_delta=generated,
@@ -93,8 +93,13 @@ def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int, queued=l
         ctl.observe([sample])
 
 
+def trimmed(inflight: int, queued_share: float) -> int:
+    """The cap a queue trim leaves: the units queued beyond the target go."""
+    return int(inflight * (1 - queued_share + QUEUE_TARGET))
+
+
 def test_throughput_is_per_second_of_poll_interval():
-    load = RoleLoad(running=1, queued=0, finished=1, generated=1000)
+    load = RoleLoad(queued=0, finished=1, generated=1000)
     # A poll loop slowed to 10 s under load reads the same throughput, not twice as much
     for seconds, expected in ((5.0, 200), (10.0, 100)):
         window = Window()
@@ -106,28 +111,33 @@ def test_throughput_is_per_second_of_poll_interval():
 def test_queued_share_adds_roles_and_counts_idle_units():
     ctl, _ = controller(inflight=60)
     # Prefill queue plus decode's pending KV pulls, over all units in flight (most of them idle on tools)
-    ctl.observe([engine("p0", "prefill", running=2, waiting=4), engine("d0", "decode", running=40, waiting=2)])
+    ctl.observe([engine("p0", "prefill", waiting=4), engine("d0", "decode", waiting=2)])
     assert ctl.queued_share == pytest.approx(0.1)
     assert ctl.queued_share_by_role == {"prefill": pytest.approx(4 / 60), "decode": pytest.approx(2 / 60)}
     assert ctl.headroom == 0.0
     assert ctl.capacity == 1_000_000  # the running set's capacity: decode engines only
 
 
-def test_climb_grows_per_turnover_tapered_by_the_queue():
+@pytest.mark.parametrize(
+    ("inflight", "waiting", "cap"),
+    [(100, 0, 100 * GROWTH_MAX), (100, 5, 100 * (1 + GROWTH_MAX) / 2), (50, 0, 100)],
+    ids=["empty-queues", "queue-halfway-to-target", "cap-not-binding"],
+)
+def test_climb_grows_per_turnover_tapered_by_the_queue(inflight, waiting, cap):
+    ctl, pool = controller(inflight)
+    turnover(ctl, pool)
+    ctl.observe([engine(waiting=waiting)])
+    assert ctl.cap == pytest.approx(cap, rel=0.01)
+
+
+def test_turnovers_without_a_measurement_do_not_grow_the_cap():
     ctl, pool = controller()
+    for _ in range(5):  # /metrics unreachable while units keep completing
+        turnover(ctl, pool)
+        ctl.observe([])
     turnover(ctl, pool)
     ctl.observe([engine()])
-    assert ctl.cap == pytest.approx(300, rel=0.02)  # empty queues: x3 per turnover
-
-    ctl, pool = controller()
-    turnover(ctl, pool)
-    ctl.observe([engine(waiting=5)])  # halfway to the target
-    assert ctl.cap == pytest.approx(200, rel=0.02)
-
-    ctl, pool = controller(inflight=50)
-    turnover(ctl, pool)
-    ctl.observe([engine()])
-    assert pool.limits == []  # the cap does not bind admission
+    assert ctl.cap == pytest.approx(100 * GROWTH_MAX, rel=0.01)  # one measured turnover's growth, not 3**6
 
 
 def test_fast_climb_ends_where_growth_stops_paying():
@@ -162,84 +172,81 @@ def test_queue_does_not_hold_growth_that_pays():
     assert ctl.paying and ctl.max_inflight > 200
 
 
-def test_queue_trims_the_surplus_without_cancelling():
+def test_queue_trims_then_cancels_when_a_drained_trim_did_not_clear_it():
     ctl, pool = controller()
     for _ in range(LOAD_WINDOW_POLLS):
         ctl.observe([engine(waiting=30)])
-    assert pool.limits == [int(100 * (1 - 0.3 + 0.1))] and pool.cancelled == []  # the units queued past the target
+    assert pool.limits == [trimmed(100, 0.3)] and pool.cancelled == []
 
     ctl.observe([engine(waiting=30)])
     assert len(pool.limits) == 1  # no repeat before the pool drained to the cap
 
-
-def test_queue_still_overloaded_after_a_drained_trim_cancels():
-    ctl, pool = controller()
-    for _ in range(LOAD_WINDOW_POLLS):
-        ctl.observe([engine(waiting=30)])
     pool.inflight = pool.limits[-1]
     turnover(ctl, pool)
     for _ in range(LOAD_WINDOW_POLLS):
         ctl.observe([engine(waiting=int(0.6 * pool.inflight))])
-    target = int(pool.inflight * (1 - 0.6 + 0.1))
+    target = trimmed(pool.inflight, 0.6)
     assert pool.limits[1:] == [target] and pool.cancelled == [pool.inflight - target]
 
 
 def test_weight_update_pause_freezes_and_skips_the_backlog():
     ctl, pool = controller()
     ctl.pause()
-    ctl.observe([engine(running=0, waiting=50)])
+    ctl.observe([engine(waiting=50)])
     assert not ctl.polls
 
+    ctl.drops = 1
     ctl.resume()
+    assert ctl.drops == 0 and ctl.window.seconds == 0  # no drop window straddles the update
     for _ in range(RESUME_SKIP_POLLS):
         ctl.observe([engine(waiting=50)])
     assert not ctl.polls and pool.limits == []
     for _ in range(LOAD_WINDOW_POLLS):
         ctl.observe([engine(waiting=50)])
-    assert pool.limits == [int(100 * (1 - 0.5 + 0.1))]  # past the backlog a standing queue trims again
+    assert pool.limits == [trimmed(100, 0.5)]  # past the backlog a standing queue trims again
 
 
-def healthy_then(ctl: ConcurrencyController, pool: Pool, after: list[EngineLoadSample], windows: int) -> None:
-    """A matured pool runs healthy for a drop window, then ``after`` for up to ``windows`` drop windows."""
-    if ctl.best is None:
-        turnover(ctl, pool)  # a pool that turned over carries its steady load
-        ctl.climbing = False
-        for _ in range(DROP_WINDOW_POLLS + 1):  # the first poll has no interval
-            ctl.observe([engine(waiting=5, finished=10, generated=1000, latency=20.0)])
+HEALTHY = engine(waiting=5, finished=10, generated=1000, latency=20.0)  # 2 s per call
+
+
+def settle(ctl: ConcurrencyController, pool: Pool, healthy: EngineLoadSample = HEALTHY) -> None:
+    """A pool that turned over (so it carries its steady load) runs ``healthy`` for a drop window: the best one."""
+    turnover(ctl, pool)
+    ctl.climbing = False
+    for _ in range(DROP_WINDOW_POLLS + 1):  # the first poll has no interval
+        ctl.observe([healthy])
+
+
+def degrade(ctl: ConcurrencyController, pool: Pool, sample: EngineLoadSample, windows: int) -> None:
+    """The engines report ``sample`` for up to ``windows`` drop windows, until the controller cancels."""
     for _ in range(windows * DROP_WINDOW_POLLS):
-        ctl.observe(after)
+        ctl.observe([sample])
         if pool.cancelled:
             break
 
 
 def test_throughput_drop_trims_then_cancels():
     ctl, pool = controller()
-    thrashing = [engine(waiting=5, finished=4, generated=400, latency=4 * 10.0)]  # 10 s per call, was 2 s
-    healthy_then(ctl, pool, thrashing, windows=2)
+    settle(ctl, pool)
+    thrashing = engine(waiting=5, finished=4, generated=400, latency=4 * 10.0)  # 10 s per call
+    degrade(ctl, pool, thrashing, windows=2)
     assert pool.limits == [50] and pool.cancelled == []  # trimmed in proportion, to half at most
 
-    healthy_then(ctl, pool, thrashing, windows=1)  # still thrashing: units finish too slowly to drain
+    degrade(ctl, pool, thrashing, windows=1)  # still thrashing: units finish too slowly to drain
     assert pool.cancelled == [50]
 
 
 def test_slower_environment_is_not_a_cliff():
     ctl, pool = controller()
-    slower = [engine(waiting=5, finished=4, generated=400, latency=8.0)]  # fewer calls, as fast
-    healthy_then(ctl, pool, slower, windows=4)
+    settle(ctl, pool)
+    degrade(ctl, pool, engine(waiting=5, finished=4, generated=400, latency=8.0), windows=4)  # fewer calls, as fast
     assert pool.cancelled == [] and pool.limits  # trimmed, never cancelled
 
 
 def test_throughput_drop_without_the_latency_metric_cancels_on_a_standing_queue():
     ctl, pool = controller()
-    turnover(ctl, pool)
-    ctl.climbing = False
-    for _ in range(DROP_WINDOW_POLLS + 1):
-        ctl.observe([engine(waiting=5, finished=10, generated=1000)])  # no e2e latency histogram exported
-    collapsed = [engine(waiting=80, finished=1, generated=100)]  # most units stuck in the engine queue
-    for _ in range(4 * DROP_WINDOW_POLLS):
-        ctl.observe(collapsed)
-        if pool.cancelled:
-            break
+    settle(ctl, pool, engine(waiting=5, finished=10, generated=1000))  # no e2e latency histogram exported
+    degrade(ctl, pool, engine(waiting=80, finished=1, generated=100), windows=4)  # most units stuck in the queue
     assert pool.cancelled
 
 
@@ -251,15 +258,24 @@ def test_projection_counts_running_units_to_the_max_context():
             ctl.record_call(1000 * call, call)
     ctl.observe([engine()])
     # Still running: projected to grow on to the 32k max context, so the pool carries a third of its load
-    assert ctl.steady_context == pytest.approx(17_026, rel=0.01)
-    assert ctl.maturity == pytest.approx(6000 / 17_026, rel=0.01)
+    assert ctl.projection.steady_context == pytest.approx(17_026, rel=0.01)
+    assert ctl.projection.maturity == pytest.approx(6000 / 17_026, rel=0.01)
 
     # All ended after their 10th call: the pool already carries its steady load
     for _ in range(10):
         ctl.record_episode(10_000, 10)
     ctl.observe([engine()])
-    assert ctl.steady_context == pytest.approx(6000)
-    assert ctl.maturity == pytest.approx(1.0)
+    assert ctl.projection.steady_context == pytest.approx(6000)
+    assert ctl.projection.maturity == pytest.approx(1.0)
+
+    # Every unit's 3rd call carried no context (e.g. a fork): the walk steps over the gap to the tail instead of
+    # stopping after the first call and reading a young pool as already at its steady load
+    ctl, pool = controller(inflight=10)
+    for call in (2, 4, 5, 6, 7, 8, 9, 10):
+        for _ in range(10):
+            ctl.record_call(1000 * call, call)
+    ctl.observe([engine()])
+    assert ctl.projection.steady_context > 15_000 and ctl.projection.maturity < 0.5
 
 
 def test_call_context_is_the_history_it_extends():
