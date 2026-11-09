@@ -41,7 +41,7 @@ from vllm.logprobs import FlatLogprobs, Logprob
 from vllm.outputs import CompletionOutput, RequestOutput
 
 from prime_rl.inference.patches import PackedSamplingMask
-from prime_rl.inference.vllm.paired_capture import NEG_INF_BITS, pack_sampler_rows, serialize_paired_support
+from prime_rl.inference.vllm.paired_capture import NEG_INF_BITS, pack_sampler_rows
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _PackedOutputs,
@@ -135,7 +135,7 @@ async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
             pass
 
 
-def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, draws: bool = False):
+def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool):
     """The packed int64 mask the patched sampler hands to the server (pinned host copies need CUDA)."""
     logits = torch.full((len(sampled_ids), 8), -torch.inf)
     for i, q in logq.items():
@@ -148,7 +148,7 @@ def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool, d
         cu, num_sampled = torch.arange(len(sampled_ids) + 1), torch.ones(len(sampled_ids), dtype=torch.int32)
         sampled = torch.tensor(sampled_ids).view(-1, 1)
         rows = np.full(len(sampled_ids), 4)
-        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows, np.full(len(sampled_ids), draws))
+        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows)
     return PackedSamplingMask(
         ids=packed.flatten().numpy(), counts=np.full(len(sampled_ids), packed.shape[1], dtype=np.int32)
     )
@@ -256,24 +256,6 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
     assert responses[1]["kv_transfer_params"] == {"kv": "kept"}
     assert responses[1]["ec_transfer_params"] == {"ec": "kept"}
-
-
-@pytest.mark.gpu
-def test_gpu_capture_sampler_draws_round_trip():
-    logq = {1: float(np.log(0.6)), 2: float(np.log(0.3)), 5: float(np.log(0.1))}
-    mask = _gpu_capture(logq, [2, 5], replay=False, draws=True)
-    ids, compact = serialize_paired_support(mask.ids, mask.counts)
-    raw = pybase64.b64decode(compact["data"])
-    values = np.frombuffer(raw, dtype="<f4", offset=len(ids) * 4)
-    assert compact["offsets"] == [0, 5, 10] and ids[0] == 2 and ids[5] == 5
-    np.testing.assert_allclose(values, [logq[i] for i in ids], atol=1e-6)
-    # The client keeps the K draws as the centering sample and drops the leading sampled token
-    sampled, draw_ids, draw_logprobs = _parse_compact_logprobs(
-        {"compact_logprobs": {**compact, "samples": True}}, [2, 5], 4
-    )
-    np.testing.assert_allclose(sampled, [logq[2], logq[5]], atol=1e-6)
-    assert draw_ids == [ids[1:5].tolist(), ids[6:10].tolist()]
-    np.testing.assert_allclose(np.array(draw_logprobs), [[logq[i] for i in row] for row in draw_ids], atol=1e-6)
 
 
 def test_pack_sampled_logprobs_takes_first_entry_and_clamps():

@@ -95,7 +95,6 @@ class _PackedOutputs:
         self._generator = generator
         self._paired = extra_args.get("prl_paired_capture", False)
         self._sampler_rows = extra_args.get("prl_sampler_rows", 0)
-        self._draws = bool(extra_args.get("prl_sampler_draws"))
         # ``serve_tokens`` asks for flat logprobs, so the engine returns FlatLogprobs here.
         self._flat = (
             sampling_params.flat_logprobs
@@ -135,8 +134,6 @@ class _PackedOutputs:
                     else:
                         # Sampler rows are compact logprobs, not a support to replay.
                         output.sampling_mask = None
-                        if self._draws:
-                            fields["compact_logprobs"]["samples"] = True
                     output.logprobs = None
                 elif self._flat:
                     assert isinstance(output.logprobs, FlatLogprobs), "Did not output flat logprobs"
@@ -177,12 +174,12 @@ class PrimeRlServingTokens(ServingTokens):
                 return self.create_error_response(
                     "Compact logprobs require a non-streaming tokens request with logprobs enabled"
                 )
-            # Captured on the GPU: the replayed support, or the sampled token plus K draws or the top ids.
+            # Captured on the GPU: the replayed support, or the sampled token plus the top ids.
             # logprobs = 0 (sampled token only) keeps vLLM's flat logprobs.
             if extra_args.get("prl_replay", False):
                 sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
                 sampling_params.logprobs = None
-            elif rows := extra_args.get("prl_sampler_draws") or sampling_params.logprobs:
+            elif rows := sampling_params.logprobs:
                 sampling_params.extra_args = {**extra_args, "prl_sampler_rows": rows}
                 sampling_params.logprobs = None
         if not request.stream and request.output_mode == "tokens":
