@@ -6,6 +6,7 @@ from prime_rl.configs.trainer import (
     IcePopLossConfig,
     IPOLossConfig,
 )
+from prime_rl.trainer.models.layers.lm_head import TokenSupport
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
@@ -14,6 +15,7 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
     ref_kl_loss_fn,
+    selective_log_softmax_with_support,
     setup_rl_loss_fn,
 )
 
@@ -38,9 +40,10 @@ def test_icepop_score_centering_matches_dense_gradient(head_size, q_head, consta
         advantage,
         torch.ones(4, dtype=torch.bool),
         q,
-        logp[:head_size].expand(4, -1),
-        q[:head_size].log().expand(4, -1),
-        torch.ones((4, head_size), dtype=torch.bool),
+        logp[:head_size].repeat(4),
+        q[:head_size].log().repeat(4),
+        torch.arange(4).repeat_interleave(head_size),
+        torch.zeros(4, dtype=torch.bool),
     )
     config = IcePopLossConfig(
         ratio_low=0.5,
@@ -71,9 +74,10 @@ def test_icepop_score_centering_excludes_non_rl_tokens():
         torch.tensor([1.0, float("nan")]),
         torch.tensor([True, False]),
         torch.tensor([0.4, 0.0]),
-        logp,
-        q.log(),
-        torch.tensor([[True, True], [False, False]]),
+        logp[0],
+        q[0].log(),
+        torch.tensor([0, 0]),
+        torch.tensor([False, False]),
     )
     loss = IcePopLoss(IcePopLossConfig(score_centering=True)).loss(inputs).loss
     gradient = torch.autograd.grad(loss, logits)[0]
@@ -489,18 +493,21 @@ def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutpu
 
 @pytest.mark.parametrize("constant_advantage", [False, True])
 def test_score_centering_replay_matches_exact_supported_gradient(constant_advantage):
-    from prime_rl.trainer.rl.loss import selective_topk_log_softmax
-
     logits = torch.tensor([0.2, -0.4, 0.8, 3.0], requires_grad=True)
-    support = torch.tensor([[0, 1, 2, -1]]).expand(3, -1)
     labels = torch.arange(3)
-    head = selective_topk_log_softmax(logits.expand(3, -1), support, support, labels)
-    logp = logits[:3].log_softmax(-1)
     q = torch.tensor([0.7, 0.2, 0.1])
+    support = TokenSupport(
+        ids=labels.repeat(3).int(),
+        offsets=torch.arange(4) * 3,
+        replayed=torch.ones(3, dtype=torch.bool),
+        logprobs=q.log().repeat(3),
+    )
+    sampled, head = selective_log_softmax_with_support(logits.expand(1, 3, -1), labels.unsqueeze(0), support)
+    logp = logits[:3].log_softmax(-1)
     advantages = torch.ones(3) if constant_advantage else torch.tensor([1.0, -0.5, 2.0])
     config = IcePopLossConfig(score_centering=True, ratio_low=0.5, ratio_high=2.0)
     actual, metrics = compute_loss(
-        trainer_logprobs=[head[torch.arange(3), labels]],
+        trainer_logprobs=[sampled[0]],
         inference_logprobs=[q.log()],
         ref_logprobs=None,
         advantages=[advantages],
@@ -512,10 +519,8 @@ def test_score_centering_replay_matches_exact_supported_gradient(constant_advant
         rl_scale=1,
         ce_scale=1,
         ref_kl_scale=1,
-        trainer_support_logprobs=[head],
-        sampler_support_logprobs=[torch.cat([q.log(), torch.zeros(1)]).expand(3, -1)],
-        support_valid=[support >= 0],
-        sampler_tail_mass=[torch.zeros(3)],
+        support=support,
+        trainer_support_logprobs=head,
     )
     ratio = logp.detach().exp() / q
     weight = ratio * ((ratio >= config.ratio_low) & (ratio <= config.ratio_high))
