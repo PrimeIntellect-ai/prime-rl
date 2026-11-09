@@ -107,7 +107,8 @@ class NemotronHDecoderLayer(nn.Module):
 
     @property
     def is_token_local(self) -> bool:
-        """Each token's output depends on that token alone (see ``TokenChunkedCheckpointWrapper``)."""
+        """Every op in the block is independent per position, so each token's output depends on that token alone
+        (see ``TokenChunkedCheckpointWrapper``). True for the MoE layers, which are norm, MoE and residual only."""
         return self.layer_type == "moe"
 
     def forward(

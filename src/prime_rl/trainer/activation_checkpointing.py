@@ -39,6 +39,10 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_kernels::select_indexed_blocks",
         "prime_kernels::indexed_attention_plan",
         "prime_rl::record_moe_routing_statistics",
+        # The EP dispatch splits are a saved CUDA-to-CPU copy of these counts. Replayed under torch.compile, the
+        # counts exchange would no longer feed the dispatch all-to-all, so inductor could order the two differently
+        # on ranks with different sequence lengths, leaving the ranks in mismatched collectives.
+        "prime_rl_collectives::all_to_all_counts",
     }
 )
 
@@ -124,24 +128,27 @@ def _selective_checkpoint_policy(
 
 
 class TokenChunkedCheckpointWrapper(CheckpointWrapper):
-    """Checkpoint a token-local block as one checkpoint per chunk of at most ``token_chunk_size`` tokens.
+    """Experimental. Checkpoint a block as one checkpoint per chunk of at most ``token_chunk_size`` tokens.
 
     The block's recompute and backward then hold one chunk's activations at a time instead of the
-    whole sequence's. Only valid for blocks whose output at each token depends on that token alone
-    (e.g. a MoE layer): the hidden states and every tensor argument laid out like them
-    (``[batch, seq, ...]``) are split along the sequence; other arguments go to every chunk as-is.
+    whole sequence's. Only valid for blocks in which every op is independent per position, so the
+    output at each token depends on that token alone: the hidden states and every tensor argument
+    laid out like them (``[batch, seq, ...]``) are split along the sequence; other arguments go to
+    every chunk as-is.
+
+    The chunk loop always runs eagerly. ``compile_chunk`` compiles the checkpointed chunk call inside
+    it; chunk lengths vary within and across rows, so the CUDA-graph compile modes would re-record often.
     """
 
     def __init__(self, mod: nn.Module, token_chunk_size: int, **checkpoint_kwargs) -> None:
         super().__init__(mod, **checkpoint_kwargs)
         self.token_chunk_size = token_chunk_size
-        self._checkpoint_chunk = super().forward
+        self._checkpoint_chunk = partial(self.checkpoint_fn, self._checkpoint_wrapped_module)
 
-    def compile(self, *args, **kwargs) -> None:
-        # Compile one checkpointed chunk, not the chunk loop: the loop's bounds follow the row length, which
-        # torch.compile would specialize on and recompile for. The checkpoint stays inside the compiled call so
-        # its policy still applies.
-        self._checkpoint_chunk = torch.compile(super().forward, *args, **kwargs)
+    def compile_chunk(self, **compile_kwargs) -> None:
+        """Compile one checkpointed chunk. Use instead of ``nn.Module.compile``, which would compile the chunk
+        loop: its bounds follow the row length, so torch.compile would recompile for every new length."""
+        self._checkpoint_chunk = torch.compile(self._checkpoint_chunk, **compile_kwargs)
 
     def forward(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         batch_size, seq_len = hidden_states.shape[:2]
@@ -151,10 +158,11 @@ class TokenChunkedCheckpointWrapper(CheckpointWrapper):
         def is_token_aligned(value) -> bool:
             return isinstance(value, torch.Tensor) and value.ndim >= 2 and value.shape[:2] == (batch_size, seq_len)
 
-        # Equal chunks rather than full chunks plus a remainder: a 1-token tail would hit torch.compile's size-1
-        # specialization, whose separate graph gave wrong parameter gradients.
+        # Equal chunks rather than full chunks plus a remainder, so no chunk is a 1-token tail: torch.compile
+        # specializes on size 1, which costs a separate graph and gave wrong parameter gradients on torch 2.13.
         num_chunks = -(-seq_len // self.token_chunk_size)
         base, extra = divmod(seq_len, num_chunks)
+        assert base > 1, f"1-token chunk: seq_len={seq_len}, token_chunk_size={self.token_chunk_size}"
         outputs = []
         start = 0
         for chunk in range(num_chunks):
