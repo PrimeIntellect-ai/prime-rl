@@ -8,7 +8,7 @@ selection with a frozen token-id lookup but keeps the learned gating weights.
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.model_conversion.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter

@@ -1,7 +1,7 @@
 import torch
 
+from prime_rl.model_conversion.configuration_qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.layers.ngram import NGramHasher, consecutive_primes_from
-from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 
 INT64_MAX = torch.iinfo(torch.int64).max
 MASK64 = 2**64 - 1

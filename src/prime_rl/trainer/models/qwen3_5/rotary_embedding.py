@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 
-from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+from prime_rl.model_conversion.configuration_qwen3_5 import Qwen3_5TextConfig
 
 
 class Qwen3_5RotaryEmbedding(nn.Module):

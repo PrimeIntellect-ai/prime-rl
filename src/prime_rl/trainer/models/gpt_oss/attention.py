@@ -8,8 +8,8 @@ in its Ulysses path.
 import torch
 from torch import nn
 
+from prime_rl.model_conversion.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
-from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, quadratic_attention_flops
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 

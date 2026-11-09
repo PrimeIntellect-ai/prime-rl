@@ -1,10 +1,10 @@
 import torch
 from torch import nn
 
+from prime_rl.model_conversion.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
-from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
 
 class Qwen3_5Attention(FlashAttention):

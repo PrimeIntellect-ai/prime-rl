@@ -334,12 +334,10 @@ def make_hf_lazy_weights(
         for tensor in group.tensors
     }
 
-    # TODO(matej): Figure out how to avoid depending on trainer code here.
-    from prime_rl.trainer.models import get_custom_causal_lm_cls
-    from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
+    from prime_rl.model_conversion import conversion_chain
+    from prime_rl.model_conversion.ops import apply_prime_to_hf
 
-    model_cls = get_custom_causal_lm_cls(hf_config)
-    apply_prime_to_hf(state, model_cls.conversion_chain(hf_config))
+    apply_prime_to_hf(state, conversion_chain(hf_config))
 
     # AutoWeightsLoader groups adjacent names by module prefix. Stable sorting
     # matches normal checkpoint iterators and keeps every expert group intact.

@@ -7,10 +7,9 @@ import torch
 from jaxtyping import Int
 from torch import Tensor, nn
 
+from prime_rl.model_conversion.converting_qwen3_8_flash_next import LAYOUT_BUFFERS
 from prime_rl.trainer.distributed.ngram_lookup import LocalLookup, NGramLookup
 from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
-
-LAYOUT_BUFFERS = ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
 
 
 def consecutive_primes_from(minimum: int, skip: int, count: int) -> list[int]:

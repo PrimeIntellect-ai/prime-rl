@@ -6,8 +6,8 @@ parameters retain their names in both formats.
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import ConvOp
-from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import glm_moe_layer_ops
+from prime_rl.model_conversion.converting_glm4_moe import glm_moe_layer_ops
+from prime_rl.model_conversion.ops import ConvOp
 
 
 def conversion_chain(config) -> list[ConvOp]:
