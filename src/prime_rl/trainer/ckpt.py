@@ -41,7 +41,7 @@ from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import DCP_TIMEOUT, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, is_ckpt_step_complete
 
 
 @dataclass
@@ -288,7 +288,12 @@ class CheckpointManager:
         self.write_group: torch.distributed.ProcessGroup | None = None
         self.pending: PendingSave | None = None
 
-        all_steps = get_all_ckpt_steps(self.ckpt_dir)
+        # Only complete steps count toward keep_last: a step cut off mid-write before a resume must not displace one
+        all_steps = [
+            step
+            for step in get_all_ckpt_steps(self.ckpt_dir)
+            if is_ckpt_step_complete(get_step_path(self.ckpt_dir, step))
+        ]
         if resume is not None and resume.step is not None:
             self.ckpt_steps = [s for s in all_steps if s <= resume.step]
         else:
@@ -349,7 +354,7 @@ class CheckpointManager:
             )
             self.write_group = torch.distributed.new_group(backend="gloo", timeout=DCP_TIMEOUT)
         staging = self.stager.stage({"app": app_state.async_state_dict()})
-        write = self.writer.submit(lambda: dcp_save(staging.wait(), checkpoint_id=path, process_group=self.write_group))
+        write = self.writer.submit(self._write, staging, path)
         if any(isinstance(optimizer, OffloadOptimizer) for optimizer in app_state.optimizers):
             staging.wait()
             staging = None
@@ -358,6 +363,9 @@ class CheckpointManager:
             f"{format_time(time.perf_counter() - start_time)}, writing it in the background"
         )
         return staging, write
+
+    def _write(self, staging: Staging, path: Path) -> None:
+        dcp_save(staging.wait(), checkpoint_id=path, process_group=self.write_group)
 
     def _save_mapping(self, path: Path, model: nn.Module) -> None:
         """Write the prime -> HF conversion of the saved model weights as views, so a reader can
