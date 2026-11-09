@@ -24,7 +24,7 @@ def sampler_rows(params) -> int:
 
 def patch_request_replay():
     from vllm.exceptions import VLLMValidationError
-    from vllm.sampling_params import SamplingParams
+    from vllm.sampling_params import RequestOutputKind, SamplingParams
     from vllm.v1.engine.input_processor import InputProcessor
     from vllm.v1.engine.output_processor import RequestState
     from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
@@ -54,6 +54,8 @@ def patch_request_replay():
                     raise VLLMValidationError("Request-scoped sampling replay does not support speculative decoding")
                 if wants_replay(params) and params.temperature <= 0:
                     raise VLLMValidationError("Replay requests require temperature > 0")
+                if wants_replay(params) and params.output_kind != RequestOutputKind.FINAL_ONLY:
+                    raise VLLMValidationError("Replay requests do not support streaming")
                 # Validate against a private view; never toggle shared engine
                 # configuration while concurrent requests are being admitted.
                 self = copy(self)

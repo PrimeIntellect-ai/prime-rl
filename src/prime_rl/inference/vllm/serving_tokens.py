@@ -169,6 +169,9 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
         extra_args = sampling_params.extra_args or {}
+        captures = extra_args.get("prl_replay", False) or extra_args.get("prl_sampler_rows", 0)
+        if captures and (request.stream or request.output_mode != "tokens"):
+            return self.create_error_response("Sampling-support capture requires a non-streaming tokens request")
         if extra_args.get("prl_compact_logprobs", False):
             if request.stream or request.output_mode != "tokens" or sampling_params.logprobs is None:
                 return self.create_error_response(
