@@ -31,7 +31,6 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Muse Glimmer (text only) | `meta-models/Muse-Glimmer-30B` | — | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
-| Nemotron H Omni (text only) | `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16` | ✅ | ✅ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
@@ -39,15 +38,6 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
-
-Nemotron 3.5 Super text-only training loads the official BF16 Omni checkpoint and reuses the
-Nemotron-H language backbone. Vision, projector, and MTP weights are excluded. Use
-`[orchestrator.renderer] name = "nemotron-3.5"` and
-`[inference.vllm] language_model_only = true` with `trust_remote_code = true` for vLLM's
-checkpoint config loading; the trainer uses PrimeRL's registered config with its default
-`trust_remote_code = false`. The short RL config is at
-`configs/advanced/nemotron-3.5-super/rl.toml`. Image/video training is not supported.
-Weight conversion retains the Omni checkpoint's `language_model.*` names.
 
 ### Low-precision training
 
