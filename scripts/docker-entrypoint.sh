@@ -77,7 +77,7 @@ import tomllib
 HEAVY = {
     "torch", "torchvision", "torchaudio", "triton", "vllm", "vllm-router",
     "flash-attn", "flash-attn-3", "flashinfer-python", "tilelang",
-    "deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels",
+    "deep-ep", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels",
 }
 
 
