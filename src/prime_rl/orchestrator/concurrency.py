@@ -646,12 +646,10 @@ class ConcurrencyController(Reconfigurable):
             self.step = max(STEP_MIN, STEP_MAX ** min(1.0, margin))
             return True
         self.step = max(STEP_MIN, math.sqrt(self.step))
-        self.direction = -self.direction
         self.cap = float(base.cap)
         self.apply_limit(base.cap, reason="step rejected")
         # Re-measure the reference level: the pool and the workload moved during the step
-        self.base = None
-        self.level = Level(cap=base.cap)
+        self.restart_steps(direction=-self.direction)
         return False
 
     def next_step(self) -> None:
@@ -705,7 +703,7 @@ class ConcurrencyController(Reconfigurable):
         stretched = best.latency > 0 and window.latency > LATENCY_STRETCH * best.latency
         cancel = self.drops >= 3 and (stretched or self.queued_share > QUEUE_CANCEL)
         self.trim(
-            int(self.clamp(inflight * max(DROP_TRIM_MIN, window.throughput / best.throughput))),
+            inflight * max(DROP_TRIM_MIN, window.throughput / best.throughput),
             inflight,
             cancel=cancel,
             reason=f"throughput drop ({window.throughput:.0f} < {best.throughput:.0f} tokens/s, "
@@ -733,7 +731,7 @@ class ConcurrencyController(Reconfigurable):
         if not cancel and (self.paying or self.turnover - self.trim_turnover < 1.0):
             return False
         self.trim(
-            int(self.clamp(self.projected(inflight * (1.0 - share + QUEUE_TARGET)))),
+            self.projected(inflight * (1.0 - share + QUEUE_TARGET)),
             inflight,
             cancel=cancel,
             reason=f"{'queue overload' if cancel else 'queue'} {share:.2f}",
@@ -742,12 +740,12 @@ class ConcurrencyController(Reconfigurable):
         self.queue_trimmed = True
         return True
 
-    def trim(self, target: int, inflight: int, *, reason: str, cancel: bool, brake: bool = False) -> None:
-        """Lower the cap (never raise) and, with ``cancel``, shed the in-flight excess; without it, admission stays
-        blocked until the pool drains below the new cap on its own. The trim was the step down: the steps measure
-        the trimmed level next and step up with the smallest step. A ``brake`` trim during the fast climb leaves it
-        climbing."""
-        target = min(target, self.max_inflight)
+    def trim(self, target: float, inflight: int, *, reason: str, cancel: bool, brake: bool = False) -> None:
+        """Lower the cap to ``target`` (clamped, never raised) and, with ``cancel``, shed the in-flight excess;
+        without it, admission stays blocked until the pool drains below the new cap on its own. The trim was the
+        step down: the steps measure the trimmed level next and step up with the smallest step. A ``brake`` trim
+        during the fast climb leaves it climbing."""
+        target = min(int(self.clamp(target)), self.max_inflight)
         self.cap = float(target)
         self.apply_limit(target, reason=reason)
         if cancel and self.on_overload is not None and inflight > target:
