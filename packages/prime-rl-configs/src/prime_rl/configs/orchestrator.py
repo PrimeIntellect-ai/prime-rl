@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias, get_args
@@ -48,8 +49,9 @@ class TrainSamplingConfig(BaseConfig):
     rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts. Truncation triggers sampling replay; top-p alone needs no
-    top-k — see docs/inference.md (Sampling Replay)."""
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and a default top-k
+    is set when only top-p truncates so every replayed support is bounded — see docs/inference.md
+    (Sampling Replay)."""
 
     max_completion_tokens: Annotated[int | None, Live()] = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
@@ -463,6 +465,11 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+# Top-k set on truncated policy sampling that has none: the kept ids of every sampled token travel to the
+# trainer, and top-p alone can keep most of the vocabulary on a flat distribution.
+TRAIN_TOP_K_DEFAULT = 10000
+
+
 class OrchestratorControlConfig(ControlConfig):
     port: int = Field(8041, ge=1, le=65535)
     """Port the control API listens on, next to the trainer's 8040 on a single node."""
@@ -606,8 +613,9 @@ class OrchestratorConfig(BaseConfig):
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
-        Owned here: opd/opsd is rejected (full-vocab prefill refs would mix
-        normalizations). Frozen-source envs sample externally and are exempt."""
+        Owned here: every truncating config gets a top-k (bounds the replayed supports); opd/opsd
+        is rejected (full-vocab prefill refs would mix normalizations). Frozen-source envs sample
+        externally and are exempt."""
         truncating = [sampling for sampling in self.policy_samplings if sampling.truncates_distribution()]
         if not truncating:
             return self
@@ -625,6 +633,20 @@ class OrchestratorConfig(BaseConfig):
                 "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
                 "prefill scores while trainer logprobs are renormalized over the sampling mask, biasing the "
                 "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
+            )
+
+        if any(sampling.top_k is None for sampling in truncating):
+            warnings.warn(
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_DEFAULT} so every replayed "
+                "support is bounded. Set top_k explicitly to override.",
+                stacklevel=2,
+            )
+            self.update_policy_samplings(
+                lambda sampling: (
+                    sampling.model_copy(update={"top_k": TRAIN_TOP_K_DEFAULT})
+                    if sampling.truncates_distribution() and sampling.top_k is None
+                    else sampling
+                )
             )
 
         return self

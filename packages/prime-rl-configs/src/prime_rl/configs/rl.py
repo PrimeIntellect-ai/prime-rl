@@ -551,7 +551,8 @@ class RLConfig(BaseConfig):
         def request_logprobs(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            k = (sampling.top_k or 1) if sampling.truncates_distribution() else loss.score_centering_topk
+            # A replayed support comes back whole with its sampler logprobs, whatever the count
+            k = 1 if sampling.truncates_distribution() else loss.score_centering_topk
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})

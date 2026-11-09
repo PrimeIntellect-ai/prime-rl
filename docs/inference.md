@@ -337,10 +337,10 @@ Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-# top_k = 128  # optional
+# top_k = 128  # optional, defaults to 10000 under truncation (bounds each replayed support)
 ```
 
-That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Top-p alone needs no top-k: each request's kept set is captured whole, at any width. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
+That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Each request's kept set is captured whole. Top-p alone gets `top_k = 10000`, so a flat distribution cannot keep most of the vocabulary; with both set, vLLM applies top-k first and top-p within it. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
 Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. Mixed batches skip mask capture for eval rows, and all-eval batches skip it entirely.
 
