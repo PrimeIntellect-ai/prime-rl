@@ -1,6 +1,7 @@
 """vLLM extension using the public ModelExpress generator client."""
 
 import atexit
+import inspect
 from typing import TYPE_CHECKING, cast
 
 import torch
@@ -19,6 +20,20 @@ if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
 else:
     Worker = object
+
+
+def redo_composed_loader_transforms(model: nn.Module) -> None:
+    """Transform again each weight that loads through vLLM's ``composed_weight_loader``, which
+    copies the checkpoint weight and then transforms it in place (Mamba's ``A = -exp(A_log)``).
+    ModelExpress replays only the copies, so its install leaves these weights untransformed."""
+    from vllm.model_executor.model_loader.weight_utils import composed_weight_loader
+
+    composed = composed_weight_loader(None, None).__code__
+    for param in model.parameters():
+        loader = inspect.unwrap(getattr(param, "weight_loader", None))
+        if getattr(loader, "__code__", None) is composed:
+            transform = loader.__closure__[composed.co_freevars.index("fn")].cell_contents
+            param.data.copy_(transform(param))
 
 
 class ModelExpressWeightUpdateWorker(Worker):
@@ -74,4 +89,6 @@ class ModelExpressWeightUpdateWorker(Worker):
             self._generator.apply_weight(staged)
         finally:
             staged.release()
-        finalize_deepseek_v4_weights(self.model_runner.get_model())
+        model = self.model_runner.get_model()
+        redo_composed_loader_transforms(model)
+        finalize_deepseek_v4_weights(model)

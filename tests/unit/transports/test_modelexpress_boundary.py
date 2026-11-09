@@ -77,6 +77,8 @@ def test_modelexpress_adapter_uses_only_public_clients(relative_path):
 
 @pytest.mark.parametrize("fail_install", [False, True])
 def test_modelexpress_worker_uses_stage_apply_release(fail_install):
+    import torch
+
     from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
 
     calls = []
@@ -95,7 +97,7 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
 
     worker = ModelExpressWeightUpdateWorker()
     worker._generator = SimpleNamespace(stage_weight=stage_weight, apply_weight=apply_weight)
-    worker.model_runner = SimpleNamespace(get_model=lambda: SimpleNamespace())
+    worker.model_runner = SimpleNamespace(get_model=lambda: torch.nn.Module())
     if fail_install:
         with pytest.raises(RuntimeError, match="installation failed"):
             worker.update_weights_from_modelexpress(version_uid="version-a")
@@ -214,3 +216,21 @@ def test_refresh_copies_current_weights_into_bound_copies():
     ModelExpressWeightSender._refresh_bound_tensors(sender, model)
     assert sender._bound["q"].tolist() == [0.0, 1.0] and sender._bound["k"].tolist() == [2.0, 3.0]
     assert sender._bound["plain"].data_ptr() == model.plain.data_ptr()
+
+
+def test_composed_loader_transforms_are_redone():
+    import functools
+
+    import torch
+    from torch import nn
+    from vllm.model_executor.model_loader.weight_utils import composed_weight_loader, default_weight_loader
+
+    from prime_rl.inference.vllm.worker.modelexpress import redo_composed_loader_transforms
+
+    model = nn.Module()
+    model.A = nn.Parameter(torch.tensor([0.0, 1.0]), requires_grad=False)
+    model.plain = nn.Parameter(torch.tensor([0.0, 1.0]), requires_grad=False)
+    loader = composed_weight_loader(default_weight_loader, lambda x: -torch.exp(x))
+    model.A.weight_loader = functools.wraps(loader)(lambda *args: loader(*args))  # a layerwise reload wrapper
+    redo_composed_loader_transforms(model)
+    assert torch.equal(model.A, -torch.exp(torch.tensor([0.0, 1.0]))) and model.plain.tolist() == [0.0, 1.0]
