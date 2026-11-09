@@ -40,6 +40,8 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    Loss,
+    RLLoss,
     compute_entropy,
     compute_loss,
     _mismatch_kl_from_log_ratio,
@@ -95,15 +97,19 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_conf
 from prime_rl.utils.utils import clean_exit
 
 
-def sparse_head_backward(micro_batch: TensorMicroBatch) -> bool:
+def sparse_head_backward(micro_batch: TensorMicroBatch, rl_loss_fn: Loss) -> bool:
     """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
-    stream), and each is replayed against a support holding its label."""
+    stream, no custom loss, which may put gradient on any token), and each is replayed against a support holding
+    its label or centered by a loss whose softmax terms cancel (``RLLoss.sparse_logit_grad``)."""
     if (
-        micro_batch["support_offsets"] is None
+        not isinstance(rl_loss_fn, RLLoss)
+        or micro_batch["support_offsets"] is None
         or micro_batch["ce_weights"] is not None
         or micro_batch["ref_kl_weights"] is not None
     ):
         return False
+    if rl_loss_fn.sparse_logit_grad:
+        return True
     support = TokenSupport(
         ids=micro_batch["support_ids"], offsets=micro_batch["support_offsets"], replayed=micro_batch["support_replayed"]
     )
@@ -191,19 +197,16 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         materialize_images = partial(model.materialize_images, processor=processor)
-    # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
-    sparse_backward_allowed = config.loss.type != "custom"
-
-    def prepare(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
-        micro_batch = prepare_micro_batch(micro_batch, materialize_images)
-        micro_batch["sparse_head_backward"] = sparse_backward_allowed and sparse_head_backward(micro_batch)
-        return micro_batch
-
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
+
+    def prepare(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
+        micro_batch = prepare_micro_batch(micro_batch, materialize_images)
+        micro_batch["sparse_head_backward"] = sparse_head_backward(micro_batch, rl_loss_fn)
+        return micro_batch
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -418,7 +421,7 @@ def train(config: TrainerConfig):
         routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
-        score_centering = config.loss.type == "icepop" and config.loss.score_centering
+        score_centering = config.loss.type != "custom"
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]

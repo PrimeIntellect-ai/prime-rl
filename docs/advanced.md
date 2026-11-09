@@ -187,7 +187,7 @@ VLM training requires a registered custom PrimeRL implementation.
 
 - **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
 - **Precision settings are separate.** The examples serve with `inference.vllm.dtype = "bfloat16"` while retaining `trainer.model.optimization_dtype = "float32"` and `reduce_dtype = "float32"`. VLM mode does not require BF16 optimizer state or gradient reduction.
-- **Monitor trainer–inference mismatch.** Image encoding, parallel reductions and model kernels can contribute numerical differences. Track `mismatch_kl/all/mean`, `masked_mismatch_kl/mean`, `unmasked_mismatch_kl/mean` and `is_masked/mean` alongside reward.
+- **Monitor trainer–inference mismatch.** Image encoding, parallel reductions and model kernels can contribute numerical differences. Track `mismatch_kl/all/mean` and `kl/mean` alongside reward.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
 
 ## LoRA Training

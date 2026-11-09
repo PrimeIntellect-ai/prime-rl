@@ -167,15 +167,17 @@ def capture_supports(logits, cu_num_logits, committed, capacity, sampler_rows=No
 
 
 def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
-    """Per selected request: the sampled token, then the ``num_rows`` top ids of the processed distribution q,
-    each packed with its full-vocabulary processed logprob. The rows copy vLLM's ``[sampled, top...]`` logprob
-    layout, where the sampled id can repeat among the top ids; the client parses each row as vLLM's (repeated
-    ids collapse into one head entry). Returns the selected request indices, packed rows and row sizes."""
+    """Per selected request: the sampled token, then ``num_rows`` i.i.d. draws (with replacement) from the
+    processed distribution q, each packed with its full-vocabulary processed logprob. The rows copy vLLM's
+    ``[sampled, top...]`` logprob layout; the client drops the leading sampled token and keeps the draws as the
+    centering sample. Draws use the global generator, so they are independent of the sampled token. Returns the
+    selected request indices, packed rows and row sizes."""
     selected = np.flatnonzero(num_rows)
     width = int(num_rows.max())
     index = torch.from_numpy(selected).pin_memory().to(logits.device, non_blocking=True)
     x = logits[cu_num_logits[:-1].long()[index]].float()
-    ids = torch.cat([sampled[index].view(-1, 1).long(), x.topk(width).indices], dim=1)
+    alternatives = torch.multinomial(x.softmax(-1), width, replacement=True)
+    ids = torch.cat([sampled[index].view(-1, 1).long(), alternatives], dim=1)
     values = (x.gather(1, ids) - x.logsumexp(-1, keepdim=True)).clamp_min(-9999.0)
     packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
     row_counts = (
