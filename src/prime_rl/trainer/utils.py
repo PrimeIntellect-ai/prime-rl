@@ -148,9 +148,11 @@ def bind_process_to_gpu_numa_node() -> None:
 
     logger = get_logger()
     device_id = torch.cuda.current_device()
+    # NVML indexes every GPU on the node and CUDA only the visible ones (CUDA_VISIBLE_DEVICES): match by UUID
+    uuid = f"GPU-{torch.cuda.get_device_properties(device_id).uuid}"
     pynvml.nvmlInit()
     try:
-        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByUUID(uuid)).busId
     finally:
         pynvml.nvmlShutdown()
     if isinstance(bus_id, bytes):
@@ -170,7 +172,7 @@ def bind_process_to_gpu_numa_node() -> None:
         else:
             cpus.add(int(part))
     os.sched_setaffinity(0, cpus)
-    logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+    logger.info(f"Bound rank with GPU {device_id} ({sysfs_bus_id}) to NUMA node {numa_node} ({len(cpus)} CPUs)")
 
 
 def configure_cpu_optimizer_threads() -> None:
