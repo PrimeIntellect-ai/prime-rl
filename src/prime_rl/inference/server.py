@@ -67,7 +67,12 @@ def server(config: InferenceConfig):
     from vllm.entrypoints.launchers.api_server.entry import run_server
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-    from prime_rl.inference.vllm.api_server import LIVENESS_TIMEOUT_ENV
+    from prime_rl.inference.vllm.api_server import (
+        LIVENESS_TIMEOUT_ENV,
+        WEIGHT_PULL_SERVER_ENV,
+        WEIGHT_PULL_STAGING_BUFFER_BYTES_ENV,
+        WEIGHT_PULL_STAGING_BUFFERS_COUNT_ENV,
+    )
 
     # Signal worker processes to disable LoRA on MoE layers when LoRA targets don't include experts
     lora_target_modules = config.vllm.lora_target_modules
@@ -84,6 +89,25 @@ def server(config: InferenceConfig):
     validate_parsed_serve_args(args)
 
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+
+    if (pull := config.weight_broadcast.pull) is not None:
+        os.environ[WEIGHT_PULL_SERVER_ENV] = pull.server
+        os.environ[WEIGHT_PULL_STAGING_BUFFER_BYTES_ENV] = str(pull.staging_buffer_bytes)
+        os.environ[WEIGHT_PULL_STAGING_BUFFERS_COUNT_ENV] = str(pull.staging_buffers_count)
+        # One engine at a time reads a version from the trainer and each engine feeds one peer at a time, so a
+        # version spreads through the fleet in a doubling tree instead of every engine sharing the trainer's
+        # network. Set before vLLM starts its workers.
+        os.environ.setdefault("MX_MAX_TRAINER_READERS", "1")
+        os.environ.setdefault("MX_MAX_TENSOR_READERS", "1")
+        # An install keeps generation paused and holds its source, so a copy whose source stopped answering must
+        # fail, shutting the server down, instead of waiting ModelExpress's default 900s on each staged batch. A
+        # batch is at most one staging buffer, seconds of work on any working path.
+        os.environ.setdefault("MX_TRANSFER_TIMEOUT", "120")
+        # An engine serves the versions it installs to its peers only when ModelExpress loaded its weights.
+        if args.load_format == "auto":
+            args.load_format = "modelexpress"
+            os.environ.setdefault("MX_LOAD_STRATEGY_CHAIN", "RL")
+            os.environ.setdefault("MX_SERVER_ADDRESS", pull.server)
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

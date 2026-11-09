@@ -95,6 +95,29 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     staging_buffers_count: int = Field(1, ge=1)
     """Number of receiver buffers. Two overlap the next read with installation."""
 
+    mode: Literal["push", "pull"] = "push"
+    """``push``: the orchestrator installs every version on every engine and the trainer waits for it. ``pull``:
+    every engine pulls the newest published version on its own, from the trainer or from a peer that already
+    installed it; the trainer publishes each version without waiting for inference, the orchestrator follows
+    the newest published version, and every token records the version that sampled it. Engines install every
+    version in place, so pull needs ``staging_buffer_bytes``."""
+
+    @model_validator(mode="after")
+    def validate_pull_staging(self):
+        if self.mode != "pull":
+            return self
+        if self.staging_buffer_bytes is None:
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' streams each version into the live weights; set "
+                "weight_broadcast.staging_buffer_bytes, e.g. 4294967296"
+            )
+        if self.staging_mode == "IN_PLACE":
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' keeps training while engines read a version, so the trainer "
+                "must publish a copy; set weight_broadcast.staging_mode to 'COPY_TO_HOST' or 'COPY_TO_DEVICE'"
+            )
+        return self
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig

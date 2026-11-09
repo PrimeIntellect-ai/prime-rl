@@ -528,8 +528,9 @@ class Orchestrator:
     async def wait_for_final_broadcast(self) -> None:
         """Stay alive for the trainer's last broadcast. Every broadcast is a
         blocking rendezvous — tearing down the watcher before it would strand
-        the trainer inside the handshake."""
-        if self.config.max_steps is None:
+        the trainer inside the handshake. A trainer that does not wait for the
+        orchestrator needs no one to stay, and may not publish its last step."""
+        if self.config.max_steps is None or not self.watcher.receiver.sender_waits:
             return
         await self.wait_for_version(self.config.max_steps, reason="before shutdown")
 
@@ -783,7 +784,7 @@ class Orchestrator:
         await asyncio.to_thread(self.log_train_batch, batch, step=step, step_time=step_time)
 
         if config.max_steps is not None and step >= config.max_steps:
-            await self.wait_for_version(step, reason="before shutdown")
+            await self.wait_for_final_broadcast()
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
         # and with a tight ``max_staleness`` it never fills at all (the

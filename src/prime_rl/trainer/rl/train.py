@@ -829,6 +829,8 @@ def train(config: TrainerConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
+    if weight_sender is not None:
+        weight_sender.close()
     micro_batch_workers.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")

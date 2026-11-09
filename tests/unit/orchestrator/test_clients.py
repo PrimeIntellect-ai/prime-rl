@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -12,6 +13,7 @@ from prime_rl.orchestrator.clients import (
     _pause_engines,
     check_health,
     load_lora_adapter,
+    maybe_check_has_model,
     setup_client,
 )
 
@@ -144,6 +146,30 @@ def test_check_health_retries_non_success_status():
         asyncio.run(check_health([client], interval=1, timeout=2))
 
     assert client.get.await_count == 2
+
+
+def test_model_check_waits_for_a_router_without_ready_engines():
+    client = AsyncMock()
+    request = httpx.Request("GET", "http://router/v1/models")
+    no_engine = httpx.Response(503, text="No available workers", request=request)
+    serving = httpx.Response(200, json={"data": [{"id": "model"}]}, request=request)
+    client.get.side_effect = [no_engine, no_engine, serving]
+
+    with patch("prime_rl.orchestrator.clients.asyncio.sleep", new=AsyncMock()):
+        asyncio.run(maybe_check_has_model([client], "model", timeout=5))
+
+    assert client.get.await_count == 3
+
+
+def test_model_check_fails_at_once_on_other_errors():
+    client = AsyncMock()
+    client.get.return_value = httpx.Response(401, request=httpx.Request("GET", "http://api/v1/models"))
+    client.base_url = httpx.URL("http://api")
+
+    with pytest.raises(RuntimeError, match="status 401"):
+        asyncio.run(maybe_check_has_model([client], "model", timeout=5))
+
+    assert client.get.await_count == 1
 
 
 def test_setup_client_assigns_renderer_model_name():
