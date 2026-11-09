@@ -4,7 +4,7 @@ from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.shared import CallableConfig
+from prime_rl.configs.shared import PluginConfig
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.utils.config import BaseConfig
 
@@ -119,7 +119,7 @@ class SFTCrossEntropyLossConfig(BaseConfig):
     type: Literal["ce"] = "ce"
 
 
-class SFTCustomLossConfig(CallableConfig):
+class SFTCustomLossConfig(PluginConfig):
     """A custom SFT loss: a function computed from the backbone's final hidden states, in place of token
     cross-entropy, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.sft.loss.LossInputs`` and
     returning a ``LossOutputs``."""

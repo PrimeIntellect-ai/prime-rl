@@ -40,7 +40,7 @@ import verifiers.v1 as vf
 from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.diff import Live
-from prime_rl.configs.shared import CallableConfig, VLLMClientConfig
+from prime_rl.configs.shared import PluginConfig, VLLMClientConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -125,7 +125,7 @@ class EchoRolesConfig(BaseConfig):
         return self
 
 
-class EchoFilterConfig(CallableConfig):
+class EchoFilterConfig(PluginConfig):
     """User-supplied per-token filter narrowing the role-selected echo tokens.
 
     The callable is imported at startup and invoked once per rollout as
