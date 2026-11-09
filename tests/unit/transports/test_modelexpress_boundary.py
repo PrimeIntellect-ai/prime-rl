@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
     "relative_path",
     [
         "src/prime_rl/transports/weights/modelexpress.py",
-        "src/prime_rl/inference/vllm/worker/modelexpress.py",
+        "packages/prime-rl-vllm/src/prime_rl/inference/vllm/worker/modelexpress.py",
     ],
 )
 def test_modelexpress_adapter_uses_only_public_clients(relative_path):
@@ -105,7 +105,7 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
 
 
 def test_modelexpress_worker_forwards_generator_buffer_config():
-    source = ast.parse((ROOT / "src/prime_rl/inference/vllm/worker/modelexpress.py").read_text())
+    source = ast.parse((ROOT / "packages/prime-rl-vllm/src/prime_rl/inference/vllm/worker/modelexpress.py").read_text())
     config = next(
         node
         for node in ast.walk(source)
