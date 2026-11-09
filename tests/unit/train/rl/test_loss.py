@@ -100,9 +100,7 @@ def test_grpo_loss():
         ce_weights=None,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
     )
     assert loss.shape == ()
 
@@ -125,9 +123,7 @@ def test_gspo_loss():
         ce_weights=None,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
     )
     assert loss.shape == ()
 
@@ -308,12 +304,10 @@ def test_ce_component_matches_masked_nll():
         ce_weights=ce_weights,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=2,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1 / 2, "ref_kl": 1.0},
     )
 
-    # loss = -sum(member logprobs) / ce_scale = -(-0.1 - 0.2) / 2 = 0.15
+    # loss = -sum(member logprobs) * ce weight = -(-0.1 - 0.2) / 2 = 0.15
     assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)
     assert "nll" in metrics
     assert "mismatch_kl" not in metrics
@@ -339,9 +333,7 @@ def test_ce_component_applies_weights():
         ce_weights=ce_weights,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
     )
 
     # loss = 0.1 * (0.1 + 0.2) = 0.03
@@ -366,9 +358,7 @@ def test_explicit_rl_weights_match_absent_stream():
         ce_weights=None,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
     )
     loss_absent, _ = compute_loss(rl_weights=None, **kwargs)
     loss_explicit, _ = compute_loss(rl_weights=[torch.ones(50, dtype=torch.float32).cuda()], **kwargs)
@@ -403,9 +393,7 @@ def test_disjoint_components_in_one_sequence():
         ce_weights=[ce_weights.cuda()],
         ref_kl_weights=[ref_kl_weights.cuda()],
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
     )
 
     assert loss.shape == ()
@@ -435,9 +423,7 @@ def test_empty_components_keep_backward_valid():
         ce_weights=ce_weights,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
     )
 
     assert torch.equal(loss, torch.zeros_like(loss))
@@ -467,9 +453,7 @@ def test_overlapping_components_sum():
         loss_mask=loss_mask,
         ref_kl_weights=None,
         rl_loss_fn=rl_loss_fn,
-        rl_scale=4,
-        ce_scale=8,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1 / 4, "ce": 1 / 8, "ref_kl": 1.0},
     )
     rl_only, _ = compute_loss(rl_weights=None, ce_weights=None, **kwargs)
     ce_only, _ = compute_loss(rl_weights=[torch.zeros(n, dtype=torch.float32).cuda()], ce_weights=ce_weights, **kwargs)
@@ -509,9 +493,7 @@ def test_score_centering_replay_matches_exact_supported_gradient(constant_advant
         ce_weights=None,
         ref_kl_weights=None,
         rl_loss_fn=IcePopLoss(config),
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
+        loss_weights={"rl": 1.0, "ce": 1.0, "ref_kl": 1.0},
         trainer_topk_logprobs=[head],
         sampler_topk_logprobs=[torch.cat([q.log(), torch.zeros(1)]).expand(3, -1)],
         topk_valid=[support >= 0],
