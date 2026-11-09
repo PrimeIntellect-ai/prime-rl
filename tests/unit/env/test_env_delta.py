@@ -1,4 +1,4 @@
-"""The env-serve delta stream: a trace's changes leave once each and reassemble into
+"""The env-serve wire: a trace's deltas cross msgpack once each and reassemble into
 the episode the worker finished with."""
 
 import asyncio
@@ -7,20 +7,16 @@ import copy
 import numpy as np
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.delta import DeltaStreamer, EpisodeAssembly, dump
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.trace import ModelCall, TimeSpan, TraceTask
 from verifiers.v1.types import AssistantMessage, Usage, UserMessage
 
-from prime_rl.env.delta import (
-    DeltaStreamer,
-    EpisodeAssembly,
-    TraceSummary,
-    dump,
-    pack,
-    unpack,
-)
+from prime_rl.env.client import assemble_episode
+from prime_rl.env.encoding import pack, unpack
+from prime_rl.env.types import TraceSummary
 
 
 class MyTask(vf.TaskData):
@@ -66,17 +62,6 @@ def add_turn(trace: vf.Trace, reply: str) -> None:
     trace.notify()
 
 
-def test_delta_fields_cover_every_serialized_trace_field():
-    """A new Trace field must be routed through the stream, or it silently vanishes."""
-    from prime_rl.env.delta import HEADER_FIELDS, LIST_FIELDS, SCALAR_FIELDS
-
-    streamed = set(HEADER_FIELDS) | set(LIST_FIELDS) | set(SCALAR_FIELDS)
-    serialized = {name for name, info in vf.Trace.model_fields.items() if not info.exclude} | set(
-        vf.Trace.model_computed_fields
-    )
-    assert streamed == serialized
-
-
 @pytest.mark.asyncio
 async def test_failed_send_is_diffed_again():
     """A delta the wire refused is not lost: its cursor stays and the next flush
@@ -107,62 +92,6 @@ async def test_failed_send_is_diffed_again():
         assembly.apply(unpack(frame))
     assert len(assembly.traces[trace.id]["nodes"]) == 3
     assert len(assembly.traces[trace.id]["calls"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_pending_preview_streams_and_clears_on_commit():
-    traces: list[vf.Trace] = []
-    frames: list[bytes] = []
-
-    async def send(data: dict) -> None:
-        frames.append(pack(data))
-
-    async with DeltaStreamer(lambda: traces, send) as streamer:
-        trace = make_trace()
-        traces.append(trace)
-        streamer.watch(trace)
-        add_turn(trace, "a1")
-        await settle()
-        # the harness sends its next request: the tool result is previewed at once
-        request, subagent = ["request"], ["sub-agent"]  # unhashable, like a PendingTurn
-        trace.preview(request, [UserMessage(content="tool says 42")])
-        await settle()
-        preview = unpack(frames[-1])
-        assert preview["pending"][0]["content"] == "tool says 42"
-        assert "nodes" not in preview
-        # a concurrent request (a sub-agent) previews under its own key; its failure
-        # takes only its own messages back
-        trace.preview(subagent, [UserMessage(content="sub-agent asks")])
-        await settle()
-        assert [m["content"] for m in unpack(frames[-1])["pending"]] == [
-            "tool says 42",
-            "sub-agent asks",
-        ]
-        trace.clear_preview(subagent)
-        trace.notify()
-        await settle()
-        assert [m["content"] for m in unpack(frames[-1])["pending"]] == ["tool says 42"]
-        # the model answers: the turn commits and the preview goes with it
-        trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="tool says 42")))
-        trace.clear_preview(request)
-        add_turn(trace, "a2")
-        await settle()
-        committed = unpack(frames[-1])
-        assert len(committed["nodes"]) == 2 and "pending" not in committed
-        trace.stop("agent_completed")
-        trace.ok = True
-        episode = Episode(env=EnvInfo(id="my-env"), task=trace.task, ok=True, traces=[trace])
-        traces = list(episode.traces)
-    assembly = EpisodeAssembly()
-    for frame in frames:
-        assembly.apply(unpack(frame))
-        if unpack(frame).get("pending"):
-            assert assembly.traces[trace.id]["pending"][0]["content"] == "tool says 42"
-    assert assembly.traces[trace.id]["pending"] == []
-    summaries = [TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls))]
-    record = assembly.finish(dump(episode, exclude={"traces"}), summaries)
-    assert "pending" not in record["traces"][0]
-    assert WireEpisode.model_validate(unpack(pack(record))).traces[0].id == trace.id
 
 
 @pytest.mark.asyncio
@@ -208,7 +137,7 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
     assert deltas == handed, "assembling never mutates a delta the caller holds"
     head = dump(episode, exclude={"traces"})
     summaries = [TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls))]
-    rebuilt = WireEpisode.model_validate(unpack(pack(assembly.finish(head, summaries))))
+    rebuilt = WireEpisode.model_validate(unpack(pack(assemble_episode(assembly, head, summaries))))
     assert rebuilt.ok and rebuilt.traces[0].id == trace.id
     assert rebuilt.traces[0].messages == trace.messages
     # Training arrays stay in the worker.
@@ -246,39 +175,8 @@ async def test_discarded_attempt_drops_its_trace():
     assert list(assembly.traces) == [second.id]
 
 
-@pytest.mark.asyncio
-async def test_retried_agent_run_replaces_its_trace():
-    traces: list[vf.Trace] = []
-    frames: list[bytes] = []
-
-    async def send(data: dict) -> None:
-        frames.append(pack(data))
-
-    async with DeltaStreamer(lambda: traces, send) as streamer:
-        first = make_trace()
-        traces.append(first)
-        streamer.watch(first)
-        add_turn(first, "a1")
-        add_turn(first, "a2")
-        await settle()
-        retry = make_trace()
-        retry.id, retry.attempt = first.id, 2
-        traces[:] = [retry]
-        streamer.watch(retry)
-        add_turn(retry, "b1")
-        await settle()
-    deltas = [unpack(frame) for frame in frames]
-    assert {"trace": first.id, "discard": True} in deltas
-    assembly = EpisodeAssembly()
-    for delta in deltas:
-        assembly.apply(delta)
-    (trace,) = assembly.traces.values()
-    assert trace["attempt"] == 2
-    assert [node["message"]["content"] for node in trace["nodes"]] == ["q", "b1"]
-
-
-def test_finish_refuses_a_gap():
+def test_assemble_episode_refuses_a_gap():
     assembly = EpisodeAssembly()
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
     with pytest.raises(RuntimeError, match="assembled 1 nodes"):
-        assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
+        assemble_episode(assembly, {}, [TraceSummary(id="t", nodes=2, calls=0)])

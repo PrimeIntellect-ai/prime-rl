@@ -1,6 +1,6 @@
 """The dispatcher's side of the live traces.
 
-Env worker pools stream every in-flight rollout as deltas (``prime_rl.env.delta``). The
+Env worker pools stream every in-flight rollout as deltas (``verifiers.v1.delta``). The
 dispatcher relays each delta to the monitors stamped with who dispatched it, and keeps
 only what its own progress line needs: the phase and turn count of each live trace.
 """
@@ -47,10 +47,12 @@ def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:
     if delta.get("discard"):
         meta.live.pop(trace_id, None)
         return
-    trace = meta.live.setdefault(trace_id, LiveTrace())
+    if "open" in delta or trace_id not in meta.live:  # an `open` for a known trace is a retry
+        meta.live[trace_id] = LiveTrace()
+    trace = meta.live[trace_id]
     trace.turns += len(delta.get("calls") or [])
     changed = delta.get("set") or {}
-    if delta.get("errors"):
+    if changed.get("errors"):
         trace.stage = "error"
     elif "timing" in changed:
         trace.stage = stage({"timing": changed["timing"]})
