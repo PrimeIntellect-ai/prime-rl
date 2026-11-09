@@ -3,13 +3,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from prime_rl.trainer.models.afmoe.converting_afmoe import conversion_chain as afmoe_conversion_chain
+from prime_rl.model_conversion.converting_afmoe import conversion_chain as afmoe_conversion_chain
+from prime_rl.model_conversion.converting_glm4_moe import conversion_chain as glm4_moe_conversion_chain
+from prime_rl.model_conversion.converting_laguna import conversion_chain as laguna_conversion_chain
+from prime_rl.model_conversion.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
+from prime_rl.model_conversion.ops import apply_hf_to_prime, apply_prime_to_hf, view_mapping
 from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoePreTrainedModel
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf, view_mapping
-from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain as glm4_moe_conversion_chain
-from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain as laguna_conversion_chain
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaPreTrainedModel
-from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
 from prime_rl.trainer.models.minimax_m2.modeling_minimax_m2 import MiniMaxM2PreTrainedModel
 
 

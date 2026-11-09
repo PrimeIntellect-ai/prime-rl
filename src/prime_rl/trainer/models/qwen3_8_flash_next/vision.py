@@ -6,13 +6,13 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
+from prime_rl.model_conversion.configuration_qwen3_8_flash_next import Qwen3_8FlashNextVisionConfig
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
     flash_attn_4_varlen_op,
 )
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
-from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextVisionConfig
 from prime_rl.trainer.vlm import load_image
 from prime_rl.transports.batch import MMRefs
 

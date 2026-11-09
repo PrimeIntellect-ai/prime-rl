@@ -12,8 +12,8 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
+from prime_rl.model_conversion.configuration_nemotron_h import NemotronHConfig
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
-from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.utils.cp import CPContext
 
 

@@ -13,9 +13,8 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.generic import maybe_autocast
 
+from prime_rl.model_conversion.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
-from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -267,10 +266,6 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.gate_proj" in name for name in state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 class LagunaModel(LagunaPreTrainedModel):

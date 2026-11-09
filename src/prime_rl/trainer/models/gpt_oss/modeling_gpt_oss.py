@@ -2,14 +2,13 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
-from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
-from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
-    conversion_chain,
+from prime_rl.model_conversion.configuration_gpt_oss import GptOssConfig
+from prime_rl.model_conversion.converting_gpt_oss import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
@@ -94,10 +93,6 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config: GptOssConfig):
-        return conversion_chain(config)
 
 
 class GptOssModel(GptOssPreTrainedModel):

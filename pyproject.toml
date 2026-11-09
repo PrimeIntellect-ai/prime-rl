@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "prime-rl-configs",
+    "prime-rl-vllm",
     "prime-pydantic-config>=0.4.3",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
@@ -48,9 +49,6 @@ orchestrator = "prime_rl.entrypoints.orchestrator:main"
 eval = "prime_rl.entrypoints.eval:main"
 env-worker-pool = "prime_rl.entrypoints.env_worker_pool:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
-
-[project.entry-points."vllm.general_plugins"]
-prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 gpu = [
@@ -254,6 +252,7 @@ deep-select = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+prime-rl-vllm = { path = "packages/prime-rl-vllm", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.
 verifiers = { path = "deps/verifiers", editable = true }

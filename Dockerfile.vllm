@@ -1,0 +1,38 @@
+# Inference image: the stock vLLM release image plus prime-rl's vLLM plugin, the AWS EFA stack and
+# prime-kernels. `vllm serve` picks up the plugin on its own; pass the weight-update worker with
+# `--worker-extension-cls` (see packages/prime-rl-vllm/README.md).
+#
+#   docker build -f Dockerfile.vllm .
+#
+# The defaults track pyproject.toml's vllm, prime-kernels and modelexpress pins; bump them together.
+ARG VLLM_VERSION=0.33.0
+FROM vllm/vllm-openai:v${VLLM_VERSION}
+
+# AWS EFA userspace stack: libfabric (which NIXL's LIBFABRIC backend and ModelExpress on EFA load) and
+# the aws-ofi-nccl NCCL net plugin. --skip-kmod: the host provides the EFA driver.
+ARG EFA_INSTALLER_VERSION=1.47.0
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar gzip \
+    && curl -fsSL "https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+        -o /tmp/aws-efa-installer.tar.gz \
+    && tar -xzf /tmp/aws-efa-installer.tar.gz -C /tmp \
+    && cd /tmp/aws-efa-installer \
+    && ./efa_installer.sh -y --skip-kmod --skip-limit-conf \
+    && cd / && rm -rf /tmp/aws-efa-installer.tar.gz /tmp/aws-efa-installer \
+    && echo /opt/amazon/efa/lib > /etc/ld.so.conf.d/efa.conf && ldconfig \
+    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/*
+
+# prime-kernels wheels are built per torch version; {arch} is filled in from the build platform.
+ARG PRIME_KERNELS_WHEEL="https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-b050074/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_{arch}.whl"
+ARG TARGETARCH
+RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64) \
+    && uv pip install --system --no-deps "$(echo "$PRIME_KERNELS_WHEEL" | sed "s/{arch}/$ARCH/")"
+
+# ModelExpress client for the modelexpress weight-update worker and pull mode.
+ARG MODELEXPRESS_SPEC="modelexpress @ git+https://github.com/skpulipaka26/modelexpress.git@c325dc8#subdirectory=modelexpress_client/python"
+COPY packages/prime-rl-vllm /tmp/prime-rl-vllm
+# Hold the image's torch and vLLM where they are while resolving the plugin's dependencies. git: for a
+# git-pinned ModelExpress.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+    && python3 -c "import torch, vllm; print(f'torch=={torch.__version__}'); print(f'vllm=={vllm.__version__}')" > /tmp/keep.txt \
+    && uv pip install --system -c /tmp/keep.txt "$MODELEXPRESS_SPEC" /tmp/prime-rl-vllm \
+    && rm -rf /tmp/prime-rl-vllm /tmp/keep.txt
