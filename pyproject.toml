@@ -63,9 +63,8 @@ gpu = [
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
-    # DSA sparse MLA backward kernel (CuTe DSL). vLLM 0.33 requires >=1.31; 1.32 changed the backward's
-    # signature (preallocated dq/dkv/d_sink and workspace), which our call sites and `cudnn_dsa_patch` predate.
-    "nvidia-cudnn-frontend>=1.31.0,<1.32 ; sys_platform == 'linux'",
+    # DSA sparse MLA backward kernel (CuTe DSL); 1.32 is the first with caller-allocated outputs.
+    "nvidia-cudnn-frontend>=1.32.0 ; sys_platform == 'linux'",
     "deep-select ; sys_platform == 'linux'",
     "flash-linear-attention>=0.6.0 ; sys_platform == 'linux'",
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",

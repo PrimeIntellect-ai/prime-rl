@@ -369,32 +369,43 @@ def cudnn_sparse_mla_backward(
     The cuDNN kernels take flat (tokens, ...) tensors with global indices, skip
     negative indices (no KV load, no dKV atomics) and expect a natural-log LSE.
     """
+    if arch == "sm90":
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import (
+            flash_attn_bwd_sm90 as backward,
+        )
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import (
+            flash_attn_bwd_sm90_workspace_size as workspace_size,
+        )
+    else:
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+            flash_attn_bwd_sm100 as backward,
+        )
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+            flash_attn_bwd_sm100_workspace_size as workspace_size,
+        )
+
     B, S, H, D_qk = q.shape
     S_kv = kv.shape[1]
     topk = indices.shape[-1]
-    args = (
-        q.view(B * S, H, D_qk),
-        kv.view(B * S_kv, D_qk),
+    q_flat = q.view(B * S, H, D_qk)
+    kv_flat = kv.view(B * S_kv, D_qk)
+    # A -inf sink leaves the softmax unchanged.
+    no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
+    dq, dkv = torch.empty_like(q_flat), torch.empty_like(kv_flat)
+    backward(
+        q_flat,
+        kv_flat,
         out.view(B * S, H, -1),
         grad_out.contiguous().view(B * S, H, -1),
         lse.view(B * S, H),
+        no_sink,
+        flat_kv_indices(indices, S_kv).view(B * S, topk),
+        softmax_scale=sm_scale,
+        dq=dq,
+        dkv=dkv,
+        d_sink=torch.empty_like(no_sink),
+        workspace=torch.empty(workspace_size(B * S, B * S_kv, D_qk, H), dtype=torch.uint8, device=q.device),
     )
-    flat_indices = flat_kv_indices(indices, S_kv).view(B * S, topk)
-    if arch == "sm90":
-        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
-
-        dq, dkv = flash_attn_bwd_sm90(*args, softmax_scale=sm_scale, topk_idxs=flat_indices)
-    else:
-        # A -inf sink leaves the softmax unchanged.
-        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
-            flash_attn_bwd_sm100,
-            flash_attn_bwd_sm100_workspace_size,
-        )
-
-        no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
-        workspace_bytes = flash_attn_bwd_sm100_workspace_size(B * S, B * S_kv, D_qk, H)
-        workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
-        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale, workspace=workspace)
     return dq.view_as(q), dkv.view_as(kv)
 
 
