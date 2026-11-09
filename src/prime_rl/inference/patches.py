@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 
@@ -47,7 +48,52 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
     monkey_patch_deepseek_v4_final_hidden_capture()
+    monkey_patch_hidden_state_cache_packed_page()
     monkey_patch_dspark_dp_compile_cache()
+
+
+def monkey_patch_hidden_state_cache_packed_page():
+    """Keep extracted hidden states from widening block-outermost KV pages.
+
+    The packed (block-outermost) layout strides every group's blocks by the widest page, but
+    appends hidden-state groups at the attention block size, so their page (e.g. 256 tokens x
+    5 layers x 4096 x 2 B = 10 MiB) becomes every layer's block stride. DeepSeek V4's FlashMLA
+    then rejects a stride that is not a multiple of 576 B, and the padding wastes most of the
+    cache. Like vLLM's non-packed path, this shrinks the hidden-state block to fit within the
+    widest attention page and pads it to that page.
+    """
+    from dataclasses import replace
+
+    from vllm.utils.torch_utils import get_dtype_size
+    from vllm.v1.core import kv_cache_utils
+    from vllm.v1.kv_cache_interface import HiddenStateCacheSpec, KVCacheGroupSpec
+
+    original = kv_cache_utils.get_kv_cache_groups
+    if getattr(original, "_prime_rl_aligns_hidden_state_pages", False):
+        return
+
+    def get_kv_cache_groups(vllm_config, kv_cache_spec):
+        groups = original(vllm_config, kv_cache_spec)
+        hidden = [g for g in groups if isinstance(g.kv_cache_spec, HiddenStateCacheSpec)]
+        others = [g.kv_cache_spec for g in groups if not isinstance(g.kv_cache_spec, HiddenStateCacheSpec)]
+        if not hidden or not others or not vllm_config.cache_config.get_resolved_kv_cache_layout().is_block_outermost:
+            return groups
+        widest = max(spec.page_size_bytes for spec in others)
+        block_size = math.gcd(*(spec.block_size for spec in others))
+        aligned = []
+        for group in groups:
+            spec = group.kv_cache_spec
+            if isinstance(spec, HiddenStateCacheSpec) and spec.page_size_bytes > widest:
+                per_token = spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+                if per_token <= widest:
+                    new_block_size = kv_cache_utils._largest_divisor_at_most(block_size, widest // per_token)
+                    spec = replace(spec, block_size=new_block_size, page_size_padded=widest)
+                    group = KVCacheGroupSpec(group.layer_names, spec)
+            aligned.append(group)
+        return aligned
+
+    get_kv_cache_groups._prime_rl_aligns_hidden_state_pages = True
+    kv_cache_utils.get_kv_cache_groups = get_kv_cache_groups
 
 
 def monkey_patch_dspark_dp_compile_cache():

@@ -11,6 +11,7 @@ port = 8000
 
 [vllm]
 model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
 max_model_len = 262144
 quantization = "mxfp8"
 quantization_config = { ignore = ["*.wo_a", "*.indexer.*"] }
