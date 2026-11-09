@@ -20,6 +20,7 @@ from modelexpress_rl import (
     WeightVersionState,
 )
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
@@ -37,11 +38,21 @@ class ModelExpressWeightSender(WeightSender):
         self._trainer: ModelExpressTrainerClient | None = None
         self._control: ModelExpressControlClient | None = None
         self._mesh_id: str | None = None
+        self._bound: dict[str, torch.Tensor] = {}
 
     def _initialize(self, model: nn.Module) -> None:
         tensors = model.state_dict()
         keep_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         overrides = {name: torch.float32 for name in tensors if keep_fp32 is not None and keep_fp32(name)}
+        # ModelExpress moves floating-point tensors only. Integer tensors (e.g. DeepSeek V4's hash
+        # routing table) go as fp32 copies, exact below 2**24, and inference casts them back.
+        for name, tensor in tensors.items():
+            if not tensor.is_floating_point():
+                local = tensor.to_local() if isinstance(tensor, DTensor) else tensor
+                if local.numel() and local.abs().max() >= 2**24:
+                    raise ValueError(f"{name} holds integers that float32 cannot carry exactly")
+                tensors[name] = tensor.to(torch.float32)
+                overrides[name] = torch.float32
         self._trainer = ModelExpressTrainerClient.initialize(
             ModelExpressTrainerConfig(
                 engine_context=FSDPTrainerContext(wire_dtype_overrides=overrides),
@@ -53,6 +64,7 @@ class ModelExpressWeightSender(WeightSender):
             )
         )
         atexit.register(self._trainer.close)
+        self._bound = tensors
         metadata = self._trainer.bind_tensors(tensors)
         gathered_workers = [None] * self.world.world_size
         dist.all_gather_object(gathered_workers, (self._trainer.worker_id, metadata))
@@ -69,9 +81,23 @@ class ModelExpressWeightSender(WeightSender):
             atexit.register(self._control.delete_trainer_mesh, self._mesh_id)
 
     @torch.no_grad()
+    def _refresh_bound_tensors(self, model: nn.Module) -> None:
+        """Copy the current weights into bound tensors that are not views of them. The state dict
+        splits a packed parameter (fused QKV, gate-up) that is sharded along its packing dimension
+        into copies, so the tensors bound at initialization would keep their first values."""
+        for name, tensor in model.state_dict().items():
+            bound, current = self._bound[name], tensor
+            if isinstance(bound, DTensor):
+                bound, current = bound.to_local(), current.to_local()
+            if bound.data_ptr() != current.data_ptr():
+                bound.copy_(current)
+
+    @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         if self._trainer is None:
             self._initialize(model)
+        else:
+            self._refresh_bound_tensors(model)
         assert self._trainer is not None
         offered = [None]
         if self.world.is_master:

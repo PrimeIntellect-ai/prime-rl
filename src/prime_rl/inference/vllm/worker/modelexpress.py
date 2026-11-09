@@ -13,6 +13,8 @@ from modelexpress_rl import (
 )
 from torch import nn
 
+from prime_rl.inference.patches import finalize_deepseek_v4_weights
+
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
 else:
@@ -72,3 +74,4 @@ class ModelExpressWeightUpdateWorker(Worker):
             self._generator.apply_weight(staged)
         finally:
             staged.release()
+        finalize_deepseek_v4_weights(self.model_runner.get_model())
