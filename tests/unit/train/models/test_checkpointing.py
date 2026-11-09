@@ -109,6 +109,10 @@ def test_mandatory_policy_only_retains_non_replayable_ops():
         is CheckpointPolicy.MUST_SAVE
     )
     assert (
+        _mandatory_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_counts.default)
+        is CheckpointPolicy.MUST_SAVE
+    )
+    assert (
         _mandatory_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )

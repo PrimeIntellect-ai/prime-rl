@@ -342,3 +342,30 @@ def test_unshipped_groups_stay_open_at_shutdown():
         assert closed == []
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("make_trace", "admitted", "reason"),
+    [
+        (lambda: trace(advantage=0), True, "zero advantage"),
+        (lambda: trace(), False, "rejected by curriculum"),
+        (lambda: trace(trainable=False), True, "no trainable survivors"),
+    ],
+)
+def test_zero_output_warning_names_the_drop_reason(monkeypatch, make_trace, admitted, reason):
+    warnings = []
+    monkeypatch.setattr(
+        "prime_rl.orchestrator.train_sink.get_logger",
+        lambda: SimpleNamespace(debug=lambda message: None, warning=warnings.append),
+    )
+    s = sink(admitted=admitted, batch_size=4)
+
+    async def run():
+        for i in range(4):
+            await s.add(episode([make_trace()], group=str(i)))
+
+    asyncio.run(run())
+
+    assert warnings == [
+        f"No admitted train payload after 4 finalized units (1 zero-output batch equivalents), by drop reason: {reason}=4"
+    ]

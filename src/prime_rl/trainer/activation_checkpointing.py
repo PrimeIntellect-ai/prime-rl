@@ -175,6 +175,9 @@ def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Cal
     checkpoint_kwargs = {
         "checkpoint_impl": CheckpointImpl.NO_REENTRANT,
         "context_fn": partial(create_selective_checkpoint_contexts, policy),
+        # Keep SAC-saved tensors out of surrounding saved-tensor hooks (activation offloading), as before
+        # torch 2.14 made this explicit; leaving it unset warns whenever a hook is in scope.
+        "respect_saved_tensors_hooks": False,
     }
 
     def wrap(block: nn.Module) -> nn.Module:
