@@ -35,6 +35,10 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_kernels::select_indexed_blocks",
         "prime_kernels::indexed_attention_plan",
         "prime_rl::record_moe_routing_statistics",
+        # The EP dispatch splits are a saved CUDA-to-CPU copy of these counts. Replayed under torch.compile, the
+        # counts exchange would no longer feed the dispatch all-to-all, so inductor could order the two differently
+        # on ranks with different sequence lengths, leaving the ranks in mismatched collectives.
+        "prime_rl_collectives::all_to_all_counts",
     }
 )
 
@@ -130,6 +134,9 @@ def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Cal
         checkpoint_wrapper,
         checkpoint_impl=CheckpointImpl.NO_REENTRANT,
         context_fn=partial(create_selective_checkpoint_contexts, policy),
+        # Keep SAC-saved tensors out of surrounding saved-tensor hooks (activation offloading), as before
+        # torch 2.14 made this explicit; leaving it unset warns whenever a hook is in scope.
+        respect_saved_tensors_hooks=False,
     )
 
 
