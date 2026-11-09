@@ -77,6 +77,8 @@ def test_modelexpress_adapter_uses_only_public_clients(relative_path):
 
 @pytest.mark.parametrize("fail_install", [False, True])
 def test_modelexpress_worker_uses_stage_apply_release(fail_install):
+    import torch
+
     from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
 
     calls = []
@@ -95,6 +97,7 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
 
     worker = ModelExpressWeightUpdateWorker()
     worker._generator = SimpleNamespace(stage_weight=stage_weight, apply_weight=apply_weight)
+    worker.model_runner = SimpleNamespace(get_model=lambda: torch.nn.Module())
     if fail_install:
         with pytest.raises(RuntimeError, match="installation failed"):
             worker.update_weights_from_modelexpress(version_uid="version-a")
@@ -183,3 +186,51 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
     assert calls == ([(0, "release"), (0, "barrier"), (1, "release"), (1, "barrier")] if outcome == "success" else [])
     if errors:
         assert errors[1] == "Inference weight installation failed on trainer rank zero"
+
+
+def test_refresh_copies_current_weights_into_bound_copies():
+    import torch
+    from torch import nn
+
+    from prime_rl.transports.weights.modelexpress import ModelExpressWeightSender
+
+    class Packed(nn.Module):
+        """Its state dict splits ``packed`` into copies, like a packed parameter sharded along its packing dimension."""
+
+        def __init__(self):
+            super().__init__()
+            self.packed = nn.Parameter(torch.zeros(4))
+            self.plain = nn.Parameter(torch.zeros(2))
+
+            def split(module, state_dict, prefix, local_metadata):
+                packed = state_dict.pop(f"{prefix}packed")
+                state_dict[f"{prefix}q"], state_dict[f"{prefix}k"] = packed[:2].clone(), packed[2:].clone()
+
+            self.register_state_dict_post_hook(split)
+
+    model = Packed()
+    sender = SimpleNamespace(_bound=model.state_dict())
+    with torch.no_grad():
+        model.packed.copy_(torch.arange(4.0))
+        model.plain.add_(1)
+    ModelExpressWeightSender._refresh_bound_tensors(sender, model)
+    assert sender._bound["q"].tolist() == [0.0, 1.0] and sender._bound["k"].tolist() == [2.0, 3.0]
+    assert sender._bound["plain"].data_ptr() == model.plain.data_ptr()
+
+
+def test_composed_loader_transforms_are_redone():
+    import functools
+
+    import torch
+    from torch import nn
+    from vllm.model_executor.model_loader.weight_utils import composed_weight_loader, default_weight_loader
+
+    from prime_rl.inference.vllm.worker.modelexpress import redo_composed_loader_transforms
+
+    model = nn.Module()
+    model.A = nn.Parameter(torch.tensor([0.0, 1.0]), requires_grad=False)
+    model.plain = nn.Parameter(torch.tensor([0.0, 1.0]), requires_grad=False)
+    loader = composed_weight_loader(default_weight_loader, lambda x: -torch.exp(x))
+    model.A.weight_loader = functools.wraps(loader)(lambda *args: loader(*args))  # a layerwise reload wrapper
+    redo_composed_loader_transforms(model)
+    assert torch.equal(model.A, -torch.exp(torch.tensor([0.0, 1.0]))) and model.plain.tolist() == [0.0, 1.0]

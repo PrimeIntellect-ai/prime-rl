@@ -46,6 +46,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    monkey_patch_deepseek_v4_skip_derived_weights_on_meta()
 
 
 @dataclass
@@ -214,25 +215,39 @@ def monkey_patch_deepseek_v4_attn_sink_loading():
 
     ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
     ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
-    that go through a loader, so the copy is silently dropped. This pads this rank's heads back
-    to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
+    that go through a loader, so the copy is silently dropped. This gives each sink parameter, at
+    construction, a loader that copies this rank's heads into its first slots and sets the rest to
+    ``-inf`` (no sink), and routes the sinks through it. Set at construction, the loader carries over
+    to the meta parameters of a layerwise reload and to ModelExpress's layout capture, and it uses
+    only a slice, a copy and a fill, which ModelExpress can capture.
 
     Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
     ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
     """
+    from vllm.distributed import get_tensor_model_parallel_rank
     from vllm.logger import init_logger
-    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.model_executor.utils import set_weight_attrs
+    from vllm.models.deepseek_v4 import attention as dsv4_attention
     from vllm.models.deepseek_v4.nvidia import model as dsv4_model
 
+    original_init = dsv4_attention.DeepseekV4Attention.__init__
     original_load_weights = dsv4_model.DeepseekV4Model.load_weights
     if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
         return
 
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        heads = self.n_local_heads
+        start = heads * get_tensor_model_parallel_rank()
+
+        def load_sink(param, weight):
+            param[:heads].copy_(weight[start : start + heads])
+            param[heads:].fill_(-float("inf"))
+
+        set_weight_attrs(self.attn_sink, {"weight_loader": load_sink})
+
     def load_weights(self, weights):
         params = dict(self.named_parameters())
-        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
-        heads_per_rank = self.config.num_attention_heads // tp_size
-        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
         loaded_params: set[str] = set()
 
         def remaining_weights():
@@ -240,19 +255,59 @@ def monkey_patch_deepseek_v4_attn_sink_loading():
                 if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
                     yield name, weight
                     continue
-                param = params[name]
-                sink = weight.new_full(tuple(param.shape), -float("inf"))
-                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
-                weight_loader = getattr(param, "weight_loader", default_weight_loader)
-                weight_loader(param, sink)
+                params[name].weight_loader(params[name], weight)
                 loaded_params.add(name)
 
         loaded_params.update(original_load_weights(self, remaining_weights()))
         return loaded_params
 
     load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_attention.DeepseekV4Attention.__init__ = __init__
     dsv4_model.DeepseekV4Model.load_weights = load_weights
     init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
+
+
+def finalize_deepseek_v4_weights(model) -> None:
+    """Finish a DeepSeek V4 weight install that bypassed ``load_weights``, as ModelExpress's does.
+
+    ``load_weights`` ends with ``process_weights_after_loading``, which derives the hyper-connection
+    broadcast weights (and Mega MoE's packed experts), and the sink loader sets the padded sink slots
+    to ``-inf``. ModelExpress writes only the weights it captured, into zero-initialized parameters,
+    so call this after each ModelExpress install."""
+    from vllm.models.deepseek_v4.nvidia.model import DeepseekV4ForCausalLM
+
+    model = getattr(model, "runnable", model)
+    if not isinstance(model, DeepseekV4ForCausalLM):
+        return
+    model.process_weights_after_loading()
+    for module in model.modules():
+        sink, heads = getattr(module, "attn_sink", None), getattr(module, "n_local_heads", None)
+        if sink is not None and heads is not None:
+            sink.data[heads:].fill_(-float("inf"))
+
+
+def monkey_patch_deepseek_v4_skip_derived_weights_on_meta():
+    """Let ModelExpress capture DeepSeek V4's weight layout.
+
+    ``DeepseekV4ForCausalLM.load_weights`` ends by deriving the first layer's hyper-connection
+    broadcast weights from ``hc_attn_fn``. ModelExpress replays ``load_weights`` on meta tensors to
+    learn where each weight lands, so there is nothing to derive yet, and copying the meta result
+    raises. Every load with data, including each ModelExpress install, derives them as before.
+    """
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original = dsv4_model.DeepseekV4Model.finalize_mhc_broadcast_weights
+    if getattr(original, "_prime_rl_skips_meta", False):
+        return
+
+    def finalize_mhc_broadcast_weights(self):
+        layer = self.layers[self.start_layer] if self.start_layer < self.end_layer else None
+        if getattr(getattr(layer, "hc_attn_fn", None), "is_meta", False):
+            return
+        original(self)
+
+    finalize_mhc_broadcast_weights._prime_rl_skips_meta = True
+    dsv4_model.DeepseekV4Model.finalize_mhc_broadcast_weights = finalize_mhc_broadcast_weights
 
 
 def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
