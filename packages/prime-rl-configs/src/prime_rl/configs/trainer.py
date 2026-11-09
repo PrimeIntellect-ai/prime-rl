@@ -586,7 +586,8 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseTrainerConfig(BaseConfig):
-    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer
+    (``SupervisedTrainerConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]

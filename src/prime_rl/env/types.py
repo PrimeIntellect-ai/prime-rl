@@ -41,7 +41,7 @@ class CancelResponse(BaseResponse):
 
 class RunRequest(BaseRequest):
     """One env-rollout, shipping the task itself: `task_data` is the dumped
-    `TaskData` the server validates into the taskset's declared type."""
+    `TaskData` the worker validates into the taskset's declared type."""
 
     method: ClassVar[str] = "run"
     task_data: dict

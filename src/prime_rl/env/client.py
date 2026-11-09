@@ -1,4 +1,4 @@
-"""ZMQ client for the env server.
+"""ZMQ client for the env worker pool.
 
 A DEALER socket + msgpack, with a single receive loop matching replies to
 per-request futures by `request_id` and routing a run's `delta` frames to its
@@ -87,7 +87,7 @@ class EnvClient:
     async def _receive_loop(self) -> None:
         # The one receiver serves every in-flight request. Awaiting each frame would
         # cost a loop turn per delta, which a busy loop turns into a hard cap on how
-        # fast a server's stream drains; so each wakeup takes everything queued.
+        # fast a pool's stream drains; so each wakeup takes everything queued.
         while True:
             try:
                 batch = [await self.socket.recv_multipart(copy=False)]
@@ -119,13 +119,13 @@ class EnvClient:
                 if len(frames) != 3:
                     raise ValueError(
                         f"expected [request_id, kind, data], got {len(frames)} frames - "
-                        "is the env server speaking the same serve protocol?"
+                        "is the env worker pool speaking the same serve protocol?"
                     )
                 request_id_frame, kind_frame, data_frame = frames
                 request_id = request_id_frame.bytes.decode()
                 kind = kind_frame.bytes
             except Exception:  # keep receiving for the other requests
-                get_logger().opt(exception=True).warning("Dropping a malformed env-server frame")
+                get_logger().opt(exception=True).warning("Dropped malformed env worker pool frame")
                 continue
             if kind != b"delta":
                 routed.append((request_id, data_frame, None))
@@ -145,7 +145,7 @@ class EnvClient:
                 continue
             delta = next(decoded)
             if isinstance(delta, Exception):
-                get_logger().opt(exception=delta).warning("Dropping a malformed env-server frame")
+                get_logger().opt(exception=delta).warning("Dropped malformed env worker pool frame")
                 continue
             # Cancellation may remove the handler while the worker decodes.
             if self._deltas.get(request_id) is not on_delta:
@@ -153,7 +153,7 @@ class EnvClient:
             try:
                 on_delta(delta)
             except Exception:  # keep receiving for the other requests
-                get_logger().opt(exception=True).warning("Dropping a malformed env-server frame")
+                get_logger().opt(exception=True).warning("Dropped malformed env worker pool frame")
 
     async def _request(
         self,
@@ -188,7 +188,7 @@ class EnvClient:
             self._deltas.pop(request_id, None)
         response = response_type.model_validate(unpack(data))
         if not response.success:
-            raise RuntimeError(response.error or "env server request failed")
+            raise RuntimeError(response.error or "env worker pool request failed")
         return response
 
     async def _decode(self, decode: Callable[..., DecodedT], *args: object) -> DecodedT:
@@ -206,7 +206,7 @@ class EnvClient:
             raise
 
     def _cancel_run(self, run_request_id: str) -> None:
-        """Fire-and-forget: tell the server the caller abandoned the run, so it aborts
+        """Fire-and-forget: tell the pool the caller abandoned the run, so it aborts
         the rollout (or frees what it kept for an episode already sent). A task on the
         loop outlives the cancelled caller."""
         task = asyncio.get_running_loop().create_task(self._send_cancel(run_request_id))
@@ -214,7 +214,7 @@ class EnvClient:
         task.add_done_callback(self._cancel_tasks.discard)
 
     async def _send_cancel(self, run_request_id: str) -> None:
-        """Best-effort server-side abort of an abandoned run."""
+        """Best-effort worker-side abort of an abandoned run."""
         with contextlib.suppress(Exception):
             payload = msgpack.packb(
                 CancelRequest(request_id=run_request_id).model_dump(mode="json"),
@@ -228,14 +228,14 @@ class EnvClient:
         except TimeoutError:
             return False
 
-    async def wait_for_server_startup(self, timeout: float = 120.0, interval: float = 1.0) -> None:
-        """Poll `health` until the server answers or `timeout` elapses."""
+    async def wait_for_pool_startup(self, timeout: float = 120.0, interval: float = 1.0) -> None:
+        """Poll `health` until the broker answers or `timeout` elapses."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if await self.health(timeout=min(interval, 2.0)):
                 return
             await asyncio.sleep(interval)
-        raise TimeoutError(f"env server at {self.address} did not become healthy in {timeout}s")
+        raise TimeoutError(f"env worker pool at {self.address} did not become healthy in {timeout}s")
 
     async def run(
         self,
@@ -246,7 +246,7 @@ class EnvClient:
         on_delta: Callable[[dict], None] | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
-        `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
+        `Trace[WireTaskData]`) plus the shared stamp. The worker takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`env.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
@@ -277,7 +277,7 @@ class EnvClient:
                 assembly.finish(response.head, response.traces),
             )
         except BaseException:
-            # The reply already arrived, so the server counts the episode delivered;
+            # The reply already arrived, so the worker counts the episode delivered;
             # tell it this caller never got the episode.
             self._cancel_run(request_id)
             raise
@@ -289,7 +289,7 @@ class EnvClient:
                 await self._receiver
             self._receiver = None
         # Let scheduled fire-and-forget cancels reach the socket first, or a
-        # run cancelled right before close() leaves its server-side rollout
+        # run cancelled right before close() leaves its worker-side rollout
         # running. Pop before awaiting: awaiting finished tasks never yields
         # (since CPython 3.12 a gather of them completes eagerly), so their
         # queued `discard` callbacks cannot be what empties the set

@@ -94,7 +94,7 @@ from prime_rl.utils.pathing import (
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
-# shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
+# shutdown wedges (env-worker-pool ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
 # Maximum shipped batches that inference has not applied the policy for yet. The
@@ -149,9 +149,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         write_resolved_config(config.output_dir, config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Route the in-process v1 library logging through our handler. The
-        # env server runs in a child process, so its logging is separate.
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        # Route the in-process v1 library logging through our handler. The env
+        # worker pool runs in a child process and sets up its own at the same level.
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
         get_logger().info("Starting orchestrator")
 
         self.progress = Progress()
@@ -238,7 +238,7 @@ class Orchestrator:
         # The launcher-set $PRL_RUN_ID is the run identity; a hosted launch sets only the
         # platform's $RUN_ID, and standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or os.environ.get("RUN_ID") or uuid.uuid4().hex
-        # Base labels for sandboxes created in this process; env-server processes read
+        # Base labels for sandboxes created in this process; env-worker-pool processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
         if self.run_name:
@@ -254,11 +254,11 @@ class Orchestrator:
             config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
-            replicas=config.env_server_replicas,
+            replicas=config.env_worker_pool_replicas,
         )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(
-                config.eval.source, config.env_addresses, config_dir, replicas=config.env_server_replicas
+                config.eval.source, config.env_addresses, config_dir, replicas=config.env_worker_pool_replicas
             )
 
         # Resume below may bump ``policy.version`` and the LoRA model name
@@ -380,6 +380,7 @@ class Orchestrator:
             progress=self.progress,
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -718,6 +719,7 @@ class Orchestrator:
         send_start_time = time.perf_counter()
         send_batch_time = await self.sender.send(micro_batch_grid)
         wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
@@ -891,7 +893,13 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
+        payload: dict[str, float] = {
+            **disp_gauges,
+            **disp_drain,
+            **watcher_gauges,
+            **self.concurrency.gauges(),
+            **self.clients.session_release_gauges(),
+        }
         if self.gc is not None:
             payload |= self.gc.gauges()
         if lag_stats.n > 0:

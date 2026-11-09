@@ -110,7 +110,7 @@ class InflightEpisode:
     dispatch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     """Names the episode on the live view from dispatch until its first trace streams."""
     live: dict[str, LiveTrace] = field(default_factory=dict)
-    """The episode's in-flight traces by id, as far as the env server's stream has
+    """The episode's in-flight traces by id, as far as the env worker pool's stream has
     told: which phase each is in and how many turns it has committed."""
 
 

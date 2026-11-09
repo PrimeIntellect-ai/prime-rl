@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -142,6 +142,10 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
+    mode: Literal["rl"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run rl`` accepts only
+    "rl" (or no mode)."""
+
     trainer: TrainerConfig
 
     orchestrator: OrchestratorConfig
@@ -611,7 +615,7 @@ class RLConfig(BaseConfig):
     def auto_setup_deployment(self):
         pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
         num_train_workers = self.orchestrator.num_train_workers
-        env_server_replicas = self.orchestrator.env_server_replicas
+        env_worker_pool_replicas = self.orchestrator.env_worker_pool_replicas
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
@@ -641,7 +645,7 @@ class RLConfig(BaseConfig):
         elif self.deployment.type == "multi_node":  # multi-node
             num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             if self.deployment.total_infer_nodes > 0:
-                env_server_replicas = self.deployment.total_infer_nodes
+                env_worker_pool_replicas = self.deployment.total_infer_nodes
 
             if (
                 self.inference is not None
@@ -715,7 +719,7 @@ class RLConfig(BaseConfig):
             update={
                 "pad_to_multiple_of": pad_to_multiple_of,
                 "num_train_workers": num_train_workers,
-                "env_server_replicas": env_server_replicas,
+                "env_worker_pool_replicas": env_worker_pool_replicas,
             }
         )
         return self

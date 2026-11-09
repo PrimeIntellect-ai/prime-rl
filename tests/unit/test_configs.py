@@ -1,4 +1,7 @@
+import importlib
+import json
 import os
+import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
 
@@ -10,7 +13,7 @@ from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
-from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import (
@@ -24,20 +27,22 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
 )
+from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
+from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
     RLConfig,
     TrainerConfig,
     SFTConfig,
+    PretrainConfig,
     OrchestratorConfig,
     InferenceConfig,
-    EnvServerConfig,
+    EnvWorkerPoolConfig,
     EvalConfig,
 ]
 
@@ -149,6 +154,69 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.vllm.max_logprobs >= 6
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
+def test_pretrain_config_roundtrip(tmp_path):
+    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config, which
+    `uv run sft` rejects."""
+    from prime_rl.entrypoints.launcher import write_config
+
+    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
+    assert config.data.type == "datatrove"
+    assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
+    assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
+
+    write_config(config, tmp_path / "pretrain.json")
+    assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
+    assert not can_parse(SFTConfig, ["@", str(tmp_path / "pretrain.json")])
+
+    muon = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--optim.type", "muon"])
+    assert muon.optim.lr == 1e-3
+    warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
+    assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_launch_runs_the_entrypoint_of_the_mode(tmp_path, monkeypatch, mode: str):
+    """`uv run launch` reads `mode` from the config files and runs that entrypoint with the same arguments."""
+    from prime_rl.entrypoints import launch
+
+    calls = []
+    monkeypatch.setattr(importlib.import_module(f"prime_rl.entrypoints.{mode}"), "main", lambda: calls.append(mode))
+    write_toml(tmp_path / "config.toml", {"mode": mode})
+    monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
+    launch.main()
+    assert calls == [mode]
+
+
+def test_launch_needs_a_mode(tmp_path, monkeypatch):
+    from prime_rl.entrypoints import launch
+
+    write_toml(tmp_path / "config.toml", {"max_steps": 1})
+    monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
+    with pytest.raises(SystemExit):
+        launch.main()
+
+
+def test_mode_must_match_the_entrypoint(tmp_path):
+    """A mode entrypoint runs only its own mode, and an internal entrypoint none, from a TOML or a resolved JSON
+    config."""
+    write_toml(tmp_path / "pretrain.toml", {"mode": "pretrain"})
+    (tmp_path / "pretrain.json").write_text(json.dumps({"mode": "pretrain"}))
+    for file in ("pretrain.toml", "pretrain.json"):
+        args = ["@", str(tmp_path / file)]
+        check_mode("pretrain", args)
+        for entrypoint in ("sft", "trainer"):
+            with pytest.raises(SystemExit):
+                check_mode(entrypoint, args)
+
+
+def test_config_files_with_different_modes_conflict(tmp_path):
+    write_toml(tmp_path / "base.toml", {"mode": "rl"})
+    write_toml(tmp_path / "override.toml", {"mode": "sft"})
+    with pytest.raises(SystemExit, match="conflicting modes"):
+        check_mode("rl", ["@", str(tmp_path / "base.toml"), "@", str(tmp_path / "override.toml")])
 
 
 def test_toml_partial_nested_override(tmp_path):
