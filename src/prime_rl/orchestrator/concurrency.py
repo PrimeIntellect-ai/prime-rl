@@ -1,72 +1,49 @@
 """ConcurrencyController: adaptive cap on in-flight units of inference work.
 
-A unit is whatever the dispatcher admits against one permit — the controller
-treats it as a black box. There is no cost model: the controller measures load
-off the engines and reacts at the pipeline's own pace.
+A unit is whatever the dispatcher admits against one permit; the controller treats it as a black box and models no
+cost. It measures load off the engines and moves at the pipeline's own pace.
 
-The cap is sized by **marginal gain**: a unit is worth adding only while it
-buys throughput. Past the knee extra units add latency (staleness) and no
-throughput, wherever the bottleneck sits: in the engines, in their KV cache, or
-outside them (an API server, the environment). The controller measures the
-engines' generated tokens per second over windows long enough for the pool to
-carry its steady load, and compares them by their **elasticity**, the relative
-change in throughput per relative change in units in flight. A move up is kept
-when it reaches ``ELASTICITY``, a move down when it does not.
+The cap is sized by **marginal gain**: a unit is worth adding only while it buys throughput. Past the knee extra
+units add latency (staleness) and no throughput, wherever the bottleneck sits: in the engines, in their KV cache, or
+outside them (an API server, the environment). The controller compares the engines' generated tokens per second
+between windows long enough for the pool to carry its steady load by their **elasticity**, the relative change in
+throughput per relative change in units in flight: a move up is kept when it reaches ``ELASTICITY``, a move down
+when it does not.
 
-The fast signal is the **queued share**: requests waiting in the engines'
-queues (for capacity, or deferred on a KV load) over the units in flight,
-averaged over polls. By Little's law it is the share of the units' time spent parked in
-an engine queue, so it means the same in every topology: in P/D the prefill
-queue and decode's pending KV pulls add up, a slow KV load or a preempted
-request counts by how long it waits, and units idle between turns (tool calls)
-count in the denominator as the capacity they are.
+The fast signal is the **queued share**: requests waiting in the engines' queues (for capacity, or deferred on a KV
+load) over the units in flight, averaged over polls. By Little's law it is the share of the units' time spent parked
+in an engine queue, so it means the same in every topology: in P/D the prefill queue and decode's pending KV pulls
+add up, a slow KV load or a preempted request counts by how long it waits, and units idle between turns (tool calls)
+count as the capacity they are.
 
-Time is counted in **turnovers** of the pool: each completed unit advances it by
-``1/inflight``. A unit's load has fully shown on the engines only once it
-completes (its context grows call by call), so the controller moves at that
-pace. It has three rules:
+Time is counted in **turnovers** of the pool: each completed unit advances it by ``1/inflight``. A unit's load shows
+in full only once it completes (its context grows call by call), so the controller moves at that pace. Three rules:
 
-- **Climb**. From the start the cap grows by up to ``GROWTH_MAX`` per turnover
-  while it binds, tapered to zero as the queued share reaches ``QUEUE_TARGET``,
-  and each window is compared with the previous one. A turnover lasts an
-  episode, so model calls pace the climb too: from the contexts of the units'
-  calls the controller projects the pool's steady load (a Kaplan-Meier estimate
-  over call numbers; units still running are assumed to grow to the engines'
-  max context), and calls grow the cap by up to ``CALL_GROWTH_MAX`` per call
-  turnover while admitting only as many young units as keep the pool carrying
-  ``MATURITY_MIN`` of that load. The first window whose growth did not pay ends
-  the fast climb at the two windows' geometric midpoint. From there the cap moves in steps from a measured level: a step is
-  measured once it settled, kept when it was worth its units, and the next
-  step grows by how clearly it paid; a rejected step returns to the level and
-  shrinks, down to ``STEP_MIN``.
-- **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond
-  the target, without cancelling. A queue still above ``QUEUE_CANCEL`` once a
-  trim has drained cancels the excess.
-- **Throughput drop**: two windows in a row whose throughput fell
-  ``THROUGHPUT_DROP`` below the best window's with as many units in flight (the
-  pool matured into a KV thrash, a collapsed frontend) trim the cap in
-  proportion to the throughput lost, without cancelling, and steps up past the
-  trimmed cap stay smallest. A third such window with the engines the
-  bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue above
-  ``QUEUE_CANCEL``) cancels the excess: past a cliff, completions drain too
-  slowly.
+- **Climb**: from the start the cap grows by up to ``GROWTH_MAX`` per turnover while it binds, tapered to zero as the
+  queued share reaches ``QUEUE_TARGET``. Model calls pace it too: from the contexts of the units' calls the
+  controller projects the pool's steady load, and grows the cap by up to ``CALL_GROWTH_MAX`` per call turnover while
+  the pool carries ``MATURITY_MIN`` of it. The first window whose growth did not pay ends the fast climb at the two
+  windows' geometric midpoint. From there the cap moves in steps from a measured level: a step is kept when it was
+  worth its units and the next one grows by how clearly it paid; a rejected step returns to the level and shrinks,
+  down to ``STEP_MIN``.
+- **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond the target, without cancelling. A
+  queue still above ``QUEUE_CANCEL`` once a trim has drained cancels the excess.
+- **Throughput drop**: two windows in a row ``THROUGHPUT_DROP`` below the best window's throughput with as many units
+  in flight (a KV thrash, a collapsed frontend) trim the cap in proportion to the throughput lost, without
+  cancelling. A third, with the engines the bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue
+  above ``QUEUE_CANCEL``), cancels the excess: past a cliff, completions drain too slowly.
 
-The queue serves the elasticity, not the other way around: while the last
-measurement showed growth still pays, the queue neither tapers growth nor
-trims (requests waiting on KV loads queue while extra units still buy
-throughput); only its cancelling tier applies. After a trim admission waits for
-completions to drain the pool, and the climb measures the trimmed level next.
-While the engines are paused for a weight update the controller freezes, and
-the queue that builds up behind the pause is ignored for a few polls after it.
+The queue serves the elasticity: while the last measurement showed growth still pays, the queue neither tapers growth
+nor trims (requests waiting on KV loads queue while extra units still buy throughput); only its cancelling tier
+applies. While the engines are paused for a weight update the controller freezes, and it ignores the queue the pause
+leaves behind for a few polls.
 
-The cap starts at ``initial_inflight`` (else the pessimistic bound
-``KV capacity / max_model_len``) and is clamped to
-``[min_inflight, max_inflight]`` throughout, unless a manual target pins it.
+The cap starts at ``initial_inflight`` (else the pessimistic ``KV capacity / max_model_len``) and stays in
+``[min_inflight, max_inflight]`` unless a manual target pins it.
 
-The controller is a pure state machine — it owns no tasks or clients. The
-metrics collector pushes ``observe(samples)`` every poll; the dispatcher
-reports ``record_episode(...)`` per completed unit and ``pause()``/``resume()``
-around weight updates, and consumes the cap via the hooks bound in :meth:`bind`.
+The controller is a pure state machine: the metrics collector pushes ``observe(samples)`` every poll, the dispatcher
+reports ``record_episode``/``record_call`` and ``pause``/``resume`` around weight updates, and consumes the cap
+through the hooks bound in :meth:`bind`.
 """
 
 from __future__ import annotations
@@ -118,9 +95,8 @@ DWELL_SECONDS = 180.0
 
 DWELL_TURNOVERS = 0.5
 """...and this much pool turnover, twice as much after a step up (its units show their load in full only as their
-contexts grow call by call), once the pool has turned over once: a younger pool runs shorter contexts, so its
-throughput overstates what the same units sustain. A step up admits its units over this much turnover: a cohort
-admitted at once runs short contexts together, then finishes together, and its waves bias the measurement."""
+contexts grow call by call). A step up admits its units over this much turnover: a cohort admitted at once runs
+short contexts together, then finishes together, and its waves bias the measurement."""
 
 SETTLE_TURNOVERS = 0.1
 """Pool turnover after a lowered cap has drained before its level is measured."""
@@ -162,8 +138,8 @@ COLOCATED = "colocated"
 
 @dataclass(frozen=True)
 class EngineLoadSample:
-    """Per-engine load facts for one ``/metrics`` poll. Raw values only —
-    thresholds and verdicts live in the controller."""
+    """Per-engine load facts for one ``/metrics`` poll. Raw values only: thresholds and verdicts live in the
+    controller."""
 
     engine_id: str
     role: str | None
@@ -425,10 +401,10 @@ class ConcurrencyController(Reconfigurable):
             self.resume_skip -= 1
             return
         self.polls.append(poll)
-        units = max(sum(poll.inflight for poll in self.polls), 1)
-        self.queued_share = sum(poll.queued for poll in self.polls) / units
+        units = max(sum(p.inflight for p in self.polls), 1)
+        self.queued_share = sum(p.queued for p in self.polls) / units
         self.queued_share_by_role = {
-            role: sum(poll.roles[role].queued for poll in self.polls if role in poll.roles) / units for role in loads
+            role: sum(p.roles[role].queued for p in self.polls if role in p.roles) / units for role in loads
         }
 
         if self.draining and inflight <= self.max_inflight:
@@ -443,8 +419,7 @@ class ConcurrencyController(Reconfigurable):
         if self.target is not None:
             return
 
-        # First capacity observation without a user-set start: derive the
-        # pessimistic starting cap, once
+        # Without a configured start, the first capacity observation derives the pessimistic starting cap
         if not self.bootstrapped and self.capacity is not None:
             self.bootstrapped = True
             cost = float(self.engine_max_len or self.fallback_cost)
@@ -463,19 +438,16 @@ class ConcurrencyController(Reconfigurable):
             self.measure(poll)
 
     def set_target(self, target: int | None) -> None:
-        """Pin the cap at ``target``, outside the configured band too, or hand it back to the
-        adaptive loop with None. A lower cap cancels nothing: admission waits for the pool
-        to drain below it."""
+        """Pin the cap at ``target``, outside the configured band too, or hand it back to the adaptive loop with
+        None. A lower cap cancels nothing: admission waits for the pool to drain below it."""
         self.target = target
         self.cap = float(target) if target is not None else self.clamp(self.cap)
         self.apply_limit(int(self.cap), reason="manual target" if target is not None else "adaptive")
         self.restart_steps()
 
     def reconfigure(self, update: ConfigUpdate) -> None:
-        """Move the band and clamp the cap into it. A manual target stays pinned, and a lower
-        cap cancels nothing: admission waits for the pool to drain below it. ``initial_inflight``
-        only seeds the startup cap, so a new value (e.g. to stay below a lowered
-        ``max_inflight``) changes nothing."""
+        """Move the band and clamp the cap into it. A manual target stays pinned, and a lower cap cancels nothing.
+        ``initial_inflight`` only seeds the startup cap, so a new value changes nothing."""
         self.config = update.config.concurrency
         if self.target is None:
             self.cap = self.clamp(self.cap)
