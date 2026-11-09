@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import ModelConfig
+from prime_rl.model_conversion.configuration_laguna import LagunaConfig
 from prime_rl.trainer.model import load_dcp_from_hf
-from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaForCausalLM
 
 

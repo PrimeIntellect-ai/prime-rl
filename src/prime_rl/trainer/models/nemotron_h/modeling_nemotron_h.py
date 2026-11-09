@@ -2,18 +2,17 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
+from prime_rl.model_conversion.configuration_nemotron_h import NemotronHConfig
+from prime_rl.model_conversion.converting_nemotron_h import (
+    is_hf_state_dict,
+    is_prime_state_dict,
+)
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
-from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
-    conversion_chain,
-    is_hf_state_dict,
-    is_prime_state_dict,
-)
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -142,10 +141,6 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config: NemotronHConfig):
-        return conversion_chain(config)
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:

@@ -25,9 +25,9 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.model_conversion.ops import view_mapping
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
     join_loaded_optimizer_state_for_runtime,
     split_packed_optimizer_state_for_checkpoint,

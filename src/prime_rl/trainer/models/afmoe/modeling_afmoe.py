@@ -13,6 +13,7 @@ from transformers.modeling_outputs import (
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
+from prime_rl.model_conversion.configuration_afmoe import AfmoeConfig
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
@@ -30,9 +31,6 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     apply_rotary_pos_emb,
 )
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-
-from .configuration_afmoe import AfmoeConfig
-from .converting_afmoe import conversion_chain
 
 
 @dataclass
@@ -296,10 +294,6 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
         return any("mlp.experts.gate_proj" in module_name for module_name in state_dict.keys())
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 class AfmoeModel(AfmoePreTrainedModel):

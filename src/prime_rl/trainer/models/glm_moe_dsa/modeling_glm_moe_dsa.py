@@ -11,9 +11,8 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 
+from prime_rl.model_conversion.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
-from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -138,10 +137,6 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.gate_proj" in module_name for module_name in state_dict.keys())
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 @auto_docstring

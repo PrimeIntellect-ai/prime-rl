@@ -9,14 +9,13 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
+from prime_rl.model_conversion.configuration_minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.trainer.models.minimax_m2.configuration_minimax_m2 import MiniMaxM2Config
-from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
@@ -98,10 +97,6 @@ class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.gate_proj" in name for name in state_dict.keys())
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 @auto_docstring
