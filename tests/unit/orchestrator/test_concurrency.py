@@ -130,6 +130,16 @@ def test_climb_grows_per_turnover_tapered_by_the_queue():
     assert pool.limits == []  # the cap does not bind admission
 
 
+def test_turnovers_without_a_measurement_do_not_grow_the_cap():
+    ctl, pool = controller()
+    for _ in range(5):  # /metrics unreachable while units keep completing
+        turnover(ctl, pool)
+        ctl.observe([])
+    turnover(ctl, pool)
+    ctl.observe([engine()])
+    assert ctl.cap == pytest.approx(300, rel=0.02)  # one measured turnover's growth, not 3**6
+
+
 def test_fast_climb_ends_where_growth_stops_paying():
     ctl, pool = controller()
     # Throughput stops growing at 150 units in flight (e.g. a saturated API server: no engine queue)
@@ -190,7 +200,9 @@ def test_weight_update_pause_freezes_and_skips_the_backlog():
     ctl.observe([engine(running=0, waiting=50)])
     assert not ctl.polls
 
+    ctl.drops = 1
     ctl.resume()
+    assert ctl.drops == 0 and ctl.window.seconds == 0  # no drop window straddles the update
     for _ in range(RESUME_SKIP_POLLS):
         ctl.observe([engine(waiting=50)])
     assert not ctl.polls and pool.limits == []
@@ -260,6 +272,15 @@ def test_projection_counts_running_units_to_the_max_context():
     ctl.observe([engine()])
     assert ctl.steady_context == pytest.approx(6000)
     assert ctl.maturity == pytest.approx(1.0)
+
+    # Every unit's 3rd call carried no context (e.g. a fork): the walk steps over the gap to the tail instead of
+    # stopping after the first call and reading a young pool as already at its steady load
+    ctl, pool = controller(inflight=10)
+    for call in (2, 4, 5, 6, 7, 8, 9, 10):
+        for _ in range(10):
+            ctl.record_call(1000 * call, call)
+    ctl.observe([engine()])
+    assert ctl.steady_context > 15_000 and ctl.maturity < 0.5
 
 
 def test_call_context_is_the_history_it_extends():

@@ -387,9 +387,12 @@ class ConcurrencyController(Reconfigurable):
         self.paused = True
 
     def resume(self) -> None:
-        """The engines resumed: skip the polls whose queue holds the backlog of the pause."""
+        """The engines resumed: skip the polls whose queue holds the backlog of the pause, and start a fresh drop
+        window so no window straddles the update."""
         self.paused = False
         self.resume_skip = RESUME_SKIP_POLLS
+        self.window = Window(start_turnover=self.turnover)
+        self.drops = 0
 
     def observe(self, samples: list[EngineLoadSample]) -> None:
         """Per-poll engine load push from the metrics collector: measure, then trim or climb."""
@@ -397,6 +400,8 @@ class ConcurrencyController(Reconfigurable):
         seconds = now - self.last_poll_time if self.last_poll_time is not None else 0.0
         self.last_poll_time = now
         if self.paused or not samples:
+            # Growth needs a measurement: turnovers that pass without one would land on the next poll in one jump
+            self.pending_turnover = 0.0
             return
         for sample in samples:
             # The running set lives on decode (or colocated) engines; prefill engines only pass it through
@@ -557,19 +562,19 @@ class ConcurrencyController(Reconfigurable):
         running at the last call number seen is assumed to grow at the mean rate to the engines' max context.
         Maturity is the load window's context per call over that projection."""
         calls = sum(c for _, c in self.call_polls)
-        first = self.first_call
-        if calls == 0 or first not in self.reached:
+        # Call numbers no unit reported (zero-context calls: forks, compaction, sub-agent starts) leave gaps, which
+        # the walk steps over rather than stopping at
+        seen = sorted(n for n, reached in self.reached.items() if n >= self.first_call and reached >= 0.5)
+        if calls == 0 or not seen:
             self.maturity = None
             return
         survival, weight, total = 1.0, 0.0, 0.0
-        n = first
-        while self.reached.get(n, 0.0) >= 0.5:
+        for n in seen:
             mean = self.context[n] / self.reached[n]
             weight += survival
             total += survival * mean
             survival *= max(0.0, 1.0 - self.ended.get(n, 0.0) / self.reached[n])
-            n += 1
-        last = n - 1
+        first, last = seen[0], seen[-1]
         young = self.context[first] / self.reached[first]
         growth = (mean - young) / (last - first) if last > first else 0.0
         if survival > 0 and growth > 0 and self.engine_max_len is not None and self.engine_max_len > mean:
