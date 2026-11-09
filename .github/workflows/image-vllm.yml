@@ -1,0 +1,98 @@
+name: Image (vLLM plugin)
+
+# Builds Dockerfile.vllm (stock vLLM + the prime-rl-vllm plugin, EFA, prime-kernels) and pushes
+#   ghcr.io/primeintellect-ai/prime-rl:vllm-v<vllm>-<short sha>  and, on PRs, :vllm-v<vllm>-pr<number>
+on:
+  pull_request:
+    paths:
+      - Dockerfile.vllm
+      - packages/prime-rl-vllm/**
+      - .github/workflows/image-vllm.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.vllm
+      - packages/prime-rl-vllm/**
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/primeintellect-ai/prime-rl
+
+concurrency:
+  group: image-vllm-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.suffix }})
+    # Fork PRs get no packages:write token and must not reach the self-hosted builders.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: image-builder, platform: linux/amd64, suffix: amd64 }
+          - { runner: image-builder-arm-2204, platform: linux/arm64, suffix: arm64 }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The PR head, not GitHub's merge commit, so the tag's sha is one you can find.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve tag
+        id: vars
+        run: |
+          vllm=$(sed -n 's/^ARG VLLM_VERSION=//p' Dockerfile.vllm)
+          echo "tag=vllm-v${vllm}-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+        with:
+          # Same pinned BuildKit as image.yml (CVE-2026-93318).
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.vllm
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,push=true,compression=zstd,compression-level=3
+          tags: ${{ env.IMAGE }}:${{ steps.vars.outputs.tag }}-${{ matrix.suffix }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+  manifest:
+    name: Manifest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifests
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          tags=(-t "${IMAGE}:${TAG}")
+          if [ -n "$PR" ]; then tags+=(-t "${IMAGE}:${TAG%-*}-pr${PR}"); fi
+          docker buildx imagetools create "${tags[@]}" "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          echo "Pushed: ${tags[*]}" >> "$GITHUB_STEP_SUMMARY"

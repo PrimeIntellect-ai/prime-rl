@@ -1,4 +1,4 @@
-from prime_rl.trainer.models.glm5_next.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
+from prime_rl.model_conversion.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
 from prime_rl.trainer.models.glm5_next.modeling_glm5_next import (
     Glm5NextForCausalLM,
     Glm5NextModel,

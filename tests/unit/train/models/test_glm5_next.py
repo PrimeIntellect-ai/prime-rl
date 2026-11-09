@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.model_conversion.ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig, sparse_attention
 from prime_rl.trainer.vlm import get_language_model
 

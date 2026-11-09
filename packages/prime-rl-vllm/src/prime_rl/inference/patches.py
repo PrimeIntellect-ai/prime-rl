@@ -6,7 +6,8 @@ import torch
 
 
 def apply_shared_vllm_patches():
-    """vLLM general plugin and the single place prime-rl applies its vLLM patches; vLLM runs it once in every process.
+    """vLLM general plugin and the single place prime-rl applies its vLLM patches; vLLM runs it once in every process,
+    including each API server process before it builds the app, so a stock ``vllm serve`` gets them all.
 
     vLLM swallows plugin load failures (``load_plugins_by_group`` logs and continues), so a broken
     entry-point target silently skips ALL of these patches.
@@ -41,11 +42,14 @@ def apply_shared_vllm_patches():
         from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
 
         patch_top_p_then_top_k()
-    # Set by `server()` when the LoRA target modules include no expert layers.
+    # Set by prime-rl's inference launcher when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    from prime_rl.inference.vllm.api_server import install_api_server_hooks
+
+    install_api_server_hooks()
 
 
 @dataclass

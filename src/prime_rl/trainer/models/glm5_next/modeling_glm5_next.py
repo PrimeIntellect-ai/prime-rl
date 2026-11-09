@@ -13,14 +13,13 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.configs.trainer import DSABackend
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
-from prime_rl.trainer.models.glm5_next.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
-from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
-    conversion_chain,
+from prime_rl.model_conversion.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
+from prime_rl.model_conversion.converting_glm5_next import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
 from prime_rl.trainer.models.glm5_next.sparse_attention import PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
@@ -163,10 +162,6 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
