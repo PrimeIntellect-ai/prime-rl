@@ -1,3 +1,4 @@
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,20 @@ def folders(tmp_path: Path) -> list[Path]:
         (folder / "00.ds.metadata").write_text("tokenizer|4\n")
         folders.append(folder)
     return folders
+
+
+def write_shard(path: Path, documents: list[list[int]]) -> None:
+    """A datatrove DocumentTokenizer shard: uint32 tokens, uint64 cumulative document ends, metadata."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.array([token for document in documents for token in document], dtype="<u4").tofile(path)
+    np.cumsum([len(document) for document in documents], dtype="<u8").tofile(f"{path}.index")
+    Path(f"{path}.metadata").write_text("tokenizer|4\n0\n0")
+
+
+def consecutive_documents(lengths: list[int]) -> list[list[int]]:
+    """Documents of the given lengths whose tokens are their positions in the stream."""
+    starts = np.cumsum([0, *lengths]).tolist()
+    return [list(range(start, start + length)) for start, length in zip(starts, lengths)]
 
 
 def take(dataset: TokenDataset, num_samples: int) -> list[dict]:
@@ -154,3 +169,34 @@ def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeyp
     warn_if_no_document_separator(TokenShards([tmp_path / "separated", tmp_path / "run-together"]), tokenizer)
     assert len(warnings) == 1
     assert "run-together" in warnings[0]
+
+
+EOS = 999  # every document ends with it, as the tokenizer writes the shards
+
+
+def test_eod_mask_loss(tmp_path):
+    # Documents of words (their positions in the stream) ending in EOS; lengths so that windows hold document ends and
+    # cut documents.
+    words = consecutive_documents([2, 6, 1, 11, 3, 4, 9, 5, 2, 7] * 6)
+    write_shard(tmp_path / "a" / "00.ds", [[*document, EOS] for document in words])
+    shards = TokenShards([tmp_path / "a"], seed=0)
+    seq_len = 8
+    off = list(islice(TokenDataset(shards, seq_len), 40))
+    on = list(islice(TokenDataset(shards, seq_len, eod_mask_token=EOS), 40))
+    eos_inputs = word_to_eos = 0
+    for plain, masked in zip(off, on):
+        # Only the loss mask changes.
+        assert {k: v for k, v in plain.items() if k != "loss_mask"} == {
+            k: v for k, v in masked.items() if k != "loss_mask"
+        }
+        for token, target, before, after in zip(
+            masked["input_ids"], masked["target_ids"], plain["loss_mask"], masked["loss_mask"]
+        ):
+            # (a) an EOS input has no loss; every other position keeps its loss as before.
+            assert after == (before and token != EOS)
+            eos_inputs += before and token == EOS
+            # (b) the last word of a document still learns to predict EOS.
+            if before and target == EOS and token != EOS:
+                assert after
+                word_to_eos += 1
+    assert eos_inputs > 0 and word_to_eos > 0

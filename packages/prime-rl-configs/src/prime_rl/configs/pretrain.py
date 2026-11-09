@@ -32,6 +32,11 @@ class DatatroveDataConfig(BaseDataConfig):
     """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
     whole sample and positions run over it."""
 
+    eod_mask_loss: bool = False
+    """No loss at positions whose input token is the tokenizer's EOS (Megatron's ``eod_mask_loss``): each document's
+    last token, whose target is the first token of the next, unrelated document. Positions whose target is EOS stay in
+    the loss, so the model still learns to end a document. ``[val.data]`` has its own setting."""
+
 
 class PretrainValConfig(BaseValConfig):
     data: DatatroveDataConfig

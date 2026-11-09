@@ -182,7 +182,7 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
-        dataset = setup_token_dataset(config.data, config.model.cp)
+        dataset = setup_token_dataset(config.data, tokenizer.eos_token_id, config.model.cp)
         warn_if_no_document_separator(dataset.shards, tokenizer)
     else:
         dataset = setup_sft_dataset(
@@ -326,7 +326,11 @@ def train(config: SFTConfig | PretrainConfig):
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
             val_dataset = setup_token_dataset(
-                config.val.data, config.model.cp, max_epochs=1, num_samples=config.val.num_samples
+                config.val.data,
+                tokenizer.eos_token_id,
+                config.model.cp,
+                max_epochs=1,
+                num_samples=config.val.num_samples,
             )
         else:
             val_dataset = setup_sft_dataset(

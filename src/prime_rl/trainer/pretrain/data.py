@@ -141,6 +141,7 @@ class TokenDataset(StatefulIterableDataset):
         non_dp_size: int = 1,
         max_epochs: int | None = None,
         num_samples: int | None = None,
+        eod_mask_token: int | None = None,
     ):
         super().__init__(non_dp_size)
         if shards.num_tokens < seq_len:
@@ -148,6 +149,8 @@ class TokenDataset(StatefulIterableDataset):
         self.shards = shards
         self.seq_len = seq_len
         self.document_masking = document_masking
+        # `eod_mask_loss`: no loss where the input is this token (EOS), whose target is the next document's first token.
+        self.eod_mask_token = eod_mask_token
         limits = [] if num_samples is None else [num_samples]
         if max_epochs is not None:
             limits.append(max_epochs * (shards.num_tokens // seq_len))
@@ -178,11 +181,19 @@ class TokenDataset(StatefulIterableDataset):
                 "input_ids": ids[:-1],
                 "target_ids": ids[1:],
                 "position_ids": [position for length in seq_lens for position in range(length)],
-                "loss_mask": [True] * self.seq_len,
+                "loss_mask": eod_loss_mask(ids[:-1], [True] * self.seq_len, self.eod_mask_token),
                 "seq_lens": seq_lens,
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
+
+
+def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | None) -> list[bool]:
+    """``loss_mask`` with every position whose input is ``eod_token`` off (Megatron's ``loss_mask[data == eod_token] =
+    0``); unchanged when ``eod_token`` is None."""
+    if eod_token is None:
+        return loss_mask
+    return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
 
 
 def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> None:
@@ -216,10 +227,12 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 def setup_token_dataset(
     config: DatatroveDataConfig,
+    eos_token_id: int,
     non_dp_size: int = 1,
     max_epochs: int | None = None,
     num_samples: int | None = None,
 ) -> TokenDataset:
+    eod_mask_token = eos_token_id if config.eod_mask_loss else None
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
@@ -227,4 +240,5 @@ def setup_token_dataset(
         non_dp_size=non_dp_size,
         max_epochs=max_epochs,
         num_samples=num_samples,
+        eod_mask_token=eod_mask_token,
     )
