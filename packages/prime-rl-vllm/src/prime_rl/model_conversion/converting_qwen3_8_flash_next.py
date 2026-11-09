@@ -4,8 +4,10 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ChunkedConvOp, ConvOp, Drop, Rename, SplitConcat
-from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
+from prime_rl.model_conversion.ops import ChunkedConvOp, ConvOp, Drop, Rename, SplitConcat
+
+# N-gram layout buffers the runtime keeps next to the checkpoint tensors.
+LAYOUT_BUFFERS = ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets")
 
 
 @dataclass

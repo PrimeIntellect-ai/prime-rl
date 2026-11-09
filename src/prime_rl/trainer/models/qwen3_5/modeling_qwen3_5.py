@@ -2,6 +2,14 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
+from prime_rl.model_conversion.configuration_qwen3_5 import (
+    Qwen3_5MoeTextConfig,
+    Qwen3_5TextConfig,
+)
+from prime_rl.model_conversion.converting_qwen3_5 import (
+    is_hf_state_dict,
+    is_prime_state_dict,
+)
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
@@ -9,15 +17,6 @@ from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForw
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
-from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
-    Qwen3_5MoeTextConfig,
-    Qwen3_5TextConfig,
-)
-from prime_rl.trainer.models.qwen3_5.converting_qwen3_5 import (
-    conversion_chain,
-    is_hf_state_dict,
-    is_prime_state_dict,
-)
 from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     Qwen3_5RotaryEmbedding,
     build_qwen3_5_mrope_position_ids,
@@ -128,10 +127,6 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 class Qwen3_5Model(Qwen3_5PreTrainedModel):

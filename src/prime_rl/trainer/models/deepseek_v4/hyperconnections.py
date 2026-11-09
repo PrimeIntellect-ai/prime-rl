@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.model_conversion.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.kernels.deepseek_v4 import dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
 from prime_rl.trainer.models.layers import norms

@@ -8,6 +8,7 @@ prime-rl's vLLM plugin. Installed next to a stock vLLM, it makes `vllm serve` be
   - `prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker`
   - `prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker` (install the `modelexpress` extra)
   - `prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker` (needs the full `prime-rl` package)
+- `prime_rl.model_conversion`: PrimeRL's model configs and the HF <-> PrimeRL state-dict conversion chains, shared with the trainer. The ModelExpress worker uses it to convert the PrimeRL-native tensors a trainer publishes.
 
 Settings that `vllm serve` has no flag for are read from the environment:
 

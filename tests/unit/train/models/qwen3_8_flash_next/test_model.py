@@ -3,7 +3,7 @@ import copy
 import pytest
 import torch
 
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.model_conversion.ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.kernels.qwen3_8_hyper_connection import launch
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,

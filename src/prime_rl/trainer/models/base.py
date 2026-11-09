@@ -138,17 +138,19 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     @classmethod
     def conversion_chain(cls, config) -> list:
         """Declarative operations converting between HF and PrimeRL state dicts."""
-        return []
+        from prime_rl.model_conversion import conversion_chain
+
+        return conversion_chain(config)
 
     def convert_to_hf(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a PrimeRL state dict to HuggingFace format in-place."""
-        from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
+        from prime_rl.model_conversion.ops import apply_prime_to_hf
 
         return apply_prime_to_hf(state_dict, self.conversion_chain(self.config))
 
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a HuggingFace state dict to PrimeRL format in-place."""
-        from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime
+        from prime_rl.model_conversion.ops import apply_hf_to_prime
 
         return apply_hf_to_prime(state_dict, self.conversion_chain(self.config))
 

@@ -3,6 +3,14 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 from transformers.utils import torch_compilable_check
 
+from prime_rl.model_conversion.configuration_qwen3_8_flash_next import (
+    Qwen3_8FlashNextConfig,
+    Qwen3_8FlashNextTextConfig,
+)
+from prime_rl.model_conversion.converting_qwen3_8_flash_next import (
+    is_hf_state_dict,
+    is_prime_state_dict,
+)
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
@@ -10,15 +18,6 @@ from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.ngram import NGramEmbeddings, NGramTable
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
-from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import (
-    Qwen3_8FlashNextConfig,
-    Qwen3_8FlashNextTextConfig,
-)
-from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import (
-    conversion_chain,
-    is_hf_state_dict,
-    is_prime_state_dict,
-)
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen3_8FlashNextNGramHasher
@@ -124,10 +123,6 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
