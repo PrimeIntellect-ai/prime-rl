@@ -169,7 +169,6 @@ class EngineLoadSample:
     role: str | None
     kv_capacity_tokens: int | None
     max_model_len: int | None
-    running: int
     # All waiting requests: queued for capacity plus deferred (KV loads, grammar compilation)
     waiting: int
     finished_delta: int = 0
@@ -182,7 +181,6 @@ class EngineLoadSample:
 class RoleLoad:
     """One poll's engines of one role, pooled."""
 
-    running: int
     queued: int
     finished: int = 0
     generated: int = 0
@@ -266,11 +264,10 @@ class Level:
 class ConcurrencyController(Reconfigurable):
     def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
         self.config = config
-        self.floor = config.min_inflight
         self.fallback_cost = fallback_cost
         """Pessimistic per-unit cost for the starting cap when the engine reports no max context."""
 
-        self.cap = float(config.initial_inflight or self.floor)
+        self.cap = float(config.initial_inflight or config.min_inflight)
         self.max_inflight = int(self.clamp(self.cap))
         # The cap last logged, and the reason of the gradual change since (None: none)
         self.logged_cap = self.max_inflight
@@ -477,7 +474,6 @@ class ConcurrencyController(Reconfigurable):
         only seeds the startup cap, so a new value (e.g. to stay below a lowered
         ``max_inflight``) changes nothing."""
         self.config = update.config.concurrency
-        self.floor = self.config.min_inflight
         if self.target is None:
             self.cap = self.clamp(self.cap)
             self.apply_limit(int(self.cap), reason="config update")
@@ -824,8 +820,7 @@ class ConcurrencyController(Reconfigurable):
         )
 
     def clamp(self, n_max: float) -> float:
-        ceiling = self.config.max_inflight or math.inf
-        return min(max(n_max, float(self.floor)), float(ceiling))
+        return min(max(n_max, float(self.config.min_inflight)), float(self.config.max_inflight or math.inf))
 
     @property
     def capacity(self) -> int | None:
@@ -877,7 +872,6 @@ def role_loads(samples: list[EngineLoadSample]) -> dict[str, RoleLoad]:
         by_role.setdefault(sample.role or COLOCATED, []).append(sample)
     return {
         role: RoleLoad(
-            running=sum(sample.running for sample in group),
             queued=sum(sample.waiting for sample in group),
             finished=sum(sample.finished_delta for sample in group),
             generated=sum(sample.generation_tokens_delta for sample in group),

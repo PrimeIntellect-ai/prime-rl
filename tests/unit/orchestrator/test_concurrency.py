@@ -39,7 +39,6 @@ def engine(
     engine_id: str = "e0",
     role: str | None = None,
     *,
-    running: int = 10,
     waiting: int = 0,
     finished: int = 0,
     generated: int = 0,
@@ -50,7 +49,6 @@ def engine(
         role=role,
         kv_capacity_tokens=1_000_000,
         max_model_len=32_768,
-        running=running,
         waiting=waiting,
         finished_delta=finished,
         generation_tokens_delta=generated,
@@ -94,7 +92,7 @@ def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int, queued=l
 
 
 def test_throughput_is_per_second_of_poll_interval():
-    load = RoleLoad(running=1, queued=0, finished=1, generated=1000)
+    load = RoleLoad(queued=0, finished=1, generated=1000)
     # A poll loop slowed to 10 s under load reads the same throughput, not twice as much
     for seconds, expected in ((5.0, 200), (10.0, 100)):
         window = Window()
@@ -106,7 +104,7 @@ def test_throughput_is_per_second_of_poll_interval():
 def test_queued_share_adds_roles_and_counts_idle_units():
     ctl, _ = controller(inflight=60)
     # Prefill queue plus decode's pending KV pulls, over all units in flight (most of them idle on tools)
-    ctl.observe([engine("p0", "prefill", running=2, waiting=4), engine("d0", "decode", running=40, waiting=2)])
+    ctl.observe([engine("p0", "prefill", waiting=4), engine("d0", "decode", waiting=2)])
     assert ctl.queued_share == pytest.approx(0.1)
     assert ctl.queued_share_by_role == {"prefill": pytest.approx(4 / 60), "decode": pytest.approx(2 / 60)}
     assert ctl.headroom == 0.0
@@ -197,7 +195,7 @@ def test_queue_still_overloaded_after_a_drained_trim_cancels():
 def test_weight_update_pause_freezes_and_skips_the_backlog():
     ctl, pool = controller()
     ctl.pause()
-    ctl.observe([engine(running=0, waiting=50)])
+    ctl.observe([engine(waiting=50)])
     assert not ctl.polls
 
     ctl.drops = 1
