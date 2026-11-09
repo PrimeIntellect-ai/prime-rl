@@ -1,13 +1,8 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import (
-    CustomLossConfig,
-    IcePopLossConfig,
-    IPOLossConfig,
-)
+from prime_rl.configs.trainer import CustomLossConfig, ReinforceLossConfig
 from prime_rl.trainer.rl.loss import (
-    IcePopLoss,
     LossInputs,
     LossOutputs,
     _mismatch_kl_from_log_ratio,
@@ -20,66 +15,110 @@ from prime_rl.trainer.rl.loss import (
 pytestmark = [pytest.mark.gpu]
 
 
-@pytest.mark.parametrize("head_size,q_head", [(4, [0.6, 0.1, 0.2, 0.1]), (2, [0.5, 0.3]), (2, [0.1, 0.1])])
+# Component-plumbing tests use a plain policy gradient, which needs no sampler support.
+PLAIN_PG = CustomLossConfig(import_path="tests.unit.train.rl.test_loss._plain_pg_loss")
+
+
+def _ragged(trainer: torch.Tensor, sampler: torch.Tensor, valid: torch.Tensor, replayed: torch.Tensor) -> dict:
+    """Padded [n, k] support fields as the flat entries of the valid slots."""
+    rows = torch.arange(valid.shape[0]).unsqueeze(-1).expand_as(valid)
+    return dict(
+        trainer_support_logprobs=trainer[valid],
+        sampler_support_logprobs=sampler[valid],
+        support_rows=rows[valid],
+        support_replayed=replayed,
+    )
+
+
+def _support_case():
+    """Every action of one prefix as its own token, replayed against support {0..3} with p renormalized over it."""
+    logits = torch.tensor([0.3, -0.4, 0.1, -0.9, -1.5, -2.0], requires_grad=True)
+    logp = logits[:4].log_softmax(-1)
+    q = torch.tensor([0.4, 0.2, 0.3, 0.1])
+    n = len(q)
+    support = _ragged(
+        logp.expand(n, -1), q.log().expand(n, -1), torch.ones((n, n), dtype=torch.bool), torch.ones(n, dtype=torch.bool)
+    )
+    return logits, logp, q, support
+
+
+def _support_inputs(logp, q, support, advantages, **kwargs):
+    n = len(q)
+    return LossInputs(
+        trainer_logprobs=logp,
+        inference_logprobs=q.log(),
+        ref_logprobs=None,
+        advantages=advantages,
+        loss_mask=torch.ones(n, dtype=torch.bool),
+        loss_weights=q,
+        **support,
+        **kwargs,
+    )
+
+
 @pytest.mark.parametrize("constant_advantage", [False, True])
-def test_icepop_score_centering_matches_dense_gradient(head_size, q_head, constant_advantage):
-    logits = torch.tensor([0.3, -0.4, 0.1, -0.9], requires_grad=True)
-    logp = logits.log_softmax(-1)
-    p = logp.detach().exp()
-    q = torch.tensor(q_head)
-    if head_size < 4:
-        q = torch.cat((q, (1 - q.sum()) * p[head_size:] / p[head_size:].sum()))
-    advantage = torch.ones(4) if constant_advantage else torch.tensor([1.3, -0.7, 0.2, -1.0])
-    # Enumerate all sampled actions, including rejected ones, under the same prefix.
-    inputs = LossInputs(
-        logp,
-        q.log(),
-        None,
-        advantage,
-        torch.ones(4, dtype=torch.bool),
-        q,
-        logp[:head_size].expand(4, -1),
-        q[:head_size].log().expand(4, -1),
-        torch.ones((4, head_size), dtype=torch.bool),
-    )
-    config = IcePopLossConfig(
-        ratio_low=0.5,
-        ratio_high=2.0,
-        score_centering=True,
-        score_centering_topk=head_size,
-    )
-    actual = setup_rl_loss_fn(config).loss(inputs).loss
-    ratio = p / q
-    weight = ratio * ((ratio >= config.ratio_low) & (ratio <= config.ratio_high))
-    baseline = (q * weight * logp).sum()
-    reference = -(q * advantage * (weight * logp - baseline)).sum()
-    actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
-    reference_gradient = torch.autograd.grad(reference, logits)[0]
-    torch.testing.assert_close(actual_gradient, reference_gradient, atol=2e-7, rtol=2e-6)
+def test_score_centering_matches_dense_gradient(constant_advantage):
+    logits, logp, q, support = _support_case()
+    n = len(q)
+    advantages = torch.ones(n) if constant_advantage else torch.linspace(-1.0, 1.3, n)
+    loss = setup_rl_loss_fn(ReinforceLossConfig(kl_coeff=0.0)).loss(_support_inputs(logp, q, support, advantages)).loss
+
+    reference = -(q * advantages * (logp - (q * logp).sum())).sum()
+    gradient = torch.autograd.grad(loss, logits, retain_graph=True)[0]
+    torch.testing.assert_close(gradient, torch.autograd.grad(reference, logits)[0], atol=2e-7, rtol=2e-6)
     if constant_advantage:
-        torch.testing.assert_close(actual_gradient, torch.zeros_like(logits), atol=2e-7, rtol=0)
+        torch.testing.assert_close(gradient, torch.zeros_like(logits), atol=2e-7, rtol=0)
 
 
-def test_icepop_score_centering_excludes_non_rl_tokens():
-    logits = torch.tensor([[0.2, -0.3], [0.7, -0.1]], requires_grad=True)
-    logp = logits.log_softmax(-1)
-    q = torch.tensor([[0.8, 0.2], [0.5, 0.5]])
-    inputs = LossInputs(
-        logp[:, 0],
-        q[:, 0].log(),
-        None,
-        torch.tensor([1.0, float("nan")]),
-        torch.tensor([True, False]),
-        torch.tensor([0.4, 0.0]),
-        logp,
-        q.log(),
-        torch.tensor([[True, True], [False, False]]),
+def test_kl_matches_dense_kl():
+    logits, logp, q, support = _support_case()
+    n = len(q)
+    inputs = _support_inputs(logp, q, support, torch.zeros(n))
+    inputs.loss_weights = None
+    result = setup_rl_loss_fn(ReinforceLossConfig(kl_coeff=0.5)).loss(inputs)
+
+    kl = (q * (q.log() - logp)).sum()
+    reference = 0.5 * n * kl
+    torch.testing.assert_close(result.loss, reference)
+    torch.testing.assert_close(
+        torch.autograd.grad(result.loss, logits, retain_graph=True)[0], torch.autograd.grad(reference, logits)[0]
     )
-    loss = IcePopLoss(IcePopLossConfig(score_centering=True)).loss(inputs).loss
-    gradient = torch.autograd.grad(loss, logits)[0]
-    assert torch.isfinite(loss)
-    assert torch.isfinite(gradient).all()
-    torch.testing.assert_close(gradient[1], torch.zeros(2))
+    torch.testing.assert_close(result.metrics["kl"], kl.detach().expand(n))
+    assert (result.metrics["score_centering/replayed"] == 1).all()
+
+
+def test_sampled_estimator_is_unbiased():
+    """Over many prefixes, the K-draw center and KL match the exact sums over q in expectation, and the
+    gradient vanishes at constant advantage."""
+    gen = torch.Generator().manual_seed(0)
+    n, vocab, k = 20000, 6, 4
+    logits = torch.randn(vocab, generator=gen).requires_grad_()
+    q = (logits.detach() + 0.5 * torch.randn(vocab, generator=gen)).softmax(-1)
+    sampled = torch.multinomial(q, n, replacement=True, generator=gen)
+    draws = torch.multinomial(q, n * k, replacement=True, generator=gen).view(n, k)
+    full = torch.arange(vocab).expand(n, -1)
+
+    def run(ids, replayed, kl_coeff):
+        logp = logits.log_softmax(-1).expand(n, -1)
+        inputs = LossInputs(
+            trainer_logprobs=logp.gather(-1, sampled[:, None]).squeeze(-1),
+            inference_logprobs=q.log()[sampled],
+            ref_logprobs=None,
+            advantages=torch.full((n,), 0.0 if kl_coeff else 1.0),
+            loss_mask=torch.ones(n, dtype=torch.bool),
+            **_ragged(
+                logp.gather(-1, ids), q.log()[ids], torch.ones(ids.shape, dtype=torch.bool), torch.full((n,), replayed)
+            ),
+        )
+        loss = setup_rl_loss_fn(ReinforceLossConfig(kl_coeff=kl_coeff)).loss(inputs).loss / n
+        return loss, torch.autograd.grad(loss, logits)[0]
+
+    for kl_coeff in (0.0, 0.5):
+        estimate, estimate_grad = run(draws, False, kl_coeff)
+        exact, exact_grad = run(full, True, kl_coeff)
+        torch.testing.assert_close(estimate, exact, atol=0.01, rtol=0)
+        torch.testing.assert_close(estimate_grad, exact_grad, atol=0.01, rtol=0)
+    torch.testing.assert_close(run(draws, False, 0.0)[1], torch.zeros(vocab), atol=0.02, rtol=0)
 
 
 def test_grpo_loss():
@@ -89,7 +128,7 @@ def test_grpo_loss():
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -114,7 +153,7 @@ def test_gspo_loss():
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -160,110 +199,6 @@ def test_setup_rl_loss_fn_with_custom_config():
     assert "custom_metric" in result.metrics
 
 
-def test_icepop_loss_masks_ratios_outside_inclusive_band():
-    ratios = torch.tensor([0.1, 0.2, 1.0, 5.0, 10.0], device="cuda")
-    trainer_logprobs = ratios.log().requires_grad_()
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.zeros_like(trainer_logprobs),
-        ref_logprobs=None,
-        advantages=torch.ones_like(trainer_logprobs),
-        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
-    )
-
-    result = setup_rl_loss_fn(IcePopLossConfig()).loss(inputs)
-
-    assert torch.isclose(result.loss, torch.tensor(-6.2, device="cuda"))
-    assert torch.isclose(result.metrics["is_masked"], torch.tensor(0.4, device="cuda"))
-    result.loss.backward()
-    assert torch.allclose(trainer_logprobs.grad, torch.tensor([0.0, -0.2, -1.0, -5.0, 0.0], device="cuda"))
-
-
-def test_icepop_loss_masks_extreme_ratio_without_nan():
-    trainer_logprobs = torch.tensor([100.0], device="cuda", requires_grad=True)
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.zeros_like(trainer_logprobs),
-        ref_logprobs=None,
-        advantages=torch.ones_like(trainer_logprobs),
-        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
-    )
-
-    result = IcePopLoss(IcePopLossConfig()).loss(inputs)
-
-    assert torch.equal(result.loss, torch.zeros_like(result.loss))
-    assert result.metrics["importance_ratio/accepted"].numel() == 0
-    assert all(torch.isfinite(value).all() for value in result.metrics.values())
-    result.loss.backward()
-    assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
-
-
-@pytest.mark.parametrize("config", [IPOLossConfig(), IcePopLossConfig()])
-def test_ipo_icepop_match_original_on_finite_ratios(config):
-    torch.manual_seed(23)
-    trainer_logprobs = (-8 * torch.rand(128, device="cuda")).requires_grad_()
-    inference_logprobs = -8 * torch.rand(128, device="cuda")
-    advantages = torch.randn(128, device="cuda")
-    loss_mask = torch.rand(128, device="cuda") > 0.3
-    weights = torch.rand(128, device="cuda")
-    inputs = LossInputs(trainer_logprobs, inference_logprobs, None, advantages, loss_mask, weights)
-
-    result = setup_rl_loss_fn(config).loss(inputs)
-    log_ratio = trainer_logprobs - inference_logprobs
-    ratio = log_ratio.exp()
-    if isinstance(config, IPOLossConfig):
-        keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
-        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
-    else:
-        keep = (
-            loss_mask
-            & (log_ratio.detach() >= torch.tensor(config.ratio_low, device="cuda").log())
-            & (log_ratio.detach() <= torch.tensor(config.ratio_high, device="cuda").log())
-        )
-        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
-
-    for population, selected in (("all", loss_mask), ("accepted", keep)):
-        metric = result.metrics[f"importance_ratio/{population}"]
-        assert not metric.requires_grad
-        torch.testing.assert_close(metric, log_ratio[selected].detach().float().exp())
-        for threshold in (5, 10, 100, 10000):
-            torch.testing.assert_close(
-                result.metrics[f"importance_ratio/{population}/above_{threshold}"],
-                log_ratio[selected].detach().float()
-                > torch.tensor(threshold, device="cuda", dtype=torch.float32).log(),
-            )
-
-    torch.testing.assert_close(result.loss, expected, rtol=1e-5, atol=1e-5)
-    actual_grad = torch.autograd.grad(result.loss, trainer_logprobs, retain_graph=True)[0]
-    expected_grad = torch.autograd.grad(expected, trainer_logprobs)[0]
-    torch.testing.assert_close(actual_grad, expected_grad, rtol=1e-5, atol=1e-5)
-
-
-def test_ipo_excludes_masked_tokens_and_caps_accepted_extreme_ratio():
-    trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.tensor([-100.0, -100.0, float("nan")], device="cuda"),
-        ref_logprobs=None,
-        advantages=torch.ones(3, device="cuda"),
-        loss_mask=torch.tensor([True, True, False], device="cuda"),
-    )
-
-    result = setup_rl_loss_fn(IPOLossConfig()).loss(inputs)
-
-    torch.testing.assert_close(result.loss, torch.tensor(-1e4, device="cuda"))
-    torch.testing.assert_close(
-        result.metrics["log_importance_ratio/all"], torch.tensor([90.0, 100.0], device="cuda", dtype=torch.float32)
-    )
-    torch.testing.assert_close(
-        result.metrics["importance_ratio/accepted"], torch.tensor([1e30], device="cuda", dtype=torch.float32)
-    )
-    assert result.metrics["importance_ratio/accepted/saturated"].all()
-    assert all(torch.isfinite(value).all() for value in result.metrics.values())
-    result.loss.backward()
-    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-1e4, 0.0, 0.0], device="cuda"))
-
-
 def test_ref_kl_loss_stays_finite_with_extreme_ratios_and_masked_nan():
     trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
     inputs = LossInputs(
@@ -297,7 +232,7 @@ def test_ce_component_matches_masked_nll():
     rl_weights = [torch.zeros(3, dtype=torch.float32).cuda()]
     ce_weights = [torch.tensor([1.0, 0.0, 1.0], dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -328,7 +263,7 @@ def test_ce_component_applies_weights():
     rl_weights = [torch.zeros(3, dtype=torch.float32).cuda()]
     ce_weights = [torch.tensor([0.1, 0.0, 0.1], dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -356,7 +291,7 @@ def test_explicit_rl_weights_match_absent_stream():
     advantages = [torch.randn(50).cuda()]
     loss_mask = [torch.rand(50).cuda() > 0.3]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     kwargs = dict(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -392,7 +327,7 @@ def test_disjoint_components_in_one_sequence():
     ref_kl_weights = torch.zeros(n, dtype=torch.float32)
     ref_kl_weights[8:] = 1.0
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -411,7 +346,7 @@ def test_disjoint_components_in_one_sequence():
     assert loss.shape == ()
     assert "nll" in metrics
     assert "ref_kl" in metrics
-    assert "is_masked" in metrics
+    assert "pg" in metrics
 
 
 def test_empty_components_keep_backward_valid():
@@ -424,7 +359,7 @@ def test_empty_components_keep_backward_valid():
     rl_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
     ce_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -458,7 +393,7 @@ def test_overlapping_components_sum():
     loss_mask = [torch.ones(n, dtype=torch.bool).cuda()]
     ce_weights = [torch.full((n,), 0.5, dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
+    rl_loss_fn = setup_rl_loss_fn(PLAIN_PG)
     kwargs = dict(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -487,45 +422,9 @@ def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutpu
     )
 
 
-@pytest.mark.parametrize("constant_advantage", [False, True])
-def test_score_centering_replay_matches_exact_supported_gradient(constant_advantage):
-    from prime_rl.trainer.rl.loss import selective_topk_log_softmax
-
-    logits = torch.tensor([0.2, -0.4, 0.8, 3.0], requires_grad=True)
-    support = torch.tensor([[0, 1, 2, -1]]).expand(3, -1)
-    labels = torch.arange(3)
-    head = selective_topk_log_softmax(logits.expand(3, -1), support, support, labels)
-    logp = logits[:3].log_softmax(-1)
-    q = torch.tensor([0.7, 0.2, 0.1])
-    advantages = torch.ones(3) if constant_advantage else torch.tensor([1.0, -0.5, 2.0])
-    config = IcePopLossConfig(score_centering=True, ratio_low=0.5, ratio_high=2.0)
-    actual, metrics = compute_loss(
-        trainer_logprobs=[head[torch.arange(3), labels]],
-        inference_logprobs=[q.log()],
-        ref_logprobs=None,
-        advantages=[advantages],
-        loss_mask=[torch.ones(3, dtype=torch.bool)],
-        rl_weights=[q],
-        ce_weights=None,
-        ref_kl_weights=None,
-        rl_loss_fn=IcePopLoss(config),
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
-        trainer_support_logprobs=[head],
-        sampler_support_logprobs=[torch.cat([q.log(), torch.zeros(1)]).expand(3, -1)],
-        support_valid=[support >= 0],
-        sampler_tail_mass=[torch.zeros(3)],
-    )
-    ratio = logp.detach().exp() / q
-    weight = ratio * ((ratio >= config.ratio_low) & (ratio <= config.ratio_high))
-    baseline = (q * weight * logp).sum()
-    reference = -(q * advantages * (weight * logp - baseline)).sum()
-    actual_grad = torch.autograd.grad(actual, logits, retain_graph=True)[0]
-    expected_grad = torch.autograd.grad(reference, logits)[0]
-    torch.testing.assert_close(actual_grad, expected_grad)
-    assert actual_grad[3] == 0
-    assert (metrics["score_centering/tail_scale"] == 0).all()
-    assert (metrics["score_centering/replayed"] == 1).all()
-    if constant_advantage:
-        torch.testing.assert_close(actual_grad, torch.zeros_like(logits), atol=1e-7, rtol=0)
+def _plain_pg_loss(inputs: LossInputs) -> LossOutputs:
+    mask = inputs.loss_mask
+    loss = -inputs.advantages[mask] * inputs.trainer_logprobs[mask]
+    if inputs.loss_weights is not None:
+        loss = loss * inputs.loss_weights[mask]
+    return LossOutputs(loss=loss.sum(), metrics={"pg": loss.detach()})
