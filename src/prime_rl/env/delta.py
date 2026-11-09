@@ -64,6 +64,7 @@ SCALAR_FIELDS = (
     "is_timeout",
     "dropped",
     "timing",
+    "checkpoints",
     "num_input_tokens",
     "num_output_tokens",
     "num_total_tokens",
