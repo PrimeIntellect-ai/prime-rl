@@ -7,7 +7,8 @@ prompt logprobs, priority, ``data_parallel_rank`` header routing, server-side
 ``max_tokens`` defaulting, ``usage`` reporting, and expanded prompt metadata.
 We subclass it to return the per-token payloads as packed arrays instead of
 per-token JSON: ``routed_experts`` as ``{data, shape, start, dtype}`` base64
-raw bytes (the form the PD router can merge and the renderers parse),
+raw bytes (the form the renderers parse; under P/D the prefill instance's rows
+reach the decode instance inside ``kv_transfer_params``),
 ``completion_logprobs`` as a ``{data, shape, dtype}`` float32 array instead of
 ``logprobs.content``, opt-in ``compact_logprobs`` for sampled and top-k evidence,
 and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator, AsyncIterator
+from contextvars import ContextVar
 from copy import copy
 from typing import Any
 
@@ -70,6 +72,34 @@ def encode_array(array: np.ndarray) -> dict[str, Any]:
         "shape": list(array.shape),
         "dtype": array.dtype.name,
     }
+
+
+def decode_array(encoded: dict[str, Any]) -> np.ndarray:
+    data = pybase64.b64decode_as_bytearray(encoded["data"])
+    return np.frombuffer(data, dtype=encoded["dtype"]).reshape(encoded["shape"])
+
+
+PD_ROUTED_EXPERTS_KEY = "prl_routed_experts"
+"""``kv_transfer_params`` key carrying a prefill instance's routed_experts to the decode instance."""
+
+_prefill_routed_experts: ContextVar[dict[str, Any] | None] = ContextVar("prefill_routed_experts", default=None)
+
+
+def merge_routed_experts(prefill: dict[str, Any], decode: dict[str, Any]) -> dict[str, Any]:
+    """Prefill rows up to where the decode instance's rows begin, then the decode rows."""
+    if prefill["dtype"] != decode["dtype"] or prefill["shape"][1:] != decode["shape"][1:]:
+        raise ValueError(
+            f"Prefill routed_experts {prefill['dtype']}{prefill['shape']} do not match "
+            f"decode routed_experts {decode['dtype']}{decode['shape']}"
+        )
+    prefill_end = prefill["start"] + prefill["shape"][0]
+    if not prefill["start"] <= decode["start"] <= prefill_end:
+        raise ValueError(
+            f"Prefill routed_experts cover [{prefill['start']}, {prefill_end}) "
+            f"but decode routed_experts start at {decode['start']}"
+        )
+    rows = np.concatenate([decode_array(prefill)[: decode["start"] - prefill["start"]], decode_array(decode)])
+    return {**encode_array(rows), "start": prefill["start"]}
 
 
 def pack_sampled_logprobs(logprobs: FlatLogprobs) -> np.ndarray:
@@ -176,6 +206,8 @@ class PrimeRlServingTokens(ServingTokens):
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
             if not sampling_params.stop:
                 sampling_params.detokenize = False
+        # Keep a prefill instance's rows out of the engine; the response is built in this same task.
+        _prefill_routed_experts.set((request.kv_transfer_params or {}).pop(PD_ROUTED_EXPERTS_KEY, None))
         return await super().serve_tokens(request, raw_request)
 
     async def serve_tokens_full_generator(  # type: ignore[override]
@@ -198,4 +230,39 @@ class PrimeRlServingTokens(ServingTokens):
         )
         if isinstance(response, GenerateTokensResponse):
             response = packed.post_process(response)
+            try:
+                hand_off_pd_routed_experts(request, response, _prefill_routed_experts.get())
+            except ValueError as error:
+                return self.create_error_response(str(error))
         return response
+
+
+def hand_off_pd_routed_experts(
+    request: GenerateRequest, response: PrimeRlGenerateResponse, prefill_routed_experts: dict[str, Any] | None
+) -> None:
+    """Carry routed_experts across P/D disaggregation through ``kv_transfer_params``.
+
+    A decode instance never computes a remotely prefilled prompt, so it has no rows for it. A prefill
+    instance puts its rows into the response's ``kv_transfer_params``, which every P/D proxy copies into
+    the decode request as is; the decode instance puts them in front of its own rows.
+    """
+    params = request.kv_transfer_params or {}
+    if params.get("do_remote_decode") and response.kv_transfer_params is not None:
+        [choice] = response.choices
+        if choice.routed_experts is not None:
+            # ponytail: the choice keeps its copy for the router fork's own merge, which fails without it and
+            # is a no-op over rows already merged here; drop it once no P/D run uses the fork.
+            response.kv_transfer_params[PD_ROUTED_EXPERTS_KEY] = choice.routed_experts
+        return
+    for choice in response.choices:
+        if choice.routed_experts is None:
+            continue
+        if prefill_routed_experts is not None:
+            choice.routed_experts = merge_routed_experts(prefill_routed_experts, choice.routed_experts)
+        elif params.get("do_remote_prefill") and (
+            choice.routed_experts["start"] > request.sampling_params.routed_experts_prompt_start
+        ):
+            raise ValueError(
+                f"Remotely prefilled request has no {PD_ROUTED_EXPERTS_KEY} in kv_transfer_params, so its "
+                "routed_experts would miss the prompt; the P/D proxy must forward kv_transfer_params as is"
+            )
