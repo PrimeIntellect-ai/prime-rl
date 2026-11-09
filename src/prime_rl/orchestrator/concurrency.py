@@ -331,8 +331,8 @@ class ConcurrencyController(Reconfigurable):
         # The cap a throughput drop trimmed to: the drop lies above it, so steps up past it stay smallest
         self.ceiling: float | None = None
 
-        self.set_limit: Callable[[int], None] | None = None
-        self.get_inflight: Callable[[], int] | None = None
+        self.set_limit: Callable[[int], None] = lambda n_max: None
+        self.get_inflight: Callable[[], int] = lambda: 0
         self.on_overload: Callable[[int], None] | None = None
 
     def bind(
@@ -342,11 +342,9 @@ class ConcurrencyController(Reconfigurable):
         get_inflight: Callable[[], int],
         on_overload: Callable[[int], None] | None = None,
     ) -> None:
-        """Attach the outbound hooks. The dispatcher is constructed with this
-        controller's initial cap, so no ``set_limit`` fires here.
-        ``on_overload`` receives the unit excess on a downward resize so the
-        dispatcher can cancel in-flight work instead of just blocking
-        admission."""
+        """Attach the dispatcher's hooks (no-ops until then). The dispatcher is constructed with this controller's
+        initial cap, so no ``set_limit`` fires here. ``on_overload`` receives the units to cancel on an overload;
+        without it a trim only blocks admission."""
         self.set_limit = set_limit
         self.get_inflight = get_inflight
         self.on_overload = on_overload
@@ -357,7 +355,7 @@ class ConcurrencyController(Reconfigurable):
         """One completed unit (from the dispatcher) after ``calls`` model calls. Advances the turnover clock by
         ``1/inflight``."""
         # The dispatcher releases the permit before this hook fires, so the completing unit is already off the count
-        inflight = (self.get_inflight() if self.get_inflight is not None else 0) + 1
+        inflight = self.get_inflight() + 1
         self.turnover += 1 / inflight
         # Error markers consumed no engine capacity: growing on them floods the engines once the environment recovers
         if tokens > 0:
@@ -407,7 +405,7 @@ class ConcurrencyController(Reconfigurable):
             if sample.max_model_len:
                 self.engine_max_len = max(self.engine_max_len or 0, sample.max_model_len)
 
-        inflight = self.get_inflight() if self.get_inflight is not None else 0
+        inflight = self.get_inflight()
         loads = role_loads(samples)
         poll = Poll(loads, inflight, seconds)
         growth, self.pending_turnover = self.pending_turnover, 0.0
@@ -796,8 +794,7 @@ class ConcurrencyController(Reconfigurable):
         if not gradual:
             self.log_growth()
         self.max_inflight = n_max
-        if self.set_limit is not None:
-            self.set_limit(n_max)
+        self.set_limit(n_max)
         if gradual:
             self.growth_reason = reason
         else:
