@@ -49,7 +49,39 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_attn_sink_loading()
     monkey_patch_deepseek_v4_final_hidden_capture()
     monkey_patch_hidden_state_cache_packed_page()
+    monkey_patch_block_outermost_mla_stride()
     monkey_patch_dspark_dp_compile_cache()
+
+
+def monkey_patch_block_outermost_mla_stride():
+    """Align the shared block stride of packed KV caches to DeepSeek V4's MLA pages.
+
+    Block-outermost groups share one block stride: the widest group's bytes per block, rounded to
+    each layer's `block_stride_alignment`. DeepSeek V4's MLA specs declare their 576 B FlashMLA
+    alignment only as page padding (`alignment`), so a wider group of another kind (a draft's KV
+    cache, extracted hidden states) leaves the stride unaligned and FlashMLA rejects it.
+    """
+    from vllm.utils.math_utils import round_up
+    from vllm.v1.core import kv_cache_utils
+
+    original = kv_cache_utils._get_kv_cache_bytes_per_block
+    if getattr(original, "_prime_rl_aligns_mla_stride", False):
+        return
+
+    def _get_kv_cache_bytes_per_block(kv_cache_groups, layout):
+        bytes_per_block = original(kv_cache_groups, layout)
+        if not layout.is_block_outermost:
+            return bytes_per_block
+        alignments = {
+            alignment
+            for group in kv_cache_groups
+            for name in group.layer_names
+            if (alignment := getattr(kv_cache_utils._get_per_layer_spec(group, name), "alignment", None))
+        }
+        return round_up(bytes_per_block, math.lcm(*alignments)) if alignments else bytes_per_block
+
+    _get_kv_cache_bytes_per_block._prime_rl_aligns_mla_stride = True
+    kv_cache_utils._get_kv_cache_bytes_per_block = _get_kv_cache_bytes_per_block
 
 
 def monkey_patch_hidden_state_cache_packed_page():
