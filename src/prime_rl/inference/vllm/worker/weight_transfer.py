@@ -135,6 +135,17 @@ class CheckpointIndexMap:
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
         self.names = set(self.records)
+        # Names that write the same elements (a tied weight's names, e.g. ``lm_head.weight`` of tied embeddings,
+        # which HF checkpoints may omit) -> the other names
+        by_writes = defaultdict(list)
+        for name, writes in self.records.items():
+            by_writes[tuple(writes)].append(name)
+        self.tied = {
+            name: [other for other in names if other != name]
+            for names in by_writes.values()
+            if len(names) > 1
+            for name in names
+        }
 
     def map_write(
         self, name: str, k: int, row_offsets: torch.Tensor | None = None, col_offsets: torch.Tensor | None = None

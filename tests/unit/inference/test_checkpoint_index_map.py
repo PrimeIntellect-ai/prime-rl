@@ -1,7 +1,9 @@
 import pytest
 import torch
+from safetensors.torch import save_file
 from torch import nn
 
+from prime_rl.inference.vllm.worker.filesystem import _read_rows
 from prime_rl.inference.vllm.worker.weight_transfer import CheckpointIndexMap
 from prime_rl.utils.sparse_weights import as_bits, bits_checksum
 
@@ -184,3 +186,34 @@ def test_match_boot_raises_on_a_block_it_cannot_find():
     model.w13.data[1, 0, 0] += 1
     with pytest.raises(NotImplementedError, match="experts.1.up.weight"):
         index_map.match_boot((name, 0, tensor) for name, tensor in checkpoint.items())
+
+
+class TiedToy(nn.Module):
+    """An engine model whose head is tied to its embedding: its loader loads both names into one param."""
+
+    def __init__(self):
+        super().__init__()
+        self.embed = nn.Parameter(torch.zeros(4, 8, dtype=torch.bfloat16))
+
+    def load_weights(self, weights):
+        for _, tensor in weights:
+            self.embed.data.copy_(tensor)
+
+
+def test_read_rows_skips_only_tied_names_the_checkpoint_omits(tmp_path):
+    model = TiedToy()
+    index_map = CheckpointIndexMap(model, {"embed": ([4, 8], "bfloat16"), "head": ([4, 8], "bfloat16")})
+    assert index_map.tied == {"embed": ["head"], "head": ["embed"]}
+    embed = torch.randn(4, 8, dtype=torch.bfloat16)
+    # A HF checkpoint of tied embeddings may store only the embedding
+    save_file({"embed": embed}, tmp_path / "model.safetensors")
+    model.embed.data.copy_(embed)
+    rows = list(_read_rows(index_map, tmp_path, "cpu"))
+    assert [(name, begin) for name, begin, _ in rows] == [("embed", 0)]
+    assert torch.equal(rows[0][2], embed)
+    assert index_map.match_boot(rows) == 0
+
+    index_map = CheckpointIndexMap(Toy(), {"weight": ([4, 8], "bfloat16"), "norm": ([8], "bfloat16")})
+    save_file({"weight": embed}, tmp_path / "model.safetensors")
+    with pytest.raises(KeyError, match="norm"):
+        list(_read_rows(index_map, tmp_path, "cpu"))
