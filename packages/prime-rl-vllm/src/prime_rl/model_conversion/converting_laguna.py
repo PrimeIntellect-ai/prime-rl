@@ -19,7 +19,7 @@ Laguna specifics:
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import (
+from prime_rl.model_conversion.ops import (
     GATE_DOWN_UP,
     Conditional,
     ConvOp,

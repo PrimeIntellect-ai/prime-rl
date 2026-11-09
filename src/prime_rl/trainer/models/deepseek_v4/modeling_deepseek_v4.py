@@ -15,10 +15,9 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
+from prime_rl.model_conversion.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
-from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
-from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
@@ -131,10 +130,6 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
             name.endswith("mlp.router.gate.weight") or "mlp.shared_expert." in name or "model.hc_head." in name
             for name in state_dict
         )
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a HuggingFace state dict to PrimeRL format in-place.

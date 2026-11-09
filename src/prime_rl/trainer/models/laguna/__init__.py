@@ -1,4 +1,4 @@
-from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
+from prime_rl.model_conversion.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.modeling_laguna import (
     LagunaForCausalLM,
     LagunaModel,

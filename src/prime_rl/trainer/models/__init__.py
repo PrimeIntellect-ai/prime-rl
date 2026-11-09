@@ -2,13 +2,14 @@
 
 from collections import OrderedDict
 
-from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
+# Registers PrimeRL's config classes with AutoConfig.
+import prime_rl.model_conversion  # noqa: F401
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
@@ -29,7 +30,6 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5MoeConfig,
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
-    Qwen3_5VisionConfig,
 )
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
@@ -37,28 +37,6 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextTextConfig,
 )
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
-
-# Make custom config discoverable by AutoConfig
-AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
-AutoConfig.register("deepseek_v4", DeepseekV4Config, exist_ok=True)
-AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
-AutoConfig.register("glm5_next", Glm5NextConfig, exist_ok=True)
-AutoConfig.register("glm5_next_text", Glm5NextTextConfig, exist_ok=True)
-AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
-AutoConfig.register("gpt_oss", GptOssConfig, exist_ok=True)
-AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
-AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
-AutoConfig.register("muse_glimmer", MuseGlimmerConfig, exist_ok=True)
-AutoConfig.register("muse_glimmer_text", MuseGlimmerTextConfig, exist_ok=True)
-AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
-AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
-AutoConfig.register("qwen3_5", Qwen3_5Config, exist_ok=True)
-AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
-AutoConfig.register("qwen3_5_moe", Qwen3_5MoeConfig, exist_ok=True)
-AutoConfig.register("qwen3_5_moe_text", Qwen3_5MoeTextConfig, exist_ok=True)
-AutoConfig.register("qwen3_5_vision", Qwen3_5VisionConfig, exist_ok=True)
-AutoConfig.register("qwen4_exp", Qwen3_8FlashNextConfig, exist_ok=True)
-AutoConfig.register("qwen4_exp_text", Qwen3_8FlashNextTextConfig, exist_ok=True)
 
 _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
 _CUSTOM_CAUSAL_LM_MODELS: tuple[

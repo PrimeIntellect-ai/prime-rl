@@ -5,9 +5,9 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
+from prime_rl.model_conversion.converting_qwen3_8_flash_next import NGramEmbeddingWeights
+from prime_rl.model_conversion.ops import ChunkedConvOp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
-from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import NGramEmbeddingWeights
 from prime_rl.utils.weights import get_chunked_conversion_ops
 
 

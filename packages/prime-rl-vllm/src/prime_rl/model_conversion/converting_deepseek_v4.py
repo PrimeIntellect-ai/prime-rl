@@ -16,7 +16,7 @@ broadcast, whose output vLLM's own loader reads back under the published names.
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import (
+from prime_rl.model_conversion.ops import (
     ConvOp,
     Drop,
     PrefixRename,

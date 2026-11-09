@@ -24,9 +24,8 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 
+from prime_rl.model_conversion.configuration_glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
-from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -137,10 +136,6 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         """Check if the state dict contains MoE layers in PrimeRL training format."""
         return any("mlp.experts.gate_proj" in name for name in state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
 
 
 @auto_docstring

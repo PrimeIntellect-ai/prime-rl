@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
-from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.model_conversion.configuration_deepseek_v4 import DeepseekV4Config
 
 # The rope types whose inverse frequencies are fixed once computed. The two left out,
 # `dynamic` and `longrope`, rescale theirs per forward against the running sequence length,
