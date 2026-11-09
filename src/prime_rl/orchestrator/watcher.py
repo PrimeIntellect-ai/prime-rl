@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.transports.weights import WeightReceiver
+from prime_rl.transports.weights.base import OfferSuperseded
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -25,12 +26,15 @@ class WeightWatcher:
         observers: list[VersionObserver],
         ckpt_step: int = 0,
         poll_interval: float = 0.1,
+        tolerate_failures: bool = False,
     ) -> None:
         self.receiver = receiver
         self.policy = policy
         self.observers = observers
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
+        self.tolerate_failures = tolerate_failures
+        """Keep running after a failed update (the trainer died mid-broadcast) and wait for its next offer."""
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -110,7 +114,20 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
-            await self.receiver.receive(next_step)
+            try:
+                await self.receiver.apply(next_step)
+            except Exception as error:
+                self.ckpt_step = self.policy.version
+                if isinstance(error, OfferSuperseded):
+                    get_logger().info(f"The trainer offered policy v{next_step} again; receiving the new offer")
+                    return
+                if not self.tolerate_failures:
+                    raise
+                get_logger().warning(
+                    f"Updating inference weights to policy v{next_step} failed ({error!r}); "
+                    "waiting for the trainer to offer it again"
+                )
+                return
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             self.policy.version = next_step
@@ -139,6 +156,7 @@ class WeightWatcher:
             **{
                 f"watcher/{phase}/{stat}": value
                 for phase, times in self.receiver.admin_plane.update_times.items()
+                if times
                 for stat, value in (("min", min(times)), ("mean", sum(times) / len(times)), ("max", max(times)))
             },
         }

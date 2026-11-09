@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -238,9 +239,20 @@ def rl_local(config: RLConfig):
 
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
+            inference_cmd = ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()]
+            if config.restarts is not None and config.restarts.inference > 0:
+                inference_cmd = [
+                    sys.executable,
+                    "-m",
+                    "prime_rl.entrypoints.supervise",
+                    "--name=inference",
+                    f"--restarts={config.restarts.inference}",
+                    f"--health=http://127.0.0.1:{config.inference.server.port}/health",
+                    shlex.join(inference_cmd),
+                ]
             processes.start(
                 "inference",
-                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()],
+                inference_cmd,
                 env={
                     **os.environ,
                     **DEFAULT_COMMON_ENV_VARS,
@@ -314,6 +326,7 @@ def rl_local(config: RLConfig):
                 len(trainer_gpu_ids),
                 log_dir,
                 config.trainer.log.ranks_filter,
+                max_restarts=config.restarts.trainer if config.restarts is not None else 0,
             ),
             env={
                 **os.environ,
@@ -489,6 +502,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            restarts=config.restarts,
             **modelexpress_vars,
         )
 

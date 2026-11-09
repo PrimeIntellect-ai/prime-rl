@@ -31,9 +31,31 @@ launch_inference_rank() {
         printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
         cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
     fi
+{%- if restarts and restarts.inference %}
+    # Collected for launch_supervised_ranks, which restarts the ranks in place when they fail
+    local -a envs=(CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase")
+    [ -n "$nixl" ] && envs+=(VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl")
+    # No pipe into tee: a server's orphaned engine processes would hold it open and hide its exit
+    RANK_COMMANDS+=("exec $(printf "%q " env "${envs[@]}" "${cmd[@]}") >> $(printf "%q" "$log") 2>&1")
+    RANK_HEALTH+=(--health "http://127.0.0.1:$port/health")
+{%- else %}
     if [ -n "$nixl" ]; then
         CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
     else
         CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
     fi
+{%- endif %}
 }
+{%- if restarts and restarts.inference %}
+
+# launch_supervised_ranks <name> [--group] — run the collected rank commands under the supervisor, which also
+# restarts a rank whose /health stops answering. With --group (the ranks of one expert-parallel group), one failed
+# rank restarts all of them.
+RANK_COMMANDS=()
+RANK_HEALTH=()
+launch_supervised_ranks() {
+    python -m prime_rl.entrypoints.supervise --name "$1" --restarts {{ restarts.inference }} ${2:-} "${RANK_HEALTH[@]}" "${RANK_COMMANDS[@]}" &
+    RANK_COMMANDS=()
+    RANK_HEALTH=()
+}
+{%- endif %}

@@ -319,6 +319,14 @@ class ConcurrencyController(Reconfigurable):
 
     # ── internals ────────────────────────────────────────────────────────────
 
+    def engines_lost(self, up_before: int, up_after: int, inflight: int) -> None:
+        """An inference engine went down: scale the cap to the engines still up, so the in-flight
+        work does not pile onto the survivors' KV caches. Growth raises it again once engines rejoin."""
+        if up_before <= 0:
+            return
+        target = max(int(self.max_inflight * up_after / up_before), self.floor)
+        self.resize_down(target, inflight, reason=f"{up_after}/{up_before} inference engines up", cancel=False)
+
     def resize_down(self, target: int, inflight: int, *, reason: str, cancel: bool = True) -> None:
         """Lower the cap (never raise) and, with ``cancel``, shed the
         in-flight excess; without it, admission stays blocked until the pool

@@ -518,6 +518,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
         fi
     done
+{%- if restarts and restarts.inference %}
+    if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
+        launch_supervised_ranks "inference node $INFER_NODE_RANK" --group
+    else
+        launch_supervised_ranks "inference node $INFER_NODE_RANK"
+    fi
+{%- endif %}
 {%- endif %}
 
 else
@@ -536,6 +543,10 @@ else
     (
         WANDB_SHARED_LABEL=trainer uv run torchrun \
             --role=trainer \
+{%- if restarts and restarts.trainer %}
+            --max-restarts={{ restarts.trainer }} \
+            --rdzv-backend=c10d \
+{%- endif %}
             --nnodes=$NUM_TRAIN_NODES \
             --nproc-per-node=$GPUS_PER_NODE \
             --node-rank=$TRAIN_NODE_RANK \

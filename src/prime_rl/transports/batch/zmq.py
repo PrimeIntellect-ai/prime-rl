@@ -15,6 +15,7 @@ class BatchRequest(msgspec.Struct):
     """A trainer rank asking for its micro batches of one step."""
 
     world_size: int
+    rank: int
     data_rank: int
     step: int
 
@@ -32,6 +33,8 @@ class ZMQBatchSender(BatchSender):
         self.socket.bind(f"tcp://{transport.host}:{transport.port}")
         self.request_decoder = msgspec.msgpack.Decoder(type=BatchRequest)
         self.current_step = current_step
+        self.last_sent: list[bytes] = []
+        """The last step's encoded micro batches, for a restarted rank that had not saved them yet."""
         self.logger.debug(f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port})")
 
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
@@ -42,13 +45,14 @@ class ZMQBatchSender(BatchSender):
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
 
         buffers = [await asyncio.to_thread(self.encode, micro_batch_list) for micro_batch_list in micro_batch_grid]
-        identity_to_request = await self._wait_for_requests()
+        requests = await self._wait_for_requests()
         send_start = time.perf_counter()
-        for identity, request in identity_to_request.items():
-            await self.socket.send_multipart([identity, buffers[request.data_rank]], copy=False)
+        for identity, request in requests.values():
+            await self._reply(identity, buffers[request.data_rank])
         send_end = time.perf_counter()
 
-        self.logger.debug(f"Sent micro batch grid for step {self.current_step} to {len(identity_to_request)} ranks")
+        self.logger.debug(f"Sent micro batch grid for step {self.current_step} to {len(requests)} ranks")
+        self.last_sent = buffers
         self.current_step += 1
         return send_end - send_start
 
@@ -58,27 +62,36 @@ class ZMQBatchSender(BatchSender):
         finally:
             self.logger.debug("Closed ZMQ micro batch sender")
 
-    async def _receive_request(self) -> tuple[bytes, BatchRequest]:
-        """A rank requests the next step only after receiving this one, so any other step means the
-        orchestrator and trainer resumed from different steps."""
-        identity, payload = await self.socket.recv_multipart()
-        request = self.request_decoder.decode(payload)
-        if request.step != self.current_step:
-            raise RuntimeError(
-                f"A trainer rank requested step {request.step}, but the orchestrator is on step "
-                f"{self.current_step}. Resume both from the same checkpoint step."
-            )
-        return identity, request
+    async def _reply(self, identity: bytes, buffer: bytes) -> None:
+        try:
+            await self.socket.send_multipart([identity, buffer], copy=False)
+        except zmq.ZMQError as error:
+            if error.errno != zmq.EHOSTUNREACH:
+                raise
+            # A restarted trainer replays the step from its replay log or asks for it again (``last_sent``)
+            self.logger.warning("A trainer rank went away before it received its micro batches")
 
-    async def _wait_for_requests(self) -> dict[bytes, BatchRequest]:
+    async def _wait_for_requests(self) -> dict[int, tuple[bytes, BatchRequest]]:
         """Collect one request per trainer rank for the current step. Each request carries the
-        trainer world size, so the first one says how many to wait for."""
-        identity, request = await self._receive_request()
-        identity_to_request = {identity: request}
-        while len(identity_to_request) < request.world_size:
-            identity, request = await self._receive_request()
-            identity_to_request[identity] = request
-        return identity_to_request
+        trainer world size, so the first one says how many to wait for. A restarted trainer replays
+        the steps it received from its own replay log; a rank that died before saving the last
+        step asks for it again and gets it from ``last_sent``. A rank's newest request replaces
+        the request of its previous worker."""
+        requests: dict[int, tuple[bytes, BatchRequest]] = {}
+        while True:
+            identity, payload = await self.socket.recv_multipart()
+            request = self.request_decoder.decode(payload)
+            if request.step == self.current_step:
+                requests[request.rank] = (identity, request)
+                if len(requests) == request.world_size:
+                    return requests
+            elif request.step == self.current_step - 1 and self.last_sent:
+                await self._reply(identity, self.last_sent[request.data_rank])
+            else:
+                raise RuntimeError(
+                    f"A trainer rank requested step {request.step}, but the orchestrator is on step "
+                    f"{self.current_step}. Resume both from the same checkpoint step."
+                )
 
 
 class ZMQBatchReceiver(BatchReceiver):
@@ -101,14 +114,17 @@ class ZMQBatchReceiver(BatchReceiver):
         self.current_step = current_step
         self.logger.debug(f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
-    def wait(self) -> None:
+    def request(self) -> None:
         request = BatchRequest(
             world_size=self.world_size,
+            rank=self.rank,
             data_rank=self.data_rank,
             step=self.current_step,
         )
         self.socket.send(self.request_encoder.encode(request))
-        self.socket.poll(timeout=None)
+
+    def poll(self, timeout: float) -> bool:
+        return self.socket.poll(timeout=int(timeout * 1000)) != 0
 
     def receive(self) -> list[MicroBatch]:
         """Receive a micro batch from the orchestrator."""

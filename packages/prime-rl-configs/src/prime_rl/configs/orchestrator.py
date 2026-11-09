@@ -525,6 +525,9 @@ class OrchestratorConfig(BaseConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
+    tolerate_restarts: bool = False
+    """Keep running while the trainer or an inference server restarts: a failed weight update waits for the trainer's next offer, a dead inference server leaves the router and the weight updates, and a restarted one takes traffic again after the next weight update. Set by the rl entrypoint's ``[restarts]``."""
+
     env_worker_pool_replicas: int | None = Field(None, ge=1)
     """Replicas of each launcher-managed env worker pool, each publishing its address to
     ``<name>.<replica>.address``; the orchestrator spreads each source's episodes over them,
