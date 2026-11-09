@@ -65,8 +65,7 @@ def _all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, 
 _all_to_all_single.register_autograd(_all_to_all_backward, setup_context=_all_to_all_setup_context)
 
 
-@torch.library.custom_op("prime_rl_collectives::all_to_all_single_equal", mutates_args=())
-def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
+def _equal_split_all_to_all(x: torch.Tensor, group_name: str) -> torch.Tensor:
     output = x.new_empty(x.shape)
     dist.all_to_all_single(
         output,
@@ -74,6 +73,11 @@ def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
         group=dist.distributed_c10d._resolve_process_group(group_name),
     )
     return output
+
+
+@torch.library.custom_op("prime_rl_collectives::all_to_all_single_equal", mutates_args=())
+def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
+    return _equal_split_all_to_all(x, group_name)
 
 
 @_all_to_all_single_equal.register_fake
@@ -99,13 +103,7 @@ _all_to_all_single_equal.register_autograd(
 @torch.library.custom_op("prime_rl_collectives::all_to_all_counts", mutates_args=())
 def _all_to_all_counts(counts: torch.Tensor, group_name: str) -> torch.Tensor:
     """Equal-split all-to-all of integer counts, a separate op so activation checkpointing can save its output."""
-    output = counts.new_empty(counts.shape)
-    dist.all_to_all_single(
-        output,
-        counts.contiguous(),
-        group=dist.distributed_c10d._resolve_process_group(group_name),
-    )
-    return output
+    return _equal_split_all_to_all(counts, group_name)
 
 
 @_all_to_all_counts.register_fake

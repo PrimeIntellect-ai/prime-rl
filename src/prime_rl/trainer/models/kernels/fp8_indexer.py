@@ -25,7 +25,7 @@ MIN_CHUNK_ROWS = 512
 DEEP_SELECT_MAX_TOPK = 4096
 # Four packed UE8M0 bytes encoding 1.0.
 UNIT_UE8M0_X4 = 0x7F7F7F7F
-# Per-row cost: scored keys + TOPK_COST_PER_KEY * (causal top-k end + -inf fill of the row), fitted on H200.
+# Per-row cost: scored keys + TOPK_COST_PER_KEY * (top-k scan of the scored keys + -inf fill of the row), fitted on H200.
 TOPK_COST_PER_KEY = 0.13
 
 
@@ -248,7 +248,8 @@ def fp8_indexer(
 
 
 def _row_costs(ks: torch.Tensor, ke: torch.Tensor, S_k_aligned: int) -> torch.Tensor:
-    return (ke - ks).clamp_min(0).to(torch.float64) + TOPK_COST_PER_KEY * (ke.to(torch.float64) + S_k_aligned)
+    scored = (ke - ks).clamp_min(0).to(torch.float64)
+    return scored + TOPK_COST_PER_KEY * (scored + S_k_aligned)
 
 
 def cp_balance_plan(own_chunk_costs: list[int], partner_chunk_costs: list[int]) -> tuple[int, int]:
@@ -277,7 +278,8 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
     q_scales = None
     if torch.cuda.get_device_capability(q_fp8.device)[0] == 10:
         # SM100 takes MX inputs only: each key's UE8M0 scale repeated over its four 32-wide blocks, unit query
-        # scales (they are folded into w) and bf16 weights. The cast is exact: w is bf16 times powers of two.
+        # scales (they are folded into w) and bf16 weights, as vLLM's `mqa_logits_mx_inputs` builds them. The
+        # cast is exact for bf16 head weights and rounds fp32 ones (GLM5-Next) the way vLLM does.
         k_scales = (k_scales.view(torch.int32) >> 23).to(torch.uint8)[:, None].expand(-1, 4).contiguous()
         k_scales = k_scales.view(torch.int32).squeeze(-1)
         q_scales = torch.full(q_fp8.shape[:-1], UNIT_UE8M0_X4, dtype=torch.int32, device=q_fp8.device)
