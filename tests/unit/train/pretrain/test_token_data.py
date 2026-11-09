@@ -200,3 +200,11 @@ def test_eod_mask_loss(tmp_path):
                 assert after
                 word_to_eos += 1
     assert eos_inputs > 0 and word_to_eos > 0
+
+
+def test_eod_mask_loss_fails_when_the_documents_end_with_another_token(tmp_path):
+    write_shard(tmp_path / "a" / "00.ds", [[*document, EOS] for document in consecutive_documents([3, 5, 2])])
+    tokenizer = SimpleNamespace(all_special_ids=[EOS], bos_token_id=None, decode=str)
+    warn_if_no_document_separator(TokenShards([tmp_path / "a"]), tokenizer, eod_mask_token=EOS)
+    with pytest.raises(ValueError, match="eod_mask_loss masks EOS .* end with .* \\(999\\)"):
+        warn_if_no_document_separator(TokenShards([tmp_path / "a"]), tokenizer, eod_mask_token=EOS + 1)

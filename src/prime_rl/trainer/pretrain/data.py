@@ -196,9 +196,12 @@ def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | 
     return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
 
 
-def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> None:
+def warn_if_no_document_separator(
+    shards: TokenShards, tokenizer: PreTrainedTokenizer, eod_mask_token: int | None = None
+) -> None:
     """Warn when the first non-empty document of a folder neither ends with a special token nor starts with BOS:
-    prime-rl reads documents as they are, so shards tokenized without a separator run their documents together."""
+    prime-rl reads documents as they are, so shards tokenized without a separator run their documents together. With
+    ``eod_mask_token`` (``eod_mask_loss``), fail when the documents end with another token, which the mask misses."""
     first_documents = {}
     for index, file in enumerate(shards.files):
         # Empty files and empty documents carry no separator to check.
@@ -213,7 +216,14 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
         first_documents[file.parent] = tokens[int(begin) : int(end)]
     special_ids = set(tokenizer.all_special_ids)
     for folder, document in first_documents.items():
-        if int(document[-1]) in special_ids or int(document[0]) == tokenizer.bos_token_id:
+        last = int(document[-1])
+        if eod_mask_token is not None and last != eod_mask_token:
+            raise ValueError(
+                f"eod_mask_loss masks EOS {tokenizer.decode([eod_mask_token])!r} ({eod_mask_token}), but the documents "
+                f"in {folder} end with {tokenizer.decode([last])!r} ({last}); set [tokenizer] so its EOS is the "
+                "separator, or turn eod_mask_loss off"
+            )
+        if last in special_ids or int(document[0]) == tokenizer.bos_token_id:
             continue
         get_logger().warning(
             f"The documents in {folder} have no separator: the first one ends with token {int(document[-1])} "
