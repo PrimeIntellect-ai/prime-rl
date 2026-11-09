@@ -258,15 +258,15 @@ def test_projection_counts_running_units_to_the_max_context():
             ctl.record_call(1000 * call, call)
     ctl.observe([engine()])
     # Still running: projected to grow on to the 32k max context, so the pool carries a third of its load
-    assert ctl.steady_context == pytest.approx(17_026, rel=0.01)
-    assert ctl.maturity == pytest.approx(6000 / 17_026, rel=0.01)
+    assert ctl.projection.steady_context == pytest.approx(17_026, rel=0.01)
+    assert ctl.projection.maturity == pytest.approx(6000 / 17_026, rel=0.01)
 
     # All ended after their 10th call: the pool already carries its steady load
     for _ in range(10):
         ctl.record_episode(10_000, 10)
     ctl.observe([engine()])
-    assert ctl.steady_context == pytest.approx(6000)
-    assert ctl.maturity == pytest.approx(1.0)
+    assert ctl.projection.steady_context == pytest.approx(6000)
+    assert ctl.projection.maturity == pytest.approx(1.0)
 
     # Every unit's 3rd call carried no context (e.g. a fork): the walk steps over the gap to the tail instead of
     # stopping after the first call and reading a young pool as already at its steady load
@@ -275,7 +275,7 @@ def test_projection_counts_running_units_to_the_max_context():
         for _ in range(10):
             ctl.record_call(1000 * call, call)
     ctl.observe([engine()])
-    assert ctl.steady_context > 15_000 and ctl.maturity < 0.5
+    assert ctl.projection.steady_context > 15_000 and ctl.projection.maturity < 0.5
 
 
 def test_call_context_is_the_history_it_extends():

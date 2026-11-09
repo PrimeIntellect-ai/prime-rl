@@ -242,6 +242,76 @@ class Level:
     window: Window | None = None
 
 
+@dataclass
+class LoadProjection:
+    """The pool's steady load, projected from its calls' contexts: a unit's context grows call by call, so a young
+    pool carries less load than it will. In steady state the mean context per call weighs the mean context of each
+    unit's n-th call by the share of units that make it, which a Kaplan-Meier estimate gives from the units that made
+    call n and ended after it: units still running count to the calls they made, and the share still running at the
+    last call number seen is assumed to grow at the mean rate to the engines' max context. Maturity is the load
+    window's context per call over that projection."""
+
+    # Per call number n of a unit: units that made call n, their summed context, and units that ended after n calls
+    reached: dict[int, float] = field(default_factory=dict)
+    context: dict[int, float] = field(default_factory=dict)
+    ended: dict[int, float] = field(default_factory=dict)
+    first_call: float = math.inf
+    # The calls since the last poll, and per poll of the load window (context, calls)
+    pending_context: int = 0
+    pending_calls: int = 0
+    polls: deque[tuple[int, int]] = field(default_factory=lambda: deque(maxlen=LOAD_WINDOW_POLLS))
+    # The projected steady context per call, a first call's, and the load window's share of it
+    steady_context: float = 1.0
+    young_context: float = 0.0
+    maturity: float | None = None
+
+    def add_call(self, context: int, call: int) -> None:
+        self.pending_context += context
+        self.pending_calls += 1
+        self.reached[call] = self.reached.get(call, 0.0) + 1
+        self.context[call] = self.context.get(call, 0.0) + context
+        # Keep about the last PROJECTION_UNITS units: workloads drift
+        self.first_call = min(self.first_call, call)
+        if call == self.first_call and self.reached[call] > 2 * PROJECTION_UNITS:
+            for counts in (self.reached, self.context, self.ended):
+                for n in counts:
+                    counts[n] /= 2
+
+    def add_end(self, calls: int) -> None:
+        self.ended[calls] = self.ended.get(calls, 0.0) + 1
+
+    def poll(self, max_len: int | None) -> int:
+        """Fold the calls since the last poll into the load window and project again. Returns their number."""
+        new_calls = self.pending_calls
+        self.polls.append((self.pending_context, new_calls))
+        self.pending_context = self.pending_calls = 0
+        calls = sum(c for _, c in self.polls)
+        # Call numbers no unit reported (zero-context calls: forks, compaction, sub-agent starts) leave gaps, which
+        # the walk steps over rather than stopping at
+        seen = sorted(n for n, reached in self.reached.items() if n >= self.first_call and reached >= 0.5)
+        if calls == 0 or not seen:
+            self.maturity = None
+            return new_calls
+        survival, weight, total = 1.0, 0.0, 0.0
+        for n in seen:
+            mean = self.context[n] / self.reached[n]
+            weight += survival
+            total += survival * mean
+            survival *= max(0.0, 1.0 - self.ended.get(n, 0.0) / self.reached[n])
+        first, last = seen[0], seen[-1]
+        young = self.context[first] / self.reached[first]
+        growth = (mean - young) / (last - first) if last > first else 0.0
+        if survival > 0 and growth > 0 and max_len is not None and max_len > mean:
+            tail = (max_len - mean) / growth
+            weight += survival * tail
+            total += survival * tail * (mean + max_len) / 2
+        current = sum(c for c, _ in self.polls) / calls
+        self.young_context = young
+        self.steady_context = max(total / weight, current, 1.0)
+        self.maturity = current / self.steady_context
+        return new_calls
+
+
 class ConcurrencyController(Reconfigurable):
     def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
         self.config = config
@@ -285,20 +355,9 @@ class ConcurrencyController(Reconfigurable):
         self.climb_window: Window | None = None
         self.climb_reference: Window | None = None
         self.climb_previous: Window | None = None
-        # Call clock: each model call advances it by 1/inflight. Per-poll (context, calls) of the model calls
+        # Call clock: each model call advances it by 1/inflight
         self.call_turnover = 0.0
-        self.pending_context = 0
-        self.pending_calls = 0
-        self.call_polls: deque[tuple[int, int]] = deque(maxlen=LOAD_WINDOW_POLLS)
-        # Load projection, per call number n of a unit: units that made call n, their summed context, and units that
-        # ended after n calls. The projected steady context per call, a first call's, and the pool's share of it.
-        self.reached: dict[int, float] = {}
-        self.context: dict[int, float] = {}
-        self.ended: dict[int, float] = {}
-        self.first_call = math.inf
-        self.steady_context = 1.0
-        self.young_context = 0.0
-        self.maturity: float | None = None
+        self.projection = LoadProjection()
         # Steps: the level being measured, the last kept level, the next step and its direction
         self.level = Level(cap=self.max_inflight)
         self.base: Level | None = None
@@ -341,21 +400,12 @@ class ConcurrencyController(Reconfigurable):
         # Error markers consumed no engine capacity: growing on them floods the engines once the environment recovers
         if tokens > 0:
             self.pending_turnover += 1 / inflight
-            self.ended[calls] = self.ended.get(calls, 0.0) + 1
+            self.projection.add_end(calls)
 
     def record_call(self, context: int, call: int) -> None:
         """The context a model call carried on from its trace's history, the ``call``-th of its unit (from the
         dispatcher's live deltas), folded into the call clock and the load projection at the next poll."""
-        self.pending_context += context
-        self.pending_calls += 1
-        self.reached[call] = self.reached.get(call, 0.0) + 1
-        self.context[call] = self.context.get(call, 0.0) + context
-        # Keep about the last PROJECTION_UNITS units: workloads drift
-        self.first_call = min(self.first_call, call)
-        if call == self.first_call and self.reached[call] > 2 * PROJECTION_UNITS:
-            for counts in (self.reached, self.context, self.ended):
-                for n in counts:
-                    counts[n] /= 2
+        self.projection.add_call(context, call)
 
     def pause(self) -> None:
         """The engines are about to pause for a weight update: freeze. Requests arriving meanwhile wait in the
@@ -390,12 +440,9 @@ class ConcurrencyController(Reconfigurable):
         loads = role_loads(samples)
         poll = Poll(loads, inflight, seconds)
         growth, self.pending_turnover = self.pending_turnover, 0.0
-        calls = self.pending_calls
-        self.call_polls.append((self.pending_context, calls))
-        self.pending_context = self.pending_calls = 0
+        calls = self.projection.poll(self.engine_max_len)
         if inflight > 0:
             self.call_turnover += calls / inflight
-        self.project()
         # After a weight update the queue is the pause's backlog, not load
         if self.resume_skip > 0:
             self.resume_skip -= 1
@@ -459,7 +506,8 @@ class ConcurrencyController(Reconfigurable):
     @property
     def mature(self) -> bool:
         """The pool's calls carry ``MATURITY_MIN`` of its projected steady load."""
-        return self.maturity is not None and self.maturity >= MATURITY_MIN
+        maturity = self.projection.maturity
+        return maturity is not None and maturity >= MATURITY_MIN
 
     @property
     def steady(self) -> bool:
@@ -492,7 +540,8 @@ class ConcurrencyController(Reconfigurable):
             return
         multiplier = 1.0 + (GROWTH_MAX - 1.0) * self.headroom
         cap = self.cap * multiplier**growth
-        if self.maturity is not None and calls > 0:
+        projection = self.projection
+        if projection.maturity is not None and calls > 0:
             # No faster than GROWTH_MAX per two windows: each window must see the units the last one added
             by_calls = self.cap * min(
                 (1.0 + (CALL_GROWTH_MAX - 1.0) * self.headroom) ** (calls / poll.inflight),
@@ -501,10 +550,10 @@ class ConcurrencyController(Reconfigurable):
             # Young units carry little load yet: admit only as many as keep the pool's load at MATURITY_MIN of its
             # projection. The maturity was measured on the units in flight over the load window; later ones count as
             # young.
-            young = self.young_context / self.steady_context
+            young = projection.young_context / projection.steady_context
             if young < MATURITY_MIN:
                 shown = min(p.inflight for p in self.polls)
-                room = shown * (self.maturity - young) / (MATURITY_MIN - young)
+                room = shown * (projection.maturity - young) / (MATURITY_MIN - young)
                 if room < by_calls:
                     window.held = True
                     by_calls = room
@@ -531,42 +580,10 @@ class ConcurrencyController(Reconfigurable):
             # The queue holds the pool where it is: the knee by the queue, approached from above
             self.end_climb("held by the queue", self.max_inflight)
 
-    def project(self) -> None:
-        """Project the pool's steady load from its calls' contexts: a unit's context grows call by call, so a young
-        pool carries less load than it will. In steady state the mean context per call weighs the mean context of
-        each unit's n-th call by the share of units that make it, which a Kaplan-Meier estimate gives from the units
-        that made call n and ended after it: units still running count to the calls they made, and the share still
-        running at the last call number seen is assumed to grow at the mean rate to the engines' max context.
-        Maturity is the load window's context per call over that projection."""
-        calls = sum(c for _, c in self.call_polls)
-        # Call numbers no unit reported (zero-context calls: forks, compaction, sub-agent starts) leave gaps, which
-        # the walk steps over rather than stopping at
-        seen = sorted(n for n, reached in self.reached.items() if n >= self.first_call and reached >= 0.5)
-        if calls == 0 or not seen:
-            self.maturity = None
-            return
-        survival, weight, total = 1.0, 0.0, 0.0
-        for n in seen:
-            mean = self.context[n] / self.reached[n]
-            weight += survival
-            total += survival * mean
-            survival *= max(0.0, 1.0 - self.ended.get(n, 0.0) / self.reached[n])
-        first, last = seen[0], seen[-1]
-        young = self.context[first] / self.reached[first]
-        growth = (mean - young) / (last - first) if last > first else 0.0
-        if survival > 0 and growth > 0 and self.engine_max_len is not None and self.engine_max_len > mean:
-            tail = (self.engine_max_len - mean) / growth
-            weight += survival * tail
-            total += survival * tail * (mean + self.engine_max_len) / 2
-        current = sum(c for c, _ in self.call_polls) / calls
-        self.young_context = young
-        self.steady_context = max(total / weight, current, 1.0)
-        self.maturity = current / self.steady_context
-
     def projected(self, units: float) -> float:
         """During the fast climb, the units that carry as much load as ``units`` will once the pool matured."""
-        if self.climbing and self.maturity is not None:
-            return units * self.maturity
+        if self.climbing and self.projection.maturity is not None:
+            return units * self.projection.maturity
         return units
 
     def end_climb(self, reason: str, cap: int) -> None:
@@ -815,9 +832,9 @@ class ConcurrencyController(Reconfigurable):
             "concurrency/paused": float(self.paused),
             "concurrency/call_turnover": self.call_turnover,
         }
-        if self.maturity is not None:
-            gauges["concurrency/maturity"] = self.maturity
-            gauges["concurrency/steady_context"] = self.steady_context
+        if self.projection.maturity is not None:
+            gauges["concurrency/maturity"] = self.projection.maturity
+            gauges["concurrency/steady_context"] = self.projection.steady_context
         if self.polls:
             gauges["concurrency/queued_share"] = self.queued_share
             for role, share in self.queued_share_by_role.items():
