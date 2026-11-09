@@ -387,15 +387,16 @@ def get_model(
 
     implementation_cls = None
     if config.implementation is not None:
+        import_path = config.implementation.import_path
         try:
-            implementation_cls = import_object(config.implementation)
+            implementation_cls = import_object(import_path)
         except (ImportError, AttributeError) as error:
-            raise ImportError(f"model.implementation {config.implementation!r} cannot be imported: {error}") from error
+            raise ImportError(f"model.implementation {import_path!r} cannot be imported: {error}") from error
     if implementation_cls is not None and not (
         isinstance(implementation_cls, type) and issubclass(implementation_cls, PreTrainedModelPrimeRL)
     ):
         raise TypeError(
-            f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {config.implementation!r} "
+            f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {import_path!r} "
             f"({implementation_cls!r})"
         )
     if implementation_cls is not None:
@@ -403,8 +404,7 @@ def get_model(
         supported.append(get_custom_causal_lm_cls(model_config) if supports_custom_impl(model_config) else None)
         if not any(cls is not None and issubclass(implementation_cls, cls) for cls in supported):
             raise TypeError(
-                f"model.implementation must extend prime-rl's class for {model_config.model_type!r}, "
-                f"got {config.implementation!r}"
+                f"model.implementation must extend prime-rl's class for {model_config.model_type!r}, got {import_path!r}"
             )
     custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
     if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):

@@ -42,6 +42,7 @@ def checkpoint(tmp_path):
 
 
 def model_config(checkpoint, implementation=f"{__name__}.Qwen3WithHead") -> ModelConfig:
+    implementation = None if implementation is None else {"import_path": implementation}
     return ModelConfig(name=str(checkpoint), attn="flash_attention_2", implementation=implementation)
 
 
@@ -83,8 +84,8 @@ def test_a_mistyped_implementation_names_the_setting(checkpoint):
 
 
 def test_implementation_is_refused_where_it_cannot_be_served():
-    model = {"implementation": f"{__name__}.Qwen3WithHead"}
-    assert SFTConfig(model=model).model.implementation == model["implementation"]
+    model = {"implementation": {"import_path": f"{__name__}.Qwen3WithHead"}}
+    assert SFTConfig(model=model).model.implementation.import_path == f"{__name__}.Qwen3WithHead"
     assert TrainerConfig(model=model, data={"fake": {}}).model.implementation  # nothing is broadcast
     source = {"env": {"taskset": {"id": "reverse-text"}, "agent": {"harness": {"id": "null"}}}}
     with pytest.raises(ValidationError, match="cannot be served"):
@@ -93,3 +94,5 @@ def test_implementation_is_refused_where_it_cannot_be_served():
         TrainerConfig(model=model)  # RL broadcasts the weights
     with pytest.raises(ValidationError, match="not supported with model.vlm"):
         ModelConfig(**model, vlm={})
+    with pytest.raises(ValidationError, match="takes no kwargs"):
+        ModelConfig(implementation={"import_path": f"{__name__}.Qwen3WithHead", "kwargs": {"num_options": 4}})

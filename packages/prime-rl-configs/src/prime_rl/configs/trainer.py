@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     GCConfig,
     HeartbeatConfig,
+    PluginConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
@@ -276,14 +277,27 @@ IMPLEMENTATION_NOT_SERVED = (
 )
 
 
+class ModelImplementationConfig(PluginConfig):
+    """The model class to build from the checkpoint at ``model.name``: ``import_path`` names a subclass of prime-rl's
+    class for the checkpoint's architecture. Only the trainer builds it, so it is refused with weight broadcasts to
+    inference (RL, online evals)."""
+
+    @model_validator(mode="after")
+    def validate_no_kwargs(self):
+        if self.kwargs:
+            raise ValueError(
+                "model.implementation takes no kwargs: put the class's hyperparameters in the checkpoint's config.json"
+            )
+        return self
+
+
 class ModelConfig(BaseModelConfig):
     vlm: VLMConfig | None = None
     """VLM configuration. Setting this enables vision-language model support."""
 
-    implementation: str | None = None
-    """Import path of the model class to build from the checkpoint at ``name``, for a model that extends a supported one
-    (e.g. an added head). Must subclass prime-rl's class for the checkpoint's architecture, which is used if None. Only
-    the trainer builds it, so it is refused with weight broadcasts to inference (RL, online evals)."""
+    implementation: ModelImplementationConfig | None = None
+    """The model class to build from the checkpoint at ``name``, for a model that extends a supported one (e.g. an
+    added head). If None, uses prime-rl's class for the checkpoint's architecture."""
 
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
