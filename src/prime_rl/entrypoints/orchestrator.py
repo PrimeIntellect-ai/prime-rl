@@ -13,6 +13,7 @@ import asyncio
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.config import check_mode, cli
+from prime_rl.utils.pathing import check_resume_dir_mode
 from prime_rl.utils.process import set_proc_title
 
 
@@ -20,6 +21,8 @@ def main():
     set_proc_title("Orchestrator")
     check_mode("orchestrator")
     config = cli(OrchestratorConfig)
+    # Fail before the checkpoint load when resume.dir forks another run kind's checkpoint.
+    check_resume_dir_mode(config.resume, "rl")
     from prime_rl.orchestrator.orchestrator import run_orchestrator
 
     asyncio.run(run_orchestrator(config))
