@@ -80,7 +80,7 @@ def sink(*, constant=True, admitted=True, batch_size=100, closed=None):
         config=SimpleNamespace(group_size=1),
         sampling_at=lambda step: vf.SamplingConfig(temperature=1.0),
         requires_sampling_masks=False,
-        requires_top_logprobs=False,
+        requires_sampler_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
     )
     return TrainSink(

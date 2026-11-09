@@ -79,7 +79,7 @@ SCALAR_FIELDS = (
 """Re-sent whole whenever their dumped value changes."""
 
 
-TRAINING_ARRAY_FIELDS = frozenset({"routed_experts", "sampling_mask", "top_logprobs"})
+TRAINING_ARRAY_FIELDS = frozenset({"routed_experts", "sampler_support"})
 """Node fields holding per-token training arrays; never streamed."""
 
 
