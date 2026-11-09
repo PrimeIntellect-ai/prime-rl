@@ -78,24 +78,29 @@ trap on_term TERM
 {%- endif %}
 {%- if smoke_test %}
 
-# Run a short all-reduce over the GPUs of every node; the nodes that fail or do not
-# answer within the timeout go to BAD_NODES.
+# Run a short all-reduce over the GPUs of every node. It passes when every node reports a
+# pass; the nodes that report a failure go to BAD_NODES. A node that reports nothing (srun
+# failed or timed out) is not marked bad, so a failure of the test itself excludes no node.
 smoke_test() {
-    local passed
-    # Each passing node prints a marked line with its name, so no node writes to a shared
+    local results missing
+    # Each node prints a marked line with its result and name, so no node writes to a shared
     # file; srun may merge the tasks' stderr into its stdout, hence the marker
-    passed=$(timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' | sed -n 's/^smoke-test-passed //p' || true
+    results=$(timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' | sed -n 's/^smoke-test-//p' || true
 log=/tmp/prl-smoke-test-$SLURM_JOB_ID.log
 if timeout 120 torchrun --standalone --nproc-per-node="$SLURM_GPUS_ON_NODE" -m prime_rl.utils.smoke_test > "$log" 2>&1; then
     echo "smoke-test-passed $SLURMD_NODENAME"
 else
+    echo "smoke-test-failed $SLURMD_NODENAME"
     echo "[smoke test] failed on $SLURMD_NODENAME:" >&2
     tail -n 20 "$log" >&2
 fi
 SMOKE_TEST_SH
 )
-    BAD_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | grep -vxFf <(echo "$passed") | paste -sd' ' || true)
-    [ -z "$BAD_NODES" ]
+    BAD_NODES=$(echo "$results" | sed -n 's/^failed //p' | paste -sd' ')
+    missing=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | grep -vxFf <(echo "$results" | sed -n 's/^passed //p') | paste -sd' ' || true)
+    [ -z "$missing" ] && return 0
+    echo "Smoke test did not pass on: $missing (reported a failure: ${BAD_NODES:-none})"
+    return 1
 }
 {%- endif %}
 {%- if watchdog %}
@@ -128,7 +133,6 @@ launch() {
     local pid code=0
 {%- if smoke_test %}
     if ! smoke_test; then
-        echo "Smoke test failed on: $BAD_NODES"
 {%- if max_requeues %}
         requeue failure $BAD_NODES
 {%- endif %}
@@ -155,7 +159,7 @@ launch() {
 {%- if smoke_test %}
         # Leftovers of the failed run must not fail the smoke test of a healthy node
         ! declare -F node_cleanup > /dev/null || node_cleanup || true
-        smoke_test || echo "Smoke test failed on: $BAD_NODES"
+        smoke_test || true
 {%- endif %}
         requeue failure $BAD_NODES
     fi
