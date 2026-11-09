@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import LogConfig, ResumeConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
@@ -401,6 +401,69 @@ def validate_run_dir(
             f"To delete the existing directory and start fresh, set clean=true or --clean via CLI. "
             f"Otherwise use a unique run name (run.name or --run.name via CLI) or output_dir for this run."
         )
+
+
+RUN_MODE_CONFIGS = {
+    # A local rl launch writes only its subconfigs, and the orchestrator's config is rl's alone.
+    "pretrain": ("pretrain.json",),
+    "sft": ("sft.json",),
+    "rl": ("rl.json", "orchestrator.json"),
+}
+"""The resolved configs a launcher leaves in its config attempt for each run kind that saves checkpoints."""
+
+INIT_FROM_KEY = {"pretrain": "model.init_from", "sft": "model.init_from", "rl": "trainer.model.init_from"}
+"""The config key that starts a run of each kind from another run's weights."""
+
+
+def get_checkpoint_mode(step_dir: Path) -> str | None:
+    """The run kind that wrote the checkpoint at ``step_dir``, from the resolved configs saved in its
+    run directory (``configs/latest/resolved``, or the legacy ``configs/resolved``).
+
+    None when the run directory keeps no resolved configs (an old run, or a ``ckpt.output_dir``
+    outside the run dir) or the configs name more than one kind, so a checkpoint whose run kind
+    can't be told keeps its old behavior.
+    """
+    configs_dir = step_dir.parent.parent / "configs"
+    for resolved_dir in (configs_dir / "latest" / "resolved", configs_dir / "resolved"):
+        if not resolved_dir.is_dir():
+            continue
+        names = {path.name for path in resolved_dir.glob("*.json")}
+        modes = [mode for mode, configs in RUN_MODE_CONFIGS.items() if not names.isdisjoint(configs)]
+        return modes[0] if len(modes) == 1 else None
+    return None
+
+
+def check_resume_dir_mode(resume: ResumeConfig | None, mode: str, *, force: bool = False) -> None:
+    """Raise when ``resume.dir`` points at another run kind's checkpoint.
+
+    A resume restores the checkpoint's whole state — the trainer's scheduler, optimizer and
+    dataloader, and for ``rl`` the orchestrator's progress — which only a checkpoint of the same
+    kind holds. Starting a new stage from another run's weights is ``model.init_from`` instead.
+    ``force`` accepts the load anyway (the run skips all three trainer states); an ``rl`` run has
+    nothing that can stand in for the orchestrator's progress.
+    """
+    if resume is None or resume.dir is None:
+        return
+    source = get_checkpoint_mode(resume.dir)
+    if source is None or source == mode:
+        return
+    init_from = f'`{INIT_FROM_KEY[mode]} = "{resume.dir}"` instead of `[resume]` — only the weights load.'
+    if mode == "rl":
+        raise ValueError(
+            f"resume.dir points at the {source} checkpoint {resume.dir}, but this run is rl: a resume "
+            f"restores the trainer state and the orchestrator's progress, which {source} checkpoints do not "
+            f"hold, and no ckpt.skip_* flag stands in for the orchestrator's progress. To start this rl run "
+            f"from those weights with fresh state, set {init_from}"
+        )
+    if force:
+        return
+    raise ValueError(
+        f"resume.dir points at the {source} checkpoint {resume.dir}, but this run is {mode}: a resume "
+        f"restores the scheduler, optimizer and dataloader state, which {source} checkpoints do not hold. "
+        f"To start this {mode} run from those weights with fresh state, set {init_from} To load this "
+        f"checkpoint anyway, set `ckpt.skip_scheduler`, `ckpt.skip_optimizer` and "
+        f"`ckpt.skip_dataloader` to true."
+    )
 
 
 def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None:
