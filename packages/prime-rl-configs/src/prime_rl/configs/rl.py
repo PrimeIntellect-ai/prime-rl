@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -142,6 +142,10 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
+    mode: Literal["rl"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run rl`` accepts only
+    "rl" (or no mode)."""
+
     trainer: TrainerConfig
 
     orchestrator: OrchestratorConfig
