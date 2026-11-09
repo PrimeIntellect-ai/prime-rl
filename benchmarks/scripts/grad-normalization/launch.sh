@@ -2,7 +2,7 @@
 # Launch one gradient-normalization A/B arm with the probes and the emulated MX encoder installed.
 #
 # Usage: launch.sh --worktree PATH --gpus IDS --layout single|cp2|dp2|offload --out DIR --name NAME
-#                  [--normalize grads|loss] [--emin N] [--encoder 0|1] [--encoder-sites dy,dz]
+#                  [--normalize grads|loss] [--emin N] [--encoder 0|1] [--encoder-sites dy,dz,sdy,sdz,ao,aqkv]
 #                  [--emin-scan N,N,...] [--steps N] [--grad-dump-step N] [--fake] [-- EXTRA_ARGS...]
 #
 # Runs `uv run --no-sync rl` (or the trainer alone on seeded fake data with --fake) from the arm's worktree.

@@ -301,7 +301,7 @@ def main():
     parity_parser.set_defaults(func=parity)
     sweep_parser = sub.add_parser("sweep", help="margin and zeroed fraction per placement and e_min")
     sweep_parser.add_argument("runs", nargs="+")
-    sweep_parser.add_argument("--site", default="dy", choices=["dy", "dy_rows", "dz"])
+    sweep_parser.add_argument("--site", default="dy", choices=["dy", "dy_rows", "dz", "sdy", "sdz", "ao", "aqkv"])
     sweep_parser.add_argument("--out-dir", required=True)
     sweep_parser.set_defaults(func=sweep)
     args = parser.parse_args()

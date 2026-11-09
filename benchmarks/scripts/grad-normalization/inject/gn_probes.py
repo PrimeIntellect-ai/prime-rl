@@ -124,7 +124,7 @@ class ProbeState:
         return not dist.is_initialized() or dist.get_rank() == 0
 
     def attach_model(self, model):
-        """Tap each MoE layer's routed output (dy), routed down-proj rows (dy_rows) and fused gate_up output (dz)."""
+        """Tap each MoE layer's routed (dy, dy_rows, dz), shared expert (sdy, sdz) and attention (ao, aqkv) sites."""
         self.model = model
         for name, layer in get_language_model(model).layers.named_children():
             moe = getattr(layer, "mlp", None)
@@ -144,6 +144,17 @@ class ProbeState:
             )
             experts.compute = probed_compute
 
+            if moe.shared_expert is not None:
+                shared = moe.shared_expert
+                shared.forward = partial(self._shared_forward, shared, index)
+                shared.register_forward_hook(partial(self._tap_module_output, (index, "sdy")))
+            if hasattr(layer, "self_attn"):
+                attn = layer.self_attn
+                attn.o_proj.register_forward_hook(partial(self._tap_module_output, (index, "ao")))
+                projections = [attn.qkv_proj] if attn.qkv_proj is not None else [attn.q_proj, attn.k_proj, attn.v_proj]
+                for projection in projections:
+                    projection.register_forward_hook(partial(self._tap_module_output, (index, "aqkv")))
+
             groups = {
                 "routed_gate_up": [experts.gate_up_proj],
                 "routed_down": [experts.down_proj],
@@ -155,6 +166,17 @@ class ProbeState:
     @staticmethod
     def _tap_output(prepare_output, key, x):
         return Tap.apply(prepare_output(x), key, None)
+
+    @staticmethod
+    def _tap_module_output(key, module, args, output):
+        return Tap.apply(output, key, None)
+
+    @staticmethod
+    def _shared_forward(shared, index, x, routed_experts=None):
+        """Shared expert forward with its gate and up outputs tapped jointly as the fused gate_up output (sdz)."""
+        gate_up = Tap.apply(torch.cat([shared.gate_proj(x), shared.up_proj(x)], dim=-1), (index, "sdz"), None)
+        gate, up = gate_up.chunk(2, dim=-1)
+        return shared.down_proj(shared.activation.apply(gate, up))
 
     @staticmethod
     def _tap_gemm(gemm, index, gate_up_width, dim, x, weight, offsets):
