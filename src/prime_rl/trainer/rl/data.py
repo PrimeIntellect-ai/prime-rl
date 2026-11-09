@@ -56,6 +56,8 @@ class TensorMicroBatch(TypedDict):
     support_logprobs: Float[Tensor, "entries"] | None
     support_offsets: Int[Tensor, "seq_plus_one"] | None
     support_replayed: Bool[Tensor, "seq"] | None
+    # Set by the trainer's micro batch preparation: whether the LM head may take its sparse backward
+    sparse_head_backward: NotRequired[bool]
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder).
@@ -378,13 +380,16 @@ def score_centering_data_errors(
     def any_per_token(flags: Tensor) -> Tensor:
         return torch.zeros(rl_mask.numel(), dtype=torch.int32, device=ids.device).index_add_(0, rows, flags.int()) > 0
 
-    sorted_keys, order = (rows * vocab_size + ids).sort()
+    in_vocab = (ids >= 0) & (ids < vocab_size)
+    # Out-of-vocabulary ids get unique keys: they fail the first check, not this one
+    keys = torch.where(in_vocab, rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device))
+    sorted_keys, order = keys.sort()
     duplicate = torch.zeros_like(ids, dtype=torch.bool)
     duplicate[order[1:]] = sorted_keys[1:] == sorted_keys[:-1]
     q = torch.zeros(rl_mask.numel(), dtype=values.dtype, device=values.device).index_add_(0, rows, values.exp())
     errors = torch.stack(
         [
-            ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token((ids < 0) | (ids >= vocab_size)),
+            ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token(~in_vocab),
             any_per_token(~values.isfinite() | (values > 1e-6)),
             any_per_token(duplicate),
             q > 1.0001,

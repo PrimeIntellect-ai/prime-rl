@@ -1,7 +1,6 @@
 import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
-from dataclasses import replace
 from functools import partial
 import time
 import asyncio
@@ -96,11 +95,18 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_conf
 from prime_rl.utils.utils import clean_exit
 
 
-def sparse_head_backward(micro_batch: TensorMicroBatch, support: TokenSupport) -> bool:
+def sparse_head_backward(micro_batch: TensorMicroBatch) -> bool:
     """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
     stream), and each is replayed against a support holding its label."""
-    if micro_batch["ce_weights"] is not None or micro_batch["ref_kl_weights"] is not None:
+    if (
+        micro_batch["support_offsets"] is None
+        or micro_batch["ce_weights"] is not None
+        or micro_batch["ref_kl_weights"] is not None
+    ):
         return False
+    support = TokenSupport(
+        ids=micro_batch["support_ids"], offsets=micro_batch["support_offsets"], replayed=micro_batch["support_replayed"]
+    )
     rl_tokens = micro_batch["loss_mask"][0]
     if micro_batch["rl_weights"] is not None:
         rl_tokens = rl_tokens & (micro_batch["rl_weights"][0] != 0)
@@ -185,7 +191,14 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         materialize_images = partial(model.materialize_images, processor=processor)
-    prepare = partial(prepare_micro_batch, materialize_images=materialize_images)
+    # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
+    sparse_backward_allowed = config.loss.type != "custom"
+
+    def prepare(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
+        micro_batch = prepare_micro_batch(micro_batch, materialize_images)
+        micro_batch["sparse_head_backward"] = sparse_backward_allowed and sparse_head_backward(micro_batch)
+        return micro_batch
+
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
@@ -450,9 +463,8 @@ def train(config: TrainerConfig):
                     offsets=micro_batch["support_offsets"],
                     replayed=micro_batch["support_replayed"],
                     logprobs=micro_batch["support_logprobs"],
-                )
-                support = replace(support, sparse_backward=sparse_head_backward(micro_batch, support))
-                support = support.to("cuda")
+                    sparse_backward=micro_batch["sparse_head_backward"],
+                ).to("cuda")
                 label_support = support.shift_left()
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
