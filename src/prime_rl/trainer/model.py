@@ -35,6 +35,7 @@ from prime_rl.configs.trainer import (
     CompileConfig,
     FP8Config,
     ModelConfig,
+    ModelImplementationConfig,
     MXFP8Config,
     TokenizerConfig,
 )
@@ -312,6 +313,29 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
+def get_implementation_cls(
+    config: ModelImplementationConfig, model_config: PretrainedConfig
+) -> type[PreTrainedModelPrimeRL]:
+    """The class ``model.implementation`` names, checked to extend prime-rl's class for the checkpoint's architecture."""
+    try:
+        cls = import_object(config.import_path)
+    except (ImportError, AttributeError, ValueError) as error:
+        raise ImportError(f"model.implementation {config.import_path!r} cannot be imported: {error}") from error
+    if not (isinstance(cls, type) and issubclass(cls, PreTrainedModelPrimeRL)):
+        raise TypeError(
+            f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {config.import_path!r} ({cls!r})"
+        )
+    base_classes = [get_custom_vlm_cls(model_config)]
+    if supports_custom_impl(model_config):
+        base_classes.append(get_custom_causal_lm_cls(model_config))
+    if not any(base is not None and issubclass(cls, base) for base in base_classes):
+        raise TypeError(
+            f"model.implementation must extend prime-rl's class for {model_config.model_type!r}, "
+            f"got {config.import_path!r}"
+        )
+    return cls
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -390,25 +414,7 @@ def get_model(
 
     implementation_cls = None
     if config.implementation is not None:
-        import_path = config.implementation.import_path
-        try:
-            implementation_cls = import_object(import_path)
-        except (ImportError, AttributeError, ValueError) as error:
-            raise ImportError(f"model.implementation {import_path!r} cannot be imported: {error}") from error
-    if implementation_cls is not None and not (
-        isinstance(implementation_cls, type) and issubclass(implementation_cls, PreTrainedModelPrimeRL)
-    ):
-        raise TypeError(
-            f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {import_path!r} "
-            f"({implementation_cls!r})"
-        )
-    if implementation_cls is not None:
-        supported = [get_custom_vlm_cls(model_config)]
-        supported.append(get_custom_causal_lm_cls(model_config) if supports_custom_impl(model_config) else None)
-        if not any(cls is not None and issubclass(implementation_cls, cls) for cls in supported):
-            raise TypeError(
-                f"model.implementation must extend prime-rl's class for {model_config.model_type!r}, got {import_path!r}"
-            )
+        implementation_cls = get_implementation_cls(config.implementation, model_config)
     custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
     if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
