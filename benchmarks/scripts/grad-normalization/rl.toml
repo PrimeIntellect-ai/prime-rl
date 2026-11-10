@@ -1,0 +1,47 @@
+max_steps = 10
+seq_len = 2048
+
+[weight_broadcast]
+type = "filesystem"
+
+[model]
+name = "samsja/mini-glm-moe"
+
+[trainer.model]
+compile = "None"
+offload = "none"
+ac_offloading = "None"
+
+[trainer.model.moe.compute]
+type = "bf16"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 128
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.concurrency]
+max_inflight = 128
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.renderer]
+name = "default"
+
+[inference]
+
+[inference.vllm]
+max_model_len = 2048
+gpu_memory_utilization = 0.7
+seed = 0

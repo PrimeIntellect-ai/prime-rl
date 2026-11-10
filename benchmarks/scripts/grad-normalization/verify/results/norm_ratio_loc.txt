@@ -1,0 +1,3 @@
+rl1000-main-single vs rl1000-fix-single: ||A||=5.377198e-05 ||B||/||A||=1.000316 global cos=0.99995073 rel L2=9.933e-03
+ce1000-main-single vs ce1000-fix-single: ||A||=5.199704e+00 ||B||/||A||=1.002655 global cos=0.99997970 rel L2=6.911e-03
+mc-main-single vs mc-main-single-rep2: ||A||=4.269768e+00 ||B||/||A||=0.999917 global cos=0.99999364 rel L2=3.567e-03

@@ -1,0 +1,4 @@
+mc-main-single vs mc-fix-single: ||A||=4.269768e+00 ||B||/||A||=0.997127 global cos=0.99954887 rel L2=3.013e-02
+mc-main-dp2 vs mc-fix-dp2: ||A||=4.269321e+00 ||B||/||A||=0.997267 global cos=0.99954990 rel L2=3.009e-02
+mc-main-single vs mc-main-dp2: ||A||=4.269768e+00 ||B||/||A||=0.999895 global cos=0.99999365 rel L2=3.565e-03
+mc-fix-single vs mc-fix-dp2: ||A||=4.257502e+00 ||B||/||A||=1.000036 global cos=0.99999354 rel L2=3.595e-03
