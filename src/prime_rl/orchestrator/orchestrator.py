@@ -1198,7 +1198,7 @@ def resolve_resume_step(config: OrchestratorConfig, ckpt_manager: CheckpointMana
         return config.resume.dir_step
     if config.resume.step is not None:
         return config.resume.step
-    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ("trainer", "orchestrator"))
 
 
 def resume_path(config: OrchestratorConfig) -> Path | None:
