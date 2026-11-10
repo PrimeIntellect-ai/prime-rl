@@ -12,6 +12,7 @@ from argparse import Namespace
 import vllm.entrypoints.launchers.api_server.entry as api_server_entry
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from prometheus_client import Gauge
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
@@ -22,6 +23,10 @@ from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
 
 LIVENESS_TIMEOUT_ENV = "PRIME_RL_LIVENESS_TIMEOUT_S"
+# ModelExpress pull mode: the engine follows the versions its trainer publishes to this server.
+WEIGHT_PULL_SERVER_ENV = "PRIME_RL_WEIGHT_PULL_SERVER"
+WEIGHT_PULL_STAGING_BUFFER_BYTES_ENV = "PRIME_RL_WEIGHT_PULL_STAGING_BUFFER_BYTES"
+WEIGHT_PULL_STAGING_BUFFERS_COUNT_ENV = "PRIME_RL_WEIGHT_PULL_STAGING_BUFFERS_COUNT"
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -39,17 +44,46 @@ def models(request: Request) -> OpenAIServingModels:
 
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
+# On vLLM's /metrics for the llm-d scheduler (EPP), which routes around paused engines and toward the newest
+# policy. Under API server scale-out each server process exports its own value; the live maximum is the engine's.
+WEIGHT_VERSION = Gauge(
+    "prime_rl:weight_version",
+    "Policy version the engine samples with, -1 before the first.",
+    multiprocess_mode="livemax",
+)
+GENERATION_PAUSED = Gauge(
+    "prime_rl:generation_paused", "1 while generation is paused to install weights.", multiprocess_mode="livemax"
+)
+WEIGHT_VERSION.set(-1)
+
+
+async def pause_generation(client: EngineClient, clear_cache: bool) -> None:
+    # Flagged before pausing, so the scheduler stops sending requests that would wait out the install.
+    GENERATION_PAUSED.set(1)
+    await client.pause_generation(mode="keep", clear_cache=clear_cache)
+
+
+async def resume_generation(client: EngineClient) -> None:
+    await client.resume_generation()
+    GENERATION_PAUSED.set(0)
+
+
+async def update_weight_version(client: EngineClient, version: int | str) -> None:
+    """Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate)."""
+    await client.update_weight_version(str(version))
+    WEIGHT_VERSION.set(int(version))
+
 
 @router.post("/pause")
 async def pause(request: Request):
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")
-    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    await pause_generation(engine_client(request), clear_cache=False)
     return {"status": "paused"}
 
 
 @router.post("/resume")
 async def resume(request: Request):
-    await engine_client(request).resume_generation()
+    await resume_generation(engine_client(request))
     return {"status": "resumed"}
 
 
@@ -58,8 +92,7 @@ async def update_weights(request: Request):
     data = await request.json()
     client = engine_client(request)
     await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
-    await client.update_weight_version(str(data["weight_version"]))
+    await update_weight_version(client, data["weight_version"])
     return {"status": "ok"}
 
 
@@ -68,7 +101,7 @@ async def update_weights_from_modelexpress(request: Request):
     data = await request.json()
     client = engine_client(request)
     await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
-    await client.update_weight_version(str(data["weight_version"]))
+    await update_weight_version(client, data["weight_version"])
     return {"status": "ok"}
 
 
@@ -101,7 +134,7 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
-    await engine_client(raw_request).update_weight_version(weight_version)
+    await update_weight_version(engine_client(raw_request), weight_version)
     return {"status": "ok"}
 
 
@@ -151,6 +184,16 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = float(os.environ.get(LIVENESS_TIMEOUT_ENV, "30"))
+
+    if weight_pull_server := os.environ.get(WEIGHT_PULL_SERVER_ENV):
+        from prime_rl.inference.vllm.weight_pull import follow_published_versions
+
+        state.weight_pull = await follow_published_versions(
+            engine_client,
+            server=weight_pull_server,
+            staging_buffer_bytes=int(os.environ[WEIGHT_PULL_STAGING_BUFFER_BYTES_ENV]),
+            staging_buffers_count=int(os.environ.get(WEIGHT_PULL_STAGING_BUFFERS_COUNT_ENV, "1")),
+        )
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both

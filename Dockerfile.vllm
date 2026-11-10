@@ -28,7 +28,7 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64) \
     && uv pip install --system --no-deps "$(echo "$PRIME_KERNELS_WHEEL" | sed "s/{arch}/$ARCH/")"
 
 # ModelExpress client for the modelexpress weight-update worker and pull mode.
-ARG MODELEXPRESS_SPEC="modelexpress @ git+https://github.com/skpulipaka26/modelexpress.git@c325dc8#subdirectory=modelexpress_client/python"
+ARG MODELEXPRESS_SPEC="modelexpress @ git+https://github.com/skpulipaka26/modelexpress.git@4a825c7#subdirectory=modelexpress_client/python"
 COPY packages/prime-rl-vllm /tmp/prime-rl-vllm
 # Hold the image's torch and vLLM where they are while resolving the plugin's dependencies. git: for a
 # git-pinned ModelExpress.
