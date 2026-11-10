@@ -50,14 +50,18 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Install Git
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           apt-get update
           apt-get install -y git
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
       - parallel:
           - name: Init public submodules
             run: |
@@ -108,14 +112,18 @@ jobs:
           - {test: reverse_text_modelexpress, name: Reverse Text ModelExpress}
     steps:
       - name: Install Git
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           apt-get update
           apt-get install -y git
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
       - parallel:
           - name: Init public submodules
             run: |
