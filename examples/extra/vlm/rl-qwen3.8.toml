@@ -154,12 +154,6 @@ min_p = 0.0
 top_k = -1
 return_token_ids = true
 
-[trainer.loss]
-type = "ipo"
-eps = 0.3
-adv_tau = 1.0
-max_importance_ratio = 10000.0
-
 # Replace color-codeword with your multimodal environment and compatible harness.
 [[orchestrator.train.source]]
 name = "color-codeword"

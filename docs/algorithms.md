@@ -13,7 +13,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Async Training & Staleness](#async-training--staleness)
 - [Loss](#loss)
   - [Loss Components](#loss-components)
-  - [IPO Loss](#ipo-loss)
+  - [RL Loss](#rl-loss)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -54,7 +54,7 @@ Model *roles* are algorithm-local vocabulary — each algorithm names its refere
 
 So for `opd` set `[orchestrator.train.algo.teacher]`; for `sft` set `[orchestrator.train.algo.sampling.source]`; `opsd` needs neither. `opd`'s teacher must be a frozen endpoint — it is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero); `opsd`'s teacher *is* the live policy by definition (self-distillation conditioned on a demonstration), so it exposes no reference to configure.
 
-Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and go stale as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
+Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry their sampler's logprobs, and go stale as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
 ### The Algorithms
 
@@ -112,7 +112,7 @@ patterns = ["WARNING"]
 def drop_warnings(rollout, *, patterns: list[str]) -> list[list[bool]]: ...
 ```
 
-Component compatibility is validated at config time: frozen-model sampling can only feed the `ce` loss component — the `rl` and `ref_kl` components need the live policy's own sampling logprobs for importance ratios — `opd` pointed at `"policy"` is rejected as degenerate (zero KL), `sft` without a frozen source is rejected (CE on the policy's own tokens is not a distillation target). A group-relative algorithm with `group_size = 1` produces all-zero advantages; the resulting empty batch is caught at runtime (the orchestrator warns and skips it), not at config time.
+Component compatibility is validated at config time: frozen-model sampling can only feed the `ce` loss component — the `rl` and `ref_kl` components need the live policy's own sampling logprobs — `opd` pointed at `"policy"` is rejected as degenerate (zero KL), `sft` without a frozen source is rejected (CE on the policy's own tokens is not a distillation target). A group-relative algorithm with `group_size = 1` produces all-zero advantages; the resulting empty batch is caught at runtime (the orchestrator warns and skips it), not at config time.
 
 ### Per-Env Algorithms
 
@@ -193,107 +193,63 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the [RL loss](#rl-loss) (REINFORCE with score centering and a sampler KL), or a [custom loss](#custom-loss) (`[trainer.loss]`). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
 The orchestrator stamps each sample's component membership as per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights` on the wire): a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens — for `rl`, the sum of its weights, which is the same count while weights are 0/1 — so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and an sft env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no weight streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path). Advantages always ship per token (`advantages` on the wire), assigned as per-token streams from the start — uniform group credit is broadcast over completion tokens at assignment; algorithms with no rl credit (opd, opsd) ship none.
 
-### IPO Loss
+### RL Loss
 
-The default RL loss is INTELLECT Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
+The `rl` component is REINFORCE with [score centering](https://arxiv.org/abs/2609.20807) under the sampler and a
+KL from the sampler to the trainer. For each RL token with sampled action $a$, advantage $A$, sampler
+distribution $q$ (the policy that generated the rollout) and trainer distribution $p$:
 
 $$
-\mathcal{L}(\theta) = -\frac{1}{N}\sum_t
-\mathbb{1}\!\left(\left|\pi(y_t)-\mu(y_t)\right| \le \epsilon\right)
-\tau_A \hat{A}_t \frac{\pi(y_t)}{\mu(y_t)}.
+\mathcal{L}_{rl,t} = -A \Big(\log p(a) - \sum_{v} \mathrm{sg}[u_v] \log p_v\Big) + \beta \sum_{v} u_v \big(\log q_v - \log p_v\big)
 $$
 
-$\mu$ is the policy that generated the rollout. $\pi$ is the current trainer policy. $\hat{A}_t$ is the token-level advantage. The trust region uses the sampled token probabilities, not their ratio.
+Both sums run over one sampler support $(v, u_v)$ per token and estimate an expectation under $q$:
 
-The knobs under `[trainer.loss]` are:
+- **Sampling replay** (truncated sampling, `top_k` and/or `top_p < 1`), **exact**: the replayed sampling mask
+  with $u_v = q_v$. $p$ and $q$ are both normalized over the mask, so the centering and the KL are exact.
+- **Untruncated sampling**, **K-sample estimate**: $K$ = `score_centering_k` i.i.d. draws $v_k \sim q$, captured
+  on the GPU next to the sampled token (independent of it), with $u_v = 1/K$ per draw. The sums are unbiased
+  estimates, not exact: the centering removes the expected score only on average over draws.
+
+The centering term subtracts $\mathbb{E}_q[\nabla \log p]$ from the score, so the policy-gradient term has zero
+mean under the sampler: a constant advantage gives zero gradient even when $p \ne q$. The KL term's gradient is
+$-\beta \sum_v u_v \nabla \log p_v$, which pulls $p$ back toward $q$; on the replayed support it is the exact
+gradient of $\mathrm{KL}(q \,\|\, p)$.
+
+There is no importance weight, clip or mask. With async training, every token is sampled by an older policy
+(and trainer and inference numerics differ), so the update is the score-centered policy gradient taken under the
+sampler, not an unbiased estimate of the current policy's gradient. The KL bounds how far $p$ drifts from $q$;
+`orchestrator.max_staleness` bounds how old $q$ can be.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `eps` | 0.3 | Maximum absolute probability change before a token is masked. |
-| `adv_tau` | 1.0 | Temperature on the advantage term. |
+| `score_centering_k` | 16 | $K$: sampler draws per untruncated token (the K-sample estimate). |
+| `kl_coeff` | 0.01 | $\beta$; 0 disables the KL. |
 
-Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+Omit `[trainer.loss]` to use these defaults (`type = "reinforce"`). The `ce` and `ref_kl` components are fixed
+and unaffected by `[trainer.loss]`.
 
-See [IPO](ipo.md) for why IPO masks by probability instead of ratio, and the GLM-4.5-Air ablation against IcePop behind `eps = 0.3`.
+The `rl` launcher requests the sampler support for every policy-sampled train source (temperature must be
+above 0). Standalone inference servers need `enable_return_sampling_mask = true`: the sampler captures its
+probabilities on the GPU from the processed distribution, next to the sampling mask, so vLLM returns no logprobs
+for these requests.
 
-### IcePop Loss
+Metrics: `score_centering/replayed` (the fraction of RL tokens with an exact replayed support; the rest use
+the K-sample estimate), `kl` (the KL per token: exact under replay, the K-sample estimate otherwise),
+`score_centering/support_mass` (trainer mass on the support, $\mathbb{E}_q[p/q]$; exactly 1 under replay) and
+`score_centering/mask_tv` (total variation between $p$ and $q$), the last two also K-sample estimates under
+untruncated sampling.
 
-IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
-importance ratio falls outside a fixed acceptance band, introduced to stabilize
-MoE RL in [Every Step Evolves: Scaling Reinforcement Learning for Trillion-Scale
-Mixture-of-Experts Reasoning Models](https://arxiv.org/abs/2510.18855). Accepted
-tokens retain the importance-weighted policy-gradient term:
-
-$$
-\mathcal{L}(\theta) = -\frac{1}{N}\sum_t
-\mathbb{1}\!\left(\alpha \le \frac{\pi(y_t)}{\mu(y_t)} \le \beta\right)
-\tau_A \hat{A}_t \frac{\pi(y_t)}{\mu(y_t)}.
-$$
-
-Enable it explicitly:
-
-```toml
-[trainer.loss]
-type = "icepop"
-ratio_low = 0.2
-ratio_high = 5.0
-```
-
-| Knob | Default | What it does |
-|---|---|---|
-| `ratio_low` | 0.2 | Lower accepted trainer-to-inference probability ratio. |
-| `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
-| `adv_tau` | 1.0 | Temperature on the advantage term. |
-
-### IcePop with Score Centering
-
-Enable [score centering](https://arxiv.org/abs/2609.20807) on IcePop:
-
-```toml
-[trainer.loss]
-type = "icepop"
-score_centering = true
-score_centering_topk = 128
-```
-
-Training sampling requires positive temperature. With untruncated sampling
-(`top_p = 1`, no `top_k`), the captured head retains full-vocabulary normalization
-and the trainer approximates the remaining sampler mass as proportional to its own tail.
-
-With truncated sampling (top-p, top-k, or both), the launcher enables sampling replay
-and the server captures the sampler's probability for every token of each recorded
-support, at any width. The renderer retains the complete recorded support; the trainer normalizes over that same support and computes exact
-centering on it, without a tail approximation. `score_centering_topk` only controls
-the captured head for untruncated sampling. The existing sampling-replay limits and
-eval requirements apply (see [Sampling Replay](inference.md#sampling-replay)).
-
-With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is
-`A * (w_a * grad(log p_a) - sum_v q_v*w_v*grad(log p_v))`. The correction applies
-even when the sampled action is rejected. All centering coefficients are detached.
-The modeled tail has a constant importance ratio, so all tail actions are accepted
-or rejected together. Both tail masses are floored at `1e-6` for stability.
-This is an approximation to the unknown sampler tail, not exact full-distribution
-centering. The IcePop ratio band remains `[0.2, 5]` by default.
-
-The launcher configures probability capture automatically. Standalone inference
-servers need `enable_return_sampling_mask = true`: the sampler captures the head on
-the GPU from the processed distribution, next to the sampling mask, so vLLM returns
-no logprobs for these requests. The renderer requests two extra candidates to recover
-a head independent of the sampled action, excluding ties at the head boundary. Missing
-heads fail explicitly. Compact HTTP transport packs token IDs and probabilities into
-binary buffers.
-
-Metrics report `score_centering/replayed` (the fraction of RL tokens centered exactly over a
-replayed support; the rest use the head and modeled tail), captured sampler
-`score_centering/head_mass`, modeled `score_centering/tail_scale`, and
-`score_centering/logit_correction_l1` (the baseline's logit-gradient L1 norm before advantage
-scaling).
+The fused LM head skips its dense softmax backward when every rl token's logit gradient lies on its label and
+support (no ce / ref_kl stream in the micro batch): always under replay, and without replay when `kl_coeff = 0`,
+since the centering weights sum to one. Without replay the KL has a dense gradient, so it takes the dense
+backward.
 
 ### Custom Loss
 

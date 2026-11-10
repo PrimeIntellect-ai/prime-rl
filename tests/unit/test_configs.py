@@ -140,10 +140,9 @@ def test_rl_launcher_config_roundtrip(tmp_path):
             str(tmp_path / "outputs"),
             "--run.name",
             "roundtrip",
-            "--trainer.loss.type",
-            "icepop",
-            "--trainer.loss.score-centering",
-            "--trainer.loss.score-centering-topk",
+            "--trainer.loss.kl-coeff",
+            "0.05",
+            "--trainer.loss.score-centering-k",
             "4",
         ],
     )
@@ -153,6 +152,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.enable_return_sampling_mask
+    assert reloaded.orchestrator.train.source[0].sampling.extra_body["extra_args"]["prl_sampler_draws"] == 4
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
 
 
@@ -310,27 +310,22 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
-    default_config = TrainerConfig()
-    assert default_config.loss.type == "ipo"
-
-    config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
-    assert config.loss.type == "icepop"
-    assert config.loss.score_centering_topk == 128
-    assert not config.loss.score_centering
+def test_reinforce_is_the_only_built_in_rl_loss():
+    config = TrainerConfig()
+    assert config.loss.type == "reinforce"
+    assert config.loss.score_centering_k == 16
+    assert config.loss.kl_coeff == 0.01
     for unsupported in (
-        {"type": "ipo_tis"},
-        {"type": "score_centering"},
-        {"type": "ipo", "score_centering": True},
-        {"type": "icepop", "score_centering_topk": None},
+        {"type": "ipo"},
+        {"type": "icepop"},
+        {"type": "reinforce", "adv_tau": 2.0},
+        {"type": "reinforce", "kl_estimator": "k1"},
+        {"type": "reinforce", "kl_staleness": "inv_sqrt"},
+        {"type": "reinforce", "score_centering_k": None},
+        {"type": "reinforce", "kl_coeff": -1.0},
     ):
         with pytest.raises(ValidationError):
             TrainerConfig.model_validate({"loss": unsupported})
-    assert config.loss.ratio_low == 0.2
-    assert config.loss.ratio_high == 5.0
-
-    with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
-        TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
 
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
@@ -1397,7 +1392,7 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     config = RLConfig.model_validate(
         {
-            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "trainer": {"loss": {"type": "reinforce"}},
             "orchestrator": {
                 "train": {
                     "source": [
@@ -1428,10 +1423,34 @@ def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
         TrainerModelConfig(init_from=init_from)
 
 
+@pytest.mark.parametrize(
+    "loss,top_k,logprobs,draws",
+    [
+        ({}, 64, 1, None),
+        ({}, None, 16, 16),
+        ({"score_centering_k": 8}, None, 8, 8),
+        ({"type": "custom", "import_path": "my_module.my_loss"}, None, None, None),
+    ],
+)
+def test_sampler_capture_follows_sampling_truncation(loss, top_k, logprobs, draws):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "reinforce", **loss}},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_k": top_k}}]}
+            },
+            "inference": {},
+        }
+    )
+    sampling = config.orchestrator.train.source[0].sampling
+    assert sampling.logprobs == logprobs
+    assert sampling.extra_body["extra_args"].get("prl_sampler_draws") == draws
+
+
 def test_score_centering_replays_top_p_alone():
     config = RLConfig.model_validate(
         {
-            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "trainer": {"loss": {"type": "reinforce"}},
             "orchestrator": {
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}}]}
             },

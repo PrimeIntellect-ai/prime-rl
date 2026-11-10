@@ -518,43 +518,21 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the optimizer state from checkpoint."""
 
 
-class IPOLossConfig(BaseConfig):
-    type: Literal["ipo"] = "ipo"
-    eps: float = Field(0.3, ge=0)
-    """Maximum absolute probability change before a token is masked."""
+class ReinforceLossConfig(BaseConfig):
+    """REINFORCE with score centering under the sampler (arXiv:2609.20807) and a sampler-to-trainer KL, both
+    over each token's sampler support ``(v, u_v)``. Per token, the loss is
+    ``-A * (log p(a) - sum_v sg[u_v] * log p_v) + kl_coeff * sum_v u_v * (log q_v - log p_v)``,
+    with no importance weight, clip or mask."""
 
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the importance weight of accepted tokens while preserving its policy gradient."""
+    type: Literal["reinforce"] = "reinforce"
 
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
+    score_centering_k: int = Field(16, ge=1)
+    """K: sampler draws per token under untruncated sampling, where the centering and the KL are a K-sample
+    estimate (``u_v = 1/K`` per draw). Truncated sampling replays its full support with ``u_v = q_v``, where both
+    are exact."""
 
-
-class IcePopLossConfig(BaseConfig):
-    type: Literal["icepop"] = "icepop"
-
-    ratio_low: float = Field(0.2, gt=0)
-    """Lower accepted trainer-to-inference probability ratio."""
-
-    ratio_high: float = Field(5.0, gt=0)
-    """Upper accepted trainer-to-inference probability ratio."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    score_centering: bool = False
-    """Center the ratio-masked importance-weighted score under the sampler."""
-
-    score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization. With sampling replay, the
-    complete recorded support is captured instead."""
-
-    @model_validator(mode="after")
-    def validate_ratio_bounds(self):
-        if self.ratio_low > self.ratio_high:
-            raise ValueError("ratio_low must not exceed ratio_high")
-        return self
+    kl_coeff: float = Field(0.01, ge=0, allow_inf_nan=False)
+    """Coefficient of KL(sampler || trainer); 0 disables the KL term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -568,7 +546,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
+    ReinforceLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 
@@ -712,7 +690,7 @@ class TrainerConfig(BaseTrainerConfig):
 
     data: DataLoaderConfig = DataLoaderConfig()
 
-    loss: LossConfig = IPOLossConfig()
+    loss: LossConfig = ReinforceLossConfig()
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     resume: ResumeConfig | None = None

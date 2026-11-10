@@ -50,8 +50,8 @@ class TensorMicroBatch(TypedDict):
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
     # Sampler support per token as CSR rows: token i owns entries support_offsets[i]:support_offsets[i + 1],
-    # its sampling mask (support_replayed) or a head of the sampler's distribution. support_logprobs is None
-    # when no packed sample carries sampler logprobs.
+    # its sampling mask (support_replayed) or K i.i.d. draws from the sampler's distribution. support_logprobs
+    # is None when no packed sample carries sampler logprobs.
     support_ids: Int[Tensor, "entries"] | None
     support_logprobs: Float[Tensor, "entries"] | None
     support_offsets: Int[Tensor, "seq_plus_one"] | None
@@ -74,6 +74,21 @@ class TensorMicroBatch(TypedDict):
 
     # Per-token staleness, -1 on tokens the policy did not sample
     staleness: Int[Tensor, "batch seq"] | None
+
+
+FAKE_SAMPLER_DRAWS = 16
+
+
+def _fake_sampler_draws(num_tokens: int, generator: torch.Generator) -> dict[str, Tensor]:
+    """Untruncated sampler support for fake batches: ``FAKE_SAMPLER_DRAWS`` draws per token, so the RL loss's
+    score centering and KL run as on real untruncated rollouts."""
+    num_entries = num_tokens * FAKE_SAMPLER_DRAWS
+    return dict(
+        support_ids=torch.randint(0, 100, (num_entries,), generator=generator, dtype=torch.int32),
+        support_logprobs=-torch.rand(num_entries, generator=generator) * 10,
+        support_offsets=torch.arange(num_tokens + 1, dtype=torch.int64) * FAKE_SAMPLER_DRAWS,
+        support_replayed=torch.zeros(num_tokens, dtype=torch.bool),
+    )
 
 
 class FakeDataLoader:
@@ -153,10 +168,7 @@ class FakeDataLoader:
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
-            "support_ids": None,
-            "support_logprobs": None,
-            "support_offsets": None,
-            "support_replayed": None,
+            **_fake_sampler_draws(input_ids.shape[0], generator),
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -189,10 +201,7 @@ class FakeDataLoader:
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
-            "support_ids": None,
-            "support_logprobs": None,
-            "support_offsets": None,
-            "support_replayed": None,
+            **_fake_sampler_draws(self.seq_len, generator),
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -345,8 +354,7 @@ def _decode_support(support: SamplerSupport | None) -> dict[str, Tensor | None]:
 SCORE_CENTERING_DATA_ERRORS = (
     "Missing or out-of-vocabulary sampler top logprobs",
     "Sampler top logprobs must be finite and nonpositive",
-    "Duplicate sampler head ids",
-    "Sampler head mass exceeds one",
+    "Duplicate ids in the replayed support",
     "Sampler probabilities must normalize over the recorded support",
     "Sampled token is missing from the recorded support",
 )
@@ -363,16 +371,20 @@ def score_centering_data_errors(
     vocab_size: int,
 ) -> Bool[Tensor, " checks"]:
     """Flag each check in ``SCORE_CENTERING_DATA_ERRORS`` that the CSR sampler evidence on ``rl_mask`` tokens
-    fails (``rows``: each entry's token). Runs on the tensors' device without a host sync, so the trainer can
-    validate on the GPU and check the flags once per step with ``raise_score_centering_data_errors``."""
+    fails (``rows``: each entry's token). Tokens without a sampling mask carry i.i.d. sampler draws, which may
+    repeat. Runs on the tensors' device without a host sync, so the trainer can validate on the GPU and check
+    the flags once per step with ``raise_score_centering_data_errors``."""
     ids, rows = ids.long(), rows.long()
 
     def any_per_token(flags: Tensor) -> Tensor:
         return torch.zeros(rl_mask.numel(), dtype=torch.int32, device=ids.device).index_add_(0, rows, flags.int()) > 0
 
     in_vocab = (ids >= 0) & (ids < vocab_size)
-    # Out-of-vocabulary ids get unique keys: they fail the first check, not this one
-    keys = torch.where(in_vocab, rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device))
+    # Sampler draws may repeat, so only replayed rows are checked for duplicates. Out-of-vocabulary ids get
+    # unique keys: they fail the first check, not this one
+    keys = torch.where(
+        replayed[rows] & in_vocab, rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device)
+    )
     sorted_keys, order = keys.sort()
     duplicate = torch.zeros_like(ids, dtype=torch.bool)
     duplicate[order[1:]] = sorted_keys[1:] == sorted_keys[:-1]
@@ -382,7 +394,6 @@ def score_centering_data_errors(
             ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token(~in_vocab),
             any_per_token(~values.isfinite() | (values > 1e-6)),
             any_per_token(duplicate),
-            q > 1.0001,
             replayed & ~torch.isclose(q, torch.ones_like(q), atol=1e-4, rtol=0),
             replayed & ~any_per_token(ids == input_ids[rows]),
         ],
