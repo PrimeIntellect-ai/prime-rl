@@ -39,6 +39,9 @@ class ActivationCheckpointConfig(BaseConfig):
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
 
+    token_chunk_size: int | None = Field(None, ge=3)
+    """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
+
 
 class ActivationOffloadingConfig(BaseConfig):
     """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
@@ -328,7 +331,7 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "cudnn_flashmla"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, vLLM's bundled FlashMLA (installed with the ``gpu`` extra), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -736,6 +739,20 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_retain(self):
+        if not self.rollout_transport.retain:
+            return self
+        if not (self.ckpt and self.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
             )
         return self
 

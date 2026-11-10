@@ -43,11 +43,13 @@ def test_example_config_live_changes_are_accepted(example):
     raw["max_staleness"] = 2
     raw["concurrency"]["max_inflight"] = 256
     raw["train"]["source"][0]["sampling"]["temperature"] = 0.8
+    raw["train"]["source"][0]["group_size"] = 8
 
     _, changes = validate_update(example, raw)
 
     assert [change.path for change in changes] == [
         "train.source[0].sampling.temperature",
+        "train.source[0].group_size",
         "concurrency.max_inflight",
         "max_staleness",
     ]
@@ -57,7 +59,7 @@ def test_example_config_frozen_changes_are_rejected(example):
     raw = dump_resolved_config(example)
     raw["seq_len"] += 1
     raw["train"]["source"][0]["sampling"]["logprobs"] = 5
-    raw["train"]["source"][0]["group_size"] *= 2
+    raw["train"]["group_size"] *= 2
     raw["train"]["sampling"]["temperature"] = 0.8
 
     with pytest.raises(InvalidConfigError) as error:
@@ -65,8 +67,8 @@ def test_example_config_frozen_changes_are_rejected(example):
 
     assert error.value.detail["frozen"] == [
         "train.source[0].sampling.logprobs",
-        "train.source[0].group_size",
         "train.sampling.temperature",
+        "train.group_size",
         "seq_len",
     ]
 
