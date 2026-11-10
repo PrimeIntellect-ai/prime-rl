@@ -425,9 +425,9 @@ def compute_loss(
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
         rl_loss_fn: RL loss object built by setup_rl_loss_fn()
-        rl_scale: Global sum of rl weights normalizing the rl component
-        ce_scale: Global ce-token count normalizing the ce component
-        ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        rl_scale: Divisor of the rl loss sum
+        ce_scale: Divisor of the ce loss sum
+        ref_kl_scale: Divisor of the ref_kl loss sum
         support: Token-aligned sampler support of the whole micro batch, or None
         trainer_support_logprobs: Trainer logprobs of every ``support`` entry
 
