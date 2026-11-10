@@ -353,14 +353,13 @@ def train(config: TrainerConfig):
         # Normalize each loss component by its own global (dp_cp) denominator, so every rank
         # divides by the same value. With a per-rank denominator, ranks with fewer loss
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
-        # Backward runs on each component's loss sum times max_scale / its denominator, and
-        # grad_scale divides by max_scale after the microbatch loop (undoing FSDP's per-rank
-        # divide too), so activation gradients do not shrink as the batch grows. One batched
-        # collective keeps every rank issuing the same op regardless of which components its
-        # samples carry. rl divides by the sum of its weights (the token count for 0/1 weights;
-        # the group count under prompt-mean aggregation); ce and ref_kl divide by their token
-        # counts, so a fractional ce weight (echo's alpha) scales the loss instead of cancelling
-        # out.
+        # Backward runs on each component's loss sum times max_scale / its denominator. After
+        # the microbatch loop, grad_scale divides by max_scale and undoes FSDP's per-rank divide.
+        # This keeps activation gradients independent of batch size. One batched collective
+        # keeps every rank issuing the same op, whatever components its samples carry. rl
+        # divides by the sum of its weights. That is the token count for 0/1 weights and the
+        # group count under prompt-mean aggregation. ce and ref_kl divide by their token counts,
+        # so a fractional ce weight (echo's alpha) scales the loss instead of cancelling out.
         local_rl_scale = 0.0
         local_ce_scale = 0
         local_ref_kl_scale = 0
