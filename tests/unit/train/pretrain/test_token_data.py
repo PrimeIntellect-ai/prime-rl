@@ -7,7 +7,12 @@ import pytest
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, warn_if_no_document_separator
+from prime_rl.trainer.pretrain.data import (
+    TokenDataset,
+    TokenShards,
+    setup_document_dataset,
+    warn_if_no_document_separator,
+)
 from prime_rl.trainer.world import reset_world
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
@@ -85,22 +90,44 @@ def set_world(monkeypatch, rank: int, world_size: int) -> None:
         monkeypatch.setenv(name, str(value))
 
 
-@pytest.mark.parametrize(("num_samples", "expected"), [(5, 5), (None, 12), (100, 12)])
-def test_validation_stops_every_rank_at_the_same_window(
-    folders: list[Path], monkeypatch, num_samples: int | None, expected: int
-):
-    """One epoch capped at num_samples windows: two data ranks together read the first windows of the sequence one
-    rank reads, each window once."""
-    seq_len = 8
-    set_world(monkeypatch, rank=0, world_size=1)
-    sequence = take(TokenDataset(TokenShards(folders), seq_len), expected)
-    samples_by_rank = []
-    for rank in range(2):
-        set_world(monkeypatch, rank=rank, world_size=2)
-        samples_by_rank.append(list(TokenDataset(TokenShards(folders), seq_len, max_epochs=1, num_samples=num_samples)))
+def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]:
+    """Inputs, targets and positions of every scored segment of a micro-batch row."""
+    segments, start = [], 0
+    for length in batch["seq_lens"].tolist():
+        end = start + length
+        if batch["loss_mask"][0, start:end].all():
+            segments.append(
+                tuple(batch[key][0, start:end].tolist() for key in ("input_ids", "target_ids", "position_ids"))
+            )
+        else:
+            assert not batch["loss_mask"][0, start:end].any()
+        start = end
+    return segments
+
+
+@pytest.mark.parametrize("world_size", [1, 2, 3])
+def test_validation_scores_every_document_on_its_own(folders: list[Path], monkeypatch, world_size: int):
+    """The data ranks together score every document as if it were alone: windows of seq_len scored tokens, each with
+    positions from 0 and no token before its own first one, every token after the document's first scored once.
+    Every rank runs the same number of micro-batches."""
+    config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
+    expected = []
+    for document in (list(document) for documents in DOCUMENTS for document in documents):
+        for start in range(0, len(document) - 1, config.seq_len):
+            window = document[start : start + config.seq_len + 1]
+            expected.append((window[:-1], window[1:], list(range(len(window) - 1))))
+
+    batches_by_rank = []
+    for rank in range(world_size):
+        set_world(monkeypatch, rank, world_size)
+        batches_by_rank.append(list(setup_dataloader(setup_document_dataset(config), config, cp=1)))
     reset_world()
-    assert [samples_by_rank[w % 2][w // 2] for w in range(expected)] == sequence
-    assert sum(map(len, samples_by_rank)) == expected
+
+    assert len({len(batches) for batches in batches_by_rank}) == 1
+    for batches in batches_by_rank:
+        assert all(batch["input_ids"].shape == (1, config.seq_len * config.micro_batch_size) for batch in batches)
+    segments = [segment for batches in batches_by_rank for batch in batches for segment in scored_segments(batch)]
+    assert sorted(segments) == sorted(expected)
 
 
 def first_tokens(batch: dict, seq_len: int) -> list[int]:

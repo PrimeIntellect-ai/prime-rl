@@ -396,7 +396,6 @@ batch_size = 256
 
 [val]                      # optional
 interval = 100
-num_samples = 512          # windows per validation; leave out to read the held-out shards once
 
 [val.data]
 paths = ["data/fineweb-edu-val"]
@@ -404,6 +403,8 @@ seq_len = 2048
 ```
 
 All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+
+Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. Every validation scores all held-out documents, so keep the held-out folder small.
 
 **Launch.**
 

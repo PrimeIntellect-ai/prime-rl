@@ -35,10 +35,10 @@ class DatatroveDataConfig(BaseDataConfig):
 
 class PretrainValConfig(BaseValConfig):
     data: DatatroveDataConfig
-    """Held-out shard folders."""
-
-    num_samples: int | None = Field(None, ge=1)
-    """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
+    """Held-out shard folders. Every validation scores each of their documents on its own, from its first token, in
+    non-overlapping windows of ``seq_len`` scored tokens (a longer document continues in the next window, without the
+    tokens before). Windows are packed into rows of ``seq_len * micro_batch_size`` tokens; ``seed`` and
+    ``document_masking`` do not apply."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
