@@ -124,7 +124,7 @@ Then, in order:
 ## Prebuilt wheels
 
 The [prime-kernels](https://github.com/PrimeIntellect-ai/prime-kernels) repository owns
-`build_kernels.yaml`. It builds the `prime-kernels`, `deep-ep`, and `torchao` wheels prime-rl pins,
+`build_kernels.yaml`. It builds the `prime-kernels`, `deep-ep`, `deep-select`, and `torchao` wheels prime-rl pins,
 for x86_64 and aarch64, and publishes them as prime-kernels release assets. DeepGEMM is not one of
 them: prime-rl uses the copy vLLM bundles (`vllm.third_party.deep_gemm`).
 
@@ -136,23 +136,14 @@ gh workflow run build_kernels.yaml \
   -f release_tag=vX.Y.Z
 ```
 
-The wheel version carries the ABI it was built against, e.g.
-`prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl`. It imports only under
+The wheel version carries the CUDA and torch ABI it was built against. It imports only under
 that exact torch and CUDA ABI. prime-kernels CI controls the build dependency pins.
 
 ### Pinning installs at the prebuilt wheels
 
 `uv sync --extra kernels` installs `prime-kernels` from the wheels named in
-`[tool.uv.sources]`. deep-ep, torchao, and vLLM use the same pattern. A sync must
-never compile these packages:
-
-```toml
-[tool.uv.sources]
-prime-kernels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/vX.Y.Z/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/vX.Y.Z/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
-]
-```
+`[tool.uv.sources]` of `pyproject.toml`, one release-asset URL per architecture. deep-ep,
+deep-select, torchao, and vLLM use the same pattern. A sync must never compile these packages.
 
 The wheels are prime-kernels release assets. Get the exact names before you move all pins:
 
