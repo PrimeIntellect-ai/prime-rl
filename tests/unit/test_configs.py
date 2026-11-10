@@ -737,7 +737,7 @@ def test_policy_sources_accept_different_top_p_values():
         }
     )
 
-    assert [source.sampling.top_k for source in config.train.source] == [None, None]
+    assert [source.sampling.top_k for source in config.train.source] == [10000, 10000]
     assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
     data = config.model_dump(mode="json")
     data["eval"] = {
@@ -1406,15 +1406,27 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
             "inference": {},
         }
     )
-    assert config.orchestrator.train.source[0].sampling.logprobs == top_k
+    assert config.orchestrator.train.source[0].sampling.logprobs == 1
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_init_from_accepts_a_checkpoint_step_dir():
+    config = TrainerModelConfig(init_from="runs/sft/checkpoints/step_500")
+
+    assert config.init_from == Path("runs/sft/checkpoints/step_500")
+
+
+@pytest.mark.parametrize("init_from", ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer"])
+def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
+    with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
+        TrainerModelConfig(init_from=init_from)
 
 
 @pytest.mark.parametrize(
     "loss,top_k,logprobs,draws",
     [
-        ({}, 64, 64, None),
+        ({}, 64, 1, None),
         ({}, None, 16, 16),
         ({"score_centering_k": 8}, None, 8, 8),
         ({"type": "custom", "import_path": "my_module.my_loss"}, None, None, None),
@@ -1446,6 +1458,6 @@ def test_score_centering_replays_top_p_alone():
         }
     )
     sampling = config.orchestrator.train.source[0].sampling
-    assert sampling.top_k is None and sampling.logprobs == 1
+    assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask

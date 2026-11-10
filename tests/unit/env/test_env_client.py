@@ -15,7 +15,7 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.env.client import EnvClient
-from prime_rl.env.delta import pack
+from prime_rl.env.encoding import pack
 from prime_rl.env.types import HealthRequest, HealthResponse
 from prime_rl.utils.logger import get_logger
 

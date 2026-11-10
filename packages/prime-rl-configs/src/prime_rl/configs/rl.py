@@ -553,7 +553,8 @@ class RLConfig(BaseConfig):
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
             truncated = sampling.truncates_distribution()
-            k = (sampling.top_k or 1) if truncated else loss.score_centering_k
+            # A replayed support comes back whole with its sampler logprobs, whatever the count
+            k = 1 if truncated else loss.score_centering_k
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             update: dict = {"logprobs": max(sampling.logprobs or 0, k)}

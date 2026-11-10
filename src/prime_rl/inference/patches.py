@@ -50,13 +50,6 @@ class PackedSamplingMask:
     ids: np.ndarray
     counts: np.ndarray
 
-    @property
-    def token_ids(self) -> list[list[int]]:
-        """vLLM's nested form, which upstream's ``text`` and ``derender`` responses read."""
-        # Captured replay supports carry each id's logprob bits above bit 32.
-        ids = self.ids.astype(np.int32, copy=False)
-        return [chunk.tolist() for chunk in np.split(ids, np.cumsum(self.counts)[:-1])]
-
 
 def monkey_patch_packed_sampling_masks():
     """Keep sampling masks as numpy arrays in the API server's output processor.
@@ -67,7 +60,8 @@ def monkey_patch_packed_sampling_masks():
     arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
     appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
     Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
-    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads. Replay requests, the only ones that keep their
+    masks, are non-streaming tokens requests.
     """
     from vllm.sampling_params import RequestOutputKind
     from vllm.v1.engine.output_processor import RequestState

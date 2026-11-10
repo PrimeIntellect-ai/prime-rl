@@ -370,32 +370,3 @@ def test_only_sampled_token_logprobs_are_packed_flat(logprobs, logprob_token_ids
     params = SamplingParams(logprobs=logprobs, logprob_token_ids=logprob_token_ids, flat_logprobs=True)
     request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params)
     assert _PackedOutputs(_empty_request_outputs(), request).strips_logprobs is packed
-
-
-@pytest.mark.asyncio
-async def test_text_output_mode_reads_packed_sampling_masks():
-    serving = object.__new__(PrimeRlServingTokens)
-    serving.engine_client = SimpleNamespace(
-        vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=False))
-    )
-    serving.enable_prompt_tokens_details = False
-    serving.enable_log_outputs = False
-    serving.return_tokens_as_token_ids = True
-    mask = PackedSamplingMask(ids=np.array([3, 1, 2, 7], dtype=np.int32), counts=np.array([3, 1], dtype=np.int32))
-    output = RequestOutput(
-        "test",
-        None,
-        [10, 11],
-        None,
-        [CompletionOutput(0, "ab", [2, 7], None, None, sampling_mask=mask, finish_reason="length")],
-        True,
-    )
-
-    async def generate_outputs():
-        yield output
-
-    request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=SamplingParams(), output_mode="text")
-    metadata = RequestResponseMetadata(request_id="test")
-    response = await serving.serve_tokens_full_generator(request, generate_outputs(), "test", "test", metadata)
-    [choice] = response.model_dump()["choices"]
-    assert choice["sampling_mask"] == [[3, 1, 2], [7]]
