@@ -47,7 +47,9 @@ API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 # On vLLM's /metrics for the llm-d scheduler (EPP), which routes around paused engines and toward the newest
 # policy. Under API server scale-out each server process exports its own value; the live maximum is the engine's.
 WEIGHT_VERSION = Gauge(
-    "prime_rl:weight_version", "Policy version the engine samples with, -1 before the first.", multiprocess_mode="livemax"
+    "prime_rl:weight_version",
+    "Policy version the engine samples with, -1 before the first.",
+    multiprocess_mode="livemax",
 )
 GENERATION_PAUSED = Gauge(
     "prime_rl:generation_paused", "1 while generation is paused to install weights.", multiprocess_mode="livemax"
