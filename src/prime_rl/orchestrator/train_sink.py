@@ -365,7 +365,7 @@ class TrainSink(Reconfigurable):
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and not _kept(sample, "sampler_support"):
+                if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(

@@ -261,8 +261,11 @@ class PayloadServer:
 
 def _fields(arrays: BranchArrays) -> set[str]:
     fields = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
-    if arrays.sampler_support is not None and arrays.sampler_support.logprobs is not None:
-        fields.add("sampler_support_logprobs")
+    if arrays.sampler_support is not None:
+        if np.frombuffer(arrays.sampler_support.replayed, dtype=np.bool_).any():
+            fields.add("sampler_support_replayed")
+        if arrays.sampler_support.logprobs is not None:
+            fields.add("sampler_support_logprobs")
     return fields
 
 
