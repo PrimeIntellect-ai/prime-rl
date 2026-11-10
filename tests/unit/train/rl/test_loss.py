@@ -512,10 +512,10 @@ def test_score_centering_replay_matches_exact_supported_gradient(constant_advant
         rl_scale=1,
         ce_scale=1,
         ref_kl_scale=1,
-        trainer_topk_logprobs=[head],
-        sampler_topk_logprobs=[torch.cat([q.log(), torch.zeros(1)]).expand(3, -1)],
-        topk_valid=[support >= 0],
-        sampler_support_complete=[torch.ones(3, dtype=torch.bool)],
+        trainer_support_logprobs=[head],
+        sampler_support_logprobs=[torch.cat([q.log(), torch.zeros(1)]).expand(3, -1)],
+        support_valid=[support >= 0],
+        sampler_tail_mass=[torch.zeros(3)],
     )
     ratio = logp.detach().exp() / q
     weight = ratio * ((ratio >= config.ratio_low) & (ratio <= config.ratio_high))
@@ -526,5 +526,6 @@ def test_score_centering_replay_matches_exact_supported_gradient(constant_advant
     torch.testing.assert_close(actual_grad, expected_grad)
     assert actual_grad[3] == 0
     assert (metrics["score_centering/tail_scale"] == 0).all()
+    assert (metrics["score_centering/replayed"] == 1).all()
     if constant_advantage:
         torch.testing.assert_close(actual_grad, torch.zeros_like(logits), atol=1e-7, rtol=0)
