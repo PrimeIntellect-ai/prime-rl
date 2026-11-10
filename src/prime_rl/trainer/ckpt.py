@@ -73,13 +73,16 @@ def describe_change(key: str, old: Any, new: Any) -> str:
 
 
 def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
-    """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``."""
+    """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``. A
+    checkpoint without a config.json (saved before this check, or copied without it) loads after a warning."""
     path = directory / "config.json"
     if not path.exists():
-        raise ValueError(
-            f"The checkpoint at {directory} has no config.json, so its architecture can't be checked. For a checkpoint "
-            "saved without one, copy the config.json of the architecture it was trained with into that directory."
-        )
+        if get_world().is_master:
+            get_logger().warning(
+                f"Checkpoint {directory} has no config.json; skipping the architecture check, so a resume with another "
+                "architecture would load silently (checkpoints saved before this check have none)"
+            )
+        return
     saved = json.loads(path.read_text())
     current = json.loads(model_config.to_json_string(use_diff=False))
     # A field only one config has (e.g. from another transformers version) has the class default in the other.

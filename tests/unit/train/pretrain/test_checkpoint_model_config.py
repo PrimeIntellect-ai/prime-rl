@@ -1,17 +1,22 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from transformers import Qwen3Config
 
+import prime_rl.trainer.ckpt as ckpt
 from prime_rl.trainer.ckpt import check_model_config, write_model_config
 
 FIELDS = {"hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 2, "num_attention_heads": 4}
 
 
-def test_a_checkpoint_with_another_or_no_architecture_does_not_load(tmp_path):
+def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, monkeypatch):
     config = Qwen3Config(**FIELDS)
-    with pytest.raises(ValueError, match="no config.json"):
-        check_model_config(config, tmp_path)
+    # A checkpoint without config.json loads after a warning.
+    warnings = []
+    monkeypatch.setattr(ckpt, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    check_model_config(config, tmp_path)
+    assert len(warnings) == 1 and "no config.json" in warnings[0]
     write_model_config(config, tmp_path)
     check_model_config(config, tmp_path)
     with pytest.raises(ValueError, match="num_hidden_layers 2 -> 3"):
