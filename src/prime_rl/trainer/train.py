@@ -42,6 +42,7 @@ from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
+    setup_document_dataset,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
@@ -146,7 +147,7 @@ def train(config: SFTConfig | PretrainConfig):
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = checkpoint_step is not None
+    loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, config.init_from_scratch)
 
     if parallel_dims.cp_enabled:
@@ -209,6 +210,12 @@ def train(config: SFTConfig | PretrainConfig):
     if config.val is not None and isinstance(config, SFTConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
+    if config.val is not None and isinstance(config, PretrainConfig):
+        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
+        logger.info(
+            f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
+            f"in {len(val_document_dataset.rows)} rows"
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -234,6 +241,8 @@ def train(config: SFTConfig | PretrainConfig):
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
         )
+    elif config.model.init_from is not None:
+        ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
 
@@ -335,9 +344,7 @@ def train(config: SFTConfig | PretrainConfig):
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
-            val_dataset = setup_token_dataset(
-                config.val.data, config.model.cp, max_epochs=1, num_samples=config.val.num_samples
-            )
+            val_dataset = val_document_dataset
         else:
             val_dataset = setup_sft_dataset(
                 tokenizer,
@@ -478,6 +485,10 @@ def train(config: SFTConfig | PretrainConfig):
                 step_loss_sum += local_loss_sum.detach()
                 scaled_loss = local_loss_sum / grad_accum_steps
 
+            if parallel_dims.dp_replicate_enabled and gradient_manager is None:
+                # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
+                # replicas once, after the last backward
+                model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
