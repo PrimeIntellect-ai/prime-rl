@@ -5,6 +5,7 @@ from torch.utils.checkpoint import CheckpointPolicy, SelectiveCheckpointContext
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
 from prime_rl.trainer.activation_checkpointing import (
+    TokenChunkedCheckpointWrapper,
     _mandatory_checkpoint_policy,
     _selective_checkpoint_policy,
     get_activation_checkpoint_wrapper,
@@ -18,6 +19,18 @@ class IdentityExperts(nn.Module):
 
     def forward(self, x: torch.Tensor, _token_counts: torch.Tensor) -> torch.Tensor:
         return x
+
+
+class TokenLocalBlock(nn.Module):
+    is_token_local = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = nn.Linear(8, 8)
+        self.embed = nn.Embedding(4, 8)
+
+    def forward(self, hidden_states: torch.Tensor, scale: torch.Tensor, token_ids: torch.Tensor) -> torch.Tensor:
+        return hidden_states + scale * torch.tanh(self.proj(hidden_states)) + self.embed(token_ids)
 
 
 def test_selective_policy_saves_default_and_custom_targets():
@@ -109,6 +122,10 @@ def test_mandatory_policy_only_retains_non_replayable_ops():
         is CheckpointPolicy.MUST_SAVE
     )
     assert (
+        _mandatory_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_counts.default)
+        is CheckpointPolicy.MUST_SAVE
+    )
+    assert (
         _mandatory_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )
@@ -120,3 +137,33 @@ def test_mandatory_policy_only_retains_non_replayable_ops():
         _mandatory_checkpoint_policy(context, torch.ops.aten._scaled_dot_product_flash_attention.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )
+
+
+@pytest.mark.parametrize("seq_len", [3, 4, 5, 8, 9, 10, 13, 16, 17, 31])
+def test_token_chunked_checkpoint_matches_whole_block(seq_len):
+    torch.manual_seed(0)
+    block = TokenLocalBlock().double()
+    whole = get_activation_checkpoint_wrapper(ActivationCheckpointConfig())(block)
+    chunked = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(token_chunk_size=4))(block)
+    assert isinstance(chunked, TokenChunkedCheckpointWrapper)
+    assert not isinstance(whole, TokenChunkedCheckpointWrapper)
+
+    hidden_states = torch.randn(2, seq_len, 8, dtype=torch.float64)
+    scale = torch.randn(1, dtype=torch.float64)
+    token_ids = torch.randint(0, 4, (2, seq_len))
+
+    def run(wrapper):
+        inputs = hidden_states.clone().requires_grad_()
+        output = wrapper(inputs, scale, token_ids=token_ids)
+        output.square().sum().backward()
+        param_grads = [param.grad.clone() for param in block.parameters()]
+        block.zero_grad()
+        return output.detach(), inputs.grad, param_grads
+
+    output, input_grad, param_grads = run(whole)
+    chunked_output, chunked_input_grad, chunked_param_grads = run(chunked)
+
+    torch.testing.assert_close(chunked_output, output)
+    torch.testing.assert_close(chunked_input_grad, input_grad)
+    for chunked_grad, grad in zip(chunked_param_grads, param_grads, strict=True):
+        torch.testing.assert_close(chunked_grad, grad)

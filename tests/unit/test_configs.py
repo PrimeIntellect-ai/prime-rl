@@ -1,4 +1,7 @@
+import importlib
+import json
 import os
+import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
 
@@ -29,7 +32,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
+from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -172,6 +175,48 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert muon.optim.lr == 1e-3
     warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_launch_runs_the_entrypoint_of_the_mode(tmp_path, monkeypatch, mode: str):
+    """`uv run launch` reads `mode` from the config files and runs that entrypoint with the same arguments."""
+    from prime_rl.entrypoints import launch
+
+    calls = []
+    monkeypatch.setattr(importlib.import_module(f"prime_rl.entrypoints.{mode}"), "main", lambda: calls.append(mode))
+    write_toml(tmp_path / "config.toml", {"mode": mode})
+    monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
+    launch.main()
+    assert calls == [mode]
+
+
+def test_launch_needs_a_mode(tmp_path, monkeypatch):
+    from prime_rl.entrypoints import launch
+
+    write_toml(tmp_path / "config.toml", {"max_steps": 1})
+    monkeypatch.setattr(sys, "argv", ["launch", "@", str(tmp_path / "config.toml")])
+    with pytest.raises(SystemExit):
+        launch.main()
+
+
+def test_mode_must_match_the_entrypoint(tmp_path):
+    """A mode entrypoint runs only its own mode, and an internal entrypoint none, from a TOML or a resolved JSON
+    config."""
+    write_toml(tmp_path / "pretrain.toml", {"mode": "pretrain"})
+    (tmp_path / "pretrain.json").write_text(json.dumps({"mode": "pretrain"}))
+    for file in ("pretrain.toml", "pretrain.json"):
+        args = ["@", str(tmp_path / file)]
+        check_mode("pretrain", args)
+        for entrypoint in ("sft", "trainer"):
+            with pytest.raises(SystemExit):
+                check_mode(entrypoint, args)
+
+
+def test_config_files_with_different_modes_conflict(tmp_path):
+    write_toml(tmp_path / "base.toml", {"mode": "rl"})
+    write_toml(tmp_path / "override.toml", {"mode": "sft"})
+    with pytest.raises(SystemExit, match="conflicting modes"):
+        check_mode("rl", ["@", str(tmp_path / "base.toml"), "@", str(tmp_path / "override.toml")])
 
 
 def test_toml_partial_nested_override(tmp_path):
@@ -1407,3 +1452,15 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert config.inference.vllm.max_logprobs >= top_k + 2
     assert config.inference.enable_return_sampling_mask
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_init_from_accepts_a_checkpoint_step_dir():
+    config = TrainerModelConfig(init_from="runs/sft/checkpoints/step_500")
+
+    assert config.init_from == Path("runs/sft/checkpoints/step_500")
+
+
+@pytest.mark.parametrize("init_from", ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer"])
+def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
+    with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
+        TrainerModelConfig(init_from=init_from)

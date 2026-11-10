@@ -38,6 +38,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 
 | Command | Purpose | Notes |
 |---|---|---|
+| `uv run launch` | Runs the entrypoint named by the config's `mode`. | See [`uv run launch`](#uv-run-launch). |
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
 | `uv run pretrain` | Pretraining from scratch on tokenized shards. | Launches torchrun internally; see [Pretraining](#pretraining). |
@@ -45,6 +46,21 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-worker-pool` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
 | `uv run env-worker-pool` | One source's worker pool replica: a broker and its env workers. | Launchers start these automatically. Use this command for standalone pools, including sources whose `serve.address` points to an externally managed pool. |
+
+### `uv run launch`
+
+A config can name its run kind with a top-level `mode`: `rl`, `sft`, `pretrain` or `eval`. `uv run launch` reads it from the config files and runs that entrypoint with the same arguments:
+
+```toml
+mode = "pretrain"
+```
+
+```bash
+uv run launch @ pretrain.toml          # same as: uv run pretrain @ pretrain.toml
+uv run launch @ pretrain.toml --help   # pretrain's help
+```
+
+`mode` is optional for `uv run rl`, `sft`, `pretrain` and `eval`. When several config files set `mode`, they must set the same one.
 
 ### Env worker pools
 
@@ -367,6 +383,7 @@ LocalPipelineExecutor(
 **Configure.** Only `data.paths` is required:
 
 ```toml
+mode = "pretrain"          # optional; lets `uv run launch` run this config
 max_steps = 1000
 
 [model]
@@ -432,6 +449,13 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 # ...or fork another run's checkpoint into a fresh run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
+```
+
+A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `trainer.model.init_from` instead. It loads only the weights, and the run starts at step 0 with a fresh optimizer, scheduler and orchestrator. `model.name` still sets the architecture and tokenizer.
+
+```bash
+uv run rl @ rl.toml --max-steps 50 --ckpt --run.name my-rl \
+  --trainer.model.init-from outputs/my-sft/checkpoints/step_500
 ```
 
 #### What a resume restores
