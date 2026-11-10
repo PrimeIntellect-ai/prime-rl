@@ -14,7 +14,8 @@ Layout under ``root`` (``<checkpoint dir>/best-weights``):
     best.json              the best step, its validation loss, every candidate's loss (written by global rank 0)
     step_<N>/rank_<r>-of-<world>.pt
 A new best is written and agreed on by all ranks before ``best.json`` points to it; only then is the previous
-snapshot removed. A failed save keeps the previous best and does not stop training.
+snapshot removed. A failed save keeps the previous best and does not stop training. The live best's files are never
+rewritten: a resume that replays the best step's validation keeps the snapshot it already has.
 """
 
 import json
@@ -22,6 +23,7 @@ import math
 import os
 import shutil
 import time
+from datetime import timedelta
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,9 @@ from prime_rl.utils.logger import get_logger
 BEST_DIR_NAME = "best-weights"
 BEST_JSON = "best.json"
 FORMAT = "prime-rl-sft-best-weights-v1"
+# The collectives wait for the slowest rank's snapshot write (each node streams ~0.12 TB for Nemotron 3.5 Super), which
+# can outlast both torch's default timeout and dist_timeout_seconds.
+GLOO_TIMEOUT = timedelta(hours=12)
 
 
 def is_improvement(val_loss: float, best_loss: float | None) -> bool:
@@ -100,7 +105,7 @@ class BestCheckpoint:
         self.logger = get_logger()
         # Object collectives (broadcast_object_list, all_gather_object) need a CPU-capable group.
         if group is None and dist.is_initialized():
-            group = dist.new_group(backend="gloo")
+            group = dist.new_group(backend="gloo", timeout=GLOO_TIMEOUT)
         self.group = group
         self.best: dict[str, Any] | None = None
         self.history: dict[int, float] = {}
@@ -128,6 +133,14 @@ class BestCheckpoint:
         and snapshot them if it is the lowest so far. Returns whether a new best was saved."""
         # All ranks must take the same branch: decide on the master's value.
         val_loss = float(_from_master(float(val_loss), self.group))
+        if step == self.best_step:
+            # A resume replaying the best step's validation: the snapshot on disk holds the weights its recorded loss
+            # was measured on, so keep both (rewriting it in place could destroy the only copy of the best).
+            self.logger.info(
+                f"Best checkpoint: step {step} is already the best (val loss {self.best_loss:.4f}, now {val_loss:.4f}), "
+                f"keeping its snapshot"
+            )
+            return False
         self.history[step] = val_loss
         if not is_improvement(val_loss, self.best_loss):
             self.logger.info(
@@ -139,23 +152,23 @@ class BestCheckpoint:
             self._write_json()
             return False
 
+        # From here on step != self.best_step, so nothing below writes or removes the live best's files.
         start = time.perf_counter()
-        self._make_step_dir(step)
         path = self.rank_file(step)
-        error = None
-        try:
-            tmp = path.with_name(path.name + ".tmp")
-            torch.save(local_tensors(model), tmp)
-            os.replace(tmp, path)
-        except Exception as exc:  # disk full, I/O error: keep training with the previous best
-            error = repr(exc)
+        tmp = path.with_name(path.name + ".tmp")
+        error = self._make_step_dir(step)
+        if error is None:
+            try:
+                torch.save(local_tensors(model), tmp)
+                os.replace(tmp, path)
+            except Exception as exc:  # disk full, I/O error: keep training with the previous best
+                error = repr(exc)
+        if error is not None:
             self.logger.error(f"Best checkpoint: rank {self.world.rank} failed to save {path}: {error}")
         if not _all_true(error is None, self.group):
             self.logger.error(f"Best checkpoint: snapshot of step {step} failed, keeping step {self.best_step}")
-            for leftover in (path, path.with_name(path.name + ".tmp")):
-                leftover.unlink(missing_ok=True)
-            if step != self.best_step:
-                self._remove_snapshot(step)
+            tmp.unlink(missing_ok=True)
+            self._remove_snapshot(step)
             return False
 
         previous = self.best
@@ -242,19 +255,33 @@ class BestCheckpoint:
 
     # Internals
 
-    def _make_step_dir(self, step: int) -> None:
-        """Master first, then one rank per node if it does not see it yet (the volume may be staged per node)."""
+    def _make_step_dir(self, step: int) -> str | None:
+        """Master first, then one rank per node if it does not see it yet (the volume may be staged per node).
+
+        Returns this rank's error, if any; every rank reaches both barriers either way."""
         path = self.step_dir(step)
-        if self.world.is_master:
-            path.mkdir(parents=True, exist_ok=True)
+        error = None
+        try:
+            if self.world.is_master:
+                path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            error = repr(exc)
         _barrier(self.group)
-        if self.world.local_rank == 0 and not path.is_dir():
-            path.mkdir(parents=True, exist_ok=True)
+        try:
+            if error is None and self.world.local_rank == 0 and not path.is_dir():
+                path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            error = repr(exc)
         _barrier(self.group)
+        return error
 
     def _remove_snapshot(self, step: int) -> None:
         """Every rank removes its own file, then one rank per node the directory (its node's copy of it)."""
-        self.rank_file(step).unlink(missing_ok=True)
+        assert step != self.best_step, f"step {step} is the live best"
+        try:
+            self.rank_file(step).unlink(missing_ok=True)
+        except OSError as exc:
+            self.logger.warning(f"Best checkpoint: could not remove {self.rank_file(step)}: {exc!r}")
         _barrier(self.group)
         if self.world.local_rank == 0:
             shutil.rmtree(self.step_dir(step), ignore_errors=True)
