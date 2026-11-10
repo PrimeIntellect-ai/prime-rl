@@ -5,6 +5,7 @@ import pytest
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.transports.weights.base import FINISHED_MARKER, SENDER_READY_MARKER, latest_finished_broadcast
 from prime_rl.utils.pathing import (
     check_resume_dir_mode,
     clean_future_steps,
@@ -13,6 +14,7 @@ from prime_rl.utils.pathing import (
     get_broadcast_dir,
     get_checkpoint_mode,
     get_step_path,
+    resolve_latest_trainer_ckpt_step,
     validate_run_dir,
 )
 
@@ -254,3 +256,22 @@ def test_orchestrator_entrypoint_rejects_cross_mode_resume(tmp_path, monkeypatch
     monkeypatch.setattr(sys, "argv", ["orchestrator", "--resume.dir", str(step_dir)])
     with pytest.raises(ValueError, match="this run is rl"):
         entrypoint.main()
+
+
+def test_latest_trainer_checkpoint_skips_steps_without_a_complete_trainer_save(tmp_path):
+    assert resolve_latest_trainer_ckpt_step(tmp_path) is None
+    (tmp_path / "step_4/trainer").mkdir(parents=True)
+    (tmp_path / "step_4/trainer/.metadata").touch()
+    (tmp_path / "step_8/orchestrator").mkdir(parents=True)
+    (tmp_path / "step_12/trainer").mkdir(parents=True)
+    assert resolve_latest_trainer_ckpt_step(tmp_path) == 4
+
+
+def test_latest_finished_broadcast_skips_an_offer_that_never_finished(tmp_path):
+    assert latest_finished_broadcast(tmp_path) == -1
+    for step, markers in {10: [SENDER_READY_MARKER, FINISHED_MARKER], 11: [SENDER_READY_MARKER]}.items():
+        step_dir = get_step_path(get_broadcast_dir(tmp_path), step)
+        step_dir.mkdir(parents=True)
+        for marker in markers:
+            (step_dir / marker).touch()
+    assert latest_finished_broadcast(tmp_path) == 10

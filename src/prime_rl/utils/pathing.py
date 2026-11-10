@@ -255,11 +255,14 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
     return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_worker_pool_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
+def write_env_worker_pool_config(
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, store_dir: Path | None = None
+) -> Path:
     """Write the ``EnvWorkerPoolConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
-    broker publishes the OS-assigned port it binds to the address file next to it."""
+    broker publishes the OS-assigned port it binds to the address file next to it. With
+    ``store_dir``, the pool keeps its training arrays in a rollout store under it."""
     env_dir = config_dir / "envs" / split
     env_dir.mkdir(parents=True, exist_ok=True)
     source_dict = dump_resolved_config(source)
@@ -269,6 +272,8 @@ def write_env_worker_pool_config(config_dir: Path, split: str, source: EnvConfig
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.level, "json_logging": log.json_logging},
     }
+    if store_dir is not None:
+        pool_config["store_dir"] = store_dir.as_posix()
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(pool_config, indent=2))
     return path
@@ -337,6 +342,15 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
+
+
+def resolve_latest_trainer_ckpt_step(ckpt_dir: Path) -> int | None:
+    """The newest step whose trainer checkpoint is complete (DCP writes ``.metadata`` last). A
+    newer step directory may hold only the orchestrator's checkpoint, or an interrupted save."""
+    steps = [
+        step for step in get_all_ckpt_steps(ckpt_dir) if (get_step_path(ckpt_dir, step) / "trainer/.metadata").exists()
+    ]
+    return max(steps, default=None)
 
 
 def has_checkpoints(output_dir: Path) -> bool:
