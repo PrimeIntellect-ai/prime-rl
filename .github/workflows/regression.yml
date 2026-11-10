@@ -93,8 +93,8 @@ jobs:
                   start=$(date +%s)
                   uv sync --all-extras --all-packages --locked
                   echo "TIMING cold_sync_seconds=$(( $(date +%s) - start ))"
-                  du -sh "$UV_CACHE_DIR" .venv
-                  df -h "$UV_CACHE_DIR" .venv
+                  du -sh "$(uv cache dir)" .venv
+                  df -h "$(uv cache dir)" .venv
             - name: Warm sync, copy mode
               env:
                   UV_LINK_MODE: copy
