@@ -381,6 +381,7 @@ class Orchestrator:
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
             on_groups_closed=self.train_source.close_groups,
+            group_size=self.train_source.group_size,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
