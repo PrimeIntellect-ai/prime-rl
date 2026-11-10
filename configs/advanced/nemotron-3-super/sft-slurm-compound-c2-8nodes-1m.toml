@@ -50,7 +50,9 @@ warmup_steps = 117   # 10% of one pass over all rows (the sum of the single runs
 min_lr = 1e-6       # then cosine decay to 1e-6 at max_steps
 
 [env_vars]
-PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"   # no pinned_max_cached_size_mb cap: -13% step time vs the Denver 128 MiB cap
+PRIME_RUNS_MODE = "disabled"   # no Prime platform run (no API key on Slurm); metrics go to the file monitor
+WANDB_MODE = "offline"   # as C1 on Denver; sync afterwards
 
 [deployment]
 type = "multi_node"
@@ -84,7 +86,7 @@ ep = 32
 fused_lm_head_token_chunk_size = 1024
 
 [model.ac]
-token_chunk_size = 8192
+token_chunk_size = 16384   # Thailand 2-node tests 2026-11-10: -2% step time vs 8192 at equal loss and GPU peak; 32768 gave no more
 
 [model.ac_offloading]
 max_inflight_activations = 1
