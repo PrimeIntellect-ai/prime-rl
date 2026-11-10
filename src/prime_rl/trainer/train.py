@@ -204,7 +204,7 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
     if config.val is not None and isinstance(config, PretrainConfig):
-        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp)
+        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
         logger.info(
             f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
             f"in {len(val_document_dataset.rows)} rows"

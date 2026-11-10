@@ -178,17 +178,20 @@ Window = tuple[int, int, int]
 """File index and the token range ``[start, end)`` of a window in the file."""
 
 
-def document_windows(shards: TokenShards, seq_len: int) -> list[Window]:
-    """Every document of ``shards`` as stored, cut into non-overlapping windows of ``seq_len`` scored tokens. A window
-    holds up to ``seq_len + 1`` tokens and scores all but its first. The next window starts at the last token of the
-    one before and sees none of the tokens before it."""
-    windows = []
+def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[Window]:
+    """Every document of ``shards`` as stored (or the first ``num_documents``), cut into non-overlapping windows of
+    ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
+    window starts at the last token of the one before and sees none of the tokens before it."""
+    windows, documents = [], 0
     for file_index in range(len(shards.files)):
         if shards.starts[file_index + 1] == shards.starts[file_index]:
             continue
         _, doc_ends = shards.open(file_index)
         begin = 0
         for end in doc_ends.tolist():
+            if documents == num_documents:
+                return windows
+            documents += 1
             for window in range(begin, end - 1, seq_len):
                 windows.append((file_index, window, min(window + seq_len + 1, end)))
             begin = end
@@ -217,11 +220,13 @@ class DocumentDataset(StatefulIterableDataset):
     under FSDP every forward is a collective: a rank short of a row repeats the first one, unscored. Full rows pass
     through the micro-batch packing unchanged."""
 
-    def __init__(self, shards: TokenShards, seq_len: int, row_len: int, non_dp_size: int = 1):
+    def __init__(
+        self, shards: TokenShards, seq_len: int, row_len: int, non_dp_size: int = 1, num_documents: int | None = None
+    ):
         super().__init__(non_dp_size)
         self.shards = shards
         self.row_len = row_len
-        self.windows = document_windows(shards, seq_len)
+        self.windows = document_windows(shards, seq_len, num_documents)
         if not self.windows:
             raise ValueError("The held-out shards have no document of two or more tokens")
         self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
@@ -297,10 +302,13 @@ def setup_token_dataset(config: DatatroveDataConfig, non_dp_size: int = 1) -> To
     )
 
 
-def setup_document_dataset(config: DatatroveDataConfig, non_dp_size: int = 1) -> DocumentDataset:
+def setup_document_dataset(
+    config: DatatroveDataConfig, non_dp_size: int = 1, num_documents: int | None = None
+) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),
         seq_len=config.seq_len,
         row_len=config.seq_len * config.micro_batch_size,
         non_dp_size=non_dp_size,
+        num_documents=num_documents,
     )

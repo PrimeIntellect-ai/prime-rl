@@ -105,14 +105,17 @@ def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]
     return segments
 
 
+@pytest.mark.parametrize("num_documents", [None, 4])
 @pytest.mark.parametrize("world_size", [1, 2, 3])
-def test_validation_scores_every_document_on_its_own(folders: list[Path], monkeypatch, world_size: int):
-    """The data ranks together score every document as if it were alone: windows of seq_len scored tokens, each with
-    positions from 0 and no token before its own first one, every token after the document's first scored once.
-    Every rank runs the same number of micro-batches."""
+def test_validation_scores_every_document_on_its_own(
+    folders: list[Path], monkeypatch, world_size: int, num_documents: int | None
+):
+    """The data ranks together score every document (or the first num_documents) as if it were alone: windows of
+    seq_len scored tokens, each with positions from 0 and no token before its own first one, every token after the
+    document's first scored once. Every rank runs the same number of micro-batches."""
     config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
     expected = []
-    for document in (list(document) for documents in DOCUMENTS for document in documents):
+    for document in [list(document) for documents in DOCUMENTS for document in documents][:num_documents]:
         for start in range(0, len(document) - 1, config.seq_len):
             window = document[start : start + config.seq_len + 1]
             expected.append((window[:-1], window[1:], list(range(len(window) - 1))))
@@ -120,7 +123,9 @@ def test_validation_scores_every_document_on_its_own(folders: list[Path], monkey
     batches_by_rank = []
     for rank in range(world_size):
         set_world(monkeypatch, rank, world_size)
-        batches_by_rank.append(list(setup_dataloader(setup_document_dataset(config), config, cp=1)))
+        batches_by_rank.append(
+            list(setup_dataloader(setup_document_dataset(config, num_documents=num_documents), config, cp=1))
+        )
     reset_world()
 
     assert len({len(batches) for batches in batches_by_rank}) == 1

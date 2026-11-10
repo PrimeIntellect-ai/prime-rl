@@ -40,6 +40,10 @@ class PretrainValConfig(BaseValConfig):
     tokens before). Windows are packed into rows of ``seq_len * micro_batch_size`` tokens; ``seed`` and
     ``document_masking`` do not apply."""
 
+    num_samples: int | None = Field(None, ge=1)
+    """Documents per validation: the first ``num_samples`` documents of the held-out shards (in folder order, then file
+    name order), the same ones every time. If None, every document."""
+
 
 class PretrainAdamWConfig(AdamWConfig):
     lr: float = Field(1e-3, ge=0)
