@@ -215,7 +215,6 @@ class Dispatcher:
         self.admission_window_s = 5.0
         self.admission_window_start = time.monotonic()
         self.admissions_in_window = 0
-        self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.live_events: list[dict[str, Any]] = []
@@ -339,7 +338,8 @@ class Dispatcher:
         if now - self.admission_window_start >= self.admission_window_s:
             self.admission_window_start = now
             self.admissions_in_window = 0
-        burst_cap = max(self.min_burst, self.max_inflight // 10)
+        min_burst = max((env.config.group_size for env in self.train_envs or ()), default=8)
+        burst_cap = max(min_burst, self.max_inflight // 10)
         return burst_cap - self.admissions_in_window
 
     @property

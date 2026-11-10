@@ -37,10 +37,6 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
-    if os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1":
-        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
-
-        patch_top_p_then_top_k()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -54,11 +50,6 @@ class PackedSamplingMask:
     ids: np.ndarray
     counts: np.ndarray
 
-    @property
-    def token_ids(self) -> list[list[int]]:
-        """vLLM's nested form, which upstream's ``text`` and ``derender`` responses read."""
-        return [chunk.tolist() for chunk in np.split(self.ids, np.cumsum(self.counts)[:-1])]
-
 
 def monkey_patch_packed_sampling_masks():
     """Keep sampling masks as numpy arrays in the API server's output processor.
@@ -69,7 +60,8 @@ def monkey_patch_packed_sampling_masks():
     arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
     appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
     Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
-    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads. Replay requests, the only ones that keep their
+    masks, are non-streaming tokens requests.
     """
     from vllm.sampling_params import RequestOutputKind
     from vllm.v1.engine.output_processor import RequestState

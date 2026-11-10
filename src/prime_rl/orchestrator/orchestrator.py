@@ -358,6 +358,7 @@ class Orchestrator:
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
             on_groups_closed=self.train_source.close_groups,
+            group_size=self.train_source.group_size,
         )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
