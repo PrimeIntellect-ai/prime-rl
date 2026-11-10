@@ -210,7 +210,7 @@ class ProcessGroup:
             if self.error_queue:
                 get_logger().error(f"Error: {self.error_queue[0]}")
                 get_logger().error("Terminating all processes...")
-                sys.exit(1)
+                raise SystemExit(1) from self.error_queue[0]
             if not pending:
                 return
             pending[0].wait(timeout=1)

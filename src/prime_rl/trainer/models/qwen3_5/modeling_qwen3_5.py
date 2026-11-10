@@ -23,6 +23,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel, materialize_qwen_vl_images
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -188,7 +189,7 @@ class Qwen3_5VLMModel(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
-        self.visual = Qwen3_5VisionModel(config.vision_config)
+        self.visual = None if config.language_model_only else Qwen3_5VisionModel(config.vision_config)
         self.language_model = Qwen3_5Model(config.text_config)
         self.cp_context = CPContext()
 
@@ -259,6 +260,14 @@ class Qwen3_5VLMModel(nn.Module):
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
+        if self.visual is None:
+            return self.language_model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                routed_experts=routed_experts,
+                seq_lens=seq_lens,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
         inputs_embeds, position_ids = self.prepare_inputs(
             input_ids,
             position_ids,
@@ -287,16 +296,22 @@ class Qwen3_5VLMModel(nn.Module):
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
     def __init__(self, config) -> None:
         super().__init__(config)
-        self.is_vlm = hasattr(config, "vision_config")
-        text_config = config.text_config if self.is_vlm else config
+        composite = hasattr(config, "vision_config")
+        self.is_vlm = composite and not config.language_model_only
+        text_config = config.text_config if composite else config
 
-        if self.is_vlm:
+        if composite:
             self.model = Qwen3_5VLMModel(config)
         else:
             self.model = Qwen3_5Model(config)
 
         self.supports_packed_multimodal_training = self.is_vlm
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
+        if getattr(config, "tie_word_embeddings", False):
+            # Small Qwen3.5 checkpoints (0.8B-4B) tie the output layer to the input embeddings and
+            # ship no lm_head weight. The loader skips lm_head.weight for tied configs, so without
+            # this it stays all zeros: uniform logits (entropy = ln(vocab)) and zero gradients.
+            self.lm_head.weight = self.get_input_embeddings().weight
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.model.get_input_embeddings()
@@ -357,7 +372,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         )
 
     def init_buffers_post_meta(self) -> None:
-        language_model = self.model.language_model if self.is_vlm else self.model
+        language_model = get_language_model(self)
         language_model.rotary_emb.reset_parameters()
         if self.is_vlm:
             self.model.visual.rotary_pos_emb.reset_parameters()

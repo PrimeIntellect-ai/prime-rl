@@ -4,7 +4,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from math import prod
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Iterator, NamedTuple
 
 import numpy as np
 import torch
@@ -23,7 +23,6 @@ from prime_rl.utils.sparse_weights import (
     ENGINE_LAYOUT,
     MANIFEST,
     anchor_complete,
-    as_bits,
     bits_dtype,
     checkpoint_index,
     decode_gaps,
@@ -33,7 +32,7 @@ from prime_rl.utils.sparse_weights import (
     read_delta,
     read_delta_in_subprocess,
     read_manifest,
-    rows_checksum,
+    revalidate,
     unpin,
     write_file,
 )
@@ -170,30 +169,101 @@ class FileSystemWeightUpdateWorker(Worker):
         return True
 
     def update_weights_from_path(self, weight_path: str) -> None:
-        """Move to the broadcast step in ``weight_path`` (a full HF checkpoint and/or a sparse delta)."""
+        """Move to the broadcast step in ``weight_path`` (a full HF checkpoint and/or a sparse delta).
+
+        The TP group's workers run collectives while they verify, so they must take the same steps: TP rank 0
+        plans the update (which checkpoint to load, which deltas to apply) and the others follow its plan. A
+        failure on any worker fails the update on all of them, so they all replay the same way next time."""
         step_dir = storage_path(weight_path)
         step = int(step_dir.name.removeprefix("step_"))
+        tp_group = get_tp_group()
+        plan, error = None, None
+        if tp_group.rank_in_group == 0:
+            try:
+                plan = self._plan_update(step_dir)
+            except Exception as e:  # re-raised below, after the others got the failure instead of a plan
+                error = e
+        if tp_group.world_size > 1:
+            plan = tp_group.broadcast_object(plan if error is None else {"failed": repr(error)}, src=0)
+        if error is not None:
+            raise error
+        if "failed" in plan:
+            raise RuntimeError(f"TP rank 0 could not plan the update to {step_dir.name}: {plan['failed']}")
+        # Unknown until this update succeeds: after a failure, the next update reloads and replays
+        self.weight_step = -1
+        check = None
+        try:
+            if plan["index_map"] is not None:
+                self._build_index_map(storage_path(plan["index_map"]))
+                if plan["write_layout"]:
+                    # A full broadcast: the trainer takes the layout at its first one, also after a restart
+                    self._write_layout(step_dir.parent)
+            check = self._run_plan(plan)
+        except Exception as e:  # re-raised below, once every worker of the TP group knows
+            error = e
+        self._raise_if_any_failed(error, f"update to {step_dir.name}")
+        if check is not None:
+            self._check(*check)
+        self.weight_step = step
+
+    def _plan_update(self, step_dir: StoragePath) -> dict:
+        """What every TP worker does to move to ``step_dir``: a dict of plain values, broadcast from TP rank 0."""
+        # A stale NFS lookup cache could hide a manifest written before ``.finished``, turning a delta into a full load
+        revalidate(step_dir / DELTA_DIR)
         has_delta = (step_dir / DELTA_DIR / MANIFEST).exists()
         base_step = read_manifest(step_dir)["base_step"] if has_delta else None
-        if has_delta or anchor_complete(step_dir):
-            self._build_index_map(step_dir)
-            if base_step is None:
-                # A full broadcast: the trainer takes the layout at its first one, also after a restart
-                self._write_layout(step_dir.parent)
-        # Unknown until this update succeeds: after a failure, the next update reloads and replays
-        held_step, self.weight_step = self.weight_step, -1
+        plan = {
+            "index_map": step_dir.as_posix() if has_delta or anchor_complete(step_dir) else None,
+            "write_layout": base_step is None,
+            "load": None,
+            "deltas": [],
+            # Steps that carry an anchor recompute every checksum from the params; others update them with the changes
+            "full_verify": any(step_dir.glob("anchor_rank*")),
+        }
         if not has_delta:
-            self._load_checkpoint(step_dir)
+            plan["load"] = step_dir.as_posix()
+        elif base_step is None:
+            # The run's first broadcast: the weights the engine booted with
+            if self.weight_step is not None:
+                plan["load"] = "boot"
+        elif base_step == self.weight_step:
+            plan["deltas"] = [step_dir.as_posix()]
         else:
-            if base_step is None:
-                # The run's first broadcast: the weights the engine booted with
-                if held_step is not None:
-                    self._load_checkpoint(self._boot_dir())
-            elif base_step == held_step:
-                self._apply_delta(step_dir)
-            else:
-                self._replay(step_dir)
-        self.weight_step = step
+            # Load the latest complete anchor at or before ``step_dir`` (or the boot checkpoint, for a chain from the
+            # run's first broadcast) and replay the deltas since
+            chain, source = [], step_dir
+            while not anchor_complete(source):
+                source_base = read_manifest(source)["base_step"]
+                if source_base is None:
+                    break
+                chain.append(source)
+                source = source.parent / f"step_{source_base}"
+            plan["load"] = source.as_posix() if anchor_complete(source) else "boot"
+            plan["deltas"] = [delta_dir.as_posix() for delta_dir in reversed(chain)]
+            logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {storage_path(plan['load']).name}")
+        return plan
+
+    def _run_plan(self, plan: dict) -> tuple | None:
+        """Load and apply what ``plan`` says; returns the check of the final weights for ``_check``."""
+        check = None
+        if plan["load"] is not None:
+            check = self._load_checkpoint(self._boot_dir() if plan["load"] == "boot" else storage_path(plan["load"]))
+        for delta_dir in plan["deltas"]:
+            checksums = self._apply_delta(storage_path(delta_dir))
+            # Each delta's checksums cover every tensor, so the last one checks the whole chain
+            check = (storage_path(delta_dir).name, *self.index_map.checksums(full=plan["full_verify"]), checksums)
+        return check
+
+    def _raise_if_any_failed(self, error: Exception | None, what: str) -> None:
+        """Raise on every worker of the TP group if ``error`` is set on any of them."""
+        tp_group = get_tp_group()
+        if tp_group.world_size > 1:
+            failed = torch.tensor([error is not None], dtype=torch.int32)
+            torch.distributed.all_reduce(failed, op=torch.distributed.ReduceOp.MAX, group=tp_group.cpu_group)
+            if failed.item() and error is None:
+                raise RuntimeError(f"A TP peer failed the {what}")
+        if error is not None:
+            raise error
 
     def _boot_dir(self) -> Path:
         """The local dir of the checkpoint the engine booted from."""
@@ -205,12 +275,23 @@ class FileSystemWeightUpdateWorker(Worker):
         return Path(folder)
 
     def _apply_chunk(
-        self, entries: list[tuple[str, int]], gaps: torch.Tensor, values: torch.Tensor, tensors: dict, device
+        self,
+        entries: list[tuple[str, int]],
+        gaps: torch.Tensor,
+        values: torch.Tensor,
+        tensors: dict,
+        device,
+        events: list[torch.cuda.Event],
     ) -> None:
+        """Apply one chunk of a delta, recording CUDA events after its copies, its index decode and its apply."""
         assert self.index_map is not None
+        gaps, values = gaps.to(device, non_blocking=True), values.to(device, non_blocking=True)
+        events.append(torch.cuda.Event(enable_timing=True))
+        events[-1].record()
         counts = torch.tensor([count for _, count in entries], device=device)
-        indices = decode_gaps(gaps.to(device, non_blocking=True), counts)
-        values = values.to(device, non_blocking=True)
+        indices = decode_gaps(gaps, counts)
+        events.append(torch.cuda.Event(enable_timing=True))
+        events[-1].record()
         offset = num_bytes = 0
         for bits, group in itertools.groupby(entries, key=lambda entry: bits_dtype(tensors[entry[0]][1])):
             run = list(group)
@@ -222,10 +303,13 @@ class FileSystemWeightUpdateWorker(Worker):
             self.index_map.apply_delta(run, indices[offset : offset + num_changes], delta)
             offset += num_changes
             num_bytes += num_changes * itemsize
+        events.append(torch.cuda.Event(enable_timing=True))
+        events[-1].record()
 
     def _build_index_map(self, step_dir: StoragePath) -> None:
         """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint tensors to
-        the params, and find which ones this worker holds in fp8 (and their scale format)."""
+        the params (where the boot weights are, after the engine's processing), and find which ones this worker holds
+        in fp8 (and their scale format)."""
         if self.index_map is not None:
             return
         if (step_dir / DELTA_DIR / MANIFEST).exists():
@@ -237,7 +321,11 @@ class FileSystemWeightUpdateWorker(Worker):
             }
         model = self._model()
         index_map = CheckpointIndexMap(model, tensors)
-        boot = checkpoint_index(self._boot_dir())
+        boot_dir = self._boot_dir()
+        moved = index_map.match_boot(_read_rows(index_map, boot_dir, next(model.parameters()).device))
+        if moved:
+            logger.info(f"Moved {moved} index map writes to where the engine's kernel layout holds them")
+        boot = checkpoint_index(boot_dir)
 
         def read_tensor(name: str) -> torch.Tensor:
             shape, dtype, _ = boot[name]
@@ -246,6 +334,8 @@ class FileSystemWeightUpdateWorker(Worker):
             return torch.from_numpy(data).view(dtype).view(shape)
 
         index_map.fp8_layout(model, read_tensor)
+        if next(model.parameters()).is_cuda:
+            index_map.fused_tables(warm_up=True)
         self.index_map = index_map
 
     def _write_layout(self, broadcast_dir: StoragePath) -> None:
@@ -259,22 +349,8 @@ class FileSystemWeightUpdateWorker(Worker):
         write_file(path, json.dumps(layout).encode())
         logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")
 
-    def _replay(self, step_dir: StoragePath) -> None:
-        """Load the latest complete anchor at or before ``step_dir`` (or the boot checkpoint, for a
-        chain from the run's first broadcast) and replay the deltas since."""
-        chain, source = [], step_dir
-        while not anchor_complete(source):
-            base_step = read_manifest(source)["base_step"]
-            if base_step is None:
-                break
-            chain.append(source)
-            source = source.parent / f"step_{base_step}"
-        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {source.name}")
-        self._load_checkpoint(source if anchor_complete(source) else self._boot_dir())
-        for delta_dir in reversed(chain):
-            self._apply_delta(delta_dir)
-
-    def _apply_delta(self, step_dir: StoragePath) -> None:
+    def _apply_delta(self, step_dir: StoragePath) -> dict[str, int]:
+        """Patch the params with the sparse delta in ``step_dir``; returns the trainer's checksums of the result."""
         start = time.perf_counter()
         prefetched, self.prefetched = self.prefetched, None
         # Always wait: a running prefetch writes into the same host buffer
@@ -286,71 +362,89 @@ class FileSystemWeightUpdateWorker(Worker):
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()
         device = next(model.parameters()).device
+        events = [torch.cuda.Event(enable_timing=True)]
+        events[0].record()
         for entries, gaps, values in delta:
-            self._apply_chunk(entries, gaps, values, tensors, device)
+            self._apply_chunk(entries, gaps, values, tensors, device, events)
+        host_time = time.perf_counter() - start - read_time
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
-        apply_time = time.perf_counter() - start - read_time
-        self._verify(step_dir, checksums)
+        # Per chunk: copies, index decode, apply
+        phases = [0.0, 0.0, 0.0]
+        for index, (begin, end) in enumerate(zip(events, events[1:])):
+            phases[index % 3] += begin.elapsed_time(end) / 1000
         logger.info(
-            f"Applied sparse weight delta {step_dir.name}: {sum(len(gaps) for _, gaps, _ in delta)} changes, "
-            f"read {read_time:.2f}s (0 if prefetched), apply {apply_time:.2f}s, "
-            f"verify {time.perf_counter() - start - read_time - apply_time:.2f}s"
+            f"Applied sparse weight delta {step_dir.name}: {sum(len(gaps) for _, gaps, _ in delta)} changes in "
+            f"{len(delta)} chunks, read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s "
+            f"(GPU: copy {phases[0]:.3f}s, decode {phases[1]:.3f}s, patch {phases[2]:.3f}s; host loop {host_time:.3f}s)"
         )
+        return checksums
 
-    def _verify(self, step_dir: StoragePath, checksums: dict[str, int]) -> None:
-        """Check every tensor this worker holds against the trainer's checksum of the new weights.
-        Tensors split across TP workers are summed over the TP group first; without TP, tensors a worker
-        holds only part of are not checked."""
-        assert self.index_map is not None
-        names, totals, partial = self.index_map.held_checksums()
+    def _check(self, label: str, names: list[str], totals: torch.Tensor, held: torch.Tensor, expected: dict) -> None:
+        """Check the checksums of the elements this worker holds of each checkpoint tensor (``totals``, over ``held``
+        elements) against the trainer's (``expected``), on every worker of the TP group alike.
+
+        Workers sum their parts over the TP group, in one vector over every checkpoint tensor of the run, so each
+        runs the same collectives whatever it holds. A tensor is checked when its holders cover it the same number
+        of times each (TP slices: once; KV heads replicated over TP workers: once per replica); one held by workers
+        that overlap unevenly (fp8 tensors read in 128-row blocks) is checked only where a worker holds it whole."""
+        start = time.perf_counter()
+        canonical, ids, counts, whole, multiplicity = self._coverage(names, held)
+        device = totals.device
+        sums = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), totals)
+        has_expected = torch.tensor([name in expected for name in canonical], device=device)
+        target = torch.tensor([expected.get(name, 0) for name in canonical], dtype=torch.int64, device=device)
+        mismatched = whole & has_expected & (sums != target)
         tp_group = get_tp_group()
-        if tp_group.world_size > 1 and partial.any():
-            reduced = totals[partial]
-            torch.distributed.all_reduce(reduced, group=tp_group.device_group)
-            totals[partial] = reduced
-        elif partial.any():
-            names = [name if not is_partial else None for name, is_partial in zip(names, partial.tolist())]
-        mismatched = [
-            name
-            for name, value in zip(names, totals.tolist())
-            if name is not None and name in checksums and value != checksums[name]
-        ]
-        if mismatched:
-            raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
+        if tp_group.world_size > 1:
+            group = tp_group.device_group
+            torch.distributed.all_reduce(sums, group=group)
+            mismatched |= (multiplicity > 0) & has_expected & (sums != multiplicity * target)
+            any_mismatch = mismatched.any().to(torch.int32)
+            torch.distributed.all_reduce(any_mismatch, op=torch.distributed.ReduceOp.MAX, group=group)
+        else:
+            any_mismatch = mismatched.any()
+        if any_mismatch.item():
+            names_off = [canonical[index] for index in mismatched.nonzero().flatten().tolist()[:8]]
+            raise RuntimeError(f"Weights at {label} diverged from the trainer: {names_off or 'on a TP peer'}")
+        logger.info(f"Verified the weights at {label} in {time.perf_counter() - start:.2f}s")
 
-    def _verify_rows(
-        self, step_dir: Path, sums: dict[str, torch.Tensor], partial: dict[str, bool], expected: dict[str, int]
-    ) -> None:
-        """Check the rows read from an anchor or full checkpoint against the trainer's checksums. Tensors this
-        worker read only some rows of are summed over the TP group first (not for fp8 tensors, read in whole
-        128-row blocks that TP workers may share); without TP they are not checked."""
-        if not sums:
-            return
-        index_map, tp_group = self.index_map, get_tp_group()
-        names = sorted(sums)
-        totals = torch.stack([sums[name] for name in names])
-        partial = torch.tensor([partial[name] for name in names], device=totals.device)
-        if tp_group.world_size > 1 and partial.any():
-            reduced = totals[partial]
-            torch.distributed.all_reduce(reduced, group=tp_group.device_group)
-            totals[partial] = reduced
-        skip = (
-            partial
-            if tp_group.world_size == 1
-            else partial & torch.tensor([name in index_map.fp8 for name in names], device=totals.device)
-        )
-        mismatched = [
-            name
-            for name, value, skipped in zip(names, totals.tolist(), skip.tolist())
-            if not skipped and value != expected[name]
-        ]
-        if mismatched:
-            raise RuntimeError(f"Sparse weight checkpoint {step_dir.name} diverged from the trainer: {mismatched[:8]}")
+    def _coverage(self, names: list[str], held: torch.Tensor) -> tuple:
+        """What ``_check`` needs of who holds what: every checkpoint tensor of the run (sorted), the positions of
+        ``names`` in it, this worker's element counts and whole tensors, and how many times the TP group's holders
+        cover each tensor evenly (0: unevenly, or not held). Static for an index map, so kept for the ``names`` and
+        ``held`` of its checksum plan; every TP worker follows the same plan, so they compute it (and run its
+        collectives) at the same updates."""
+        cached = getattr(self, "coverage_cache", None)
+        if cached is not None and cached[0] is names and cached[1] is held:
+            return cached[2]
+        assert self.index_map is not None
+        canonical = sorted(self.index_map.numel)
+        position = {name: index for index, name in enumerate(canonical)}
+        device = held.device
+        ids = torch.tensor([position[name] for name in names], dtype=torch.long, device=device)
+        counts = torch.zeros(len(canonical), dtype=torch.int64, device=device).index_put_((ids,), held)
+        numel = torch.tensor([self.index_map.numel[name] for name in canonical], device=device)
+        whole = counts == numel
+        multiplicity = torch.zeros_like(counts)
+        tp_group = get_tp_group()
+        if tp_group.world_size > 1:
+            group = tp_group.device_group
+            total_counts, most = counts.clone(), counts.clone()
+            # Holders' fewest elements; non-holders report the most anyone could hold
+            fewest = torch.where(counts > 0, counts, numel)
+            torch.distributed.all_reduce(total_counts, group=group)
+            torch.distributed.all_reduce(most, op=torch.distributed.ReduceOp.MAX, group=group)
+            torch.distributed.all_reduce(fewest, op=torch.distributed.ReduceOp.MIN, group=group)
+            even = (total_counts > 0) & (total_counts % numel == 0) & (most == fewest)
+            multiplicity = torch.where(even, total_counts // numel, 0)
+        coverage = (canonical, ids, counts, whole, multiplicity)
+        self.coverage_cache = (names, held, coverage)
+        return coverage
 
-    def _load_checkpoint(self, step_dir: StoragePath) -> None:
+    def _load_checkpoint(self, step_dir: StoragePath) -> tuple | None:
         """Reload every weight from the HF checkpoint (or anchor) in ``step_dir``. In a sparse run, each worker reads
-        only the rows it holds, straight into its params."""
+        only the rows it holds, straight into its params, and returns their check for ``_check``."""
         model = self._model()
         if self.index_map is None:
             model_loader = get_model_loader(self.load_config)
@@ -364,37 +458,43 @@ class FileSystemWeightUpdateWorker(Worker):
             )
             weights_iterator = model_loader._get_weights_iterator(local_source)
             load_weights_checkpoint_layerwise(model, weights_iterator, self.model_runner.model_config, self.vllm_config)
-            return
+            return None
         start = time.perf_counter()
-        index_map, index = self.index_map, checkpoint_index(step_dir)
-        device = next(model.parameters()).device
+        index_map = self.index_map
         # Checksums of anchors and full checkpoints written by the trainer (none for the boot checkpoint)
         expected = read_anchor_checksums(step_dir)
-        sums: dict[str, torch.Tensor] = {}
-        partial: dict[str, bool] = {}
-
-        def read(name: str, begin: int, end: int) -> torch.Tensor:
-            num_cols, dtype = index_map.num_cols[name], index[name][1]
-            data = np.empty((end - begin) * num_cols * dtype.itemsize, np.uint8)
-            read_checkpoint_range(index[name], begin * num_cols, end * num_cols, data)
-            return torch.from_numpy(data).view(dtype).view(end - begin, num_cols)
-
-        ranges = list(index_map.row_ranges().items())
         num_bytes = 0
-        with ThreadPoolExecutor(16) as pool:
-            # A bounded window of reads ahead of the GPU writes
-            for window in itertools.batched(ranges, 64):
-                for (name, (begin, end)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
-                    rows = rows.to(device)
-                    index_map.load_rows(name, rows, begin)
-                    if name in expected:
-                        num_cols = index_map.num_cols[name]
-                        sums[name] = rows_checksum(as_bits(rows).reshape(-1), begin * num_cols)
-                        partial[name] = (end - begin) * num_cols != index_map.numel[name]
-                    num_bytes += rows.nbytes
+        for name, begin, rows in _read_rows(index_map, step_dir, next(model.parameters()).device):
+            index_map.load_rows(name, rows, begin)
+            num_bytes += rows.nbytes
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
-        self._verify_rows(step_dir, sums, partial, expected)
         logger.info(
             f"Loaded this worker's {num_bytes / 2**30:.2f} GiB of {step_dir.name} in {time.perf_counter() - start:.1f}s"
         )
+        # Checked from the params as loaded, so a wrong mapping or write in ``load_rows`` fails the check
+        return step_dir.name, *index_map.held_checksums(), expected
+
+
+def _read_rows(index_map: CheckpointIndexMap, step_dir: StoragePath, device) -> Iterator[tuple[str, int, torch.Tensor]]:
+    """``(name, begin, rows)``: the ``row_ranges`` rows of each checkpoint tensor in ``step_dir``, on ``device``. A
+    tied name the checkpoint omits is skipped: its elements come with a tied name it has."""
+    index = checkpoint_index(step_dir)
+    ranges = []
+    for name, rows in index_map.row_ranges().items():
+        if name in index:
+            ranges.append((name, rows))
+        elif not any(tied in index for tied in index_map.tied.get(name, ())):
+            raise KeyError(f"{step_dir} has no {name}")
+
+    def read(name: str, begin: int, end: int) -> torch.Tensor:
+        num_cols, dtype = index_map.num_cols[name], index[name][1]
+        data = np.empty((end - begin) * num_cols * dtype.itemsize, np.uint8)
+        read_checkpoint_range(index[name], begin * num_cols, end * num_cols, data)
+        return torch.from_numpy(data).view(dtype).view(end - begin, num_cols)
+
+    with ThreadPoolExecutor(16) as pool:
+        # A bounded window of reads ahead of the GPU writes
+        for window in itertools.batched(ranges, 64):
+            for (name, (begin, _)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
+                yield name, begin, rows.to(device)
