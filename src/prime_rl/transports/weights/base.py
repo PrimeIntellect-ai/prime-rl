@@ -36,6 +36,17 @@ def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
             shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
 
 
+def latest_finished_broadcast(output_dir: Path) -> int:
+    """The newest version whose broadcast finished, -1 if none."""
+    broadcast_dir = get_broadcast_dir(output_dir)
+    finished = [
+        step
+        for step in get_all_ckpt_steps(broadcast_dir)
+        if (get_step_path(broadcast_dir, step) / FINISHED_MARKER).exists()
+    ]
+    return max(finished, default=-1)
+
+
 class WeightSender(ABC):
     """Trainer-side weight publisher. ``broadcast`` wraps the transport's
     ``_broadcast`` with the shared sentinel handshake: every version is
@@ -72,11 +83,6 @@ class WeightSender(ABC):
 
     def step_dir(self, step: int) -> Path:
         return get_step_path(get_broadcast_dir(self.output_dir), step)
-
-    def latest_finished(self) -> int:
-        """The newest version whose broadcast finished, -1 if none."""
-        steps = get_all_ckpt_steps(get_broadcast_dir(self.output_dir))
-        return max((step for step in steps if (self.step_dir(step) / FINISHED_MARKER).exists()), default=-1)
 
     def _wait_for_receiver_ready(self, step_dir: Path) -> None:
         """Wait for the consumer to acknowledge the offered version. Bounded:

@@ -19,7 +19,7 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport
-from prime_rl.transports.payload import delete_payloads, mark_trained, resolve_payloads
+from prime_rl.transports.payload import delete_payloads, mark_trained, require_rollout_store, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
 
 
@@ -283,7 +283,10 @@ class DataLoader:
         read them has fetched them. A retaining run's rollout stores keep them until
         `commit`: a restarted trainer fetches them again."""
         if self.retain:
-            self.stores |= {url.rpartition("/")[0] for url in self.payload_urls}
+            stores = {url.rpartition("/")[0] for url in self.payload_urls}
+            for store in stores - self.stores:
+                require_rollout_store(store)
+            self.stores |= stores
             mark_trained(self.stores, self.payload_urls, self.step, self.receiver.committed)
         else:
             delete_payloads(self.payload_urls)

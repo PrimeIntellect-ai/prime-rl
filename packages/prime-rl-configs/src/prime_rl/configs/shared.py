@@ -318,8 +318,10 @@ class BaseTransportConfig(BaseConfig):
     retain: bool = False
     """Keep every shipped step, and the training arrays the env worker pools hold for it,
     until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
-    checkpoint and trains the steps since again. Needs a checkpoint interval and a run
-    directory the orchestrator and trainer share."""
+    checkpoint and trains the steps since again. Needs a checkpoint interval, the filesystem
+    weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
+    in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
+    starts, a pool started separately needs it in its own config."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):

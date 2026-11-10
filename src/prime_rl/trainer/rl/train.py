@@ -9,13 +9,13 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import latest_finished_broadcast, prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, resolve_latest_trainer_ckpt_step, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -91,7 +91,11 @@ from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import (
+    resolve_latest_ckpt_step,
+    resolve_latest_trainer_ckpt_step,
+    write_resolved_config,
+)
 from prime_rl.utils.utils import clean_exit
 
 
@@ -308,7 +312,7 @@ def train(config: TrainerConfig):
     # serves the policies they produced: publish only what it has not finished publishing.
     published = -1
     if config.rollout_transport.retain and weight_sender is not None:
-        published = weight_sender.latest_finished()
+        published = latest_finished_broadcast(config.output_dir)
         logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)

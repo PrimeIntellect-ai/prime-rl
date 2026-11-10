@@ -1,5 +1,7 @@
 import os
 import queue
+import shutil
+import socket
 import tempfile
 import threading
 import uuid
@@ -30,6 +32,15 @@ def setup_worker(
     set_episode_hook(PayloadHook(bind_address, store))
 
 
+def remove_dead_stores(store_dir: Path) -> None:
+    """Remove the rollout stores of this node's pools that died without deleting theirs
+    (``<host>-<pid>-<random>``)."""
+    for path in store_dir.glob(f"{socket.gethostname()}-*"):
+        pid = path.name.rsplit("-", 2)[1]
+        if not Path("/proc", pid).exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
     """Publish the broker's bound address atomically for waiting clients."""
     address = addresses.get()
@@ -52,7 +63,9 @@ def run_pool(config: EnvWorkerPoolConfig):
         if config.store_dir is not None:
             # The broker serves the arrays its workers write, so they outlive any one worker.
             config.store_dir.mkdir(parents=True, exist_ok=True)
-            directory = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=config.store_dir)))
+            remove_dead_stores(config.store_dir)
+            prefix = f"{socket.gethostname()}-{os.getpid()}-"
+            directory = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=prefix, dir=config.store_dir)))
             store = StoreWriter(directory, RolloutStore(directory, *payload_host(config.serve.address)).url)
         # Apply logging, sandbox labels, and the payload hook in the broker and every worker.
         run_env_worker_pool(

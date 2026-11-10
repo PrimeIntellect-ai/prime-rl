@@ -103,11 +103,23 @@ def test_step_is_sent_only_after_every_trainer_rank_requests_it(
         transport.close()
 
 
+def _tokens(step: int, data_rank: int) -> int:
+    return 2 * step + data_rank
+
+
+def _received_tokens(receiver: BatchReceiver) -> list[int]:
+    (micro_batch,) = receiver.receive()
+    return np.frombuffer(micro_batch.input_ids, np.int32).tolist()
+
+
 async def _send(sender: BatchSender, receivers: list[BatchReceiver]) -> None:
+    """Ship the sender's current step, a grid whose tokens name the step and data rank."""
+    step = sender.current_step
+    grid = [[_micro_batch(_tokens(step, data_rank))] for data_rank in range(2)]
     waits = [asyncio.to_thread(receiver.wait) for receiver in receivers]
-    await asyncio.wait_for(asyncio.gather(sender.send(MICRO_BATCH_GRID), *waits), timeout=10)
+    await asyncio.wait_for(asyncio.gather(sender.send(grid), *waits), timeout=10)
     for receiver in receivers:
-        receiver.receive()
+        assert _received_tokens(receiver) == [_tokens(step, receiver.data_rank)]
 
 
 @pytest.mark.parametrize(
@@ -127,7 +139,7 @@ def test_restarted_ranks_get_the_retained_steps_until_a_checkpoint_covers_them(
     for step in range(2):
         for receiver in restarted:
             receiver.wait()
-            assert receiver.receive()[0].sequence_lengths == [1]
+            assert _received_tokens(receiver) == [_tokens(step, receiver.data_rank)]
     assert sender.current_step == 2
 
     for receiver in restarted:

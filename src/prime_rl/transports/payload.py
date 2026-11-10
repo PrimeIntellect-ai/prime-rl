@@ -247,8 +247,8 @@ class PayloadServer:
                 self.end_headers()
 
             def do_POST(self) -> None:
-                server.trained(_trained_decoder.decode(self.rfile.read(int(self.headers["Content-Length"]))))
-                self.send_response(204)
+                trained = _trained_decoder.decode(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(204 if server.trained(trained) else 501)
                 self.end_headers()
 
             def log_message(self, *args: Any) -> None:
@@ -270,8 +270,9 @@ class PayloadServer:
         with self.lock:
             return self.blobs.get(key)
 
-    def trained(self, trained: Trained) -> None:
-        raise NotImplementedError("Only a rollout store retains trained arrays")
+    def trained(self, trained: Trained) -> bool:
+        """Whether this server retains trained arrays: only a `RolloutStore` does."""
+        return False
 
 
 class Trained(msgspec.Struct):
@@ -320,7 +321,7 @@ class RolloutStore(PayloadServer):
         if path.parent == self.live:
             path.unlink(missing_ok=True)
 
-    def trained(self, trained: Trained) -> None:
+    def trained(self, trained: Trained) -> bool:
         if trained.ids:
             step_dir = self.directory / f"step_{trained.step}"
             step_dir.mkdir(exist_ok=True)
@@ -341,6 +342,7 @@ class RolloutStore(PayloadServer):
                 shutil.rmtree(step_dir, ignore_errors=True)
         with self.lock:
             self.steps = {key: step for key, step in self.steps.items() if step > trained.committed}
+        return True
 
 
 class StoreWriter:
@@ -518,6 +520,19 @@ def mark_trained(stores: Iterable[str], urls: Iterable[str], step: int, committe
         urllib.request.Request(store, data=msgspec.msgpack.encode(Trained(step, keys, committed)), method="POST")
         for store, keys in ids.items()
     )
+
+
+def require_rollout_store(url: str) -> None:
+    """Raise unless the env worker pool at `url` retains trained arrays. A pool without a
+    rollout store would neither keep nor free the arrays marked on it."""
+    request = urllib.request.Request(url, data=msgspec.msgpack.encode(Trained(0, [], -1)), method="POST")
+    try:
+        _opener.open(request, timeout=60).close()
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(
+            f"The env worker pool at {url} has no rollout store, which rollout_transport.retain needs: "
+            "set store_dir in its config"
+        ) from error
 
 
 def wait_for_deletes() -> None:

@@ -490,8 +490,6 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
-        if self.rollout_transport.retain and not (self.trainer.ckpt and self.trainer.ckpt.interval):
-            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
         return self
 
     @model_validator(mode="after")

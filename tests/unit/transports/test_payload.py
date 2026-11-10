@@ -29,6 +29,7 @@ from prime_rl.transports.payload import (
     encode_branch_arrays,
     mark_trained,
     payload_host,
+    require_rollout_store,
     resolve_payloads,
     wait_for_deletes,
 )
@@ -371,6 +372,12 @@ def test_rollout_store_keeps_trained_arrays_until_a_checkpoint_covers_them(tmp_p
     mark_trained([store.url], [], step=4, committed=3)
     wait_for_deletes()
     assert store.get("trained") is None and store.get("queued") == b"queued"
+
+
+def test_a_pool_without_a_rollout_store_rejects_retention(tmp_path):
+    require_rollout_store(RolloutStore(tmp_path, "127.0.0.1").url)
+    with pytest.raises(RuntimeError, match="no rollout store"):
+        require_rollout_store(PayloadServer("127.0.0.1").url)
 
 
 def test_discard_frees_what_keep_kept():

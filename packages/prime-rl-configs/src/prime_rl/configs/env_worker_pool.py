@@ -65,7 +65,9 @@ class EnvWorkerPoolConfig(BaseConfig):
     store_dir: Path | None = None
     """Keep finished episodes' training arrays as files in a directory of this pool's
     under ``store_dir``, served by one rollout store for the whole pool, instead of in
-    each worker's memory. Set by the ``rl`` launcher for ``rollout_transport.retain``."""
+    each worker's memory. The directory is local to the node and deleted when the pool
+    exits; a pool that died without deleting it is cleaned up by the next pool that starts
+    on the node. Set by the ``rl`` launcher for ``rollout_transport.retain``."""
 
     log: LogConfig = LogConfig()
 
