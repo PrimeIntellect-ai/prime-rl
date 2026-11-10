@@ -93,6 +93,7 @@ jobs:
             - name: Run invariance test
               env:
                   USERNAME_CI: CI_RUNNER
+                  UV_NO_SYNC: "1"
                   WANDB_MODE: offline
                   HF_TOKEN: ${{ secrets.HF_TOKEN }}
                   PYTEST_OUTPUT_DIR: /tmp/outputs

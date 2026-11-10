@@ -76,6 +76,7 @@ jobs:
       - name: Run unit tests
         env:
           USERNAME_CI: CI_RUNNER
+          UV_NO_SYNC: "1"
           WANDB_MODE: offline
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
@@ -142,6 +143,7 @@ jobs:
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER
+          UV_NO_SYNC: "1"
           WANDB_MODE: offline
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
