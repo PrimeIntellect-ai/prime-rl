@@ -47,6 +47,10 @@ jobs:
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
+    env:
+      # `uv sync --locked` installs everything; a later implicit sync re-fetches
+      # metadata for other-platform direct-URL wheels and fails on GitHub hiccups.
+      UV_NO_SYNC: "1"
     timeout-minutes: 45
     steps:
       - name: Install Git
@@ -60,8 +64,12 @@ jobs:
           submodules: false
       - parallel:
           - name: Init public submodules
+            env:
+              GH_TOKEN: ${{ github.token }}
+            # Authenticate the clones: anonymous clones from the shared runner IP get throttled.
             run: |
               git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
@@ -88,6 +96,10 @@ jobs:
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
+    env:
+      # `uv sync --locked` installs everything; a later implicit sync re-fetches
+      # metadata for other-platform direct-URL wheels and fails on GitHub hiccups.
+      UV_NO_SYNC: "1"
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -118,8 +130,12 @@ jobs:
           submodules: false
       - parallel:
           - name: Init public submodules
+            env:
+              GH_TOKEN: ${{ github.token }}
+            # Authenticate the clones: anonymous clones from the shared runner IP get throttled.
             run: |
               git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
