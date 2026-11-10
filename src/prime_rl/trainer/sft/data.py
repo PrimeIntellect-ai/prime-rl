@@ -516,6 +516,16 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         )
 
 
+def load_val_subsets(config: SFTDataConfig) -> dict[str, Dataset]:
+    """[val] per_subset: each subset's raw dataset on its own, in config order, loaded as a single-subset config loads it
+    (no interleaving, so the rows keep their stored order)."""
+    splits = config.splits or ["train"] * len(config.subsets)
+    return {
+        subset: load_sft_dataset(config.model_copy(update={"subsets": [subset], "splits": [split]}))
+        for subset, split in zip(config.subsets, splits)
+    }
+
+
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
     config: DataConfig,

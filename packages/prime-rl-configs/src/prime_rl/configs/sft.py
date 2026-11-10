@@ -127,7 +127,23 @@ class SFTValConfig(BaseValConfig):
     writes and reads only its own shard file, so the snapshot only reloads into the same world size and sharding.
     The ``eval_on_start`` validation is not a candidate. A new best replaces the previous snapshot."""
 
+    per_subset: bool = False
+    """Validate each entry of ``data.subsets`` on its own, one after the other, instead of interleaving them (which
+    repeats rows of the smaller subsets and packs unevenly across data ranks). Every row of every subset is validated
+    once, in its stored order, exactly as a run with that subset alone validates it. Logs ``val/<subset>/loss`` for
+    each subset and, as ``val/loss``, the token-weighted loss over all of them, which is what ``keep_best`` compares."""
+
     data: SFTDataConfig
+
+    @model_validator(mode="after")
+    def validate_per_subset(self):
+        if self.per_subset:
+            subsets = self.data.subsets
+            if not subsets or len(set(subsets)) != len(subsets):
+                raise ValueError("val.per_subset needs val.data.subsets, without duplicates")
+            if self.data.probabilities is not None:
+                raise ValueError("val.per_subset validates every subset in full: remove val.data.probabilities")
+        return self
 
 
 class SFTHFExportConfig(BaseConfig):
