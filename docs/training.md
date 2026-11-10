@@ -453,6 +453,13 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
+A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `trainer.model.init_from` instead. It loads only the weights, and the run starts at step 0 with a fresh optimizer, scheduler and orchestrator. `model.name` still sets the architecture and tokenizer.
+
+```bash
+uv run rl @ rl.toml --max-steps 50 --ckpt --run.name my-rl \
+  --trainer.model.init-from outputs/my-sft/checkpoints/step_500
+```
+
 #### What a resume restores
 
 - The curriculum of each train source, and the live config (see [Updating the Config Live](#updating-the-config-live)).

@@ -129,7 +129,7 @@ class FileMonitor(Monitor):
                     ]
                 if "open" in delta:
                     line["dispatch"] = event["dispatch"]
-                # deltas key semantic links by node index (int)
+                # env-defined dicts (`info`, `metrics`, task data) may be keyed by int
                 appends.setdefault(path, []).append(
                     orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS)
                 )
