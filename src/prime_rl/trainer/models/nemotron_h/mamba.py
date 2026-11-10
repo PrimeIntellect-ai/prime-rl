@@ -13,6 +13,7 @@ import torch.distributed as dist
 from torch import nn
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
+from prime_rl.trainer.models.layers.norms import Norm
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.utils.cp import CPContext
 
@@ -53,7 +54,7 @@ def head_to_sequence_parallel(
     )
 
 
-class GatedRMSNorm(nn.Module):
+class GatedRMSNorm(Norm):
     def __init__(self, hidden_size: int, group_size: int, eps: float) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))

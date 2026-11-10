@@ -61,7 +61,6 @@ gpu = [
     "vllm>=0.33.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
-    "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     # DSA sparse MLA backward kernel (CuTe DSL). vLLM 0.33 requires >=1.31; 1.32 changed the backward's
     # signature (preallocated dq/dkv/d_sink and workspace), which our call sites and `cudnn_dsa_patch` predate.
@@ -246,7 +245,6 @@ renderers = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
-dion = false
 deep-ep = false
 nixl-cu13 = false
 torchao = false
@@ -268,7 +266,6 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
