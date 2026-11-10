@@ -88,16 +88,31 @@ jobs:
                     uses: astral-sh/setup-uv@v10.0.1
                     with:
                         enable-cache: false
-            - name: Install dependencies
-              run: uv sync --all-extras --all-packages --locked
-            - name: Run invariance test
+            - name: Cold sync
+              run: |
+                  start=$(date +%s)
+                  uv sync --all-extras --all-packages --locked
+                  echo "TIMING cold_sync_seconds=$(( $(date +%s) - start ))"
+                  du -sh "$UV_CACHE_DIR" .venv
+                  df -h "$UV_CACHE_DIR" .venv
+            - name: Warm sync, copy mode
               env:
-                  USERNAME_CI: CI_RUNNER
-                  UV_NO_SYNC: "1"
-                  WANDB_MODE: offline
-                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
-                  PYTEST_OUTPUT_DIR: /tmp/outputs
-              run: uv run pytest -vvs tests/regression/test_parallel_invariance.py
+                  UV_LINK_MODE: copy
+              run: |
+                  rm -rf .venv
+                  start=$(date +%s)
+                  uv sync --all-extras --all-packages --locked
+                  echo "TIMING warm_copy_sync_seconds=$(( $(date +%s) - start ))"
+            - name: Warm sync, copy mode, offline
+              continue-on-error: true
+              env:
+                  UV_LINK_MODE: copy
+                  UV_OFFLINE: "1"
+              run: |
+                  rm -rf .venv
+                  start=$(date +%s)
+                  uv sync --all-extras --all-packages --locked
+                  echo "TIMING warm_copy_offline_sync_seconds=$(( $(date +%s) - start ))"
             - name: Upload run logs on failure
               if: failure()
               uses: actions/upload-artifact@v7
