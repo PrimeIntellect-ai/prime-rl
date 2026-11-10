@@ -151,6 +151,9 @@ class EngineLoadSample:
     generation_tokens_delta: int = 0
     # Summed end-to-end latency (arrival at the engine to finish) of the requests in ``finished_delta``
     latency_delta: float = 0.0
+    # Requests the engine runs, and its GPU KV cache usage (0-1, None when not reported)
+    running: int = 0
+    kv_usage: float | None = None
 
 
 @dataclass(frozen=True)
@@ -820,6 +823,41 @@ class ConcurrencyController(Reconfigurable):
     def capacity(self) -> int | None:
         """Total KV tokens across decode engines; None until the first poll."""
         return sum(self.capacity_by_engine.values()) or None
+
+    @property
+    def binding(self) -> bool:
+        """The last poll's units in flight fill the cap."""
+        return bool(self.polls) and self.polls[-1].inflight >= BINDING_FRACTION * self.max_inflight
+
+    @property
+    def at_knee(self) -> bool:
+        """The engines are the bottleneck while the cap binds: the engines queue at the target (the knee by the
+        queue, which also brakes the fast climb), or the steps run and the last measurement showed growth not
+        paying. Whether something else holds admission back is the dispatcher's to say."""
+        if self.target is not None or not self.binding:
+            return False
+        queued = bool(self.polls) and self.queued_share >= QUEUE_TARGET
+        return queued or (not self.climbing and not self.paying)
+
+    @property
+    def env_bound(self) -> bool:
+        """The configured ``max_inflight`` holds the cap while growth still pays: the episodes' external resources,
+        not the engines, bound the pool."""
+        ceiling = self.config.max_inflight
+        growing = self.climbing or self.paying
+        return ceiling is not None and self.max_inflight >= ceiling and self.binding and growing
+
+    def explore(self) -> None:
+        """Find the knee afresh: climb fast from the current cap again (the balance advisor's probe). A manual target
+        stays pinned."""
+        if self.target is not None:
+            return
+        get_logger().info(f"Concurrency climbing from {self.max_inflight} to find the knee again")
+        self.climbing = True
+        self.climb_window = self.climb_reference = self.climb_previous = None
+        self.ceiling = None
+        self.paying = False
+        self.restart_steps()
 
     # ── observability ────────────────────────────────────────────────────────
 

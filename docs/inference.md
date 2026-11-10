@@ -13,6 +13,7 @@ This page covers the inference configuration and the supported features/deployme
 - [Router](#router)
     - [Routing policies](#routing-policies)
 - [Adaptive Concurrency](#adaptive-concurrency)
+- [GPU Split Advice](#gpu-split-advice)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
     - [HiSparse](#hisparse)
@@ -222,6 +223,30 @@ While the engines are paused for a weight update the controller freezes, and it 
 In RL, rollouts made faster than the trainer consumes them only wait and go stale, so the dispatcher holds train admission to what the trainer takes. A finished train rollout keeps its permit until the trainer takes it, except for one batch of finished rollouts waiting (so the trainer finds its next batch ready). While the trainer is the bottleneck (its batch was ready before it asked for it), train episodes in flight are also held to what keeps it fed, by Little's law: the rollouts per second it takes times the average generation lifetime, plus 10%. Both only stop new train groups; eval episodes are not held back. The controller sees the episodes in flight, and its queue rule trims only while the cap binds, so a pool the dispatcher holds below the cap does not read as overload.
 
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`. `max_inflight` is unbounded by default; set it when episodes hold other scarce resources (e.g. sandboxes).
+
+## GPU Split Advice
+
+Once concurrency adapts, an RL run is a pipeline of GPU pools: the inference engines make rollouts (in P/D, prefill engines feed decode engines) and the trainer consumes them. The slowest pool sets the run's speed while the others idle part of each step, and which pool that is moves during a run as episodes grow longer. The orchestrator measures what each pool sustains at its current size, in train rollouts per minute, and logs under `balance/*` how fast the run would be with the same nodes (or, on one node, GPUs) split differently:
+
+- **Trainer** (`balance/trainer/capacity`): the rollouts it trained over its busy time, which runs from receiving a batch to requesting the next (training, broadcasting, checkpointing). `balance/trainer_busy` is its share of each step.
+- **Inference** (`balance/inference/capacity`): the tokens per second the engines generate at their knee (the concurrency controller's steps run, growth no longer pays, the cap binds, and no trainer-side bound holds admission back), over the tokens a finished train rollout costs. KV offload, Mooncake, HiSparse and P/D transfers are all inside that measurement. While the trainer is the bottleneck the engines run below their knee: the last knee measurement stands in for up to two hours, after that the current rate is only a lower bound (`balance/<pool>/lower_bound`).
+- **Prefill / decode**: at the knee, the role whose engines queue more binds. The other role's slack is estimated: prefill engines are compute bound, so the share of polls in which they run a request is how busy they are; decode engines' GPU KV usage bounds how many more sequences they could hold (with KV offload a full GPU cache is normal, and decode then counts as having no slack).
+- **Environment**: a cap held at `concurrency.max_inflight` while more episodes would still pay means the episodes' external resources (e.g. sandboxes) bound the run; no split is advised, raise the cap instead.
+
+Each pool's capacity is assumed to scale with its units, and the advisor searches every split that keeps the deployment valid (whole inference replicas, the trainer's HSDP islands or context-parallel groups) for the fastest (`balance/best_speed`, `balance/<pool>/best_units`, `balance/gain`). Lower bounds count as the capacity, so taking units from a pool whose capacity is unmeasured never looks better than it is. When one split promises at least 10% (`min_gain`) for 30 minutes (`sustain_minutes`), and, with `max_steps` set, the time it saves exceeds a restart (this run's time to its first batch plus a generation lifetime), the orchestrator logs a notice and writes it to `balance.json` in the run directory:
+
+```
+[balance] Inference-bound for the last 31 min (trainer busy 62% of each step).
+  trainer   capacity    51.6 rollouts/min at 40 nodes (measured: busy time per step)
+  prefill   capacity    80.2 rollouts/min at 8 nodes (measured: at the knee now; prefill busy 40%)
+  decode    capacity    32.1 rollouts/min at 16 nodes (measured: at the knee now; decode queues at the knee)
+  current      trainer 40 / prefill 8 / decode 16 nodes  32.1 rollouts/min
+  recommended  trainer 36 / prefill 6 / decode 22 nodes  44.2 rollouts/min (+38%)
+  restart ~20 min, saves ~19.4 h of the ~70.0 h left
+  To apply, stop the run and resume it with: --deployment.num_train_nodes 36 --inference.deployment.num_prefill_replicas 6 --inference.deployment.num_decode_replicas 11 --deployment.num_infer_nodes 28
+```
+
+`[orchestrator.balance]` sets the window (`window_minutes`), the thresholds, and an opt-in probe (`probe = true`): while the trainer is the bottleneck and inference capacity is only a lower bound, the probe lifts the trainer-side admission bounds and restarts the concurrency climb until the engines' knee is measured again (at most `probe_max_minutes`, every `probe_interval_minutes`). Rollouts made meanwhile wait for the trainer and go stale; tokens past `max_staleness` are masked. Without the probe a trainer-bound run gets advice only from an earlier knee measurement (e.g. its startup climb).
 
 ## Advanced Configuration
 

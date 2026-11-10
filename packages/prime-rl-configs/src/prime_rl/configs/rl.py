@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import BalancePoolConfig, OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -772,6 +772,25 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_balance_pools(self):
+        """Describe the deployment's GPU pools to the orchestrator's balance advisor: their sizes, the steps they
+        change in, and the keys that set them."""
+        balance = self.orchestrator.balance
+        if not balance.enabled or balance.pools is not None or self.inference is None:
+            return self
+        pools = balance_pools(self)
+        if pools is None:
+            return self
+        unit = "GPU" if self.deployment.type == "single_node" else "node"
+        infer_replicas = 1 if self.deployment.type == "single_node" else self.deployment.num_infer_replicas
+        self.orchestrator = self.orchestrator.model_copy(
+            update={
+                "balance": balance.model_copy(update={"pools": pools, "unit": unit, "infer_replicas": infer_replicas})
+            }
+        )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_inference_client(self):
         """Auto-configure the orchestrator policy client from the inference server config.
 
@@ -813,3 +832,91 @@ class RLConfig(BaseConfig):
         return self
 
     ### Warnings
+
+
+def balance_pools(config: RLConfig) -> list[BalancePoolConfig] | None:
+    """The trainer and inference pools of ``config``'s deployment, or None when it has no inference engines."""
+    deployment, inference = config.deployment, config.inference
+    model = config.trainer.model
+    if deployment.type == "single_node":
+        if deployment.num_infer_gpus == 0:
+            return None
+        # The trainer runs data parallel over its context-parallel groups
+        train_step = model.cp * model.dp_replicate
+        tp = inference.vllm.tensor_parallel_size
+        return [
+            BalancePoolConfig(
+                name="trainer",
+                units=deployment.num_train_gpus,
+                step=train_step,
+                minimum=train_step,
+                keys=["deployment.num_train_gpus"],
+                per_step=[train_step],
+            ),
+            BalancePoolConfig(
+                name="inference",
+                units=deployment.num_infer_gpus,
+                step=tp,
+                minimum=tp,
+                keys=["deployment.num_infer_gpus"],
+                per_step=[tp],
+            ),
+        ]
+
+    if deployment.total_infer_nodes == 0:
+        return None
+    # HSDP replicates over ``dp_replicate`` islands: whole islands of nodes
+    train_step = model.dp_replicate
+    pools = [
+        BalancePoolConfig(
+            name="trainer",
+            units=deployment.num_train_nodes,
+            step=train_step,
+            minimum=train_step,
+            keys=["deployment.num_train_nodes"],
+            per_step=[train_step],
+        )
+    ]
+    replicas = deployment.num_infer_replicas
+    infer = inference.deployment
+    if infer.type == "disaggregated":
+        for role, nodes, count in (
+            ("prefill", infer.prefill_nodes_per_replica, infer.num_prefill_replicas),
+            ("decode", infer.decode_nodes_per_replica, infer.num_decode_replicas),
+        ):
+            pools.append(
+                BalancePoolConfig(
+                    name=role,
+                    units=nodes * count * replicas,
+                    step=nodes * replicas,
+                    minimum=nodes * replicas,
+                    keys=[f"inference.deployment.num_{role}_replicas"],
+                    per_step=[1],
+                )
+            )
+    elif infer.type == "multi_node" and not inference.vllm.enable_expert_parallel:
+        # Every inference node runs its own server: grow by a node per replica
+        pools.append(
+            BalancePoolConfig(
+                name="inference",
+                units=deployment.total_infer_nodes,
+                step=replicas,
+                minimum=replicas,
+                keys=["deployment.num_infer_nodes", "inference.deployment.num_nodes"],
+                per_step=[1, 1],
+            )
+        )
+    else:
+        # One server spans a replica's nodes: grow by whole replicas
+        nodes = deployment.infer_nodes_per_replica
+        pools.append(
+            BalancePoolConfig(
+                name="inference",
+                units=deployment.total_infer_nodes,
+                step=nodes,
+                minimum=nodes,
+                keys=["deployment.num_infer_replicas"],
+                per_step=[1],
+            )
+        )
+    return pools

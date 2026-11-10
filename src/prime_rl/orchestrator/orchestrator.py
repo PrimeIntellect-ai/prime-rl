@@ -46,10 +46,11 @@ from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.balance import Advice, BalanceAdvisor, TrainerStep, inference_poll
 from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
-from prime_rl.orchestrator.concurrency import ConcurrencyController
+from prime_rl.orchestrator.concurrency import ConcurrencyController, EngineLoadSample
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -192,6 +193,14 @@ class Orchestrator:
         self.ships = 0
         self.shipped_at: float | None = None
         self.trainer_rate: float | None = None
+        # Balance advice: when this process started and first shipped (the cost of a restart), the wall-clock time
+        # of the last ship (the trainer's busy time runs from it to its next request), and the last metrics poll
+        self.started_at = time.monotonic()
+        self.first_shipped_at: float | None = None
+        self.shipped_wall: float | None = None
+        self.balance_polled_at: float | None = None
+        self.balance_finished = 0
+        self.balance = BalanceAdvisor(config.balance) if config.balance.enabled else None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -392,7 +401,7 @@ class Orchestrator:
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
             roles=config.inference_metrics_roles,
-            on_load=self.concurrency.observe,
+            on_load=self.observe_inference,
             log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
@@ -743,6 +752,7 @@ class Orchestrator:
         trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
+        self.observe_trainer_step(batch.cohort.num_traces, step)
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
@@ -840,6 +850,94 @@ class Orchestrator:
             f"train episode(s); any in-flight evals will complete)"
         )
 
+    def observe_inference(self, samples: list[EngineLoadSample]) -> None:
+        """One inference metrics poll: the concurrency controller acts on it, then the balance advisor records it.
+        The engines are at their knee only while nothing on the trainer side holds admission back."""
+        self.concurrency.observe(samples)
+        if self.balance is None:
+            return
+        now = time.monotonic()
+        seconds = now - self.balance_polled_at if self.balance_polled_at is not None else 0.0
+        self.balance_polled_at = now
+        held = self.dispatcher.trainer_target is not None or self.dispatcher.held_permits > 0
+        finished = self.dispatcher.finished_train_rollouts
+        finished, self.balance_finished = finished - self.balance_finished, finished
+        self.balance.observe(
+            inference_poll(
+                samples,
+                seconds,
+                finished=finished,
+                knee=self.concurrency.at_knee and not held,
+                env_bound=self.concurrency.env_bound and not held,
+                queued_share=self.concurrency.queued_share_by_role,
+            )
+        )
+        if self.balance.probe_done():
+            self.balance.end_probe()
+            self.dispatcher.trainer_bounds_lifted = False
+            get_logger().info("Balance probe ended: the trainer-side admission bounds apply again")
+
+    def observe_trainer_step(self, rollouts: int, step: int) -> None:
+        """Record a shipped batch with the time the trainer spent before asking for it, then update the balance
+        advice: log a notice when another split of the GPUs is clearly faster, and probe the engines' knee while
+        the trainer is the bottleneck. The first two ships carry the trainer's warmup and are not recorded."""
+        shipped_wall = time.time()
+        previous, self.shipped_wall = self.shipped_wall, shipped_wall
+        if self.first_shipped_at is None:
+            self.first_shipped_at = time.monotonic()
+        if self.balance is None or previous is None or self.ships <= 2:
+            return
+        period = shipped_wall - previous
+        requested_at = self.sender.last_requested_at
+        if requested_at is not None:
+            busy = min(max(requested_at - previous, 0.0), period)
+        elif self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S:
+            busy = period
+        else:
+            busy = None
+        self.balance.observe_step(TrainerStep(rollouts=rollouts, period=period, busy=busy))
+        advice = self.balance.evaluate()
+        if advice is None:
+            return
+        remaining_s = None
+        if self.config.max_steps is not None and advice.rate > 0:
+            remaining_s = max(self.config.max_steps - step, 0) * rollouts / advice.rate
+        restart_s = self.first_shipped_at - self.started_at + (self.dispatcher.generation_s or 0.0)
+        notice = self.balance.notice(advice, remaining_s=remaining_s, restart_s=restart_s)
+        if notice is not None:
+            get_logger().warning(notice)
+            self.write_balance(advice, notice)
+        if self.balance.should_probe(advice):
+            self.balance.start_probe()
+            self.dispatcher.trainer_bounds_lifted = True
+            self.concurrency.explore()
+            get_logger().info(
+                "Balance probe: the trainer is the bottleneck and inference capacity is unmeasured, so the "
+                "trainer-side admission bounds are lifted until the engines' knee is found"
+            )
+
+    def write_balance(self, advice: Advice, notice: str) -> None:
+        """Keep the last advice in the run directory, for the next launch of a similar run."""
+        path = self.config.output_dir / "balance.json"
+        record = {
+            "step": self.progress.step,
+            "unit": self.config.balance.unit,
+            "current": advice.current.units,
+            "recommended": advice.best.units,
+            "gain": advice.gain,
+            "bottleneck": advice.bottleneck,
+            "capacities": {
+                name: {"rollouts_per_min": c.rate * 60, "kind": c.kind.value, "source": c.source}
+                for name, c in advice.capacities.items()
+            },
+            "overrides": self.balance.overrides(advice.best),
+            "notice": notice,
+        }
+        try:
+            path.write_text(json.dumps(record, indent=2))
+        except OSError as e:
+            get_logger().debug(f"Could not write {path}: {e!r}")
+
     async def trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
         fires. No-op when eval is not configured."""
@@ -925,6 +1023,8 @@ class Orchestrator:
             **self.concurrency.gauges(),
             **self.clients.session_release_gauges(),
         }
+        if self.balance is not None:
+            payload |= self.balance.gauges()
         if self.gc is not None:
             payload |= self.gc.gauges()
         if lag_stats.n > 0:

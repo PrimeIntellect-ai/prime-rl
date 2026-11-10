@@ -193,10 +193,14 @@ class Dispatcher:
         self.unconsumed_train_rollouts = unconsumed_train_rollouts
         self.batch_size = batch_size
         self.trainer_rate = trainer_rate
-        # Rollouts of the train episodes waiting in ``out_q``
+        # Rollouts of the train episodes waiting in ``out_q``, and of every train episode finished so far
         self.queued_train_rollouts = 0
+        self.finished_train_rollouts = 0
         # Average seconds from dispatch to completion of a train episode
         self.generation_s: float | None = None
+        # The balance advisor's probe lifts the trainer-side bounds (held permits, trainer target) to find the
+        # engines' knee
+        self.trainer_bounds_lifted = False
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -275,7 +279,7 @@ class Dispatcher:
     def held_permits(self) -> int:
         """Permits still held by finished train rollouts: those beyond ``BUFFERED_BATCHES`` batches that the
         trainer has not taken yet."""
-        if self.unconsumed_train_rollouts is None or self.batch_size is None:
+        if self.unconsumed_train_rollouts is None or self.batch_size is None or self.trainer_bounds_lifted:
             return 0
         waiting = self.queued_train_rollouts + self.unconsumed_train_rollouts()
         return max(0, waiting - BUFFERED_BATCHES * self.batch_size())
@@ -285,7 +289,7 @@ class Dispatcher:
         """Train episodes in flight that keep a bottlenecked trainer fed, by Little's law: the rollouts per second it
         takes times the generation lifetime, plus ``TRAINER_MARGIN``. None while the trainer is not the bottleneck."""
         rate = self.trainer_rate() if self.trainer_rate is not None else None
-        if rate is None or self.generation_s is None:
+        if rate is None or self.generation_s is None or self.trainer_bounds_lifted:
             return None
         return (1 + TRAINER_MARGIN) * rate * self.generation_s
 
@@ -795,6 +799,7 @@ class Dispatcher:
         episode.record_run(run)
         if meta.kind == "train":
             self.queued_train_rollouts += len(episode.traces)
+            self.finished_train_rollouts += len(episode.traces)
         await self.out_q.put(episode)
 
     async def get(self) -> DispatchResult:

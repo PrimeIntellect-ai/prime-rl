@@ -236,6 +236,14 @@ def counter_delta(sample: EngineSample, previous: TimedSnapshot | None, names: t
     return delta
 
 
+def kv_usage(snapshot: EngineSnapshot) -> float | None:
+    """GPU KV cache usage (0-1) under its current or legacy gauge name, None when the engine reports neither."""
+    for name in ("kv_cache_usage_perc", "gpu_cache_usage_perc"):
+        if name in snapshot.gauges:
+            return snapshot.gauges[name]
+    return None
+
+
 def histogram_sum_delta(sample: EngineSample, previous: TimedSnapshot | None, name: str) -> float:
     """Increase of a histogram's ``_sum`` since the previous scrape (0 on the first scrape or a reset)."""
     if previous is None or name not in sample.snapshot.histograms:
@@ -416,6 +424,8 @@ class InferenceMetricsCollector:
             finished_delta=counter_delta(sample, previous, ("request_success", "request_success_total")),
             generation_tokens_delta=counter_delta(sample, previous, ("generation_tokens", "generation_tokens_total")),
             latency_delta=histogram_sum_delta(sample, previous, "e2e_request_latency_seconds"),
+            running=int(sample.snapshot.gauges.get("num_requests_running", 0.0)),
+            kv_usage=kv_usage(sample.snapshot),
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

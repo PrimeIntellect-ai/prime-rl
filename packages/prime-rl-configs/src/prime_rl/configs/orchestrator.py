@@ -466,6 +466,70 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+class BalancePoolConfig(BaseConfig):
+    """One GPU pool of the deployment, as the balance advisor sees it: how many units it holds, in which steps it
+    can change, and the config key that sets it."""
+
+    name: Literal["trainer", "inference", "prefill", "decode"]
+    """The pool: the trainer, colocated inference engines, or the prefill or decode engines of a P/D deployment."""
+
+    units: int = Field(ge=1)
+    """Units (GPUs on a single node, else nodes) the pool holds."""
+
+    step: int = Field(1, ge=1)
+    """Units the pool grows or shrinks by: one replica of its engines, or the trainer's parallelism granularity."""
+
+    minimum: int = Field(1, ge=1)
+    """Fewest units the pool can run on."""
+
+    keys: list[str] = []
+    """Config keys that set the pool's size, each set to ``units // step * per_step``."""
+
+    per_step: list[int] = []
+    """The value each key in ``keys`` moves by per step of the pool."""
+
+
+class BalanceConfig(BaseConfig):
+    """Advice on the trainer / inference (and prefill / decode) GPU split. The orchestrator measures how busy each
+    pool is and logs, under ``balance/*``, the speed the run would have with each pool resized; when another split
+    of the same GPUs would be clearly faster for long enough, it logs a notice with the config to restart with."""
+
+    enabled: bool = True
+    """Measure the pools and log ``balance/*``. The advice itself needs ``pools``, which ``rl`` fills."""
+
+    pools: list[BalancePoolConfig] | None = None
+    """The deployment's GPU pools. Filled by ``rl`` from ``deployment`` and ``inference.deployment``."""
+
+    unit: Literal["GPU", "node"] = "GPU"
+    """What a pool unit is. Filled by ``rl``."""
+
+    infer_replicas: int = Field(1, ge=1)
+    """``deployment.num_infer_replicas``: a P/D split is advised per replica. Filled by ``rl``."""
+
+    window_minutes: float = Field(30.0, gt=0)
+    """Span the pool measurements average over."""
+
+    min_gain: float = Field(0.1, ge=0)
+    """Relative speedup a split must promise before it is advised."""
+
+    sustain_minutes: float = Field(30.0, ge=0)
+    """How long one split must keep promising ``min_gain`` before the notice."""
+
+    knee_max_age_minutes: float = Field(120.0, gt=0)
+    """Oldest inference knee measurement that stands for inference capacity while the trainer is the bottleneck."""
+
+    probe: bool = False
+    """While the trainer is the bottleneck, inference runs below its knee, so its capacity is unmeasured. A probe
+    lifts the trainer-side admission bounds until the concurrency controller finds the knee again. It costs staleness:
+    rollouts made faster than the trainer takes them wait, and the oldest are masked past ``max_staleness``."""
+
+    probe_interval_minutes: float = Field(120.0, gt=0)
+    """Least time between two probes."""
+
+    probe_max_minutes: float = Field(20.0, gt=0)
+    """Longest a probe runs before it gives up on finding the knee."""
+
+
 # Top-k set on truncated policy sampling that has none: the kept ids of every sampled token travel to the
 # trainer, and top-p alone can keep most of the vocabulary on a flat distribution.
 TRAIN_TOP_K_DEFAULT = 10000
@@ -543,6 +607,9 @@ class OrchestratorConfig(BaseConfig):
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
+
+    balance: BalanceConfig = BalanceConfig()
+    """Trainer / inference GPU split advice (``[orchestrator.balance]``)."""
 
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Freezes the startup heap, turns off automatic full collections (each one holds the GIL and stalls the event loop for as long as it takes to walk every held episode) and runs one every N steps instead. Young collections still run. Set to null to use Python's default GC behavior."""

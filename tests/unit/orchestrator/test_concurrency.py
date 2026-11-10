@@ -341,3 +341,30 @@ def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
     dispatcher.out_q.put_nowait(episode)
     assert asyncio.run(dispatcher.get()) is episode
     assert dispatcher.queued_train_rollouts == 1
+
+
+def test_knee_and_environment_signals():
+    ctl, pool = controller()
+    # Climbing with empty queues: growth still pays, not the knee
+    run(ctl, pool, lambda n: 100 * n, polls=3)
+    assert ctl.climbing and not ctl.at_knee
+    # The engines queue at the target while the cap binds: the knee by the queue, even mid-climb
+    run(ctl, pool, lambda n: 100 * n, polls=12, queued=lambda n: n // 8)
+    assert ctl.at_knee
+    # A pool held below the cap (by the trainer, say) is not at the engines' knee
+    pool.inflight = ctl.max_inflight // 2
+    ctl.observe([engine(finished=10, generated=1000, waiting=pool.inflight // 8)])
+    assert not ctl.at_knee
+
+    # The configured ceiling holds the cap while the climb still pays: the environment bounds the pool
+    ctl = ConcurrencyController(ConcurrencyConfig(initial_inflight=100, max_inflight=100), fallback_cost=1)
+    pool = Pool(100)
+    ctl.bind(set_limit=pool.limits.append, get_inflight=lambda: pool.inflight)
+    run(ctl, pool, lambda n: 100 * n, polls=3)
+    assert ctl.env_bound and not ctl.at_knee
+
+    # Explore restarts the fast climb from the current cap
+    ctl, pool = controller()
+    ctl.climbing, ctl.paying = False, True
+    ctl.explore()
+    assert ctl.climbing and not ctl.paying
