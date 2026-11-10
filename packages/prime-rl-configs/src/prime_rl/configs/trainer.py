@@ -19,6 +19,7 @@ from prime_rl.configs.shared import (
     VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
+    validate_step_dir,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -37,6 +38,9 @@ class ActivationCheckpointConfig(BaseConfig):
 
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+
+    token_chunk_size: int | None = Field(None, ge=3)
+    """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -276,6 +280,9 @@ class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
+    init_from: Path | None = None
+    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
+
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
@@ -340,6 +347,12 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def validate_init_from(self):
+        if self.init_from is not None:
+            validate_step_dir(self.init_from, field="model.init_from")
+        return self
 
     @model_validator(mode="after")
     def validate_cp(self):
@@ -586,7 +599,8 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseTrainerConfig(BaseConfig):
-    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer
+    (``SupervisedTrainerConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
@@ -625,8 +639,8 @@ class BaseTrainerConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: ControlConfig | None = None
-    """Serve the run control API on the master rank (pause the run after the next
-    step). If None, the run takes no control requests."""
+    """Serve the run control API on the master rank (pause or checkpoint the run
+    after the next step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""

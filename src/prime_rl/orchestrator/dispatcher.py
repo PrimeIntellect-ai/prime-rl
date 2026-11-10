@@ -1,7 +1,7 @@
 """Dispatcher: schedules rollouts under a shared permit counter.
 
 - Capacity (``max_inflight``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server. The cap is dynamic —
+  one episode: one ``run`` request against an env worker pool. The cap is dynamic —
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
@@ -34,6 +34,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
+from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
 from prime_rl.orchestrator import live
@@ -540,6 +541,10 @@ class Dispatcher:
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            # A recursive harness's sub-agents are routed as sessions of their own.
+            for call in delta.get("calls", ()):
+                if (acp := call.get("acp")) is not None:
+                    session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
@@ -578,7 +583,7 @@ class Dispatcher:
         return True
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
-        """Delete the training arrays env servers kept for episodes no sink will see."""
+        """Delete the training arrays env workers kept for episodes no sink will see."""
         delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
 
     async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:

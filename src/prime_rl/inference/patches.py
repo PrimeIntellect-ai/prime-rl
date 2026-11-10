@@ -54,6 +54,11 @@ class PackedSamplingMask:
     ids: np.ndarray
     counts: np.ndarray
 
+    @property
+    def token_ids(self) -> list[list[int]]:
+        """vLLM's nested form, which upstream's ``text`` and ``derender`` responses read."""
+        return [chunk.tolist() for chunk in np.split(self.ids, np.cumsum(self.counts)[:-1])]
+
 
 def monkey_patch_packed_sampling_masks():
     """Keep sampling masks as numpy arrays in the API server's output processor.
@@ -140,17 +145,17 @@ def monkey_patch_packed_aux_outputs():
     AuxOutputWorkerConnector.process_output = process_output
 
 
-AUX_OUTPUT_STORE_HEADROOM = 2
+AUX_OUTPUT_STORE_HEADROOM = 3
 
 
 def monkey_patch_aux_output_store():
     """Size the routed-experts store above the KV cache.
 
-    With a KV connector the scheduler retains rows for up to twice the KV cache's blocks
-    (vllm-project/vllm#62591), and a store of exactly KV size then grows by copying its whole arena on the
-    engine path. The worker builds it at ``AUX_OUTPUT_STORE_HEADROOM`` times vLLM's size instead (anonymous
-    mmap: unused slots cost no memory). vllm-project/vllm#62392 keeps referenced keys out of the eviction LRU,
-    which this patch used to work around.
+    Referenced rows are never evicted. With a KV connector the scheduler retains rows for up to twice the KV
+    cache's blocks (vllm-project/vllm#62591), and running requests reference up to one more KV cache of blocks
+    they have not finished, so a smaller store grows by copying its whole arena on the engine path. The worker
+    builds it at ``AUX_OUTPUT_STORE_HEADROOM`` times vLLM's size instead (anonymous mmap: unused slots cost no
+    memory).
     """
     from vllm.distributed.aux_output_connector import worker as aux_worker
     from vllm.distributed.aux_output_connector.store import BlockObjectStore

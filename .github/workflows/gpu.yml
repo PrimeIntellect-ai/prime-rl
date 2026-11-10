@@ -98,6 +98,7 @@ jobs:
         include:
           - {test: reverse_text_sft, name: Reverse Text SFT}
           - {test: reverse_text_sft_lora, name: Reverse Text SFT LoRA}
+          - {test: pretrain, name: Pretrain}
           - {test: reverse_text, name: Reverse Text}
           - {test: reverse_text_rl_opd, name: Reverse Text RL OPD}
           - {test: reverse_text_rl_sft, name: Reverse Text RL SFT}

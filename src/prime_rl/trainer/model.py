@@ -38,7 +38,10 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.activation_checkpointing import (
+    TokenChunkedCheckpointWrapper,
+    get_activation_checkpoint_wrapper,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -627,6 +630,33 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def clear_padding_idx(model: nn.Module) -> None:
+    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
+    embedding at zero and keep it frozen, also after a resume."""
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            module.padding_idx = None
+
+
+@torch.no_grad()
+def initialize_from_scratch(model: nn.Module) -> None:
+    """Initialize the weights with the model's own init (``initialize_weights``, which applies its
+    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
+    get_logger().info("Initializing the weights from scratch")
+    model.to_empty(device="cuda")
+    torch.distributed.barrier()
+    model.init_buffers_post_meta()
+    local_params = {
+        name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
+    }
+    for param in local_params.values():
+        param.fill_(float("nan"))
+    model.initialize_weights()
+    uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
+    if uninitialized:
+        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -802,9 +832,12 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
-    for layer_id in range(len(language_model.layers)):
-        # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    for layer in language_model.layers:
+        if isinstance(layer, TokenChunkedCheckpointWrapper):
+            layer.compile_chunk(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        else:
+            # Doing it in-place avoids mangled fqn which can break checkpoint loading
+            layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -903,6 +936,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -959,12 +993,20 @@ def setup_model(
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
+        if config.ac.token_chunk_size is not None and parallel_dims.ep not in (1, parallel_dims.cp):
+            # Every chunk runs the EP all-to-alls. An EP group wider than CP spans ranks holding different rows,
+            # whose chunk counts can differ, so one rank would wait on a collective its peers never start.
+            raise ValueError(
+                f"model.ac.token_chunk_size requires ep == 1 or ep == cp, got ep={parallel_dims.ep}, cp={parallel_dims.cp}"
+            )
         apply_ac(model, config.ac)
     if config.compile is not None:
         apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
 
+    if init_from_scratch:
+        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
@@ -973,6 +1015,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
+    elif init_from_scratch:
+        initialize_from_scratch(model)
     else:
         load_dcp_from_hf(model, config)
 
