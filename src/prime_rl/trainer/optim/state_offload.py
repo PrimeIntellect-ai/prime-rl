@@ -236,20 +236,14 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         for param in self.optimizer.state:
             state = self.optimizer.state[param]
             for key, value in state.items():
-                if isinstance(value, DTensor):
-                    local_tensor = value._local_tensor
-                    if device == "cpu":
-                        new_local = self._offload_to_cpu(param, key, local_tensor)
-                    else:
-                        new_local = local_tensor.to(device, non_blocking=True)
-                    new_dtensor = copy.copy(value)
-                    new_dtensor._local_tensor = new_local
-                    state[key] = new_dtensor
-                elif isinstance(value, torch.Tensor):
-                    if device == "cpu":
-                        state[key] = self._offload_to_cpu(param, key, value)
-                    else:
-                        state[key] = value.to(device, non_blocking=True)
+                if not isinstance(value, torch.Tensor):
+                    continue
+                local = _local(value)
+                if device == "cpu":
+                    new_local = self._offload_to_cpu(param, key, local)
+                else:
+                    new_local = local.to(device, non_blocking=True)
+                state[key] = _with_local(value, new_local)
         if device == "cpu" and torch.cuda.is_initialized():
             torch.cuda.synchronize()
 
