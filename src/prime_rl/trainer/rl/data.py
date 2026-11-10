@@ -225,6 +225,10 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
         for name in ("rl_weights", "ce_weights", "ref_kl_weights"):
             if micro_batch[name] is not None:
                 micro_batch[name] = torch.zeros_like(micro_batch[name])
+        # The rank that failed the fetch has no sampler support for this micro batch while its CP
+        # peers may: clear it on every rank, or only the peers enter the ragged support all-gather.
+        for name in ("support_ids", "support_logprobs", "support_offsets", "support_replayed"):
+            micro_batch[name] = None
 
 
 class DataLoader:
