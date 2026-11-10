@@ -189,6 +189,17 @@ class Env:
             )
         return restores
 
+    async def release(self) -> None:
+        """Let the rollouts that ``save`` holds at their restore points go on. A replica
+        that does not answer releases its rollouts by itself after two minutes."""
+        results = await asyncio.gather(*(client.release() for client in self.env_clients), return_exceptions=True)
+        failed = [result for result in results if isinstance(result, BaseException)]
+        if failed:
+            get_logger().warning(
+                f"{len(failed)} of {len(results)} replicas of {self.name} did not release their saved rollouts: "
+                f"{failed[0]!r}"
+            )
+
     def _collect_late_save(self, save: asyncio.Task) -> None:
         self._late_saves.discard(save)
         if not save.cancelled() and save.exception() is None:

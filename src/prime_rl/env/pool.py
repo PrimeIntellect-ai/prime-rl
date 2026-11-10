@@ -43,7 +43,7 @@ from prime_rl.utils.process import set_proc_title
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
 
-BROADCAST = (b"save",)
+BROADCAST = (b"save", b"release")
 """Requests every worker answers for its own rollouts (`merge_replies`)."""
 
 

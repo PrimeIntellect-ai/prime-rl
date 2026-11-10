@@ -38,13 +38,17 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
             discarded.extend(snapshot.id for snapshot in snapshots)
             return [snapshot.id for snapshot in snapshots]
 
-    async def save_all() -> list[RestorePoint]:
+    async def save_all(skipped: dict[str, int], *, hold: bool) -> list[RestorePoint]:
         # t9's run ended while the checkpoints were taken; t2 is one trace of a multi-agent episode.
+        assert hold
+        skipped["the 'subprocess' runtime takes no memory snapshots"] = 2
         return [point("t1"), point("t2"), point("t9"), point("../t4")]
 
     monkeypatch.setattr(worker, "save_all", save_all)
     monkeypatch.setattr(worker, "PrimeBackend", Backend)
     env_worker = EnvWorker.__new__(EnvWorker)
+    env_worker.taskset_id = "tasks"
+    env_worker._warned_skips = set()
     env_worker._slots = {
         "r1": slot("e1", "t1"),
         "r2": slot("e2", "t2", "t3"),
@@ -63,6 +67,11 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
     episode_id, restored = read_restore(ref.path)
     assert episode_id == "e1" and restored.trace == point("t1").trace and restored.snapshot == ref.snapshot
     assert discarded == ["s-t2", "s-t9", "s-../t4"]
+    # One reason per running rollout without a restore point.
+    assert sorted(response.skipped) == [
+        *["its episode has more than one trace, or it ended during the save"] * 3,
+        *["the 'subprocess' runtime takes no memory snapshots"] * 2,
+    ]
 
 
 def test_an_unreadable_restore_file_starts_the_rollout_over(tmp_path):

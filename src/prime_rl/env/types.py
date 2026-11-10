@@ -76,6 +76,12 @@ class SaveResponse(BaseResponse):
     """Why a running rollout took no restore point: one reason per such rollout."""
 
 
+class ReleaseRequest(BaseRequest):
+    """Let the rollouts a ``save`` holds at their restore points go on."""
+
+    method: ClassVar[str] = "release"
+
+
 class DiscardRequest(BaseRequest):
     """Delete box snapshots (dumped `Snapshot`s) that nothing will restore."""
 

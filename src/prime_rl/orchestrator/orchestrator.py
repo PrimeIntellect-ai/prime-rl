@@ -1193,15 +1193,22 @@ class Orchestrator:
         start = time.perf_counter()
         restores = await self.save_inflight(rollouts)
         saved = time.perf_counter()
-        async with self.sink_lock:
-            locked = time.perf_counter()
-            work = self.open_work(restores)
-            state = build_state(self.progress, self.train_source, self.config_state())
-            snapshotted = time.perf_counter()
-            # Under the lock, so the sink deletes none of the arrays meanwhile.
-            needed, persisted = await persist_open_work(work, rollouts)
-            forked = time.perf_counter()
-            pid = self.ckpt_manager.fork_writer(state, work, step, freeze=self.gc is None)
+        try:
+            async with self.sink_lock:
+                locked = time.perf_counter()
+                work = self.open_work(restores)
+                state = build_state(self.progress, self.train_source, self.config_state())
+                snapshotted = time.perf_counter()
+                # The saved rollouts wait at their restore points until here: each one
+                # is either in the open work with its restore point, or finished before.
+                await asyncio.gather(*(env.release() for env in self.train_envs))
+                # Under the lock, so the sink deletes none of the arrays meanwhile.
+                needed, persisted = await persist_open_work(work, rollouts)
+                forked = time.perf_counter()
+                pid = self.ckpt_manager.fork_writer(state, work, step, freeze=self.gc is None)
+        except BaseException:
+            await asyncio.shield(asyncio.gather(*(env.release() for env in self.train_envs), return_exceptions=True))
+            raise
         if persisted < needed:
             get_logger().warning(
                 f"{needed - persisted} of {needed} training arrays of the unshipped episodes were not written "

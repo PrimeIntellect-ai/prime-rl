@@ -36,6 +36,7 @@ from prime_rl.env.types import (
     DiscardResponse,
     HealthRequest,
     HealthResponse,
+    ReleaseRequest,
     RunRequest,
     RunResponse,
     SaveRequest,
@@ -318,6 +319,10 @@ class EnvClient:
         written as a restore file under `directory`. The caller owns the snapshots of
         the restore points it gets back."""
         return await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout)
+
+    async def release(self, timeout: float | None = 30.0) -> None:
+        """Let the rollouts the last `save` holds at their restore points go on."""
+        await self._request(ReleaseRequest(), BaseResponse, timeout=timeout)
 
     async def discard(self, snapshots: list[dict], timeout: float | None = 120.0) -> list[str]:
         """Delete box snapshots; returns the ids of the deleted."""

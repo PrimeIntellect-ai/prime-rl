@@ -16,7 +16,7 @@ from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.delta import DeltaStreamer, dump
 from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode
-from verifiers.v1.restore import RestorePoint, save_all
+from verifiers.v1.restore import RestorePoint, release_all, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
@@ -233,7 +233,9 @@ class EnvWorker:
         multi-trace episode cannot continue from one trace, and a run that ended while
         the checkpoints were taken has nothing left to continue."""
         reasons: dict[str, int] = {}
-        points = await save_all(reasons)
+        # Held at their restore points until the client's `release`: a saved rollout
+        # must still run when the client records what is in flight.
+        points = await save_all(reasons, hold=True)
         slots = {
             slot.traces[0].id: (request_id, slot) for request_id, slot in self._slots.items() if len(slot.traces) == 1
         }
@@ -306,6 +308,9 @@ class EnvWorker:
                 response = CancelResponse(cancelled=running is not None)
             elif route == "save":
                 response = await self._save(SaveRequest.model_validate(raw))
+            elif route == "release":
+                release_all()
+                response = BaseResponse()
             elif route == "discard":
                 snapshots = DiscardRequest.model_validate(raw).snapshots
                 deleted = await PrimeBackend.discard([Snapshot.model_validate(snapshot) for snapshot in snapshots])
