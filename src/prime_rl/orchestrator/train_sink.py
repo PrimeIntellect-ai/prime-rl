@@ -10,7 +10,7 @@ observations; only queued traces retain verifier objects. The consumer drains
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
@@ -135,9 +135,12 @@ class TrainSink(Reconfigurable):
         batch_size: int,
         on_result: Callable[[list[vf.Episode]], bool] | None = None,
         on_groups_closed: Callable[[Iterable[str]], None] | None = None,
+        group_size: Callable[[str], int | None] | None = None,
     ) -> None:
         """``on_groups_closed`` receives the ids of every group that closes: a group
-        that finalized without anything to ship, or one whose batch shipped (`shipped`)."""
+        that finalized without anything to ship, or one whose batch shipped (`shipped`).
+        ``group_size`` returns the size a group was drawn with, or None if unknown; an
+        unknown group takes its env's current group size."""
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
@@ -145,6 +148,7 @@ class TrainSink(Reconfigurable):
         self.batch_size = batch_size
         self.on_result = on_result
         self.on_groups_closed = on_groups_closed
+        self.group_size = group_size
 
         self.rollout_window = RolloutWindow()
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
@@ -157,7 +161,8 @@ class TrainSink(Reconfigurable):
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
-        self.zero_output_units = 0
+        # Finalized units that shipped no payload since the last shipment, by drop reason.
+        self.zero_output_units: Counter[str] = Counter()
         self.reported_zero_output_windows = 0
 
     def reconfigure(self, update: ConfigUpdate) -> None:
@@ -176,8 +181,9 @@ class TrainSink(Reconfigurable):
         """Delete the env workers' arrays of samples that will never ship."""
         self._release(sample_payload_urls(samples))
 
-    def group_size_for(self, env_name: str) -> int:
-        return self.train_envs.get(env_name).config.group_size
+    def group_size_for(self, group_id: str, env_name: str) -> int:
+        size = self.group_size(group_id) if self.group_size is not None else None
+        return size if size is not None else self.train_envs.get(env_name).config.group_size
 
     def batch_progress(self) -> tuple[int, int]:
         return len(self.pending_batch), self.batch_size
@@ -186,6 +192,12 @@ class TrainSink(Reconfigurable):
         episodes = sum(len(group) for group in self.pending_groups.values())
         failures = sum(len(group) for group in self.pending_group_failures.values())
         return episodes + failures
+
+    def unbatched_rollouts(self) -> int:
+        """Finished rollouts not cut into a batch yet: those of groups still waiting for members, and the queued
+        ones."""
+        waiting = sum(len(episode.traces) for group in self.pending_groups.values() for episode in group)
+        return waiting + len(self.pending_batch)
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
@@ -231,7 +243,7 @@ class TrainSink(Reconfigurable):
         cancellation = self.pending_group_cancellations.get(group_id)
         cancelled = cancellation.count if cancellation is not None else 0
         failed = len(self.pending_group_failures[group_id])
-        return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
+        return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(group_id, env_name)
 
     async def take_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
@@ -329,7 +341,7 @@ class TrainSink(Reconfigurable):
         # resume re-runs it.
         if cancellation is not None and cancellation.reason == "shutdown":
             self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=group)
-            self._record_zero_output(group, [], n_owed)
+            self._record_zero_output(group, [], n_owed, reason="cancelled")
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
@@ -344,8 +356,8 @@ class TrainSink(Reconfigurable):
         if not survivors or not admitted:
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name, admitted=admitted)
-            self._record_zero_output(group, survivors, n_owed)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
+            self._record_zero_output(group, survivors, n_owed, reason=reason)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason={reason}"
@@ -359,7 +371,7 @@ class TrainSink(Reconfigurable):
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and not _kept(sample, "sampling_mask"):
+                if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
@@ -368,11 +380,9 @@ class TrainSink(Reconfigurable):
                         "the inference server config (the rl entrypoint does this automatically) - "
                         f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_ARRAYS_HINT}"
                     )
-                if env.requires_top_logprobs and not (
-                    _kept(sample, "top_logprobs") or _kept(sample, "sampling_mask_logprobs")
-                ):
+                if env.requires_sampler_logprobs and not _kept(sample, "sampler_support_logprobs"):
                     raise RuntimeError(
-                        f"env {env_name!r} requested sampler top logprobs but returned none. {_KEEP_ARRAYS_HINT}"
+                        f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
@@ -383,7 +393,7 @@ class TrainSink(Reconfigurable):
         if not samples_by_trace:
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name)
-            self._record_zero_output(group, survivors, n_owed)
+            self._record_zero_output(group, survivors, n_owed, reason="zero advantage")
             return
 
         self.pending_batch.update(samples_by_trace)
@@ -404,9 +414,9 @@ class TrainSink(Reconfigurable):
         # instead of resetting it, or a stalled trainer plus a tight bound
         # could void groups forever without ever surfacing the warning.
         if not queued:
-            self._record_zero_output(group, [], n_owed)
+            self._record_zero_output(group, [], n_owed, reason="stale")
             return
-        self.zero_output_units = 0
+        self.zero_output_units.clear()
         self.reported_zero_output_windows = 0
 
     def _record_group(
@@ -467,25 +477,29 @@ class TrainSink(Reconfigurable):
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
 
-    def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
+    def _record_zero_output(
+        self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int, *, reason: str
+    ) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
         cancelled), so dropped groups advance the zero-output tally at the
         same rate as fully-delivered ones."""
         returned_traces = sum(len(episode.traces) for episode in group)
-        self.zero_output_units += len(survivors) or returned_traces or n_owed
+        self.zero_output_units[reason] += len(survivors) or returned_traces or n_owed
         self._warn_zero_output()
 
     def _warn_zero_output(self) -> None:
         """Warn once per batch-equivalent of finalized units that shipped no
         payload, so a run that produces no training signal stays visible in the
         logs without aborting."""
-        windows = self.zero_output_units // self.batch_size
+        units = self.zero_output_units.total()
+        windows = units // self.batch_size
         if windows <= self.reported_zero_output_windows:
             return
         self.reported_zero_output_windows = windows
         get_logger().warning(
-            f"No admitted train payload after {self.zero_output_units} finalized units "
-            f"({windows} zero-output batch equivalents)"
+            f"No admitted train payload after {units} finalized units "
+            f"({windows} zero-output batch equivalents), by drop reason: "
+            + ", ".join(f"{reason}={count}" for reason, count in self.zero_output_units.most_common())
         )
 
     async def process_batch(self) -> TrainBatch:

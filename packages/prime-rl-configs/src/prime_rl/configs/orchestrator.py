@@ -49,9 +49,9 @@ class TrainSamplingConfig(BaseConfig):
     rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
-    a default top-k is injected when only top-p truncates so sampling masks stay
-    bounded — see docs/inference.md (Sampling Replay)."""
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and a default top-k
+    is set when only top-p truncates so every replayed support is bounded — see docs/inference.md
+    (Sampling Replay)."""
 
     max_completion_tokens: Annotated[int | None, Live()] = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
@@ -239,9 +239,10 @@ class TrainSourceConfig(EnvConfig):
     ratio: Annotated[float, Live()] = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
-    group_size: int = Field(1, ge=1)
+    group_size: Annotated[int, Live()] = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages. Overrides the
-    train group's ``group_size`` for this env, so envs can use different sizes."""
+    train group's ``group_size`` for this env, so envs can use different sizes. A live
+    change applies to groups drawn after it; open groups keep the size they started with."""
 
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm for this env: sampling plus the per-token training signal
@@ -443,7 +444,7 @@ class CheckpointConfig(BaseConfig):
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
-    in-flight episode cap from engine KV pressure; these fields only bound and
+    in-flight episode cap from engine load; these fields only bound and
     seed it."""
 
     initial_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
@@ -452,8 +453,8 @@ class ConcurrencyConfig(BaseConfig):
     min_inflight: Annotated[int, Live()] = Field(1, ge=1)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: Annotated[int | None, Live()] = Field(1024, ge=1)
-    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
+    max_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
+    """Maximum number of in-flight episodes. None (the default) leaves the cap to the controller. Set it to bound other external resources the episodes hold (e.g. sandboxes)."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
@@ -465,13 +466,9 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
-# Top-k injected on truncated policy sampling that has none, and the hard upper
-# bound for explicit top-k. vLLM's native sampling-mask capture requires a
-# per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
-# batch's masks to the largest sampling mask, so the bound also caps trainer
-# mask tensors.
-TRAIN_TOP_K_DEFAULT = 128
-TRAIN_TOP_K_BOUND = 512
+# Top-k set on truncated policy sampling that has none: the kept ids of every sampled token travel to the
+# trainer, and top-p alone can keep most of the vocabulary on a flat distribution.
+TRAIN_TOP_K_DEFAULT = 10000
 
 
 class OrchestratorControlConfig(ControlConfig):
@@ -617,9 +614,9 @@ class OrchestratorConfig(BaseConfig):
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
-        Owned here: every truncating config gets a top-k bound (bounds the sampling
-        masks); opd/opsd is rejected (full-vocab prefill refs would mix
-        normalizations). Frozen-source envs sample externally and are exempt."""
+        Owned here: every truncating config gets a top-k (bounds the replayed supports); opd/opsd
+        is rejected (full-vocab prefill refs would mix normalizations). Frozen-source envs sample
+        externally and are exempt."""
         truncating = [sampling for sampling in self.policy_samplings if sampling.truncates_distribution()]
         if not truncating:
             return self
@@ -631,19 +628,18 @@ class OrchestratorConfig(BaseConfig):
                 "while sampling-mask capture is on."
             )
 
-        oversized = [sampling.top_k for sampling in truncating if (sampling.top_k or 0) > TRAIN_TOP_K_BOUND]
-        if oversized:
+        algos = [env.algo for env in self.train.source] or [self.train.algo]
+        if any(algo.type in ("opd", "opsd") for algo in algos):
             raise ValueError(
-                f"Truncated train sampling with top_k = {max(oversized)} exceeds the sampling-replay "
-                f"bound ({TRAIN_TOP_K_BOUND}): the trainer pads each micro batch's masks to the largest "
-                f"sampling mask, so unbounded masks blow up trainer memory. Use top_k <= {TRAIN_TOP_K_BOUND}."
+                "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
+                "prefill scores while trainer logprobs are renormalized over the sampling mask, biasing the "
+                "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
             )
 
-        unbounded = [sampling for sampling in truncating if sampling.top_k is None]
-        if unbounded:
+        if any(sampling.top_k is None for sampling in truncating):
             warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_DEFAULT} so every sampling mask is "
-                "bounded and sampling replay stays exact. Set top_k explicitly to override.",
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_DEFAULT} so every replayed "
+                "support is bounded. Set top_k explicitly to override.",
                 stacklevel=2,
             )
             self.update_policy_samplings(
@@ -652,14 +648,6 @@ class OrchestratorConfig(BaseConfig):
                     if sampling.truncates_distribution() and sampling.top_k is None
                     else sampling
                 )
-            )
-
-        algos = [env.algo for env in self.train.source] or [self.train.algo]
-        if any(algo.type in ("opd", "opsd") for algo in algos):
-            raise ValueError(
-                "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
-                "prefill scores while trainer logprobs are renormalized over the sampling mask, biasing the "
-                "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
             )
 
         return self
@@ -752,21 +740,6 @@ class OrchestratorConfig(BaseConfig):
                 if getattr(env.sampling, "top_k", None) is None:
                     env.sampling.top_k = -1
                 env.sampling.logprobs = None
-        return self
-
-    @model_validator(mode="after")
-    def validate_policy_top_k_consistency(self):
-        """Require one top-k capture mode across the live policy server."""
-        policy_sources = [env for env in self.train.source if env.algo.rollout_model == "policy"]
-        enabled = [env for env in policy_sources if env.sampling.top_k is not None]
-        disabled = [env for env in policy_sources if env.sampling.top_k is None]
-        if enabled and disabled:
-            names = ", ".join(env.resolved_name for env in disabled)
-            raise ValueError(
-                "Live-policy train sources cannot mix top_k > 0 and top_k = -1 because "
-                "sampling-mask capture is engine-wide. Set top_k > 0 for these sources: "
-                f"{names}."
-            )
         return self
 
     @property
