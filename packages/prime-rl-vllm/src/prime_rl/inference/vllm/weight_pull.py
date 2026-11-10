@@ -22,6 +22,8 @@ from modelexpress_rl import ModelExpressControlClient, WeightVersion, WeightVers
 from vllm.engine.protocol import EngineClient
 from vllm.logger import init_logger
 
+from prime_rl.inference.vllm.api_server import pause_generation, resume_generation, update_weight_version
+
 # vLLM only configures loggers under its own namespace.
 logger = init_logger(f"vllm.{__name__}")
 
@@ -63,10 +65,10 @@ async def _apply(engine_client: EngineClient, version: WeightVersion) -> None:
     requests running now recompute their prefix on resume. A failed install leaves generation paused: the
     weights may be half written, and the server is about to exit."""
     start = time.perf_counter()
-    await engine_client.pause_generation(mode="keep", clear_cache=True)
+    await pause_generation(engine_client, clear_cache=True)
     await engine_client.collective_rpc("update_weights_from_modelexpress", args=(version.version_id,))
-    await engine_client.update_weight_version(str(version.version_number))
-    await engine_client.resume_generation()
+    await update_weight_version(engine_client, version.version_number)
+    await resume_generation(engine_client)
     logger.info("Installed policy v%d in place in %.2fs", version.version_number, time.perf_counter() - start)
 
 

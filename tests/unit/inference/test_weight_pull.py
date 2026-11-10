@@ -5,6 +5,7 @@ import pytest
 from modelexpress_rl import WeightPayloadFormat, WeightVersion, WeightVersionState
 
 from prime_rl.inference.vllm import weight_pull
+from prime_rl.inference.vllm.api_server import GENERATION_PAUSED, WEIGHT_VERSION
 
 
 def version(
@@ -49,6 +50,8 @@ class FakeServer:
             raise self.apply_error
 
     async def pause_generation(self, *, mode, clear_cache):
+        # The scheduler must see the pause before the engine stops serving.
+        assert GENERATION_PAUSED._value.get() == 1
         self.calls.append(("pause", mode, clear_cache))
 
     async def update_weight_version(self, label):
@@ -80,6 +83,8 @@ def test_installs_newest_version_a_source_can_serve():
         ("label", "2"),
         ("resume",),
     ]
+    assert WEIGHT_VERSION._value.get() == 2
+    assert GENERATION_PAUSED._value.get() == 0
 
 
 def test_failed_install_leaves_generation_paused():
@@ -89,6 +94,7 @@ def test_failed_install_leaves_generation_paused():
         asyncio.run(weight_pull._apply(engine, version(2)))
 
     assert engine.calls == [("pause", "keep", True), ("update_weights_from_modelexpress", "mesh-a-v2")]
+    assert GENERATION_PAUSED._value.get() == 1
 
 
 def test_versions_of_a_restarted_trainer_are_newer_whatever_their_number():
