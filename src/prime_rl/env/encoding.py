@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from uuid import UUID
 
+import msgpack
 import numpy as np
 from pydantic_core import to_jsonable_python
 
@@ -64,3 +65,12 @@ def msgpack_encoder(obj):
         return dataclasses.asdict(obj)
     else:
         return to_jsonable_python(obj)
+
+
+def pack(payload: object) -> bytes:
+    return msgpack.packb(payload, default=msgpack_encoder, use_bin_type=True)
+
+
+def unpack(data: bytes | memoryview) -> object:
+    # Env-defined dicts (`info`, `metrics`, task data) may be keyed by int.
+    return msgpack.unpackb(data, raw=False, strict_map_key=False)

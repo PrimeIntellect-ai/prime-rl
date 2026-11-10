@@ -470,6 +470,10 @@ def train(config: SFTConfig | PretrainConfig):
                 step_loss_sum += local_loss_sum.detach()
                 scaled_loss = local_loss_sum / grad_accum_steps
 
+            if parallel_dims.dp_replicate_enabled and gradient_manager is None:
+                # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
+                # replicas once, after the last backward
+                model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()

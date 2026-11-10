@@ -18,7 +18,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -49,11 +49,15 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Sampling-mask token ids per position, padded with -1 to the micro batch's
-    # maximum mask size. A row containing only -1 has no mask.
-    sampling_mask: Int[Tensor, "batch seq mask"] | None
-    top_logprobs_ids: Int[Tensor, "batch seq head"] | None
-    top_logprobs_values: Float[Tensor, "batch seq head"] | None
+    # Sampler support per token as CSR rows: token i owns entries support_offsets[i]:support_offsets[i + 1],
+    # its sampling mask (support_replayed) or a head of the sampler's distribution. support_logprobs is None
+    # when no packed sample carries sampler logprobs.
+    support_ids: Int[Tensor, "entries"] | None
+    support_logprobs: Float[Tensor, "entries"] | None
+    support_offsets: Int[Tensor, "seq_plus_one"] | None
+    support_replayed: Bool[Tensor, "seq"] | None
+    # Set by the trainer's micro batch preparation: whether the LM head may take its sparse backward
+    sparse_head_backward: NotRequired[bool]
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder).
@@ -149,9 +153,10 @@ class FakeDataLoader:
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
-            "sampling_mask": None,
-            "top_logprobs_ids": None,
-            "top_logprobs_values": None,
+            "support_ids": None,
+            "support_logprobs": None,
+            "support_offsets": None,
+            "support_replayed": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -184,9 +189,10 @@ class FakeDataLoader:
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
-            "sampling_mask": None,
-            "top_logprobs_ids": None,
-            "top_logprobs_values": None,
+            "support_ids": None,
+            "support_logprobs": None,
+            "support_offsets": None,
+            "support_replayed": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -283,36 +289,7 @@ class DataLoader:
                 .reshape(packed_routed_experts.shape)
                 .unsqueeze(0)
             )
-        sampling_mask = None
-        packed_sampling_mask = micro_batch.sampling_mask
-        if packed_sampling_mask is not None:
-            counts = np.frombuffer(packed_sampling_mask.counts, dtype=np.int32)
-            ids = np.frombuffer(packed_sampling_mask.ids, dtype=np.int32)
-            # Boolean assignment fills row-major, matching the flat concat order.
-            max_mask_size = max(int(counts.max()), 1) if counts.size else 1
-            padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
-            padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
-            sampling_mask = torch.from_numpy(padded).unsqueeze(0)
-        top_ids = top_values = None
-        # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
-        heads = [
-            head
-            for head in (micro_batch.top_logprobs, packed_sampling_mask)
-            if head is not None and head.logprobs is not None
-        ]
-        if heads:
-            head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
-            counts = sum(head_counts)
-            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
-            order = np.argsort(rows, kind="stable")
-            width = max(int(counts.max(initial=0)), 1)
-            valid = np.arange(width)[None, :] < counts[:, None]
-            ids = np.full((len(counts), width), -1, dtype=np.int32)
-            values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
-            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
-            top_ids = torch.from_numpy(ids).unsqueeze(0)
-            top_values = torch.from_numpy(values).unsqueeze(0)
+        support = _decode_support(micro_batch.sampler_support)
 
         def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
             """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
@@ -339,14 +316,30 @@ class DataLoader:
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=stream("mm_token_type_ids", np.int64),
             routed_experts=routed_experts,
-            sampling_mask=sampling_mask,
-            top_logprobs_ids=top_ids,
-            top_logprobs_values=top_values,
+            **support,
             rl_weights=stream("rl_weights", np.float32),
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
             staleness=stream("staleness", np.int16),
         )
+
+
+def _decode_support(support: SamplerSupport | None) -> dict[str, Tensor | None]:
+    """The packed sampler support as token-major CSR tensors."""
+    if support is None:
+        return dict(support_ids=None, support_logprobs=None, support_offsets=None, support_replayed=None)
+    counts = np.frombuffer(support.counts, dtype=np.int32)
+    offsets = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    logprobs = None
+    if support.logprobs is not None:
+        logprobs = torch.from_numpy(np.frombuffer(support.logprobs, dtype=np.float32).copy())
+    return dict(
+        support_ids=torch.from_numpy(np.frombuffer(support.ids, dtype=np.int32).copy()),
+        support_logprobs=logprobs,
+        support_offsets=torch.from_numpy(offsets),
+        support_replayed=torch.from_numpy(np.frombuffer(support.replayed, dtype=np.bool_).copy()),
+    )
 
 
 SCORE_CENTERING_DATA_ERRORS = (
@@ -360,40 +353,42 @@ SCORE_CENTERING_DATA_ERRORS = (
 
 
 def score_centering_data_errors(
-    input_ids: Int[Tensor, "batch seq"],
-    loss_mask: Bool[Tensor, "batch seq"],
-    rl_weights: Float[Tensor, "batch seq"] | None,
-    top_ids: Int[Tensor, "batch seq head"],
-    top_values: Float[Tensor, "batch seq head"],
-    sampling_mask: Int[Tensor, "batch seq mask"] | None,
+    input_ids: Int[Tensor, " seq"],
+    rl_mask: Bool[Tensor, " seq"],
+    ids: Int[Tensor, " entries"],
+    values: Float[Tensor, " entries"],
+    rows: Int[Tensor, " entries"],
+    replayed: Bool[Tensor, " seq"],
     *,
     vocab_size: int,
 ) -> Bool[Tensor, " checks"]:
-    """Flag each check in ``SCORE_CENTERING_DATA_ERRORS`` that the sampler evidence on RL tokens
-    fails. Runs on the tensors' device without a host sync, so the trainer can validate on the GPU
-    and check the flags once per step with ``raise_score_centering_data_errors``."""
-    rl_mask = loss_mask if rl_weights is None else loss_mask & (rl_weights != 0)
-    valid = top_ids >= 0
-    ordered = top_ids.sort(-1).values
-    head_mass = top_values.exp().masked_fill(~valid, 0.0).sum(-1)
-    if sampling_mask is None:
-        unnormalized = unsampled = torch.zeros_like(rl_mask)
-    else:
-        replay = (sampling_mask >= 0).any(-1)
-        unnormalized = replay & ~torch.isclose(head_mass, torch.ones_like(head_mass), atol=1e-4, rtol=0)
-        unsampled = replay & ~(sampling_mask == input_ids.unsqueeze(-1)).any(-1)
+    """Flag each check in ``SCORE_CENTERING_DATA_ERRORS`` that the CSR sampler evidence on ``rl_mask`` tokens
+    fails (``rows``: each entry's token). Runs on the tensors' device without a host sync, so the trainer can
+    validate on the GPU and check the flags once per step with ``raise_score_centering_data_errors``."""
+    ids, rows = ids.long(), rows.long()
+
+    def any_per_token(flags: Tensor) -> Tensor:
+        return torch.zeros(rl_mask.numel(), dtype=torch.int32, device=ids.device).index_add_(0, rows, flags.int()) > 0
+
+    in_vocab = (ids >= 0) & (ids < vocab_size)
+    # Out-of-vocabulary ids get unique keys: they fail the first check, not this one
+    keys = torch.where(in_vocab, rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device))
+    sorted_keys, order = keys.sort()
+    duplicate = torch.zeros_like(ids, dtype=torch.bool)
+    duplicate[order[1:]] = sorted_keys[1:] == sorted_keys[:-1]
+    q = torch.zeros(rl_mask.numel(), dtype=values.dtype, device=values.device).index_add_(0, rows, values.exp())
     errors = torch.stack(
         [
-            ~valid.any(-1) | (top_ids >= vocab_size).any(-1),
-            (valid & (~top_values.isfinite() | (top_values > 1e-6))).any(-1),
-            ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(-1),
-            head_mass > 1.0001,
-            unnormalized,
-            unsampled,
+            ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token(~in_vocab),
+            any_per_token(~values.isfinite() | (values > 1e-6)),
+            any_per_token(duplicate),
+            q > 1.0001,
+            replayed & ~torch.isclose(q, torch.ones_like(q), atol=1e-4, rtol=0),
+            replayed & ~any_per_token(ids == input_ids[rows]),
         ],
         dim=-1,
     )
-    return (errors & rl_mask.unsqueeze(-1)).flatten(0, -2).any(0)
+    return (errors & rl_mask.unsqueeze(-1)).any(0)
 
 
 def raise_score_centering_data_errors(errors: list[Bool[Tensor, " checks"]]) -> None:
@@ -407,23 +402,19 @@ def raise_score_centering_data_errors(errors: list[Bool[Tensor, " checks"]]) -> 
 
 
 def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
-    """Validate sampler evidence before the LM head consumes it."""
-    ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]
-    if ids is None or values is None:
-        mask = batch["loss_mask"]
-        if batch["rl_weights"] is not None:
-            mask = mask & (batch["rl_weights"] != 0)
-        if mask.any():
-            raise ValueError("Score centering requires top logprobs on every RL token")
+    """Validate sampler evidence on the CPU before the LM head consumes it."""
+    mask = batch["loss_mask"][0]
+    if batch["rl_weights"] is not None:
+        mask = mask & (batch["rl_weights"][0] != 0)
+    if not mask.any():
         return
+    ids, values, offsets = batch["support_ids"], batch["support_logprobs"], batch["support_offsets"]
+    if ids is None or values is None:
+        raise ValueError("Score centering requires top logprobs on every RL token")
+    counts = offsets.diff()
+    rows = torch.repeat_interleave(torch.arange(len(counts)), counts)
     errors = score_centering_data_errors(
-        batch["input_ids"],
-        batch["loss_mask"],
-        batch["rl_weights"],
-        ids,
-        values,
-        batch["sampling_mask"],
-        vocab_size=vocab_size,
+        batch["input_ids"][0], mask, ids, values, rows, batch["support_replayed"], vocab_size=vocab_size
     )
     raise_score_centering_data_errors([errors])
 

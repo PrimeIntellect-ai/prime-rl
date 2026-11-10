@@ -36,8 +36,10 @@ class FileSystemBatchSender(BatchSender):
         step_path = get_step_path(self.batch_dir, self.current_step)
         step_path.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._encode_and_write, micro_batch_grid, step_path)
+        wait_start = time.perf_counter()
         await self._wait_for_requests(step_path)
         send_start = time.perf_counter()
+        self.last_wait_s = send_start - wait_start
         for data_rank in range(self.data_world_size):
             (step_path / f"rank_{data_rank}.bin.tmp").rename(step_path / f"rank_{data_rank}.bin")
         send_end = time.perf_counter()
