@@ -170,20 +170,15 @@ MAX_SLOTS = max_sparse_attn_slots(V4FLASH_CONFIG)
 SM_SCALE = DIM**-0.5
 
 requires_cudnn_flashmla = pytest.mark.skipif(
-    importlib.util.find_spec("flash_mla") is None
+    importlib.util.find_spec("vllm") is None
+    or importlib.util.find_spec("vllm._flashmla_C") is None
     or importlib.util.find_spec("cudnn") is None
     or not torch.cuda.is_available()
     or (torch.cuda.get_device_capability()[0] != 9 and torch.cuda.get_device_capability() not in ((10, 0), (10, 3))),
-    reason="the cudnn_flashmla backend needs `flash-mla` (the `gpu` extra), the cuDNN frontend and an SM90, SM100 or SM103 GPU",
+    reason="the cudnn_flashmla backend needs vLLM's FlashMLA (the `gpu` extra), the cuDNN frontend and an SM90, SM100 or SM103 GPU",
 )
 
 DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
-
-if importlib.util.find_spec("flash_mla") is not None:
-    # vLLM's bundled FlashMLA (`vllm._flashmla_C`) and the flash-mla wheel both define the GNU-unique
-    # symbol `Fwd_Sm90_Impl::features`, so the copy loaded first in the process serves both. vLLM's
-    # older list lacks TOPK_LENGTH, so load the wheel at collection, before any vLLM test loads its copy.
-    import flash_mla  # noqa: F401
 
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.
@@ -788,7 +783,7 @@ def test_fp8_o_a_proj_quantizes_and_multiplies_like_vllm_wo_a(monkeypatch):
     vLLM fuses the inverse RoPE into the input cast. Position 0 makes that rotation the identity, so
     its kernel quantizes exactly the tensor the trainer does.
     """
-    deep_gemm = pytest.importorskip("deep_gemm")
+    deep_gemm = pytest.importorskip("vllm.third_party.deep_gemm")
     pytest.importorskip("vllm")
     from vllm.models.deepseek_v4.common.ops.fused_inv_rope_fp8_quant import fused_inv_rope_fp8_quant
     from vllm.utils.deep_gemm import per_block_cast_to_fp8

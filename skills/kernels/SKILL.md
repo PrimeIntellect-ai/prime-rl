@@ -124,8 +124,9 @@ Then, in order:
 ## Prebuilt wheels
 
 The [prime-kernels](https://github.com/PrimeIntellect-ai/prime-kernels) repository owns
-`build_kernels.yaml`. It builds `prime-kernels`, `deep-ep`, `deep-gemm`, and `torchao` for
-x86_64 and aarch64. It publishes the wheels as prime-kernels release assets.
+`build_kernels.yaml`. It builds the `prime-kernels`, `deep-ep`, and `torchao` wheels prime-rl pins,
+for x86_64 and aarch64, and publishes them as prime-kernels release assets. DeepGEMM is not one of
+them: prime-rl uses the copy vLLM bundles (`vllm.third_party.deep_gemm`).
 
 Run that workflow in prime-kernels for each torch or CUDA bump:
 
@@ -142,7 +143,7 @@ that exact torch and CUDA ABI. prime-kernels CI controls the build dependency pi
 ### Pinning installs at the prebuilt wheels
 
 `uv sync --extra kernels` installs `prime-kernels` from the wheels named in
-`[tool.uv.sources]`. deep-ep, deep-gemm, torchao, and vLLM use the same pattern. A sync must
+`[tool.uv.sources]`. deep-ep, torchao, and vLLM use the same pattern. A sync must
 never compile these packages:
 
 ```toml
