@@ -358,7 +358,9 @@ def test_rollout_store_keeps_trained_arrays_until_a_checkpoint_covers_them(tmp_p
     for key in ("trained", "dropped", "queued"):
         writer.put(key, key.encode())
 
-    mark_trained([store.url], [f"{store.url}/trained"], step=3, committed=2)
+    # Two data ranks can mark the same blob.
+    for _ in range(2):
+        mark_trained([store.url], [f"{store.url}/trained", f"{store.url}/missing"], step=3, committed=2)
     wait_for_deletes()
     delete_payloads([f"{store.url}/trained", f"{store.url}/dropped"])
     wait_for_deletes()

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from pathlib import Path
 
 import torch.nn as nn
@@ -75,7 +76,9 @@ class FileSystemWeightReceiver(WeightReceiver):
         # A trainer restarted mid-broadcast offers the version again: acknowledge every offer.
         while not (weights_dir / FINISHED_MARKER).exists():
             if (weights_dir / SENDER_READY_MARKER).exists() and not (weights_dir / RECEIVER_READY_MARKER).exists():
-                self._ack(step)
+                # The trainer resets the directory for a new offer; the next pass acknowledges it.
+                with contextlib.suppress(FileNotFoundError):
+                    self._ack(step)
             await asyncio.sleep(0.1)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)

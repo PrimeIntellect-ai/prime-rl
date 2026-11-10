@@ -326,11 +326,16 @@ class RolloutStore(PayloadServer):
             step_dir.mkdir(exist_ok=True)
             for key in trained.ids:
                 path = self.path(key)
-                # A step trained again after a trainer restart has its blobs there already.
-                if path.parent == self.live and path.exists():
+                if path.parent != self.live:
+                    continue
+                # Another data rank may mark the same blob, and a step trained again after a
+                # trainer restart has its blobs there already.
+                try:
                     path.rename(step_dir / key)
-                    with self.lock:
-                        self.steps[key] = trained.step
+                except FileNotFoundError:
+                    continue
+                with self.lock:
+                    self.steps[key] = trained.step
         for step_dir in self.directory.glob("step_*"):
             if int(step_dir.name.removeprefix("step_")) <= trained.committed:
                 shutil.rmtree(step_dir, ignore_errors=True)
