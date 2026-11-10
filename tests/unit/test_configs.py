@@ -16,6 +16,7 @@ from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import ModelExpressWeightBroadcastConfig as InferenceModelExpressWeightBroadcastConfig
 from prime_rl.configs.orchestrator import (
     EvalSourcesConfig,
     OrchestratorConfig,
@@ -30,6 +31,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -1476,3 +1478,78 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+def test_weight_pull_rejects_in_place_trainer_staging():
+    with pytest.raises(ValidationError, match="staging_mode"):
+        ModelExpressWeightBroadcastConfig(mode="pull", staging_buffer_bytes=1, staging_mode="IN_PLACE")
+
+
+def test_weight_pull_engine_follows_the_configured_model_with_only_its_own_experts():
+    config = InferenceConfig.model_validate(
+        {"weight_broadcast": {"type": "modelexpress", "mode": "pull", "host": "mx", "staging_buffer_bytes": 1}}
+    )
+
+    namespace = config.to_namespace()
+
+    assert (namespace.weight_pull, namespace.enable_ep_weight_filter) == (
+        {"model_name": "Qwen/Qwen3-0.6B", "server": "mx:8001", "staging_buffer_bytes": 1, "staging_buffers_count": 1},
+        True,
+    )
+
+
+def test_rl_hands_inference_its_own_modelexpress_settings():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "inference": {},
+            "weight_broadcast": {"type": "modelexpress", "mode": "pull", "host": "mx", "staging_buffer_bytes": 1},
+        }
+    )
+
+    assert config.inference.weight_broadcast == InferenceModelExpressWeightBroadcastConfig(
+        mode="pull", host="mx", staging_buffer_bytes=1
+    )
+
+
+@pytest.mark.parametrize(
+    ("inference", "error"),
+    [
+        ({"vllm": {"tensor_parallel_size": 8, "enable_expert_parallel": True}}, None),
+        ({"vllm": {"tensor_parallel_size": 4, "enable_expert_parallel": True}}, "one server per DP rank"),
+        ({"vllm": {"tensor_parallel_size": 4}}, None),
+        ({"vllm": {"tensor_parallel_size": 2}, "deployment": {"type": "disaggregated"}}, "disaggregated"),
+    ],
+)
+def test_weight_pull_rejects_a_dp_group_split_across_inference_servers(inference, error):
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": inference,
+        "deployment": {"type": "multi_node", "gpus_per_node": 8, "num_train_nodes": 1, "num_infer_nodes": 1},
+        "slurm": {},
+        "weight_broadcast": {"type": "modelexpress", "mode": "pull", "staging_buffer_bytes": 1},
+    }
+
+    if error is None:
+        RLConfig.model_validate(config)
+    else:
+        with pytest.raises(ValidationError, match=error):
+            RLConfig.model_validate(config)
+
+
+@pytest.mark.parametrize(("port", "collides"), [(5555, False), (5700, True), (5815, True), (6800, True), (6816, False)])
+def test_modelexpress_rejects_a_rollout_port_inside_its_listeners(port, collides):
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "rollout_transport": {"type": "zmq", "port": port},
+        "weight_broadcast": {"type": "modelexpress"},
+    }
+
+    if collides:
+        with pytest.raises(ValidationError, match="collides with ModelExpress"):
+            RLConfig.model_validate(config)
+    else:
+        RLConfig.model_validate(config)

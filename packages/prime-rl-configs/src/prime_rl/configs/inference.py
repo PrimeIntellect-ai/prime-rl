@@ -185,9 +185,43 @@ class VllmConfig(BaseConfig):
         return self
 
 
-class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem", "nixl", "modelexpress"] = "filesystem"
+class DefaultWeightBroadcastConfig(BaseConfig):
+    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
+
+
+class ModelExpressWeightBroadcastConfig(BaseConfig):
+    type: Literal["modelexpress"] = "modelexpress"
+
+    mode: Literal["push", "pull"] = "push"
+    """``push``: the orchestrator installs each version. ``pull``: the engine installs each published version on its
+    own, from the trainer or a peer engine that installed it."""
+
+    host: str = "localhost"
+    """ModelExpress server host the trainer publishes policy versions to. Used by ``pull``."""
+
+    port: int = 8001
+    """ModelExpress server port. Used by ``pull``."""
+
+    staging_buffer_bytes: int | None = Field(None, gt=0)
+    """Bytes per buffer that a copy from the trainer streams through. Required by ``pull``."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of streaming buffers. Two overlap the next read with installation."""
+
+    @model_validator(mode="after")
+    def validate_pull_staging(self):
+        if self.mode == "pull" and self.staging_buffer_bytes is None:
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' needs weight_broadcast.staging_buffer_bytes, e.g. 4294967296"
+            )
+        return self
+
+
+WeightBroadcastConfig: TypeAlias = Annotated[
+    DefaultWeightBroadcastConfig | ModelExpressWeightBroadcastConfig, Field(discriminator="type")
+]
+"""How the engine receives policy weights. ``rl`` sets it from its ``[weight_broadcast]``."""
 
 
 class CPUOffloadTier(BaseConfig):
@@ -457,7 +491,7 @@ class InferenceConfig(BaseConfig):
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
-    weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
+    weight_broadcast: WeightBroadcastConfig = DefaultWeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
     """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
@@ -651,10 +685,20 @@ class InferenceConfig(BaseConfig):
 
     def to_namespace(self) -> Namespace:
         """Dump the server + vllm sections into a vLLM-compatible Namespace."""
+        broadcast = self.weight_broadcast
+        pulls = broadcast.type == "modelexpress" and broadcast.mode == "pull"
         namespace = Namespace(
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            weight_pull={
+                "model_name": self.vllm.model,
+                "server": f"{broadcast.host}:{broadcast.port}",
+                "staging_buffer_bytes": broadcast.staging_buffer_bytes,
+                "staging_buffers_count": broadcast.staging_buffers_count,
+            }
+            if pulls
+            else None,
         )
 
         extra_fields = self.vllm.model_extra or {}
@@ -664,6 +708,10 @@ class InferenceConfig(BaseConfig):
             if value is None and (key in self._OMIT_IF_NONE or key in extra_fields):
                 continue
             setattr(namespace, key, value)
+
+        # A pulling engine reads only the experts its rank owns, which vLLM decides only with this filter on.
+        if pulls and "enable_ep_weight_filter" not in extra_fields:
+            namespace.enable_ep_weight_filter = True
 
         # Auto tool choice is gated on a tool-call parser being resolved, unless
         # explicitly overridden.

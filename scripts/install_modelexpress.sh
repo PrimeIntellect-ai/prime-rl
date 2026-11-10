@@ -6,9 +6,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-MODELEXPRESS_REPOSITORY="https://github.com/ai-dynamo/modelexpress.git"
-# Must match the modelexpress client rev pinned in pyproject.toml.
-MODELEXPRESS_REF="446feecd33dafec3f5e8c7becab4d72894bb9640"
+# The server must speak the client's refit protocol, so build it from the commit uv.lock resolves the client to.
+read -r MODELEXPRESS_REPOSITORY MODELEXPRESS_REF < <(uv run --no-project python - "$PROJECT_DIR/uv.lock" <<'EOF'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as lock:
+    sources = {package["source"].get("git") for package in tomllib.load(lock)["package"] if package["name"] == "modelexpress"}
+if len(sources) != 1 or None in sources:
+    sys.exit(f"uv.lock must pin modelexpress to one git commit to build its matching server, found {sources}")
+url, commit = sources.pop().split("#")
+print(url.split("?")[0], commit)
+EOF
+)
 PROTOC_VERSION="29.3"
 REDIS_VERSION="7.4.2"
 REDIS_SHA256="4ddebbf09061cbb589011786febdb34f29767dd7f89dbe712d2b68e808af6a1f"

@@ -80,6 +80,15 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
 
 
+# ModelExpress listens on a base port plus each process's CUDA device index. Every process counts devices from 0, so
+# processes on one node offset their base by their first physical GPU, which prime-rl never shares between
+# processes. The ranges hold a node of up to 16 GPUs.
+MODELEXPRESS_TRAINER_METADATA_PORT = 5700
+MODELEXPRESS_INFERENCE_METADATA_PORT = 5800
+MODELEXPRESS_INFERENCE_WORKER_GRPC_PORT = 6800
+MODELEXPRESS_PORT_SPAN = 16
+
+
 class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["modelexpress"] = "modelexpress"
 
@@ -94,6 +103,29 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
     staging_buffers_count: int = Field(1, ge=1)
     """Number of receiver buffers. Two overlap the next read with installation."""
+
+    mode: Literal["push", "pull"] = "push"
+    """``push``: the orchestrator installs every version on every engine and the trainer waits for it. ``pull``:
+    every engine installs published versions on its own, from the trainer or from a peer that already installed
+    it; the trainer waits only for an engine still reading its previous copy, the orchestrator follows the newest
+    published version, and every token records the version that sampled it. Engines install every
+    version in place, so pull needs ``staging_buffer_bytes``."""
+
+    @model_validator(mode="after")
+    def validate_pull_staging(self):
+        if self.mode != "pull":
+            return self
+        if self.staging_buffer_bytes is None:
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' streams each version into the live weights; set "
+                "weight_broadcast.staging_buffer_bytes, e.g. 4294967296"
+            )
+        if self.staging_mode == "IN_PLACE":
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' keeps training while engines read a version, so the trainer "
+                "must publish a copy; set weight_broadcast.staging_mode to 'COPY_TO_HOST' or 'COPY_TO_DEVICE'"
+            )
+        return self
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

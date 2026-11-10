@@ -11,6 +11,11 @@ from threading import Event, Thread
 import psutil
 import setproctitle
 
+from prime_rl.configs.shared import (
+    MODELEXPRESS_INFERENCE_METADATA_PORT,
+    MODELEXPRESS_INFERENCE_WORKER_GRPC_PORT,
+    MODELEXPRESS_TRAINER_METADATA_PORT,
+)
 from prime_rl.utils.logger import get_logger
 
 PRIME_RL_PROC_PREFIX = "PRL"
@@ -56,6 +61,16 @@ def get_physical_gpu_ids() -> list[int]:
         pynvml.nvmlInit()
         return list(range(pynvml.nvmlDeviceGetCount()))
     return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
+
+
+def set_modelexpress_port_defaults(*, trainer: bool) -> None:
+    """Place this process's ModelExpress listeners where no other process on the node binds."""
+    first_gpu = get_physical_gpu_ids()[0]
+    if trainer:
+        os.environ.setdefault("MX_METADATA_PORT", str(MODELEXPRESS_TRAINER_METADATA_PORT + first_gpu))
+        return
+    os.environ.setdefault("MX_METADATA_PORT", str(MODELEXPRESS_INFERENCE_METADATA_PORT + first_gpu))
+    os.environ.setdefault("MX_WORKER_GRPC_PORT", str(MODELEXPRESS_INFERENCE_WORKER_GRPC_PORT + first_gpu))
 
 
 def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int], list[int]]:
