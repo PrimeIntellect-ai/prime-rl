@@ -3,10 +3,10 @@
 Each sampled episode contributes one window of up to `--window` tokens from one of its trainable
 branches (verifiers' `Trace.branches`: the trainer's token ids and sampled-token masks). A window
 keeps its exact token prefix, so the target can prefill the whole context before the window.
-Episodes are the run's most recent successful train episodes; each env's token budget follows the
-square root of its decoded tokens there. Rows follow the Speculators schema (`input_ids`,
-`loss_mask` aligned to DSpark anchors, `seq_len`) plus `prefix_ids`. Whole episodes are held out
-for serving benchmarks.
+Episodes are the run's successful train episodes (all, or the most recent `--recent`); each env's
+token budget follows the square root of its decoded tokens there. Rows follow the Speculators schema
+(`input_ids`, `loss_mask` aligned to DSpark anchors, `seq_len`) plus `prefix_ids`. Whole task groups
+(the rollouts of one task) are held out, so validation never shares a task's context with training.
 
 Usage (from the prime-rl repo; pass the run's launch directory when its renderer path is relative):
     uv run python tools/specdecode_windows.py <run_dir> <out_dir> [--launch-dir DIR] [--tokens 10e6]
@@ -14,6 +14,7 @@ Usage (from the prime-rl repo; pass the run's launch directory when its renderer
 
 import argparse
 import collections
+import hashlib
 import json
 import math
 import os
@@ -58,6 +59,7 @@ def sample_window(task: tuple) -> dict | None:
                 "seq_len": end - start,
                 "prefix_ids": token_ids[:end],
                 "env": entry["env"],
+                "group": entry["group"],
                 "episode": entry["id"],
             }
     return None
@@ -71,8 +73,8 @@ def main() -> None:
     parser.add_argument("--tokens", type=float, default=10e6, help="window tokens to sample in total")
     parser.add_argument("--window", type=int, default=8192)
     parser.add_argument("--block-size", type=int, default=8, help="DSpark block size")
-    parser.add_argument("--recent", type=int, default=20000, help="most recent successful train episodes")
-    parser.add_argument("--heldout", type=float, default=0.02, help="fraction of episodes held out")
+    parser.add_argument("--recent", type=int, default=0, help="most recent successful train episodes; 0 for all")
+    parser.add_argument("--heldout", type=float, default=0.02, help="fraction of task groups held out")
     parser.add_argument("--min-loss-frac", type=float, default=0.25)
     parser.add_argument("--workers", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
@@ -86,7 +88,7 @@ def main() -> None:
         entries = [json.loads(line) for line in f]
     entries = [e for e in entries if e.get("kind") == "train" and e.get("ok") and e.get("output_tokens")]
     episodes = collections.defaultdict(list)
-    for entry in entries[-args.recent :]:
+    for entry in entries[-args.recent :] if args.recent else entries:
         episodes[entry["env"]].append(entry)
     weights = {env: math.sqrt(sum(e["output_tokens"] for e in eps)) for env, eps in episodes.items()}
     budgets = {env: args.tokens * w / sum(weights.values()) for env, w in weights.items()}
@@ -110,11 +112,11 @@ def main() -> None:
                         taken += row["seq_len"]
             print(f"{env}: {len(rows[env])} windows, {taken / 1e6:.2f}M tokens (budget {budgets[env] / 1e6:.2f}M)")
 
-    train, heldout = [], []
-    for env_rows in rows.values():
-        n_heldout = math.ceil(args.heldout * len(env_rows))
-        heldout += env_rows[:n_heldout]
-        train += env_rows[n_heldout:]
+    def held_out(group: str) -> bool:
+        return int(hashlib.sha256(group.encode()).hexdigest(), 16) % 10_000 < args.heldout * 10_000
+
+    train = [row for env_rows in rows.values() for row in env_rows if not held_out(row["group"])]
+    heldout = [row for env_rows in rows.values() for row in env_rows if held_out(row["group"])]
     rng.shuffle(train)
     for split, split_rows in (("train", train), ("heldout", heldout)):
         Dataset.from_list(split_rows).save_to_disk(str(out_dir / split))

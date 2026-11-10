@@ -60,17 +60,20 @@ uv run specdecode @ examples/specdecode/qwen3_train_dspark.toml
 
 ### Drafts from RL traces
 
-Agentic RL episodes run to hundreds of thousands of tokens, so the tools train on windows instead of whole episodes. `tools/specdecode_windows.py` samples one window per episode from a run's most recent successful train episodes, using the trainer's own branch token ids and sampled-token masks. Each env gets a token budget proportional to the square root of the tokens it decoded in that period. A row keeps the window's exact prefix, and a fraction of episodes is held out. The extraction server prefills each full prefix. `TailHiddenStatesConnector` (`kv_connector_extra_config.tail_tokens`) writes only the window's positions, so they carry the full context at window-sized storage cost.
+Agentic RL episodes run to hundreds of thousands of tokens, so the tools train on windows instead of whole episodes. `tools/specdecode_windows.py` samples one window per episode from a run's successful train episodes, using the trainer's own branch token ids and sampled-token masks. Each env gets a token budget proportional to the square root of the tokens it decoded. A row keeps the window's exact prefix. Whole task groups (all rollouts of a task) are held out, so validation never shares a task's context with training. `tools/specdecode_sft_windows.py` writes the same rows from an SFT run's data, rendered as that run trained on it. The extraction server prefills each full prefix. `TailHiddenStatesConnector` (`kv_connector_extra_config.tail_tokens`) writes only the window's positions, so they carry the full context at window-sized storage cost. `tools/specdecode_extract.py` shuffles the training windows of every source together and places the held-out windows last. Speculators validates on the trailing rows, so set `train.data.train_data_ratio` to the value `--finalize` prints.
 
 ```bash
-uv run python tools/specdecode_windows.py <run_dir> outputs/specdecode/windows --launch-dir <run launch dir>
+uv run python tools/specdecode_windows.py <rl_run_dir> outputs/specdecode/windows/rl --launch-dir <run launch dir>
+uv run python tools/specdecode_sft_windows.py <sft_run_dir> outputs/specdecode/windows/sft --launch-dir <run launch dir>
 uv run inference @ examples/specdecode/deepseek-v4/extract.toml --vllm.model <checkpoint>
-uv run python tools/specdecode_extract.py outputs/specdecode/windows/train outputs/specdecode/deepseek-v4-data --model <checkpoint>
-uv run python tools/specdecode_extract.py outputs/specdecode/windows/train outputs/specdecode/deepseek-v4-data --model <checkpoint> --finalize
-uv run specdecode @ examples/specdecode/deepseek-v4/train_dspark.toml
+uv run python tools/specdecode_extract.py outputs/specdecode/deepseek-v4-data outputs/specdecode/windows/{rl,sft}/train \
+    --val outputs/specdecode/windows/{rl,sft}/heldout --model <checkpoint>   # then again with --finalize
+uv run specdecode @ examples/specdecode/deepseek-v4/train_dspark.toml   # with train.data.train_data_ratio set to the printed ratio
 ```
 
 Extract with the quantization, kernels and cache dtypes the draft will be served against. For DeepSeek V4, prime-rl's vLLM plugin captures the final layer as the `hc_head` output, the input of the final norm, rather than the mean of the hyper-connection streams. This makes training targets match the verifier's logits. The training workers also resolve DeepSeek V4's `embed` and `head` weight names. `tools/specdecode_bench.py` replays held-out prompts and reports output throughput and mean acceptance length; run it against the same server with and without `examples/specdecode/deepseek-v4/dspark.toml`.
+
+Each verified sequence occupies `num_speculative_tokens + 1` rows of DeepSeek V4's sparse-attention indexer, and DeepGEMM's paged-MQA-logits metadata kernel fails above about 4096 rows per step. That is why `dspark.toml` caps `max_num_seqs` and the CUDA-graph capture size. Speculative verification also costs base-model compute in proportion to the speculative tokens. On one DeepSeek-V4-Flash node, 7 tokens sped up per-request decoding at a few sequences per engine but slowed it at about 100. With 3 tokens it was never slower and was neutral at that load.
 
 The default file backend reads `<data_path>/hidden_states`. To select another directory, set `hidden_states_path` under `[train.backend]`. Offline mode uses `train.generation.on_missing = "raise"`; online mode sets it to `"generate"`. Upstream manages standalone checkpoint saving and resume within `train.trainer.save_path`.
 
