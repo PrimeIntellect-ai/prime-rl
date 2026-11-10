@@ -7,7 +7,8 @@ and the train rollouts in flight. Layout under ``<output_dir>/checkpoints``::
     step_N/orchestrator/rollouts/<trace id>.restore an in-flight rollout's restore point (env workers write it)
     step_N/orchestrator/rollouts/arrays/<blob id>   the training arrays of the unshipped episodes
     rollout_snapshots.json                          the box snapshots each step's restore points hold
-    resumed_arrays/<blob id>                        the arrays of the checkpoint this run resumed from
+    resumed/<blob id>                               the arrays of the checkpoint this run resumed from
+    resumed/<trace id>.restore                      its restore points
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
 ROLLOUTS_DIR = "rollouts"
 ARRAYS_DIR = "arrays"
 OPEN_WORK_FILE = "open_work.pkl"
-RESUMED_ARRAYS_DIR = "resumed_arrays"
+RESUMED_DIR = "resumed"
 SNAPSHOTS_FILE = "rollout_snapshots.json"
 PERSISTED_URL = "checkpoint"
 """The URL of a training array in a written checkpoint: the checkpoint's own arrays,
@@ -154,29 +155,36 @@ class CheckpointManager:
         return work
 
     def load_open_work(self, rollouts: Path, owned: bool) -> dict:
-        """Read the open work in ``rollouts``. Its training arrays are linked into this
-        run's ``resumed_arrays``: the run reads them until the episodes ship, which can
-        be after the trainer's cleanup removed the checkpoint. Without ``owned`` the
-        checkpoint is another run's, which keeps its restore points' snapshots."""
-        arrays = self.ckpt_dir / RESUMED_ARRAYS_DIR
-        shutil.rmtree(arrays, ignore_errors=True)
-        arrays.mkdir(parents=True)
+        """Read the open work in ``rollouts``. Its training arrays and restore files
+        are linked into this run's ``resumed``: the run reads the arrays until the
+        episodes ship, which can be after the trainer's cleanup removed the checkpoint,
+        and the env workers read restore files only in their run's directory. Without
+        ``owned`` the checkpoint is another run's, which keeps its restore points'
+        snapshots."""
+        resumed = self.ckpt_dir / RESUMED_DIR
+        shutil.rmtree(resumed, ignore_errors=True)
+        resumed.mkdir(parents=True)
         if (rollouts / ARRAYS_DIR).exists():
             for file in (rollouts / ARRAYS_DIR).iterdir():
-                link_or_copy(file, arrays / file.name)
+                link_or_copy(file, resumed / file.name)
         # Reading makes many objects and frees none: a collection would only scan them.
         collecting = gc.isenabled()
         gc.disable()
         try:
-            work = read_open_work(rollouts, arrays.resolve().as_uri())
+            work = read_open_work(rollouts, resumed.resolve().as_uri())
         finally:
             if collecting:
                 gc.enable()
         for episode in work["episodes"]:
             episode.owned = episode.owned and owned
             if episode.restore is not None:
-                # The checkpoint may have moved since the env workers wrote the path.
-                episode.restore.path = str(rollouts.resolve() / Path(episode.restore.path).name)
+                # By name: the checkpoint may have moved since the env workers wrote
+                # the path.
+                name = Path(episode.restore.path).name
+                if link_or_copy(rollouts / name, resumed / name):
+                    episode.restore.path = str(resumed.resolve() / name)
+                else:
+                    episode.restore = None
         return work
 
     def gauges(self) -> dict[str, float]:

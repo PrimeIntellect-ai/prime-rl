@@ -12,14 +12,16 @@ from prime_rl.env import run_env_worker_pool, set_episode_hook
 from prime_rl.orchestrator.utils import setup_env_worker_pool_logging
 from prime_rl.transports.payload import PayloadHook
 from prime_rl.utils.config import check_mode, cli
+from prime_rl.utils.pathing import set_save_root
 from prime_rl.utils.utils import clean_exit
 
 
 def setup_worker(
-    log_level: str | None, json_logging: bool, sandbox_labels: list[str], bind_address: str | None
+    log_level: str | None, json_logging: bool, sandbox_labels: list[str], bind_address: str | None, output_dir: Path
 ) -> None:
     setup_env_worker_pool_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
+    set_save_root(output_dir)
     # Episode streams never carry training arrays; the hook keeps them for the trainer.
     set_episode_hook(PayloadHook(bind_address))
 
@@ -52,6 +54,7 @@ def run_pool(config: EnvWorkerPoolConfig):
             config.log.json_logging,
             sandbox_labels,
             config.serve.address,
+            config.output_dir,
         ),
         config_data=config.env.model_dump(mode="json"),
         max_concurrent=config.serve.max_concurrent,

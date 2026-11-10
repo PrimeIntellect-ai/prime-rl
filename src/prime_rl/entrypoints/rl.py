@@ -171,7 +171,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
     for split, source in env_worker_pools(config):
-        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log)
+        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, config.orchestrator.output_dir)
 
 
 def rl_local(config: RLConfig):

@@ -30,6 +30,7 @@ from prime_rl.transports.payload import (
     resolve_payloads,
     wait_for_deletes,
 )
+from prime_rl.utils import pathing
 
 
 def _episode(
@@ -359,7 +360,8 @@ def test_discard_frees_what_keep_kept():
     assert not hook.server.blobs
 
 
-def test_persist_writes_blobs_only_inside_the_directory(tmp_path):
+def test_persist_writes_blobs_only_inside_the_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
     server = PayloadServer("127.0.0.1")
     server.put("t1-0", b"arrays")
     server.put("evil", b"x")
@@ -367,11 +369,16 @@ def test_persist_writes_blobs_only_inside_the_directory(tmp_path):
     assert server.persist(str(directory), ["t1-0", "../evil", "sub/evil", "..", "", "gone"]) == ["t1-0"]
     assert [file.name for file in (tmp_path / "ckpt").rglob("*") if file.is_file()] == ["t1-0"]
     assert (directory / "t1-0").read_bytes() == b"arrays"
+    for outside in ("relative/dir", str(tmp_path.parent / "other"), str(tmp_path / ".." / "other")):
+        with pytest.raises(ValueError):
+            server.persist(outside, ["t1-0"])
+    monkeypatch.setattr(pathing, "_save_root", None)
     with pytest.raises(ValueError):
-        server.persist("relative/dir", ["t1-0"])
+        server.persist(str(directory), ["t1-0"])
 
 
-def test_persist_links_a_blob_an_earlier_checkpoint_holds(tmp_path):
+def test_persist_links_a_blob_an_earlier_checkpoint_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
     server = PayloadServer("127.0.0.1")
     server.put("t1-0", b"arrays")
     first, second, third = tmp_path / "step_1", tmp_path / "step_2", tmp_path / "step_3"

@@ -37,7 +37,7 @@ from prime_rl.env.types import (
     TraceSummary,
 )
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import is_file_name
+from prime_rl.utils.pathing import confined, is_file_name
 
 
 class EpisodeHook(Protocol):
@@ -121,9 +121,9 @@ def write_restores(directory: Path, restores: list[tuple[str, RestorePoint]]) ->
 
 def read_restore(path: str) -> tuple[str, RestorePoint] | None:
     """The episode id and restore point `write_restores` wrote to `path`; None if the
-    file cannot be read."""
+    file cannot be read or is outside the run directory."""
     try:
-        with open(path, "rb") as f:
+        with open(confined(path), "rb") as f:
             saved = pickle.load(f)
         return saved["episode_id"], saved["point"]
     except Exception as e:  # noqa: BLE001 - the rollout starts over instead
@@ -250,9 +250,9 @@ class EnvWorker:
                 reasons[reason] = reasons.get(reason, 0) + 1
         try:
             paths = await asyncio.to_thread(
-                write_restores, Path(req.dir), [(slots[point.id][1].id, point) for point in saved]
+                write_restores, confined(req.dir), [(slots[point.id][1].id, point) for point in saved]
             )
-        except OSError as e:
+        except (OSError, ValueError) as e:
             # Without their files nothing restores these rollouts: they start over.
             get_logger().warning(f"Failed to write {len(saved)} restore files to {req.dir} - {e!r}")
             orphans += [point.snapshot for point in saved]

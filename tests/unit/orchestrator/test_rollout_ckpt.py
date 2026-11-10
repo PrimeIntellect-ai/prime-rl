@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import msgspec
 import numpy as np
+import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
@@ -17,7 +18,7 @@ from prime_rl.env.types import RestoreRef
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.ckpt import (
     ARRAYS_DIR,
-    RESUMED_ARRAYS_DIR,
+    RESUMED_DIR,
     CheckpointManager,
     SnapshotLedger,
     build_state,
@@ -45,7 +46,15 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.transports import payload
 from prime_rl.transports.payload import PayloadHook, delete_payloads, wait_for_deletes
+from prime_rl.utils import pathing
 from tests.unit.orchestrator.test_train_sink import episode, trace
+
+
+@pytest.fixture(autouse=True)
+def run_directory(tmp_path, monkeypatch):
+    """The env workers of a test keep checkpoint files only under its `tmp_path`."""
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+
 
 # Samples hold numpy streams; encode them as lists to compare them byte for byte.
 ENCODER = msgspec.msgpack.Encoder(enc_hook=lambda value: value.tolist())
@@ -517,6 +526,7 @@ def test_a_checkpoint_with_rollouts_continues_its_open_groups_instead_of_rerunni
         ckpt_path = manager.get_ckpt_path(6)
         (ckpt_path / "rollouts" / ARRAYS_DIR).mkdir(parents=True)
         (ckpt_path / "rollouts" / ARRAYS_DIR / "blob").write_bytes(b"arrays")
+        (ckpt_path / "rollouts" / "t1.restore").write_bytes(b"point")
         write_open_work(work, ckpt_path / "rollouts")
         write_state({**build_state(Progress(step=7), source, {}), "rollouts": True}, ckpt_path)
         return manager
@@ -528,19 +538,21 @@ def test_a_checkpoint_with_rollouts_continues_its_open_groups_instead_of_rerunni
     assert progress.step == 7 and not resumed.reopened
     resumed.adopt_open_groups(loaded["open_groups"], loaded["reopened"])
     assert resumed.open_groups == source.open_groups
-    # The restore file is read from where the checkpoint is now.
+    # The restore file is found where the checkpoint is now, and read in this run.
     (restored,) = loaded["episodes"]
-    assert restored.restore.path == str((manager.get_ckpt_path(6) / "rollouts" / "t1.restore").resolve())
+    assert restored.restore.path == str((manager.ckpt_dir / RESUMED_DIR / "t1.restore").resolve())
     assert owned_snapshots(loaded) == [{"id": "s-t1", "type": "memory"}]
-    # The arrays outlive the checkpoint directory.
+    # The arrays and the restore file outlive the checkpoint directory.
     shutil.rmtree(manager.get_ckpt_path(6))
-    assert (manager.ckpt_dir / RESUMED_ARRAYS_DIR / "blob").read_bytes() == b"arrays"
+    assert (manager.ckpt_dir / RESUMED_DIR / "blob").read_bytes() == b"arrays"
+    assert (manager.ckpt_dir / RESUMED_DIR / "t1.restore").read_bytes() == b"point"
 
     # A fork of the checkpoint leaves the snapshots to the run that took them.
     fork = CheckpointManager(tmp_path / "fork", CheckpointConfig(rollouts=True))
     source_path = checkpoint(tmp_path / "other", rollouts=True).get_ckpt_path(6)
     forked = fork.load(Progress(), TrainSource([train_env("a")]), step=6, path=source_path)
-    assert owned_snapshots(forked) == [] and forked["episodes"][0].restore is not None
+    assert owned_snapshots(forked) == []
+    assert forked["episodes"][0].restore.path == str((fork.ckpt_dir / RESUMED_DIR / "t1.restore").resolve())
 
     # Without ckpt.rollouts the open groups re-run whole, as from a checkpoint without rollouts.
     manager = checkpoint(tmp_path / "off", rollouts=False)

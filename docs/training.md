@@ -478,7 +478,7 @@ A resume restores:
 
 - The finished episodes that did not ship: the episodes in the result queue, the groups that still collect episodes, the traces queued for a batch, and a batch that the trainer did not take yet. Their training arrays are in `step_{n}/orchestrator/rollouts/arrays/`.
 - The open train groups, with the number of episodes that each group still owes. A resume does not re-run them whole.
-- The running rollouts. Each env worker takes a memory checkpoint of the sandbox of each running rollout and writes a restore file to `step_{n}/orchestrator/rollouts/`. The resumed run continues each rollout in a new sandbox, before it starts new work.
+- The running rollouts. Each env worker takes a memory checkpoint of the sandbox of each running rollout and writes a restore file to `step_{n}/orchestrator/rollouts/`. The resumed run continues each rollout in a new sandbox, before it starts new work. An env worker pool reads and writes these files only in its `--output-dir`. The launchers set it to the run directory. If you start a pool yourself, set it to the run directory too.
 - The in-flight limit of the concurrency controller.
 
 These start over:

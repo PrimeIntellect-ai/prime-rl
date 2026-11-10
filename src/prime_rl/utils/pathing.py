@@ -254,11 +254,14 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
     return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_worker_pool_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
+def write_env_worker_pool_config(
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, output_dir: Path
+) -> Path:
     """Write the ``EnvWorkerPoolConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
-    broker publishes the OS-assigned port it binds to the address file next to it."""
+    broker publishes the OS-assigned port it binds to the address file next to it.
+    ``output_dir`` is the run directory: the pool keeps checkpoint files only there."""
     env_dir = config_dir / "envs" / split
     env_dir.mkdir(parents=True, exist_ok=True)
     source_dict = dump_resolved_config(source)
@@ -267,6 +270,7 @@ def write_env_worker_pool_config(config_dir: Path, split: str, source: EnvConfig
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.level, "json_logging": log.json_logging},
+        "output_dir": output_dir.absolute().as_posix(),
     }
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(pool_config, indent=2))
@@ -328,6 +332,28 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
 def is_file_name(name: str) -> bool:
     """Whether ``name`` names a file inside whatever directory it is joined to."""
     return bool(name) and name not in (".", "..") and name == os.path.basename(name) and "\0" not in name
+
+
+_save_root: str | None = None
+
+
+def set_save_root(root: Path | None) -> None:
+    """Name the run directory of this process: the one directory its env worker reads
+    and writes checkpoint files in (``confined``)."""
+    global _save_root
+    _save_root = None if root is None else os.path.realpath(root)
+
+
+def confined(path: str | Path) -> Path:
+    """``path`` with its links resolved, when it lies in the run directory
+    (``set_save_root``); a ``ValueError`` otherwise. The paths an env worker gets come
+    over the network, so they name no file outside its run."""
+    if _save_root is None:
+        raise ValueError("this process has no run directory to keep checkpoint files in")
+    resolved = os.path.realpath(path)
+    if not resolved.startswith(_save_root + os.sep):
+        raise ValueError(f"{str(path)!r} is outside the run directory {_save_root!r}")
+    return Path(resolved)
 
 
 def is_complete_rl_ckpt(ckpt_dir: Path, orchestrator_ckpt_dir: Path, step: int) -> bool:

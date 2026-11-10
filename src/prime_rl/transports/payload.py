@@ -53,7 +53,7 @@ from prime_rl.transports.batch.types import (
     TrainingSample,
 )
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import is_file_name
+from prime_rl.utils.pathing import confined, is_file_name
 
 _encoder = msgspec.msgpack.Encoder()
 _decoder = msgspec.msgpack.Decoder(BranchArrays)
@@ -302,11 +302,9 @@ class PayloadServer:
     def persist(self, directory: str, keys: list[str]) -> list[str]:
         """Write the blobs `keys` name to `<directory>/<key>` and return the keys
         written. A blob an earlier call persisted is linked from that file while it
-        exists. Only plain file names are written, so nothing lands outside
-        `directory`."""
-        target = Path(directory)
-        if not target.is_absolute():
-            raise ValueError(f"persist directory {directory!r} is not absolute")
+        exists. `directory` lies in the run directory (`confined`) and only plain file
+        names are written, so nothing lands outside it."""
+        target = confined(directory)
         target.mkdir(parents=True, exist_ok=True)
         written = []
         for key in keys:

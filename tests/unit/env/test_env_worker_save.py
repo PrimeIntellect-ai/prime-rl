@@ -10,6 +10,7 @@ from verifiers.v1.restore import RestorePoint
 from prime_rl.env import worker
 from prime_rl.env.types import SaveRequest
 from prime_rl.env.worker import EnvWorker, read_restore
+from prime_rl.utils import pathing
 
 
 def point(trace_id: str) -> RestorePoint:
@@ -46,6 +47,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
 
     monkeypatch.setattr(worker, "save_all", save_all)
     monkeypatch.setattr(worker, "PrimeBackend", Backend)
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
     env_worker = EnvWorker.__new__(EnvWorker)
     env_worker.taskset_id = "tasks"
     env_worker._warned_skips = set()
@@ -74,7 +76,16 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
     ]
 
 
-def test_an_unreadable_restore_file_starts_the_rollout_over(tmp_path):
+def test_an_unreadable_restore_file_starts_the_rollout_over(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
     assert read_restore(str(tmp_path / "missing.restore")) is None
     (tmp_path / "broken.restore").write_bytes(b"not a pickle")
     assert read_restore(str(tmp_path / "broken.restore")) is None
+
+
+def test_a_restore_file_outside_the_run_directory_is_not_read(tmp_path, monkeypatch):
+    (tmp_path / "run").mkdir()
+    monkeypatch.setattr(pathing, "_save_root", str((tmp_path / "run").resolve()))
+    worker.write_restores(tmp_path, [("e1", point("t1"))])
+    assert read_restore(str(tmp_path / "t1.restore")) is None
+    assert read_restore(str(tmp_path / "run" / ".." / "t1.restore")) is None
