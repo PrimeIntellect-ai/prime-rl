@@ -19,6 +19,7 @@ from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
 from prime_rl.orchestrator.utils import episode_group_id
+from prime_rl.transports.payload import PayloadHook, wait_for_deletes
 from prime_rl.utils.logger import setup_logger
 
 # Samples hold numpy streams; encode them as lists to compare them byte for byte.
@@ -80,7 +81,7 @@ def sink(*, constant=True, admitted=True, batch_size=100, closed=None, group_siz
         config=SimpleNamespace(group_size=1),
         sampling_at=lambda step: vf.SamplingConfig(temperature=1.0),
         requires_sampling_masks=False,
-        requires_top_logprobs=False,
+        requires_sampler_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
     )
     return TrainSink(
@@ -391,5 +392,35 @@ def test_open_group_closes_at_the_size_it_was_drawn_with():
         for _ in range(2):
             await s.add(episode([trace()], group="unknown"))
         assert len(s.pending_groups["unknown"]) == 2
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("support", ["missing", "head", "replayed"])
+def test_truncated_sampling_requires_replayed_support(support):
+    async def run():
+        hook = PayloadHook()
+        t = trace()
+        if support != "missing":
+            t.nodes[-1].sampler_support = vf.SamplerSupport(
+                ids=np.array([3, 4], dtype=np.int32),
+                counts=np.array([1, 1], dtype=np.int32),
+                replayed=np.full(2, support == "replayed", dtype=np.bool_),
+                logprobs=np.array([-0.1, -0.2], dtype=np.float32),
+            )
+        ep = episode([t])
+        hook.keep(ep, vf.SamplingConfig())
+        s = sink()
+        s.train_envs.get("test").requires_sampling_masks = True
+        try:
+            if support == "replayed":
+                await s.add(ep)
+                assert s.pending_batch
+            else:
+                with pytest.raises(RuntimeError, match="carry no sampling masks"):
+                    await s.add(ep)
+        finally:
+            hook.discard(ep)
+            wait_for_deletes()
 
     asyncio.run(run())

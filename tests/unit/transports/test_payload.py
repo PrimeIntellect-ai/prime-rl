@@ -12,7 +12,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.episode import EnvInfo, Episode
-from verifiers.v1.types import SamplingMask, TopLogprobs, TurnTokens
+from verifiers.v1.types import SamplerSupport, TurnTokens
 
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -40,10 +40,11 @@ def _episode(
     )
     rows = rng.integers(0, 128, size=(prompt_len + completion_len - 1, 3, 2)).astype(np.uint8)
     counts = rng.integers(1, 5, size=completion_len).astype(np.int32)
-    head = TopLogprobs(
+    support = SamplerSupport(
         ids=rng.integers(0, 1000, size=int(counts.sum())).astype(np.int32),
-        logprobs=-rng.random(int(counts.sum())).astype(np.float32),
         counts=counts,
+        replayed=np.full(completion_len, masked),
+        logprobs=-rng.random(int(counts.sum())).astype(np.float32),
     )
     graph.prepare_turn(trace, [vf.UserMessage(content="u")]).commit(
         vf.Response(
@@ -64,9 +65,7 @@ def _episode(
                 }
                 if routed
                 else None,
-                top_logprobs=head,
-                # A mask the head covers exactly carries the head's logprobs.
-                sampling_mask=SamplingMask(ids=head.ids, counts=head.counts) if masked else None,
+                sampler_support=support,
             ),
         )
     )
@@ -145,21 +144,23 @@ def test_fetched_micro_batches_hold_each_branchs_arrays():
                         )
                         rows += payload._tile(rows, padding * len(rows) // sum(lengths))
                         assert mb.routed_experts.data == rows
-                    for name, empty in (("sampling_mask", (0, 0)), ("top_logprobs", (0, 0))):
-                        got = getattr(mb, name)
-                        heads = [getattr(arrays, name) for arrays, _ in want]
-                        if all(head is None for head in heads):
-                            assert got is None
-                            continue
+                    got = mb.sampler_support
+                    supports = [arrays.sampler_support for arrays, _ in want]
+                    if all(support is None for support in supports):
+                        assert got is None
+                    else:
                         got_rows = _rows(got.counts, got.ids, got.logprobs)
                         want_rows = []
-                        for head, (_, n) in zip(heads, want):
+                        want_replayed = b""
+                        for support, (_, n) in zip(supports, want):
                             want_rows += (
-                                _rows(head.counts, head.ids, head.logprobs)[:n]
-                                if head is not None
+                                _rows(support.counts, support.ids, support.logprobs)[:n]
+                                if support is not None
                                 else [((), None)] * n
                             )
+                            want_replayed += support.replayed[:n] if support is not None else bytes(n)
                         want_rows += [((), None)] * padding
+                        assert got.replayed == want_replayed + bytes(padding)
                         assert [ids for ids, _ in got_rows] == [ids for ids, _ in want_rows]
                         for (_, got_lp), (ids, want_lp) in zip(got_rows, want_rows):
                             if want_lp is not None:
@@ -187,72 +188,64 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
             payload=PayloadSlice(url=server.url, id=key, num_tokens=4, fields=fields) if key is not None else None,
         )
 
-    head = wire.TopLogprobs(
+    head = wire.SamplerSupport(
         ids=np.array([3, 7, 4], np.int32).tobytes(),
-        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
         counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
+        replayed=bytes(4),
+        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
     )
-    replayed = wire.SamplingMask(
+    replayed = wire.SamplerSupport(
         ids=np.array([5, 6, 8], np.int32).tobytes(),
         counts=np.array([0, 0, 1, 2], np.int32).tobytes(),
+        replayed=np.array([False, False, True, True]).tobytes(),
         logprobs=np.log(np.array([1.0, 0.75, 0.25], np.float32)).tobytes(),
     )
-    plain = wire.SamplingMask(ids=np.array([9], np.int32).tobytes(), counts=np.array([0, 0, 0, 1], np.int32).tobytes())
+    plain = wire.SamplerSupport(
+        ids=np.array([9], np.int32).tobytes(),
+        counts=np.array([0, 0, 0, 1], np.int32).tobytes(),
+        replayed=np.array([False, False, False, True]).tobytes(),
+    )
     samples = [
-        sample("head", ["top_logprobs"], top_logprobs=head),
-        sample("replayed", ["sampling_mask", "sampling_mask_logprobs"], sampling_mask=replayed),
-        sample("plain", ["sampling_mask"], sampling_mask=plain),
+        sample("head", ["sampler_support", "sampler_support_logprobs"], sampler_support=head),
+        sample("replayed", ["sampler_support", "sampler_support_logprobs"], sampler_support=replayed),
+        sample("plain", ["sampler_support"], sampler_support=plain),
         # No arrays at all: it shares the micro batch and gets empty rows.
         sample(None, []),
     ]
     with ThreadPoolExecutor(2) as pool:
         [[truncated]] = prepare_batch(samples[:1], seq_len=3, num_train_workers=1, bin_cost=sum)
         assert resolve_payloads([truncated], pool)[0] == []
-        np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
-        np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.counts, np.int32), [0, 0, 2])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.ids, np.int32), [3, 7])
         [[truncated]] = prepare_batch(samples[1:2], seq_len=3, num_train_workers=1, bin_cost=sum)
         assert resolve_payloads([truncated], pool)[0] == []
-        np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.ids, np.int32), [5])
-        np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.logprobs, np.float32), [0.0])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.ids, np.int32), [5])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.logprobs, np.float32), [0.0])
+        assert truncated.sampler_support.replayed == np.array([False, False, True]).tobytes()
 
         [[packed]] = prepare_batch(samples, seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16)
         packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
         assert resolve_payloads([packed], pool)[0] == []
-    assert len(packed.top_logprobs.ids) == 3 * 4
+    assert len(packed.sampler_support.ids) == 7 * 4
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
-    ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
+    offsets, ids, values = tensor["support_offsets"], tensor["support_ids"], tensor["support_logprobs"]
     assert ids.shape == values.shape
-    assert ids.shape[0] == sum(packed.sequence_lengths)
+    assert offsets.shape[0] == sum(packed.sequence_lengths) + 1
     rows = {
-        tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
+        tuple(ids[start:end].tolist()): values[start:end].tolist()
+        for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist())
+        if end > start
     }
     expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
     assert rows.keys() == expected.keys()
     for key, value in expected.items():
         np.testing.assert_allclose(rows[key], value, rtol=1e-6)
-
-
-@pytest.mark.parametrize("support", ["complete", "mismatch"])
-def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
-    import verifiers.v1 as vf
-
-    from prime_rl.transports.payload import _encode_sampler_evidence
-
-    mask = vf.SamplingMask(ids=np.array([5, 6, 8], np.int32), counts=np.array([0, 0, 1, 2], np.int32))
-    head = vf.TopLogprobs(
-        ids=np.array([5, 8, 6], np.int32),
-        logprobs=np.array([0.0, -0.3, -1.4], np.float32),
-        counts=np.array([0, 0, 1, 2] if support == "complete" else [0, 1, 0, 2], np.int32),
-    )
-    if support == "mismatch":
-        with pytest.raises(ValueError):
-            _encode_sampler_evidence(mask, head, 4)
-        return
-    sampling_mask, top_logprobs = _encode_sampler_evidence(mask, head, 4)
-    assert top_logprobs is None
-    np.testing.assert_array_equal(np.frombuffer(sampling_mask.ids, np.int32), [5, 8, 6])
-    np.testing.assert_array_equal(np.frombuffer(sampling_mask.counts, np.int32), [0, 0, 1, 2])
-    np.testing.assert_array_equal(np.frombuffer(sampling_mask.logprobs, np.float32), np.float32([0.0, -0.3, -1.4]))
+    replayed_rows = {
+        tuple(ids[start:end].tolist())
+        for start, end, row_replayed in zip(offsets[:-1].tolist(), offsets[1:].tolist(), tensor["support_replayed"])
+        if row_replayed
+    }
+    assert replayed_rows == {(5,), (6, 8), (9,)}
 
 
 def test_unfetchable_micro_batches_are_reported():
@@ -304,10 +297,14 @@ def test_keep_keeps_routing_when_the_sampler_evidence_does_not_encode(monkeypatc
     rows; a train run that needs the mask or head stops at the train sink."""
     hook = PayloadHook()
     episode = _two_trace_episode(np.random.default_rng(4))
-    _failing_second_encode(monkeypatch, ValueError("Top logprobs are not aligned to branch tokens"))
+    _failing_second_encode(monkeypatch, ValueError("Sampler support is not aligned to branch tokens"))
     hook.keep(episode, vf.SamplingConfig())
     first, second = episode.traces
-    assert first.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == ["routed_experts", "top_logprobs"]
+    assert first.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == [
+        "routed_experts",
+        "sampler_support",
+        "sampler_support_logprobs",
+    ]
     assert second.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == ["routed_experts"]
     assert all(node.routed_experts is None for node in second.nodes)
 
@@ -329,7 +326,7 @@ def test_fetches_bypass_http_proxies(monkeypatch):
 
 def test_short_routing_rows_fail_the_alignment_check():
     rows = wire.RoutedExperts(data=bytes(3 * 2 * 2), shape=[4, 2, 2], dtype="uint8")
-    mb = SimpleNamespace(routed_experts=rows, sampling_mask=None, top_logprobs=None)
+    mb = SimpleNamespace(routed_experts=rows, sampler_support=None)
     with pytest.raises(AssertionError, match="bytes"):
         payload._assert_aligned(mb, num_tokens=4)
 

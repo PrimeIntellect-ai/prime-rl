@@ -365,7 +365,7 @@ class TrainSink(Reconfigurable):
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and not _kept(sample, "sampling_mask"):
+                if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
@@ -374,11 +374,9 @@ class TrainSink(Reconfigurable):
                         "the inference server config (the rl entrypoint does this automatically) - "
                         f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_ARRAYS_HINT}"
                     )
-                if env.requires_top_logprobs and not (
-                    _kept(sample, "top_logprobs") or _kept(sample, "sampling_mask_logprobs")
-                ):
+                if env.requires_sampler_logprobs and not _kept(sample, "sampler_support_logprobs"):
                     raise RuntimeError(
-                        f"env {env_name!r} requested sampler top logprobs but returned none. {_KEEP_ARRAYS_HINT}"
+                        f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:

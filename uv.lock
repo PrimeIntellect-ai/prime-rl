@@ -8079,7 +8079,7 @@ requires-dist = [
     { name = "prime-sandboxes", specifier = ">=0.5.7" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.0" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev9" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
