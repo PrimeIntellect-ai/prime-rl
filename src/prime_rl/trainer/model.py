@@ -1,7 +1,9 @@
 import logging
 import os
 import shutil
+import sys
 import time
+import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -36,7 +38,10 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.activation_checkpointing import (
+    TokenChunkedCheckpointWrapper,
+    get_activation_checkpoint_wrapper,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -225,7 +230,8 @@ def get_global_moe_stats(
     ep_group: dist.ProcessGroup | None,
     dp_cp_group: dist.ProcessGroup,
 ) -> tuple[dict[str, Tensor], Tensor]:
-    """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step.
+    """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step,
+    or with EP, also one EP imbalance per micro step and layer.
 
     Also returns this rank's unreduced per-layer expert counts summed over the micro steps, for `get_expert_load_stats`.
     """
@@ -247,12 +253,35 @@ def get_global_moe_stats(
         per_layer_max_vio.append((layer_tokens_per_expert.amax(dim=1) - balanced_load) / balanced_load)
         per_layer_routing_confidence.append(routing_confidence_sum / num_routed_tokens)
 
-    max_vio = torch.stack(per_layer_max_vio, dim=1).amax(dim=1)
-    routing_confidence = torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1)
-    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX, group=dp_cp_group)
-    dist.all_reduce(routing_confidence, op=dist.ReduceOp.SUM, group=dp_cp_group)
-    routing_confidence /= dist.get_world_size(dp_cp_group)
-    return {"max_vio": max_vio, "routing_confidence": routing_confidence}, tokens_per_expert
+    max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
+    mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
+    if ep_group is not None:
+        # Every rank of an EP group holds the same `[micro_steps, layers]` imbalances. A layer waits for the busiest
+        # rank of its EP group and, through its FSDP collectives, for the slowest group: take the max over DP groups,
+        # with the DP mean beside it.
+        rank_imbalance = compute_ep_imbalance(stats[..., :-1], dist.get_world_size(ep_group))
+        max_stats.append(rank_imbalance)
+        mean_stats.append(rank_imbalance)
+    max_stats, mean_stats = torch.cat(max_stats, dim=1), torch.cat(mean_stats, dim=1)
+    dist.all_reduce(max_stats, op=dist.ReduceOp.MAX, group=dp_cp_group)
+    dist.all_reduce(mean_stats, op=dist.ReduceOp.SUM, group=dp_cp_group)
+    mean_stats /= dist.get_world_size(dp_cp_group)
+
+    moe_stats = {"max_vio": max_stats[:, 0], "routing_confidence": mean_stats[:, 0]}
+    if ep_group is not None:
+        moe_stats["ep_imbalance/rank"] = max_stats[:, 1:]
+        moe_stats["ep_imbalance/rank_dp_mean"] = mean_stats[:, 1:]
+    return moe_stats, tokens_per_expert
+
+
+def compute_ep_imbalance(tokens_per_expert: Tensor, ep: int) -> Tensor:
+    """The busiest EP rank's load over the mean rank load, from `[..., num_experts]` counts summed over the EP group.
+
+    EP rank r holds experts [r * num_experts / ep, (r + 1) * num_experts / ep) and runs the grouped GEMMs of every
+    route to them, padding routes included (they run through the GEMMs too).
+    """
+    rank_routes = tokens_per_expert.unflatten(-1, (ep, -1)).sum(dim=-1)
+    return rank_routes.amax(dim=-1) / rank_routes.mean(dim=-1)
 
 
 def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
@@ -601,6 +630,33 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def clear_padding_idx(model: nn.Module) -> None:
+    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
+    embedding at zero and keep it frozen, also after a resume."""
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            module.padding_idx = None
+
+
+@torch.no_grad()
+def initialize_from_scratch(model: nn.Module) -> None:
+    """Initialize the weights with the model's own init (``initialize_weights``, which applies its
+    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
+    get_logger().info("Initializing the weights from scratch")
+    model.to_empty(device="cuda")
+    torch.distributed.barrier()
+    model.init_buffers_post_meta()
+    local_params = {
+        name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
+    }
+    for param in local_params.values():
+        param.fill_(float("nan"))
+    model.initialize_weights()
+    uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
+    if uninitialized:
+        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -679,6 +735,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
+        # Tied checkpoints ship no lm_head weight: the head loads through the input embedding it shares.
+        assert model.lm_head.weight is model.get_input_embeddings().weight, (
+            f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
+        )
         state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
@@ -751,13 +811,33 @@ def mark_dynamic_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
+def load_lazy_modules() -> None:
+    """Finish loading the lazily imported modules in ``sys.modules``.
+
+    FLA reads ``sys.modules`` inside compiled code, so Dynamo wraps the whole dict and checks every module's type.
+    That check loads a lazy module (wandb's ``azure.storage.blob``), which grows ``sys.modules`` mid-iteration
+    and crashes the trace with "dictionary changed size during iteration".
+    """
+    for module in list(sys.modules.values()):
+        module_type = type(module)
+        if (
+            issubclass(module_type, types.ModuleType)
+            and module_type.__getattribute__ is not types.ModuleType.__getattribute__
+        ):
+            getattr(module, "__name__", None)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
-    for layer_id in range(len(language_model.layers)):
-        # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    for layer in language_model.layers:
+        if isinstance(layer, TokenChunkedCheckpointWrapper):
+            layer.compile_chunk(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        else:
+            # Doing it in-place avoids mangled fqn which can break checkpoint loading
+            layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -856,6 +936,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -912,12 +993,20 @@ def setup_model(
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
+        if config.ac.token_chunk_size is not None and parallel_dims.ep not in (1, parallel_dims.cp):
+            # Every chunk runs the EP all-to-alls. An EP group wider than CP spans ranks holding different rows,
+            # whose chunk counts can differ, so one rank would wait on a collective its peers never start.
+            raise ValueError(
+                f"model.ac.token_chunk_size requires ep == 1 or ep == cp, got ep={parallel_dims.ep}, cp={parallel_dims.cp}"
+            )
         apply_ac(model, config.ac)
     if config.compile is not None:
         apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
 
+    if init_from_scratch:
+        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
@@ -926,6 +1015,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
+    elif init_from_scratch:
+        initialize_from_scratch(model)
     else:
         load_dcp_from_hf(model, config)
 

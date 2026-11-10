@@ -161,8 +161,8 @@ class ResumeConfig(BaseConfig):
             raise ValueError(
                 "resume.step and resume.dir are mutually exclusive — the step is taken from the directory name"
             )
-        if self.dir is not None and not re.fullmatch(r"step_\d+", self.dir.name):
-            raise ValueError(f"resume.dir must point at a checkpoint step directory (`.../step_<N>`), got '{self.dir}'")
+        if self.dir is not None:
+            validate_step_dir(self.dir, field="resume.dir")
         return self
 
     @property
@@ -282,10 +282,8 @@ class PolicyClientConfig(VLLMClientConfig):
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
-    """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
-
-    vf_level: str = Field(default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"))
-    """Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
+    """Log level for the process and the verifiers library it runs, env worker pools included.
+    Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
@@ -336,3 +334,9 @@ class ZMQTransportConfig(BaseTransportConfig):
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
+
+
+def validate_step_dir(path: Path, *, field: str) -> None:
+    """Raise unless ``path`` names a checkpoint step directory (``.../step_<N>``)."""
+    if not re.fullmatch(r"step_\d+", path.name):
+        raise ValueError(f"{field} must point at a checkpoint step directory (`.../step_<N>`), got '{path}'")

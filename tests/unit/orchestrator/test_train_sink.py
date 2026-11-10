@@ -18,6 +18,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
+from prime_rl.orchestrator.utils import episode_group_id
 from prime_rl.utils.logger import setup_logger
 
 # Samples hold numpy streams; encode them as lists to compare them byte for byte.
@@ -73,7 +74,7 @@ def episode(traces, *, group="g", version=0):
     )
 
 
-def sink(*, constant=True, admitted=True, batch_size=100):
+def sink(*, constant=True, admitted=True, batch_size=100, closed=None):
     config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1),
@@ -89,6 +90,7 @@ def sink(*, constant=True, admitted=True, batch_size=100):
         progress=Progress(),
         batch_size=batch_size,
         on_result=lambda group: admitted,
+        on_groups_closed=closed.extend if closed is not None else None,
     )
 
 
@@ -286,3 +288,84 @@ def test_reconfigure_applies_new_batch_size_and_staleness():
         assert not s.pending_batch
 
     asyncio.run(run())
+
+
+def test_groups_close_when_they_finalize_without_shipping():
+    async def run():
+        closed = []
+        rejected = sink(admitted=False, closed=closed)
+        await rejected.add(episode([trace()], group="rejected"))
+        assert closed == ["rejected"]
+
+        s = sink(batch_size=2, closed=closed)
+        await s.add(episode([trace(ok=False)], group="failed"))
+        await s.cancel(GroupCancellation("train", "test", "overload", 1, 1, "overload"))
+        assert closed == ["rejected", "failed", "overload"]
+
+        # A shutdown drop re-runs on resume, so the group stays open.
+        await s.cancel(GroupCancellation("train", "test", "shutdown", 1, 1, "shutdown"))
+        assert closed == ["rejected", "failed", "overload"]
+
+        s.progress.step = 4
+        await s.add(episode([trace()], group="stale"))
+        assert closed[-1] == "stale" and not s.pending_batch
+
+        closed.clear()
+        pruned = sink(constant=False, batch_size=1, closed=closed)
+        batch = await pruned.add(episode([trace(advantage=0)], group="pruned"))
+        assert not batch.samples and closed == ["pruned"]
+
+    asyncio.run(run())
+
+
+def test_shipped_groups_close_when_the_consumer_ships_them():
+    async def run():
+        closed = []
+        s = sink(constant=False, batch_size=2, closed=closed)
+        batch = await s.add(episode([trace(), trace(advantage=0), trace()], group="partial"))
+        assert len(batch.samples) == 1 and len(s.pending_batch) == 1
+        assert {episode_group_id(episode) for episode in batch.cohort.episodes} == {"partial"}
+        # Taking the batch does not close it: a batch that never ships re-runs on resume.
+        assert closed == []
+        s.shipped(batch)
+        assert closed == ["partial"]
+
+    asyncio.run(run())
+
+
+def test_unshipped_groups_stay_open_at_shutdown():
+    async def run():
+        closed = []
+        s = sink(constant=False, batch_size=2, closed=closed)
+        await s.add(episode([trace(), trace(advantage=0), trace()], group="partial"))
+        s.discard_queued()
+        assert closed == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("make_trace", "admitted", "reason"),
+    [
+        (lambda: trace(advantage=0), True, "zero advantage"),
+        (lambda: trace(), False, "rejected by curriculum"),
+        (lambda: trace(trainable=False), True, "no trainable survivors"),
+    ],
+)
+def test_zero_output_warning_names_the_drop_reason(monkeypatch, make_trace, admitted, reason):
+    warnings = []
+    monkeypatch.setattr(
+        "prime_rl.orchestrator.train_sink.get_logger",
+        lambda: SimpleNamespace(debug=lambda message: None, warning=warnings.append),
+    )
+    s = sink(admitted=admitted, batch_size=4)
+
+    async def run():
+        for i in range(4):
+            await s.add(episode([make_trace()], group=str(i)))
+
+    asyncio.run(run())
+
+    assert warnings == [
+        f"No admitted train payload after 4 finalized units (1 zero-output batch equivalents), by drop reason: {reason}=4"
+    ]
