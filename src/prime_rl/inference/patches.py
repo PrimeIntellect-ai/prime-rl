@@ -21,6 +21,7 @@ def apply_shared_vllm_patches():
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_routed_experts_with_pd_connectors()
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
+    monkey_patch_offload_keys_slice()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
@@ -483,6 +484,35 @@ def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: in
         return None
     prompt_start = request.sampling_params.routed_experts_prompt_start
     return max(0, prompt_start // block_size * block_size - num_computed_tokens)
+
+
+def monkey_patch_offload_keys_slice():
+    """Index a request's new block hashes in ``RequestOffloadState.update_offload_keys`` instead of scanning to them.
+
+    The native offload scheduler calls it for every scheduled request on every step, and upstream reaches the
+    new hashes with ``islice(block_hashes, start, None, step)``, which walks the list from its head to ``start``
+    each time. The cost grows with context length times running requests times KV groups, and on long agentic
+    contexts it dominated the engine-core thread (most py-spy samples in it, decode falling as rollouts grew).
+    A list slice yields the same keys from ``start`` on.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.offloading import scheduler as offload_scheduler
+
+    if getattr(offload_scheduler.RequestOffloadState.update_offload_keys, "_prime_rl_slice", False):
+        return
+    make_offload_key = offload_scheduler.make_offload_key
+
+    def update_offload_keys(self) -> None:
+        block_hashes = self.req.block_hashes
+        for group_config, group_state in zip(self.config.kv_group_configs, self.group_states):
+            step = group_config.hashes_per_chunk
+            keys = group_state.offload_keys
+            for req_block_hash in block_hashes[step * len(keys) + step - 1 :: step]:
+                key = make_offload_key(req_block_hash, group_config.group_idx)
+                keys.append(key)
+                self.req_context.set_offload_key_position(key, len(keys) * group_config.tokens_per_chunk)
+
+    update_offload_keys._prime_rl_slice = True
+    offload_scheduler.RequestOffloadState.update_offload_keys = update_offload_keys
 
 
 def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
