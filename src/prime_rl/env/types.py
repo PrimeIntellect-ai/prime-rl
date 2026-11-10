@@ -4,8 +4,6 @@ from pydantic import BaseModel, Field
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 
-from prime_rl.env.delta import TraceSummary
-
 
 class BaseRequest(BaseModel):
     """`method` is sent as its own route frame, not as payload data."""
@@ -50,8 +48,16 @@ class RunRequest(BaseRequest):
     sampling: SamplingConfig
 
 
+class TraceSummary(BaseModel):
+    """A finished trace's identity and size, for the client's assembly check."""
+
+    id: str
+    nodes: int
+    calls: int
+
+
 class RunResponse(BaseResponse):
-    """The end of a run whose traces already streamed as deltas (`env.delta`)."""
+    """The end of a run whose traces already streamed as deltas (`verifiers.v1.delta`)."""
 
     head: dict | None = None
     """The rollout's episode without its traces — its standing (`id`/`env`/`errors`,

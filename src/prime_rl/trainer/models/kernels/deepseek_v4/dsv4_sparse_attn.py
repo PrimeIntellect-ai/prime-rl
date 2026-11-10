@@ -3,7 +3,7 @@
 # autograd rule that ties them together and forms the attention-sink gradient in torch. The
 # TileLang kernels themselves live in `dsv4_sparse_attn_fwd.py` and `dsv4_sparse_attn_bwd.py`; this
 # module is the only place that knows both exist. The `cudnn_flashmla` backend calls FlashMLA's
-# sparse prefill forward and the cuDNN frontend's DSA backward from their wheels.
+# sparse prefill forward (bundled in the vLLM wheel) and the cuDNN frontend's DSA backward.
 
 # TileLang ships a libcudart stub that proxies to the real CUDA runtime via
 # dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
@@ -172,7 +172,7 @@ def cudnn_flashmla_forward(
     _num_stages: int,
     _threads: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    from flash_mla import flash_mla_sparse_fwd
+    from prime_rl.trainer.models.kernels import flash_mla_sparse_fwd
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]

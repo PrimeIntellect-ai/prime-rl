@@ -14,7 +14,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
-from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
+from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -607,6 +607,7 @@ def rl(config: RLConfig):
 
 def main():
     set_proc_title("Launcher")
+    check_mode("rl")
     rl(cli(RLConfig))
 
 
