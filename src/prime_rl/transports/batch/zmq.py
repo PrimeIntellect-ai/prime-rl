@@ -40,6 +40,11 @@ class ZMQBatchSender(BatchSender):
             await asyncio.to_thread(self.log.write, self.current_step, buffers)
         wait_start = time.perf_counter()
         rank_to_request = await self._wait_for_requests()
+        _, request = next(iter(rank_to_request.values()))
+        if request.data_world_size != self.data_world_size:
+            buffers = await asyncio.to_thread(self.deal, micro_batch_grid, buffers, request.data_world_size)
+            if self.retain:
+                await asyncio.to_thread(self.log.write, self.current_step, buffers)
         send_start = time.perf_counter()
         self.last_wait_s = send_start - wait_start
         if self.retain:
@@ -85,14 +90,17 @@ class ZMQBatchSender(BatchSender):
 
     async def _wait_for_requests(self) -> dict[int, tuple[bytes, BatchRequest]]:
         """Collect one request per trainer rank for the current step. Each request carries the
-        trainer world size, so the first one says how many to wait for. A rank that asks again
-        (a restarted trainer) replaces its earlier request."""
-        identity, request = await self._receive_request()
-        rank_to_request = {request.rank: (identity, request)}
-        while len(rank_to_request) < request.world_size:
+        trainer world size, which says how many to wait for. A rank that asks again (a restarted
+        trainer) replaces its earlier request, and a request with another world size (a trainer
+        restarted at another size) drops the ones collected so far."""
+        rank_to_request: dict[int, tuple[bytes, BatchRequest]] = {}
+        while True:
             identity, request = await self._receive_request()
+            if any(other.world_size != request.world_size for _, other in rank_to_request.values()):
+                rank_to_request = {}
             rank_to_request[request.rank] = (identity, request)
-        return rank_to_request
+            if len(rank_to_request) == request.world_size:
+                return rank_to_request
 
 
 class ZMQBatchReceiver(BatchReceiver):
@@ -100,6 +108,7 @@ class ZMQBatchReceiver(BatchReceiver):
         self,
         output_dir: Path,
         data_rank: int,
+        data_world_size: int,
         rank: int,
         world_size: int,
         current_step: int,
@@ -108,21 +117,21 @@ class ZMQBatchReceiver(BatchReceiver):
         """ZMQ micro batch receiver. Every trainer rank owns one DEALER socket and requests each step
         before reading it. With ``transport.retain``, a step the sender already published is read
         from the log instead, which is how a restarted trainer gets the steps since its checkpoint."""
-        super().__init__(output_dir, data_rank, rank, world_size, current_step)
+        super().__init__(output_dir, data_rank, data_world_size, rank, world_size, current_step)
         self.context = zmq.Context.instance()
         self.socket: zmq.Socket = self.context.socket(zmq.DEALER)
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
         self.request_encoder = msgspec.msgpack.Encoder()
         self.retain = transport.retain
-        self.payload: bytes | zmq.Frame | None = None
+        self.micro_batches: list[MicroBatch] | None = None
         self.logger.debug(f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
     def wait(self) -> None:
         requested = False
         while True:
             if self.retain:
-                self.payload = self.log.read(self.current_step, self.data_rank)
-                if self.payload is not None:
+                self.micro_batches = self.read_log()
+                if self.micro_batches is not None:
                     return
             if not requested:
                 self.socket.send(self.request_encoder.encode(self.request()))
@@ -131,13 +140,12 @@ class ZMQBatchReceiver(BatchReceiver):
                 step, payload = self.socket.recv_multipart(copy=False)
                 # A reply to a request for a step that was then read from the log arrives late.
                 if int.from_bytes(step.bytes, "big") == self.current_step:
-                    self.payload = payload
+                    self.micro_batches = self.decoder.decode(payload)
                     return
 
     def receive(self) -> list[MicroBatch]:
         """The micro batches ``wait`` got from the orchestrator or the log."""
-        micro_batches: list[MicroBatch] = self.decoder.decode(self.payload)
-        self.payload = None
+        micro_batches, self.micro_batches = self.micro_batches, None
         self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self.current_step}")
         self.current_step += 1
         return micro_batches

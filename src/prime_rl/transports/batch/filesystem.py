@@ -6,7 +6,7 @@ import msgspec
 
 from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender
 from prime_rl.transports.batch.types import MicroBatch
-from prime_rl.utils.pathing import get_step_path, sync_wait_for_path
+from prime_rl.utils.pathing import get_step_path
 
 REQUEST_POLL_INTERVAL_S = 0.1
 
@@ -34,9 +34,12 @@ class FileSystemBatchSender(BatchSender):
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
 
-        await asyncio.to_thread(self._encode_and_write, micro_batch_grid)
+        buffers = await asyncio.to_thread(self._encode_and_write, micro_batch_grid)
         wait_start = time.perf_counter()
-        committed = await self._wait_for_requests()
+        committed, data_world_size = await self._wait_for_requests()
+        if data_world_size != self.data_world_size:
+            buffers = await asyncio.to_thread(self.deal, micro_batch_grid, buffers, data_world_size)
+            await asyncio.to_thread(self.log.write, self.current_step, buffers)
         send_start = time.perf_counter()
         self.last_wait_s = send_start - wait_start
         self.log.publish(self.current_step, self.data_world_size)
@@ -47,39 +50,54 @@ class FileSystemBatchSender(BatchSender):
         self.current_step += 1
         return send_end - send_start
 
-    def _encode_and_write(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
-        self.log.write(self.current_step, [self.encode(micro_batches) for micro_batches in micro_batch_grid])
+    def _encode_and_write(self, micro_batch_grid: list[list[MicroBatch]]) -> list[bytes]:
+        buffers = [self.encode(micro_batches) for micro_batches in micro_batch_grid]
+        self.log.write(self.current_step, buffers)
+        return buffers
 
-    async def _wait_for_requests(self) -> int:
+    async def _wait_for_requests(self) -> tuple[int, int]:
         """Block until every trainer rank requested the step; returns the step the trainer has
-        committed. Each request holds the trainer world size, so the first one says how many to
-        wait for."""
+        committed and its number of data ranks. Each request holds the trainer world size. The
+        newest request says how many to wait for: requests a trainer of another size left behind
+        do not count."""
         step_path = get_step_path(self.log.dir, self.current_step)
         while True:
-            requests = [
-                msgspec.msgpack.decode(path.read_bytes(), type=BatchRequest)
-                for path in step_path.glob("rank_*.request")
-            ]
-            if requests and len(requests) == requests[0].world_size:
-                return max(request.committed for request in requests)
+            paths = sorted(step_path.glob("rank_*.request"), key=lambda path: path.stat().st_mtime)
+            requests = [msgspec.msgpack.decode(path.read_bytes(), type=BatchRequest) for path in paths]
+            if requests:
+                world_size = requests[-1].world_size
+                requests = [r for r in requests if r.world_size == world_size and r.rank < world_size]
+                if len(requests) == world_size:
+                    return max(request.committed for request in requests), requests[0].data_world_size
             await asyncio.sleep(REQUEST_POLL_INTERVAL_S)
 
 
 class FileSystemBatchReceiver(BatchReceiver):
     """Filesystem-based micro batch receiver that reads micro batches from disk."""
 
-    def __init__(self, output_dir: Path, data_rank: int, rank: int, world_size: int, current_step: int = 0):
-        super().__init__(output_dir, data_rank, rank, world_size, current_step)
+    def __init__(
+        self,
+        output_dir: Path,
+        data_rank: int,
+        data_world_size: int,
+        rank: int,
+        world_size: int,
+        current_step: int = 0,
+    ):
+        super().__init__(output_dir, data_rank, data_world_size, rank, world_size, current_step)
+        self.micro_batches: list[MicroBatch] | None = None
 
     def wait(self) -> None:
-        """Request the current step, then wait for its micro batch file to appear on disk."""
+        """Request the current step, then wait for it to be published on disk."""
         step_path = get_step_path(self.log.dir, self.current_step)
         step_path.mkdir(parents=True, exist_ok=True)
         write_atomic(step_path / f"rank_{self.rank}.request", msgspec.msgpack.encode(self.request()))
-        sync_wait_for_path(self.log.path(self.current_step, self.data_rank))
+        while (micro_batches := self.read_log()) is None:
+            time.sleep(REQUEST_POLL_INTERVAL_S)
+        self.micro_batches = micro_batches
 
     def receive(self) -> list[MicroBatch]:
-        """Read and return the micro batches from disk."""
-        micro_batches: list[MicroBatch] = self.decoder.decode(self.log.read(self.current_step, self.data_rank))
+        """The micro batches ``wait`` read from disk."""
+        micro_batches, self.micro_batches = self.micro_batches, None
         self.current_step += 1
         return micro_batches

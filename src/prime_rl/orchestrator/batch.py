@@ -1,4 +1,3 @@
-import copy
 import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -11,6 +10,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.perf import FlopCounter
+from prime_rl.transports.batch.base import dummy_micro_batch
 from prime_rl.transports.batch.types import (
     MICRO_BATCH_DTYPES,
     MicroBatch,
@@ -616,34 +616,11 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     )
 
 
-def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
-    """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
-    dummy = copy.deepcopy(source)
-    dummy.advantages = np.zeros(len(dummy.input_ids), dtype=np.float32)
-    dummy.loss_mask = np.zeros(len(dummy.input_ids), dtype=np.bool_)
-    # ce/ref_kl membership is weight != 0 (independent of loss_mask), so the
-    # streams must go too or the dummy would still train those tokens.
-    dummy.rl_weights = None
-    dummy.ce_weights = None
-    dummy.ref_kl_weights = None
-    # Fully loss-masked: fetch only the routing rows the forward pass replays, since
-    # replaying sampling masks would be pure wasted work.
-    dummy.payloads = (
-        [msgspec.structs.replace(payload, fields=["routed_experts"]) for payload in dummy.payloads]
-        if _has_routing(dummy)
-        else None
-    )
-    # The copied identity would double-annotate the source's traces.
-    dummy.trace_ids = None
-    dummy.branch_indices = None
-    return dummy
-
-
 def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
     """Pad a group of micro batches so its length is divisible by num_train_workers."""
     num_padding = -len(group) % num_train_workers
     if num_padding > 0 and len(group) > 0:
-        dummy = _make_dummy_batch(group[0])
+        dummy = dummy_micro_batch(group[0])
         group.extend([dummy] * num_padding)
     return group
 

@@ -736,6 +736,8 @@ class Orchestrator:
         send_start_time = time.perf_counter()
         self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
+        # A trainer restarted with another number of data ranks: pack the next steps for it.
+        self.packer.num_train_workers = self.sender.data_world_size
         self.unsent_rollouts = 0
         shipped_at = time.perf_counter()
         # The trainer's first step in a process includes its warmup, so its pace counts from the second one

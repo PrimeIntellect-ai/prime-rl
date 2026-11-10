@@ -255,6 +255,7 @@ class DataLoader:
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
             data_rank=dp_rank,
+            data_world_size=dp_world_size,
             rank=self.world.rank,
             world_size=self.world.world_size,
             current_step=start_step,
