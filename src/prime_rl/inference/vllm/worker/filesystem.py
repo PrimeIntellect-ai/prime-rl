@@ -30,11 +30,13 @@ from prime_rl.utils.sparse_weights import (
     read_anchor_checksums,
     read_checkpoint_range,
     read_delta,
+    read_delta_in_subprocess,
     read_manifest,
     revalidate,
     unpin,
     write_file,
 )
+from prime_rl.utils.weight_store import S3Path, StoragePath, storage_path
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -87,16 +89,20 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def prefetch_weights_from_path(self, weight_path: str) -> None:
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
-        self.prefetched = (weight_path, _prefetch_pool.submit(self._read_delta, Path(weight_path)))
+        self.prefetched = (weight_path, _prefetch_pool.submit(self._read_delta, storage_path(weight_path)))
 
-    def _read_delta(self, step_dir: Path) -> tuple[list[DeltaChunk], dict[str, int]]:
+    def _read_delta(self, step_dir: StoragePath) -> tuple[list[DeltaChunk], dict[str, int]]:
         """Read this worker's part of a delta into a pinned host buffer reused across steps, in chunks of up to 2^26
         changes of consecutive frames."""
         global _reader_pool
         if _reader_pool is None:
             _reader_pool = ThreadPoolExecutor(16)
         start = time.perf_counter()
-        frames, checksums = read_delta(step_dir, _reader_pool, None if self.index_map is None else self.index_map.names)
+        names = None if self.index_map is None else self.index_map.names
+        if isinstance(step_dir, S3Path):
+            frames, checksums = read_delta_in_subprocess(step_dir, names)
+        else:
+            frames, checksums = read_delta(step_dir, _reader_pool, names)
         read_time = time.perf_counter() - start
         chunks, size = [[]], 0
         for frame in frames:
@@ -168,7 +174,7 @@ class FileSystemWeightUpdateWorker(Worker):
         The TP group's workers run collectives while they verify, so they must take the same steps: TP rank 0
         plans the update (which checkpoint to load, which deltas to apply) and the others follow its plan. A
         failure on any worker fails the update on all of them, so they all replay the same way next time."""
-        step_dir = Path(weight_path)
+        step_dir = storage_path(weight_path)
         step = int(step_dir.name.removeprefix("step_"))
         tp_group = get_tp_group()
         plan, error = None, None
@@ -188,7 +194,7 @@ class FileSystemWeightUpdateWorker(Worker):
         check = None
         try:
             if plan["index_map"] is not None:
-                self._build_index_map(Path(plan["index_map"]))
+                self._build_index_map(storage_path(plan["index_map"]))
                 if plan["write_layout"]:
                     # A full broadcast: the trainer takes the layout at its first one, also after a restart
                     self._write_layout(step_dir.parent)
@@ -200,7 +206,7 @@ class FileSystemWeightUpdateWorker(Worker):
             self._check(*check)
         self.weight_step = step
 
-    def _plan_update(self, step_dir: Path) -> dict:
+    def _plan_update(self, step_dir: StoragePath) -> dict:
         """What every TP worker does to move to ``step_dir``: a dict of plain values, broadcast from TP rank 0."""
         # A stale NFS lookup cache could hide a manifest written before ``.finished``, turning a delta into a full load
         revalidate(step_dir / DELTA_DIR)
@@ -234,18 +240,18 @@ class FileSystemWeightUpdateWorker(Worker):
                 source = source.parent / f"step_{source_base}"
             plan["load"] = source.as_posix() if anchor_complete(source) else "boot"
             plan["deltas"] = [delta_dir.as_posix() for delta_dir in reversed(chain)]
-            logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {Path(plan['load']).name}")
+            logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {storage_path(plan['load']).name}")
         return plan
 
     def _run_plan(self, plan: dict) -> tuple | None:
         """Load and apply what ``plan`` says; returns the check of the final weights for ``_check``."""
         check = None
         if plan["load"] is not None:
-            check = self._load_checkpoint(self._boot_dir() if plan["load"] == "boot" else Path(plan["load"]))
+            check = self._load_checkpoint(self._boot_dir() if plan["load"] == "boot" else storage_path(plan["load"]))
         for delta_dir in plan["deltas"]:
-            checksums = self._apply_delta(Path(delta_dir))
+            checksums = self._apply_delta(storage_path(delta_dir))
             # Each delta's checksums cover every tensor, so the last one checks the whole chain
-            check = (Path(delta_dir).name, *self.index_map.checksums(full=plan["full_verify"]), checksums)
+            check = (storage_path(delta_dir).name, *self.index_map.checksums(full=plan["full_verify"]), checksums)
         return check
 
     def _raise_if_any_failed(self, error: Exception | None, what: str) -> None:
@@ -300,7 +306,7 @@ class FileSystemWeightUpdateWorker(Worker):
         events.append(torch.cuda.Event(enable_timing=True))
         events[-1].record()
 
-    def _build_index_map(self, step_dir: Path) -> None:
+    def _build_index_map(self, step_dir: StoragePath) -> None:
         """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint tensors to
         the params (where the boot weights are, after the engine's processing), and find which ones this worker holds
         in fp8 (and their scale format)."""
@@ -332,7 +338,7 @@ class FileSystemWeightUpdateWorker(Worker):
             index_map.fused_tables(warm_up=True)
         self.index_map = index_map
 
-    def _write_layout(self, broadcast_dir: Path) -> None:
+    def _write_layout(self, broadcast_dir: StoragePath) -> None:
         """Report which checkpoint tensors this worker holds in fp8, so the trainer sends their deltas as fp8. The
         trainer waits for every worker of the world group (every DP, PP and TP rank)."""
         assert self.index_map is not None
@@ -343,7 +349,7 @@ class FileSystemWeightUpdateWorker(Worker):
         write_file(path, json.dumps(layout).encode())
         logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")
 
-    def _apply_delta(self, step_dir: Path) -> dict[str, int]:
+    def _apply_delta(self, step_dir: StoragePath) -> dict[str, int]:
         """Patch the params with the sparse delta in ``step_dir``; returns the trainer's checksums of the result."""
         start = time.perf_counter()
         prefetched, self.prefetched = self.prefetched, None
@@ -436,7 +442,7 @@ class FileSystemWeightUpdateWorker(Worker):
         self.coverage_cache = (names, held, coverage)
         return coverage
 
-    def _load_checkpoint(self, step_dir: Path) -> tuple | None:
+    def _load_checkpoint(self, step_dir: StoragePath) -> tuple | None:
         """Reload every weight from the HF checkpoint (or anchor) in ``step_dir``. In a sparse run, each worker reads
         only the rows it holds, straight into its params, and returns their check for ``_check``."""
         model = self._model()
@@ -470,7 +476,7 @@ class FileSystemWeightUpdateWorker(Worker):
         return step_dir.name, *index_map.held_checksums(), expected
 
 
-def _read_rows(index_map: CheckpointIndexMap, step_dir: Path, device) -> Iterator[tuple[str, int, torch.Tensor]]:
+def _read_rows(index_map: CheckpointIndexMap, step_dir: StoragePath, device) -> Iterator[tuple[str, int, torch.Tensor]]:
     """``(name, begin, rows)``: the ``row_ranges`` rows of each checkpoint tensor in ``step_dir``, on ``device``. A
     tied name the checkpoint omits is skipped: its elements come with a tied name it has."""
     index = checkpoint_index(step_dir)

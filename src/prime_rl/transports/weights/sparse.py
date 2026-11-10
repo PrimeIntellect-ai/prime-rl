@@ -1,6 +1,5 @@
 import json
 import queue
-import shutil
 import threading
 import time
 from bisect import bisect_left, bisect_right
@@ -24,6 +23,7 @@ from prime_rl.trainer.models.fusions import get_model_packed_parameters, join_mo
 from prime_rl.transports.weights.base import WeightSender
 from prime_rl.transports.weights.sparse_kernels import Pieces, build_pieces, count_changes, write_changes
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     ENGINE_LAYOUT,
@@ -44,6 +44,7 @@ from prime_rl.utils.sparse_weights import (
     write_rank_file,
     zigzag,
 )
+from prime_rl.utils.weight_store import S3Path, StoragePath, remove, storage_path
 from prime_rl.utils.weights import convert_state_dict_to_hf, resolve_fqn, resolve_wire_dtype
 
 if TYPE_CHECKING:
@@ -295,20 +296,21 @@ class SparseDeltaEncoder:
         return parts
 
     @torch.no_grad()
-    def write_full_checkpoint(self, model: nn.Module, is_master: bool, step_dir: Path, rank: int, world_size: int):
-        """Write this rank's slices of a full HF checkpoint of the live weights, one tensor at a time."""
+    def write_full_checkpoint(
+        self, model: nn.Module, is_master: bool, open_writer: Callable[[list], AnchorWriter], world_size: int
+    ) -> None:
+        """Write this rank's slices of a full HF checkpoint of the live weights, one tensor at a time, with the
+        writer ``open_writer(slices)``."""
         shards = [
             (key, shard, offset, self._slices(fqn, shard.numel(), offset))
             for key, fqn, shard, offset, _ in self.local_shards(model, is_master, aliases=True)
         ]
-        writer = AnchorWriter(
+        writer = open_writer(
             [
                 (name, shape, start, end - begin, self.wire_dtypes[key])
                 for key, _, _, slices in shards
                 for name, shape, start, begin, end in slices
-            ],
-            step_dir,
-            rank,
+            ]
         )
         for key, shard, offset, slices in shards:
             values = shard.reshape(-1).to(self.wire_dtypes[key])
@@ -1006,7 +1008,7 @@ class SparseDeltaEncoder:
             self.anchor.write_all(items)
 
 
-def _write_json(path: Path, value) -> None:
+def _write_json(path: StoragePath, value) -> None:
     write_file(path, json.dumps(value).encode())
 
 
@@ -1038,6 +1040,11 @@ class SparseFileSystemWeightSender(WeightSender):
         self.errors: list[BaseException] = []
         self.weights_read: threading.Event | None = None
         self.part_bytes = 0
+        self.storage = storage_path(config.path) if config.path else get_broadcast_dir(output_dir)
+        if config.path and self.world.is_master:
+            # Leftovers of an earlier run would look like anchors and deltas of this one
+            for path in self.storage.glob("step_*"):
+                remove(path)
         self.optimizer: "OptimizerLike | None" = None
         self.model: nn.Module | None = None
         # The step whose delta the next optimizer step collects
@@ -1045,7 +1052,7 @@ class SparseFileSystemWeightSender(WeightSender):
         self.streamed_dir: Path | None = None
         self.num_streamed = 0
         # The delta dir of the step being encoded, where a failed encode or write leaves this rank's failure marker
-        self.delta_dir: Path | None = None
+        self.delta_dir: StoragePath | None = None
 
     def diff_in_optimizer(self, optimizer: "OptimizerLike") -> None:
         """Take the deltas of the optimizer's parameters from its steps, which must each be followed by a broadcast."""
@@ -1084,16 +1091,26 @@ class SparseFileSystemWeightSender(WeightSender):
     def _arm(self, step: int) -> None:
         """Collect v{step}'s delta, and its anchor slices at anchor steps, in the coming optimizer step."""
         encoder = self.encoder
-        anchor = None
-        if step % self.config.interval == 0:
-            # Written next to the step dir, which the broadcast handshake recreates, and moved in once complete
-            anchor = AnchorWriter(encoder.anchor_slices(), self.step_dir(step), self.world.rank)
-        # Parts written during the step go next to the step dir too, and are moved in when it is published
-        self.streamed_dir = self.step_dir(step).with_name(f".{self.step_dir(step).name}.delta{self.world.rank}")
+        anchor = self._anchor_writer(step, encoder.anchor_slices()) if step % self.config.interval == 0 else None
+        step_dir = get_step_path(self.storage, step)
+        # Parts written during the step go next to the broadcast step dir, which the broadcast handshake recreates,
+        # and are moved in when it is published; on separate storage straight into the step dir
+        if self.config.path:
+            self.streamed_dir = step_dir / DELTA_DIR
+        else:
+            self.streamed_dir = step_dir.with_name(f".{step_dir.name}.delta{self.world.rank}")
         self.streamed_dir.mkdir(parents=True, exist_ok=True)
         self.num_streamed = 0
         encoder.arm(anchor, self._stream_part)
         self.armed_step = step
+
+    def _anchor_writer(self, step: int, slices: list) -> AnchorWriter:
+        """Written next to the step dir and moved in once complete; for S3, next to the broadcast step dir and
+        uploaded."""
+        local_dir = None
+        if isinstance(self.storage, S3Path):
+            local_dir = self.step_dir(step).with_name(f".{self.step_dir(step).name}.anchor{self.world.rank}")
+        return AnchorWriter(slices, get_step_path(self.storage, step), self.world.rank, local_dir)
 
     def _stream_part(self, part: tuple) -> None:
         path = self.streamed_dir / rank_part(self.world.rank, self.num_streamed)
@@ -1106,7 +1123,7 @@ class SparseFileSystemWeightSender(WeightSender):
             layout = [None]
             if self.world.is_master:
                 try:
-                    layout[0] = self._wait_for_engine_layout(self.step_dir(0).parent)
+                    layout[0] = self._wait_for_engine_layout(self.storage)
                 except Exception as error:
                     # Every rank joins the broadcast and fails with the master
                     layout[0] = error
@@ -1145,8 +1162,9 @@ class SparseFileSystemWeightSender(WeightSender):
         if self.seen_anchor is not None:
             self.anchor_step = max(self.anchor_step, self.seen_anchor)
         self.seen_anchor = self.complete_anchor
-        if self.world.is_master:
-            (step_dir / DELTA_DIR).mkdir(exist_ok=True)
+        step_dir = get_step_path(self.storage, step)
+        # Every rank: on a separate storage dir, no handshake creates the step dir before the others write to it
+        (step_dir / DELTA_DIR).mkdir(parents=True, exist_ok=True)
         if self.encoder is None:
             self.encoder = SparseDeltaEncoder(model)
             self.model = model
@@ -1166,25 +1184,25 @@ class SparseFileSystemWeightSender(WeightSender):
         args = (step, base_step, step_dir, shards, ready, self.weights_read, encoder.anchor)
         self._submit(self.encodes, self._encode, *args)
 
-    def _broadcast_full(self, model: nn.Module, step: int, step_dir: Path) -> None:
+    def _broadcast_full(self, model: nn.Module, step: int, step_dir: StoragePath) -> None:
         """Publish v{step} as a full checkpoint of the live weights; the run's first broadcast at step 0 is the
         checkpoint the engines booted from. The next delta is against it."""
         if self.last_step is None and self.world.is_master:
             # Engines report their layout again as they load it; the last run's may differ
-            shutil.rmtree(step_dir.parent / ENGINE_LAYOUT, ignore_errors=True)
+            remove(self.storage / ENGINE_LAYOUT)
         if self.last_step is None and step == 0:
             self.anchor_step = step
             if self.world.is_master:
                 self._write_manifest(step_dir, step, None, 0)
-                WeightSender._finish(self, step, step_dir)
+                WeightSender._finish(self, step, self.step_dir(step))
         else:
             self.encoder.write_full_checkpoint(
-                model, self.world.is_master, step_dir, self.world.rank, self.world.world_size
+                model, self.world.is_master, partial(self._anchor_writer, step), self.world.world_size
             )
             self._wait_for_anchor(step_dir)
             self.anchor_step = step
             if self.world.is_master:
-                WeightSender._finish(self, step, step_dir)
+                WeightSender._finish(self, step, self.step_dir(step))
         self.last_step = step
         if self.optimizer is not None:
             # Engines report their layout as they load this broadcast. Take it (and compile the fp8 quantizer) now,
@@ -1194,7 +1212,7 @@ class SparseFileSystemWeightSender(WeightSender):
                 self._bind()
             self.encoder.reset(model, self.world.is_master)
 
-    def _wait_for_engine_layout(self, broadcast_dir: Path) -> dict[str, str]:
+    def _wait_for_engine_layout(self, broadcast_dir: StoragePath) -> dict[str, str]:
         start = time.monotonic()
         while (layout := read_engine_layout(broadcast_dir)) is None:
             if time.monotonic() - start > self.timeout:
@@ -1206,7 +1224,7 @@ class SparseFileSystemWeightSender(WeightSender):
         self,
         step: int,
         base_step: int,
-        step_dir: Path,
+        step_dir: StoragePath,
         shards,
         ready,
         weights_read: threading.Event,
@@ -1229,7 +1247,8 @@ class SparseFileSystemWeightSender(WeightSender):
             num_parts = self.num_streamed
             if self.world.is_master:
                 self._submit(self.writes, self._write_manifest, step_dir, step, base_step, self.world.world_size)
-            self._submit(self.writes, self._move_streamed, self.streamed_dir, step_dir / DELTA_DIR)
+            if not self.config.path:
+                self._submit(self.writes, self._move_streamed, self.streamed_dir, step_dir / DELTA_DIR)
 
             def diffed(scale_changes: int) -> None:
                 args = (step, base_step, step_dir, num_parts, start, time.perf_counter() - start, scale_changes)
@@ -1252,12 +1271,12 @@ class SparseFileSystemWeightSender(WeightSender):
             anchor.write_parts(encoder.anchor_parts(source), encoder.stream_to_host)
             self._submit(self.anchors, self._close_anchor, step, step_dir, anchor)
 
-    def _write_manifest(self, step_dir: Path, step: int, base_step: int | None, ranks: int) -> None:
+    def _write_manifest(self, step_dir: StoragePath, step: int, base_step: int | None, ranks: int) -> None:
         """Written before the parts, so engines can read part files as they appear."""
         manifest = {"step": step, "base_step": base_step, "ranks": ranks, "tensors": self.encoder.hf_tensors}
         _write_json(step_dir / DELTA_DIR / MANIFEST, manifest)
 
-    def _write_part(self, path: Path, part: tuple) -> None:
+    def _write_part(self, path: StoragePath, part: tuple) -> None:
         entries, gaps, values, checksums = part
         self.part_bytes += write_rank_file(
             path, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums
@@ -1274,7 +1293,7 @@ class SparseFileSystemWeightSender(WeightSender):
         self,
         step: int,
         base_step: int,
-        step_dir: Path,
+        step_dir: StoragePath,
         num_parts: int,
         start: float,
         encode_time: float,
@@ -1301,7 +1320,7 @@ class SparseFileSystemWeightSender(WeightSender):
                 break
             time.sleep(0.05)
             revalidate(delta_dir)
-        WeightSender._finish(self, step, step_dir)
+        WeightSender._finish(self, step, self.step_dir(step))
         written = [json.loads(marker.read_text()) for marker in markers]
         num_bytes = sum(marker["bytes"] for marker in written)
         scales = (
@@ -1314,12 +1333,12 @@ class SparseFileSystemWeightSender(WeightSender):
             f"encode {encode_time:.2f}s, committed {time.perf_counter() - start:.2f}s after the encode started{scales}"
         )
 
-    def _close_anchor(self, step: int, step_dir: Path, anchor: AnchorWriter) -> None:
+    def _close_anchor(self, step: int, step_dir: StoragePath, anchor: AnchorWriter) -> None:
         anchor.close(self.world.world_size)
         self._wait_for_anchor(step_dir)
         self.complete_anchor = step
 
-    def _wait_for_anchor(self, step_dir: Path) -> None:
+    def _wait_for_anchor(self, step_dir: StoragePath) -> None:
         if self.world.is_master:
             while not anchor_complete(step_dir):
                 time.sleep(0.1)
@@ -1329,4 +1348,9 @@ class SparseFileSystemWeightSender(WeightSender):
 
     def _clean(self, step: int) -> None:
         # Engines replay from the last anchor, so keep everything since it
-        super()._clean(step if self.anchor_step is None else min(step, self.anchor_step + 1))
+        step = step if self.anchor_step is None else min(step, self.anchor_step + 1)
+        super()._clean(step)
+        if self.config.path:  # the base class cleans the broadcast dir
+            for path in self.storage.glob("step_*"):
+                if int(path.name.removeprefix("step_")) < step - 1:
+                    remove(path)
