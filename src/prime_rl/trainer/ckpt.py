@@ -398,19 +398,7 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
-        # Load sharded state
-        app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
-        state_dict = {"app": app_state}
-        dcp_load(state_dict=state_dict, checkpoint_id=path, process_group=get_dcp_group())
-        # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
-        # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
-        # reserves on top of them instead of reusing them.
-        gc.collect()
-        torch.cuda.empty_cache()
-        if self.skip_optimizer:
-            for optimizer in optimizers:
-                if isinstance(optimizer, OffloadOptimizer):
-                    optimizer.finish_model_only_checkpoint_load()
+        _load_app_state(path, model, optimizers, scheduler, progress, model_only=self.skip_optimizer)
 
         # Load the dataloader
         if dataloader is not None:
@@ -427,6 +415,15 @@ class CheckpointManager:
             dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
 
         self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
+
+    def load_weights(self, path: Path, model: nn.Module, optimizers: list[OptimizerLike]) -> None:
+        """Load only the model weights of the trainer checkpoint at ``path`` (in-place)."""
+        if not path.exists():
+            raise FileNotFoundError(f"model.init_from has no trainer checkpoint at {path}")
+        self.logger.info(f"Initializing weights from {path}")
+        start_time = time.perf_counter()
+        _load_app_state(path, model, optimizers, scheduler=None, progress=None, model_only=True)
+        self.logger.debug(f"Loaded weights in {format_time(time.perf_counter() - start_time)}")
 
     def load(
         self,
@@ -559,3 +556,25 @@ def setup_ckpt_manager(
     ``with_orchestrator``: a step is complete only once the orchestrator saved it too (RL)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
     return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume, with_orchestrator)
+
+
+def _load_app_state(
+    path: Path,
+    model: nn.Module,
+    optimizers: list[OptimizerLike],
+    scheduler: LRScheduler | None,
+    progress: Progress | None,
+    *,
+    model_only: bool,
+) -> None:
+    app_state = AppState(model, [] if model_only else optimizers, scheduler, progress)
+    dcp_load(state_dict={"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
+    # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
+    # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
+    # reserves on top of them instead of reusing them.
+    gc.collect()
+    torch.cuda.empty_cache()
+    if model_only:
+        for optimizer in optimizers:
+            if isinstance(optimizer, OffloadOptimizer):
+                optimizer.finish_model_only_checkpoint_load()

@@ -173,7 +173,7 @@ def train(config: TrainerConfig):
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
-    loading_from_ckpt_later = checkpoint_step is not None
+    loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
@@ -254,6 +254,8 @@ def train(config: TrainerConfig):
             f"Resuming from step {checkpoint_step} "
             f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
         )
+    elif config.model.init_from is not None:
+        ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
 
