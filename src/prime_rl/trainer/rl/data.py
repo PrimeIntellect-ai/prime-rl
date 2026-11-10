@@ -19,7 +19,7 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport
-from prime_rl.transports.payload import delete_payloads, resolve_payloads
+from prime_rl.transports.payload import delete_payloads, mark_trained, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
 
 
@@ -77,6 +77,9 @@ class TensorMicroBatch(TypedDict):
 
 
 class FakeDataLoader:
+    def commit(self, step: int, release: bool) -> None:
+        pass
+
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
         self.world = get_world()
         self.dp_world_size = dp_world_size
@@ -258,10 +261,15 @@ class DataLoader:
             transport=config,
         )
 
+        self.retain = config.retain
+        self.stores: set[str] = set()
+        """The rollout stores holding arrays of a step no checkpoint covers yet."""
+
     def wait_for_batch(self) -> None:
         self.receiver.wait()
 
     def get_batch(self) -> list[TensorMicroBatch]:
+        self.step = self.receiver.current_step
         micro_batches = self.receiver.receive()
         start = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
@@ -272,9 +280,22 @@ class DataLoader:
 
     def release_payloads(self) -> None:
         """Free the last batch's arrays on the env workers. Call once every rank that may
-        read them has fetched them."""
-        delete_payloads(self.payload_urls)
+        read them has fetched them. A retaining run's rollout stores keep them until
+        `commit`: a restarted trainer fetches them again."""
+        if self.retain:
+            self.stores |= {url.rpartition("/")[0] for url in self.payload_urls}
+            mark_trained(self.stores, self.payload_urls, self.step, self.receiver.committed)
+        else:
+            delete_payloads(self.payload_urls)
         self.payload_urls = []
+
+    def commit(self, step: int, release: bool) -> None:
+        """A checkpoint covers every step up to ``step``: the orchestrator learns it with the
+        next request, and with ``release`` the rollout stores this rank marked now."""
+        self.receiver.committed = step
+        if self.retain and release:
+            mark_trained(self.stores, [], step, step)
+            self.stores = set()
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""

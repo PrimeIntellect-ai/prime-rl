@@ -483,8 +483,15 @@ class RLConfig(BaseConfig):
                 f"({self.orchestrator.rollout_transport.type!r}); set the shared [rollout_transport] "
                 "block or make both sub-configs the same type."
             )
+        if self.trainer.rollout_transport.retain != self.orchestrator.rollout_transport.retain:
+            raise ValueError(
+                "trainer.rollout_transport.retain != orchestrator.rollout_transport.retain; set the "
+                "shared [rollout_transport] instead."
+            )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        if self.rollout_transport.retain and not (self.trainer.ckpt and self.trainer.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
         return self
 
     @model_validator(mode="after")

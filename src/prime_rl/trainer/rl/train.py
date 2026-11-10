@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, resolve_latest_trainer_ckpt_step, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -173,7 +173,10 @@ def train(config: TrainerConfig):
             checkpoint_step = config.resume.dir_step
         else:
             checkpoint_step = config.resume.step
-            if checkpoint_step is None:
+            if checkpoint_step is None and config.rollout_transport.retain:
+                # A trainer restarted on its own: the orchestrator may be steps ahead.
+                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_manager.ckpt_dir)
+            elif checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model
@@ -299,6 +302,14 @@ def train(config: TrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     start_step = progress.step
+    # One rank per data rank releases its micro batches' arrays.
+    is_data_master = world.rank % (world.world_size // parallel_dims.get_mesh("dp").size()) == 0
+    # A trainer restarted on its own trains the retained steps again, and inference already
+    # serves the policies they produced: publish only what it has not finished publishing.
+    published = -1
+    if config.rollout_transport.retain and weight_sender is not None:
+        published = weight_sender.latest_finished()
+        logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
@@ -320,7 +331,7 @@ def train(config: TrainerConfig):
         # rollouts so the trainer and inference pool join the same update lifecycle,
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
-        if progress.step == start_step and weight_sender is not None:
+        if progress.step == start_step and weight_sender is not None and progress.step - 1 > published:
             startup_version = progress.step - 1
             if world.is_master:
                 prune_broadcasts_beyond(config.output_dir, startup_version)
@@ -352,7 +363,7 @@ def train(config: TrainerConfig):
             # Every rank has fetched its arrays now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
-            if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
+            if is_data_master:
                 dataloader.release_payloads()
             # A step where no micro batch's arrays could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env worker pools): stop instead of
@@ -691,7 +702,7 @@ def train(config: TrainerConfig):
 
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.
-        if weight_sender is None:
+        if weight_sender is None or progress.step <= published:
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
@@ -722,6 +733,7 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            dataloader.commit(progress.step, release=is_data_master)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
@@ -843,6 +855,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:

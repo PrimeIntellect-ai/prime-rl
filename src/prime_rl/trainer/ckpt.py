@@ -348,6 +348,15 @@ class CheckpointManager:
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
 
+def resolve_latest_trainer_ckpt_step(ckpt_dir: Path) -> int | None:
+    """The newest step whose trainer checkpoint is complete (DCP writes ``.metadata`` last). A
+    newer step directory may hold only the orchestrator's checkpoint, or an interrupted save."""
+    steps = [
+        step for step in get_all_ckpt_steps(ckpt_dir) if (get_step_path(ckpt_dir, step) / "trainer/.metadata").exists()
+    ]
+    return max(steps, default=None)
+
+
 def setup_ckpt_manager(
     output_dir: Path,
     ckpt_config: CheckpointConfig | None,

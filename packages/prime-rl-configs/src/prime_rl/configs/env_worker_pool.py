@@ -62,6 +62,11 @@ class EnvWorkerPoolConfig(BaseConfig):
     pools they spawn, so the address never has to be agreed on up front (``serve.address``
     unset binds an OS-assigned port)."""
 
+    store_dir: Path | None = None
+    """Keep finished episodes' training arrays as files in a directory of this pool's
+    under ``store_dir``, served by one rollout store for the whole pool, instead of in
+    each worker's memory. Set by the ``rl`` launcher for ``rollout_transport.retain``."""
+
     log: LogConfig = LogConfig()
 
     output_dir: Path = Field(default_factory=default_output_dir)

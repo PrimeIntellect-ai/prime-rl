@@ -315,7 +315,11 @@ class HeartbeatConfig(BaseConfig):
 
 
 class BaseTransportConfig(BaseConfig):
-    pass
+    retain: bool = False
+    """Keep every shipped step, and the training arrays the env worker pools hold for it,
+    until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
+    checkpoint and trains the steps since again. Needs a checkpoint interval and a run
+    directory the orchestrator and trainer share."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):
