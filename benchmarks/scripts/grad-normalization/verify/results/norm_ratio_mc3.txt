@@ -1,3 +1,0 @@
-pow2-main-single vs pow2-fix-single: ||A||=4.281958e+00 ||B||/||A||=0.999935 global cos=0.99999381 rel L2=3.520e-03
-mc-main-cp2 vs mc-fix-cp2: ||A||=4.269706e+00 ||B||/||A||=0.997124 global cos=0.99954965 rel L2=3.011e-02
-mc-main-single vs mc-main-cp2: ||A||=4.269768e+00 ||B||/||A||=0.999986 global cos=0.99999330 rel L2=3.661e-03

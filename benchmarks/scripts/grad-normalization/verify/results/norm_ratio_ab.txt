@@ -1,7 +1,0 @@
-main-single vs main-single-rep: ||A||=5.702730e-05 ||B||/||A||=1.000094 global cos=0.99998630 rel L2=5.235e-03
-main-single vs fix-single: ||A||=5.702730e-05 ||B||/||A||=0.999902 global cos=0.99998546 rel L2=5.393e-03
-main-cp2 vs fix-cp2: ||A||=5.702146e-05 ||B||/||A||=1.000211 global cos=0.99998656 rel L2=5.190e-03
-main-dp2 vs main-dp2-rep: ||A||=5.701076e-05 ||B||/||A||=1.000142 global cos=0.99998599 rel L2=5.295e-03
-main-dp2 vs fix-dp2: ||A||=5.701076e-05 ||B||/||A||=1.000362 global cos=0.99998524 rel L2=5.446e-03
-main-single vs main-cp2: ||A||=5.702730e-05 ||B||/||A||=0.999897 global cos=0.99998570 rel L2=5.348e-03
-main-single vs main-dp2: ||A||=5.702730e-05 ||B||/||A||=0.999710 global cos=0.99998626 rel L2=5.249e-03
