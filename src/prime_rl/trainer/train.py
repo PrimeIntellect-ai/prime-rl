@@ -39,7 +39,12 @@ from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenShards, detect_document_separator, setup_token_dataset
+from prime_rl.trainer.pretrain.data import (
+    TokenShards,
+    detect_separator,
+    setup_token_dataset,
+    warn_if_no_document_separator,
+)
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -182,7 +187,12 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
-        eod_mask_token = detect_document_separator(TokenShards(config.data.paths), tokenizer, config.data.eod_mask_loss)
+        shards = TokenShards(config.data.paths)
+        if config.data.eod_mask_loss:
+            eod_mask_token = detect_separator(shards, tokenizer)
+        else:
+            eod_mask_token = None
+            warn_if_no_document_separator(shards, tokenizer)
         dataset = setup_token_dataset(config.data, config.model.cp, eod_mask_token=eod_mask_token)
     else:
         dataset = setup_sft_dataset(

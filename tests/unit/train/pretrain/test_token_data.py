@@ -8,7 +8,13 @@ import pytest
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, detect_document_separator
+from prime_rl.trainer.pretrain.data import (
+    TokenDataset,
+    TokenShards,
+    detect_separator,
+    document_edges,
+    warn_if_no_document_separator,
+)
 from prime_rl.trainer.world import reset_world
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
@@ -153,8 +159,9 @@ def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders
 
 
 def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):
-    """Both folders start with an empty file and an empty document; without eod_mask_loss only the one whose first
-    real document has no separator warns, with it the check fails there."""
+    """Both folders start with an empty file and an empty document. Only the one whose first real document has no
+    separator warns, and only real documents are read: an empty first document does not wrap around to the last
+    token."""
     eos = 1
     for name, document in (("separated", [5, 6, eos]), ("run-together", [5, 6, 7])):
         folder = tmp_path / name
@@ -167,11 +174,13 @@ def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeyp
     monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     tokenizer = SimpleNamespace(all_special_ids=[eos], added_tokens_decoder={}, bos_token_id=None, decode=str)
     shards = TokenShards([tmp_path / "separated", tmp_path / "run-together"])
-    assert detect_document_separator(shards, tokenizer, eod_mask_loss=False) is None
+    warn_if_no_document_separator(shards, tokenizer)
     assert len(warnings) == 1
     assert "run-together" in warnings[0]
-    with pytest.raises(ValueError, match="not a special token"):
-        detect_document_separator(TokenShards([tmp_path / "run-together"]), tokenizer, eod_mask_loss=True)
+    edges = {folder.name: edges for folder, edges in document_edges(shards, 16).items()}
+    assert edges == {"separated": ([5], [eos]), "run-together": ([5], [7])}
+    with pytest.raises(ValueError, match=r"run-together: .*\(7\)"):
+        detect_separator(TokenShards([tmp_path / "run-together"]), tokenizer)
 
 
 EOS = 999  # every document ends with it, as the tokenizer writes the shards
@@ -215,7 +224,19 @@ def test_eod_mask_loss_detects_the_shared_separator(tmp_path):
     tokenizer = SimpleNamespace(
         all_special_ids=[EOS], added_tokens_decoder=added_tokens_decoder, bos_token_id=None, decode=str
     )
-    assert detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "b"]), tokenizer, True) == EOS
-    assert detect_document_separator(TokenShards([tmp_path / "c"]), tokenizer, True) == EOS + 1
-    with pytest.raises(ValueError, match="end with .* and the documents in .*c with"):
-        detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "c"]), tokenizer, True)
+    assert detect_separator(TokenShards([tmp_path / "a", tmp_path / "b"]), tokenizer) == EOS
+    assert detect_separator(TokenShards([tmp_path / "c"]), tokenizer) == EOS + 1
+    with pytest.raises(ValueError, match=r"/a: .*\(999\); .*/c: .*\(1000\)"):
+        detect_separator(TokenShards([tmp_path / "a", tmp_path / "c"]), tokenizer)
+
+
+def test_eod_mask_loss_masks_nothing_on_bos_separated_shards(tmp_path, monkeypatch):
+    """Documents that start with BOS and end with ordinary tokens have nothing to mask: BOS predicts each document's
+    first token."""
+    bos = 1
+    write_shard(tmp_path / "a" / "00.ds", [[bos, *document] for document in consecutive_documents([3, 5, 2] * 8)])
+    tokenizer = SimpleNamespace(all_special_ids=[bos], added_tokens_decoder={}, bos_token_id=bos, decode=str)
+    infos = []
+    monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(info=infos.append))
+    assert detect_separator(TokenShards([tmp_path / "a"]), tokenizer) is None
+    assert len(infos) == 1

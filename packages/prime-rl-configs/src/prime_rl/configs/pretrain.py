@@ -37,11 +37,10 @@ class PretrainDataConfig(DatatroveDataConfig):
     """Training shards."""
 
     eod_mask_loss: bool = True
-    """No loss at positions whose input token is the document separator (Megatron's ``eod_mask_loss``): each
-    document's last token, whose target is the first token of the next, unrelated document. Positions whose target is
-    the separator stay in the loss, so the model still learns to end a document. The separator is the special token
-    the shards' documents end with, detected at startup; shards whose documents do not end with one special token
-    fail the check."""
+    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
+    the document separator. The separator is the special token the training shards' documents end with, detected at
+    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
+    mask)."""
 
 
 class PretrainValConfig(BaseValConfig):
