@@ -441,6 +441,19 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 
+    rollouts: bool = False
+    """Also checkpoint the pipeline: the finished but unshipped train episodes, and the
+    running train rollouts, each as a memory checkpoint of its sandbox. A resumed run
+    continues them, so it starts with the batches the checkpointed run would have
+    shipped. A rollout that cannot take a memory checkpoint starts over. The checkpoint
+    of step N is then written when the trainer publishes the weights of N, not when N
+    ships. Eval rollouts are never checkpointed."""
+
+    trainer_output_dir: Path | None = None
+    """The trainer's ``ckpt.output_dir``, when its checkpoints are not in the run
+    directory. The orchestrator writes nothing there: it only reads which steps the
+    trainer finished, to resume from the latest step both wrote."""
+
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the

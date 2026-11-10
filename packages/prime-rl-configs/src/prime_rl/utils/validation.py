@@ -79,9 +79,11 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
-    # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
-    propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
+    # The orchestrator keeps its checkpoints in the run directory; it only reads the
+    # trainer's ``output_dir``.
+    propagate("ckpt.output_dir", "trainer.ckpt.output_dir", "orchestrator.ckpt.trainer_output_dir")
     propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
+    propagate("ckpt.rollouts", "orchestrator.ckpt.rollouts")
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
 

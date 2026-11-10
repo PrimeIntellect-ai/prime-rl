@@ -325,9 +325,28 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
-def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
+def is_file_name(name: str) -> bool:
+    """Whether ``name`` names a file inside whatever directory it is joined to."""
+    return bool(name) and name not in (".", "..") and name == os.path.basename(name) and "\0" not in name
+
+
+def is_complete_rl_ckpt(ckpt_dir: Path, orchestrator_ckpt_dir: Path, step: int) -> bool:
+    """Whether both halves of an RL run's checkpoint of ``step`` are written: the trainer's
+    (its sharded state ends with ``.metadata``) and the orchestrator's."""
+    trainer = get_step_path(ckpt_dir, step) / "trainer" / ".metadata"
+    orchestrator = get_step_path(orchestrator_ckpt_dir, step) / "orchestrator" / "progress.pt"
+    return trainer.exists() and orchestrator.exists()
+
+
+def resolve_latest_ckpt_step(ckpt_dir: Path, orchestrator_ckpt_dir: Path | None = None) -> int | None:
+    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found.
+
+    For an RL run, pass ``orchestrator_ckpt_dir``, where the orchestrator writes its half (``ckpt_dir`` holds
+    the trainer's). The two halves are written at different times, so a crash can leave a step with only one;
+    such a step does not count."""
     steps = get_all_ckpt_steps(ckpt_dir)
+    if orchestrator_ckpt_dir is not None:
+        steps = [step for step in steps if is_complete_rl_ckpt(ckpt_dir, orchestrator_ckpt_dir, step)]
     if len(steps) == 0:
         logger = get_logger()
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")

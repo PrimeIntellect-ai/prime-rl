@@ -113,10 +113,11 @@ class TrainSource(Reconfigurable):
             ],
         }
 
-    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+    def load_state_dict(self, state_dict: dict[str, Any], reopen: bool = True) -> None:
         """Restore each configured env's curriculum by env name. An env missing from the
         checkpoint starts fresh; state of an env that is no longer configured is dropped.
-        Open groups re-run, except those of a removed env or task or a streaming taskset."""
+        Open groups re-run, except those of a removed env or task or a streaming taskset.
+        Without ``reopen`` none re-runs: the caller continues them (``adopt_open_groups``)."""
         required_fields = {"rng", "envs"}
         if not required_fields <= set(state_dict) <= required_fields | {"open_groups"}:
             raise ValueError(f"Unexpected train-source checkpoint fields: {sorted(state_dict)}")
@@ -130,7 +131,14 @@ class TrainSource(Reconfigurable):
                 get_logger().info(f"Env {name} is not in the checkpoint, so its curriculum starts fresh")
         for name in sorted(env_states.keys() - self.curricula.keys()):
             get_logger().info(f"Dropped the checkpointed curriculum state of env {name}, which is no longer configured")
-        self._reopen(state_dict.get("open_groups", []))
+        if reopen:
+            self._reopen(state_dict.get("open_groups", []))
+
+    def adopt_open_groups(self, open_groups: dict[str, tuple[str, str, int]], reopened: list[tuple[str, str]]) -> None:
+        """Take over a rollout checkpoint's open groups as they were: ``open_groups``
+        stay open under their ids and sizes, and ``reopened`` still wait to re-run."""
+        self.open_groups = {group_id: group for group_id, group in open_groups.items() if group[0] in self.curricula}
+        self._reopen(reopened)
 
     def _reopen(self, open_groups: list[tuple[str, str]]) -> None:
         removed_env: Counter[str] = Counter()

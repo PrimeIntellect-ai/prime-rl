@@ -164,6 +164,13 @@ class ConcurrencyController(Reconfigurable):
         self.get_inflight = get_inflight
         self.on_overload = on_overload
 
+    def resume(self, max_inflight: int) -> None:
+        """Start from the cap a rollout checkpoint saved, clamped into the band, so the
+        rollouts the run restores do not wait for the startup ramp."""
+        self.cap = self.clamp(float(max_inflight))
+        self.bootstrapped = True
+        self.apply_limit(int(self.cap), reason=None)
+
     # ── inbound hooks ────────────────────────────────────────────────────────
 
     def record_episode(self, tokens: int) -> None:

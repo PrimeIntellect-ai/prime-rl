@@ -96,6 +96,9 @@ class SharedCheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    rollouts: bool = False
+    """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
@@ -402,6 +405,8 @@ class RLConfig(BaseConfig):
                     "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
                 },
             )
+            if orchestrator.ckpt.trainer_output_dir is None:
+                orchestrator.ckpt.trainer_output_dir = trainer.ckpt.output_dir
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(

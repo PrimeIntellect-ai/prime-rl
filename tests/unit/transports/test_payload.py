@@ -26,6 +26,7 @@ from prime_rl.transports.payload import (
     delete_payloads,
     encode_branch_arrays,
     payload_host,
+    persist_payloads,
     resolve_payloads,
     wait_for_deletes,
 )
@@ -356,3 +357,42 @@ def test_discard_frees_what_keep_kept():
     assert hook.server.blobs
     hook.discard(episode)
     assert not hook.server.blobs
+
+
+def test_persist_writes_blobs_only_inside_the_directory(tmp_path):
+    server = PayloadServer("127.0.0.1")
+    server.put("t1-0", b"arrays")
+    server.put("evil", b"x")
+    directory = tmp_path / "ckpt" / "arrays"
+    assert server.persist(str(directory), ["t1-0", "../evil", "sub/evil", "..", "", "gone"]) == ["t1-0"]
+    assert [file.name for file in (tmp_path / "ckpt").rglob("*") if file.is_file()] == ["t1-0"]
+    assert (directory / "t1-0").read_bytes() == b"arrays"
+    with pytest.raises(ValueError):
+        server.persist("relative/dir", ["t1-0"])
+
+
+def test_persist_links_a_blob_an_earlier_checkpoint_holds(tmp_path):
+    server = PayloadServer("127.0.0.1")
+    server.put("t1-0", b"arrays")
+    first, second, third = tmp_path / "step_1", tmp_path / "step_2", tmp_path / "step_3"
+    assert persist_payloads(server.url, first, ["t1-0", "../evil"]) == ["t1-0"]
+    assert persist_payloads(server.url, second, ["t1-0"]) == ["t1-0"]
+    assert (second / "t1-0").samefile(first / "t1-0")
+    # The earlier checkpoints are gone (the trainer's cleanup): the blob is written again.
+    (first / "t1-0").unlink()
+    (second / "t1-0").unlink()
+    assert persist_payloads(server.url, third, ["t1-0"]) == ["t1-0"]
+    assert (third / "t1-0").read_bytes() == b"arrays"
+    # A deleted blob is in no later checkpoint.
+    server.delete("t1-0")
+    assert persist_payloads(server.url, tmp_path / "step_4", ["t1-0"]) == []
+
+
+def test_a_checkpoints_arrays_survive_a_delete(tmp_path):
+    (tmp_path / "t1-0").write_bytes(b"arrays")
+    delete_payloads([f"{tmp_path.as_uri()}/t1-0"])
+    wait_for_deletes()
+    assert (tmp_path / "t1-0").read_bytes() == b"arrays"
+    # Blobs a checkpoint holds are linked into the next one; a missing one is not.
+    assert persist_payloads(tmp_path.as_uri(), tmp_path / "next", ["t1-0", "gone"]) == ["t1-0"]
+    assert (tmp_path / "next" / "t1-0").samefile(tmp_path / "t1-0")

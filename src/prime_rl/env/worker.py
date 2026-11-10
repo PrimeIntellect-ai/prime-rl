@@ -1,6 +1,10 @@
 import asyncio
+import os
+import pickle
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Protocol
 
 import msgpack
@@ -10,7 +14,10 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.delta import DeltaStreamer, dump
+from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode
+from verifiers.v1.restore import RestorePoint, save_all
+from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
@@ -19,12 +26,18 @@ from prime_rl.env.types import (
     BaseResponse,
     CancelRequest,
     CancelResponse,
+    DiscardRequest,
+    DiscardResponse,
     HealthResponse,
+    RestoreRef,
     RunRequest,
     RunResponse,
+    SaveRequest,
+    SaveResponse,
     TraceSummary,
 )
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import is_file_name
 
 
 class EpisodeHook(Protocol):
@@ -87,6 +100,37 @@ class _Keeping:
             self.hook.discard(self.episode)
 
 
+def write_restores(directory: Path, restores: list[tuple[str, RestorePoint]]) -> list[Path]:
+    """Write each `(episode id, restore point)` to `<directory>/<trace id>.restore`. A
+    reader never sees a partial file."""
+    directory.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for episode_id, point in restores:
+        path = directory / f"{point.id}.restore"
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                pickle.dump({"episode_id": episode_id, "point": point}, f, protocol=5)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        paths.append(path)
+    return paths
+
+
+def read_restore(path: str) -> tuple[str, RestorePoint] | None:
+    """The episode id and restore point `write_restores` wrote to `path`; None if the
+    file cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            saved = pickle.load(f)
+        return saved["episode_id"], saved["point"]
+    except Exception as e:  # noqa: BLE001 - the rollout starts over instead
+        get_logger().warning(f"Could not read restore file {path}, so its rollout starts over - {e!r}")
+        return None
+
+
 class EnvWorker:
     """Execute episodes through one Verifiers env and stream their traces over ZMQ."""
 
@@ -114,6 +158,9 @@ class EnvWorker:
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
+        # The slot of each run in flight by wire request_id, so a `save` can tell which
+        # run a restore point continues.
+        self._slots: dict[str, RunSlot] = {}
         # Episodes the hook kept, by run request, until their reply is sent.
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
         self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
@@ -142,7 +189,13 @@ class EnvWorker:
         # No client is built or cached here — each rollout constructs its own from
         # `req.client` and closes it, so a training run's changing model leaves nothing behind.
         ctx = ModelContext(client=req.client, model=req.model, sampling=req.sampling)
-        (slot,) = self.env.slots(self._build_task(req.task_data))
+        task = self._build_task(req.task_data)
+        restored = await asyncio.to_thread(read_restore, req.restore) if req.restore is not None else None
+        if restored is not None:
+            episode_id, point = restored
+            slot = RunSlot(task, id=episode_id, restore=point)
+        else:
+            (slot,) = self.env.slots(task)
 
         async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart([client_id, request_id, b"delta", pack(delta)], copy=False)
@@ -150,23 +203,64 @@ class EnvWorker:
         # The gate spans requests: it bounds this worker's episodes in flight. The
         # streamer ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
-        async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
-            episode = await self.env.run_slot(slot, ctx, self._gate, on_trace=streamer.watch)
-            if hook is not None:
-                # Before the final flush, so what the hook writes to the traces streams.
-                keeping = _Keeping(hook, episode)
-                try:
-                    # The thread runs to the end even when this await is cancelled.
-                    await asyncio.shield(asyncio.to_thread(keeping.run, ctx.sampling))
-                except asyncio.CancelledError:
-                    keeping.abandon()
-                    raise
-                self._kept[request_id] = (hook, episode)
+        self._slots[request_id.decode()] = slot
+        try:
+            async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
+                episode = await self.env.run_slot(slot, ctx, self._gate, on_trace=streamer.watch)
+                if hook is not None:
+                    # Before the final flush, so what the hook writes to the traces streams.
+                    keeping = _Keeping(hook, episode)
+                    try:
+                        # The thread runs to the end even when this await is cancelled.
+                        await asyncio.shield(asyncio.to_thread(keeping.run, ctx.sampling))
+                    except asyncio.CancelledError:
+                        keeping.abandon()
+                        raise
+                    self._kept[request_id] = (hook, episode)
+        finally:
+            self._slots.pop(request_id.decode(), None)
         return RunResponse(
             head=dump(episode, exclude={"traces"}),
             traces=[
                 TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls)) for trace in episode.traces
             ],
+        )
+
+    async def _save(self, req: SaveRequest) -> SaveResponse:
+        """Take a memory checkpoint of every running rollout and write the restore point
+        of each run with a single trace. Every other snapshot taken is deleted here: a
+        multi-trace episode cannot continue from one trace, and a run that ended while
+        the checkpoints were taken has nothing left to continue."""
+        points = await save_all()
+        slots = {
+            slot.traces[0].id: (request_id, slot) for request_id, slot in self._slots.items() if len(slot.traces) == 1
+        }
+        saved: list[RestorePoint] = []
+        orphans: list[dict] = []
+        for point in points:
+            if point.id in slots and is_file_name(point.id):
+                saved.append(point)
+            else:
+                orphans.append(point.snapshot)
+        try:
+            paths = await asyncio.to_thread(
+                write_restores, Path(req.dir), [(slots[point.id][1].id, point) for point in saved]
+            )
+        except OSError as e:
+            # Without their files nothing restores these rollouts: they start over.
+            get_logger().warning(f"Failed to write {len(saved)} restore files to {req.dir} - {e!r}")
+            orphans += [point.snapshot for point in saved]
+            saved, paths = [], []
+        if orphans:
+            try:
+                await PrimeBackend.discard([Snapshot.model_validate(snapshot) for snapshot in orphans])
+            except Exception as e:  # noqa: BLE001 - the restore points written must still be reported
+                get_logger().warning(f"Failed to delete {len(orphans)} unused snapshots {orphans} - {e!r}")
+        return SaveResponse(
+            restores={
+                slots[point.id][0]: RestoreRef(trace_id=point.id, path=str(path), snapshot=point.snapshot)
+                for point, path in zip(saved, paths)
+            }
         )
 
     async def _handle(self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes) -> None:
@@ -196,6 +290,12 @@ class EnvWorker:
                     hook, episode = kept
                     hook.discard(episode)
                 response = CancelResponse(cancelled=running is not None)
+            elif route == "save":
+                response = await self._save(SaveRequest.model_validate(raw))
+            elif route == "discard":
+                snapshots = DiscardRequest.model_validate(raw).snapshots
+                deleted = await PrimeBackend.discard([Snapshot.model_validate(snapshot) for snapshot in snapshots])
+                response = DiscardResponse(deleted=deleted)
             else:
                 response = BaseResponse(success=False, error=f"unknown method {route!r}")
         except asyncio.CancelledError:

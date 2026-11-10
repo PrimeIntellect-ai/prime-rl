@@ -40,10 +40,17 @@ class WeightWatcher:
         self.update_lock = asyncio.Lock()
         self.stopped = asyncio.Event()
         self.update_hooks: list[Callable[[int], Awaitable[None]]] = []
+        self.pending_hooks: list[Callable[[int], Awaitable[None]]] = []
 
     def on_update(self, hook: Callable[[int], Awaitable[None]]) -> None:
         """Register an async hook that runs after inference applies new weights."""
         self.update_hooks.append(hook)
+
+    def on_pending(self, hook: Callable[[int], Awaitable[None]]) -> None:
+        """Register an async hook that runs once the observers have settled for a
+        published version, before inference receives its weights. The trainer waits in
+        its broadcast meanwhile, so everything sampled so far used older versions."""
+        self.pending_hooks.append(hook)
 
     async def sync_startup(self, step: int, timeout: float) -> None:
         """Apply the startup policy and notify the registered update hooks."""
@@ -107,6 +114,9 @@ class WeightWatcher:
                     get_logger().warning(
                         f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
                     )
+
+            for hook in self.pending_hooks:
+                await hook(next_step)
 
             get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()

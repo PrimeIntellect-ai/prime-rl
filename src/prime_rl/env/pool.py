@@ -9,7 +9,8 @@ A broker binds the client-facing ROUTER, starts one worker process and scales up
 load-balancing requests to the least-busy worker over a `DEALER` per worker. The
 worker's `client_id` (its reply identity) is the broker's DEALER identity; the broker
 holds the real client identity in `pending` and routes the reply back by `request_id`.
-`health` is answered inline (no worker needed); everything else goes to a worker.
+`health` is answered inline (no worker needed); a `BROADCAST` request goes to every
+worker and the client gets their merged reply; everything else goes to one worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
@@ -41,6 +42,29 @@ from prime_rl.utils.process import set_proc_title
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
+
+BROADCAST = (b"save",)
+"""Requests every worker answers for its own rollouts (`merge_replies`)."""
+
+
+def merge_replies(replies: list[bytes]) -> bytes:
+    """One reply from the workers' replies to a `BROADCAST` request: dicts merge, lists
+    join, counts add up, and it fails if any worker failed."""
+    merged: dict = {"success": True, "error": None}
+    for reply in (msgpack.unpackb(data, raw=False) for data in replies):
+        for key, value in reply.items():
+            if key == "success":
+                merged["success"] = merged["success"] and value
+            elif key == "error":
+                if value:
+                    merged["error"] = "; ".join(filter(None, [merged["error"], value]))
+            elif isinstance(value, dict):
+                merged.setdefault(key, {}).update(value)
+            elif isinstance(value, list):
+                merged.setdefault(key, []).extend(value)
+            else:
+                merged[key] = merged.get(key, 0) + value
+    return msgpack.packb(merged, use_bin_type=True)
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -168,6 +192,9 @@ class EnvWorkerPool:
         # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
+        # `BROADCAST` request_id -> {client_id, waiting, replies}; each worker's part
+        # carries `<request_id>/<worker index>`.
+        broadcasts: dict[bytes, dict] = {}
         sizing = (
             f"max_workers={self._cap_str} multiplex={self.pool.multiplex}"
             if self.elastic
@@ -219,6 +246,15 @@ class EnvWorkerPool:
                                 }
                                 in_flight += 1
                                 await worker["dealer"].send_multipart([request_id, method, payload])
+                        elif method in BROADCAST:
+                            broadcasts[request_id] = {
+                                "client_id": client_id,
+                                "waiting": len(self.workers),
+                                "replies": [],
+                            }
+                            for w in self.workers:
+                                part = request_id + b"/" + str(w["index"]).encode()
+                                await w["dealer"].send_multipart([part, method, payload])
                         else:
                             worker = min(self.workers, key=lambda w: w["active"])
                             worker["active"] += 1
@@ -235,6 +271,18 @@ class EnvWorkerPool:
                 for w in self.workers:
                     if w["dealer"] in events:
                         request_id, kind, data = await w["dealer"].recv_multipart(copy=False)
+                        parent = request_id.bytes.rpartition(b"/")[0]
+                        if kind.bytes == b"reply" and parent in broadcasts:
+                            broadcast = broadcasts[parent]
+                            broadcast["replies"].append(data.bytes)
+                            broadcast["waiting"] -= 1
+                            if broadcast["waiting"] == 0:
+                                del broadcasts[parent]
+                                with contextlib.suppress(zmq.ZMQError):
+                                    await self.frontend.send_multipart(
+                                        [broadcast["client_id"], parent, b"reply", merge_replies(broadcast["replies"])]
+                                    )
+                            continue
                         # Copy only the routing key; relay the Frames unchanged. A
                         # `delta` is one of many for its request — only the `reply`
                         # closes the request out.
