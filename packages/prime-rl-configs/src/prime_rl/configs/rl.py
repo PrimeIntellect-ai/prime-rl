@@ -584,6 +584,17 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_speculative_sampler_logprobs(self):
+        """Speculative verification captures replayed supports, not untruncated sampler rows."""
+        if self.inference is None or not getattr(self.inference.vllm, "speculative_config", None):
+            return self
+        if any(not s.truncates_distribution() and s.logprobs for s in self.orchestrator.policy_samplings):
+            raise ValueError(
+                "With speculative decoding, sampler logprobs (e.g. score centering) need truncated train sampling"
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays, and recorded sampler logprobs are captured next to them.

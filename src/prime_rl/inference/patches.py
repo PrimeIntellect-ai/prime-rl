@@ -57,8 +57,8 @@ def monkey_patch_packed_sampling_masks():
     vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
     runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
     objects per token that every gen-2 pass walks. Store only the (untracked) id
-    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
-    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    arrays, one per position, and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask``
+    instead. A speculative step appends one chunk covering all its accepted positions.
     Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
     ``PrimeRlServingTokens.serve_tokens_full_generator`` reads. Replay requests, the only ones that keep their
     masks, are non-streaming tokens requests.
@@ -71,7 +71,10 @@ def monkey_patch_packed_sampling_masks():
 
     class _MaskIds(list):
         def append(self, chunk):
-            super().append(chunk.token_ids)
+            if chunk.offsets is None:
+                super().append(chunk.token_ids)
+            else:
+                self.extend(chunk.token_ids[a:b] for a, b in zip(chunk.offsets[:-1], chunk.offsets[1:]))
 
     def _init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
