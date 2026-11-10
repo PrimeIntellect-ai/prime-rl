@@ -32,12 +32,16 @@ class DatatroveDataConfig(BaseDataConfig):
     """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
     whole sample and positions run over it."""
 
+
+class PretrainDataConfig(DatatroveDataConfig):
+    """Training shards."""
+
     eod_mask_loss: bool = True
     """No loss at positions whose input token is the document separator (Megatron's ``eod_mask_loss``): each
     document's last token, whose target is the first token of the next, unrelated document. Positions whose target is
     the separator stay in the loss, so the model still learns to end a document. The separator is the special token
     the shards' documents end with, detected at startup; shards whose documents do not end with one special token
-    fail the check. ``[val.data]`` has its own setting."""
+    fail the check."""
 
 
 class PretrainValConfig(BaseValConfig):
@@ -83,7 +87,7 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 
-    data: DatatroveDataConfig
+    data: PretrainDataConfig
 
     val: PretrainValConfig | None = None
     """Validation on held-out shards. If None, no validation runs."""

@@ -149,7 +149,8 @@ class TokenDataset(StatefulIterableDataset):
         self.shards = shards
         self.seq_len = seq_len
         self.document_masking = document_masking
-        # `eod_mask_loss`: no loss where the input is this token (EOS), whose target is the next document's first token.
+        # `eod_mask_loss`: no loss where the input is this token, the document separator, whose target is the next
+        # document's first token.
         self.eod_mask_token = eod_mask_token
         limits = [] if num_samples is None else [num_samples]
         if max_epochs is not None:
@@ -263,12 +264,11 @@ def detect_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenize
 
 def setup_token_dataset(
     config: DatatroveDataConfig,
-    separator: int | None,
     non_dp_size: int = 1,
     max_epochs: int | None = None,
     num_samples: int | None = None,
+    eod_mask_token: int | None = None,
 ) -> TokenDataset:
-    eod_mask_token = separator if config.eod_mask_loss else None
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,

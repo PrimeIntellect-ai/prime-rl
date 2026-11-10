@@ -182,13 +182,8 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
-        data_configs = [config.data] + ([config.val.data] if config.val is not None else [])
-        separator = detect_document_separator(
-            TokenShards([path for data in data_configs for path in data.paths]),
-            tokenizer,
-            eod_mask_loss=any(data.eod_mask_loss for data in data_configs),
-        )
-        dataset = setup_token_dataset(config.data, separator, config.model.cp)
+        eod_mask_token = detect_document_separator(TokenShards(config.data.paths), tokenizer, config.data.eod_mask_loss)
+        dataset = setup_token_dataset(config.data, config.model.cp, eod_mask_token=eod_mask_token)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
@@ -331,11 +326,7 @@ def train(config: SFTConfig | PretrainConfig):
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
             val_dataset = setup_token_dataset(
-                config.val.data,
-                separator,
-                config.model.cp,
-                max_epochs=1,
-                num_samples=config.val.num_samples,
+                config.val.data, config.model.cp, max_epochs=1, num_samples=config.val.num_samples
             )
         else:
             val_dataset = setup_sft_dataset(

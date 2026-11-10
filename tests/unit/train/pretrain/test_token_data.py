@@ -8,12 +8,7 @@ import pytest
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
-from prime_rl.trainer.pretrain.data import (
-    TokenDataset,
-    TokenShards,
-    detect_document_separator,
-    setup_token_dataset,
-)
+from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, detect_document_separator
 from prime_rl.trainer.world import reset_world
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
@@ -210,8 +205,8 @@ def test_eod_mask_loss(tmp_path):
     assert eos_inputs > 0 and word_to_eos > 0
 
 
-def test_eod_mask_loss_masks_the_detected_separator(tmp_path):
-    """The separator is the special token all checked documents of all folders end with; the datasets mask it."""
+def test_eod_mask_loss_detects_the_shared_separator(tmp_path):
+    """The separator is the special token all checked documents of all folders end with."""
     for name, separator in (("a", EOS), ("b", EOS), ("c", EOS + 1)):
         documents = [[*document, separator] for document in consecutive_documents([3, 5, 2] * 8)]
         write_shard(tmp_path / name / "00.ds", documents)
@@ -224,6 +219,3 @@ def test_eod_mask_loss_masks_the_detected_separator(tmp_path):
     assert detect_document_separator(TokenShards([tmp_path / "c"]), tokenizer, True) == EOS + 1
     with pytest.raises(ValueError, match="end with .* and the documents in .*c with"):
         detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "c"]), tokenizer, True)
-    config = DatatroveDataConfig(paths=[tmp_path / "a"], seq_len=8, batch_size=2, micro_batch_size=2)
-    assert setup_token_dataset(config, EOS).eod_mask_token == EOS
-    assert setup_token_dataset(config.model_copy(update={"eod_mask_loss": False}), EOS).eod_mask_token is None
