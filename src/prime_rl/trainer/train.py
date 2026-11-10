@@ -13,7 +13,6 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.gradient_normalization import GradientNormalization, all_reduce_counts
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
@@ -425,18 +424,25 @@ def train(config: SFTConfig | PretrainConfig):
             (is_first_step and config.val.eval_on_start)
             or (not is_first_step and progress.step % config.val.interval == 0)
         )
-        micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
-        local_counts = {"ce": sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)}
-        global_counts = all_reduce_counts(local_counts, dp_cp_group, cp_gathered=False, cp_size=cp_size)
-        global_token_count_val = global_counts["ce"]
-        norm = GradientNormalization.from_counts(
-            global_counts, parallel_dims.fsdp_gradient_divide_factor, config.optim.normalize
-        )
-        prepare_gradient_offload(
-            gradient_manager,
-            norm.grad_scale,
-            overlap_optimizer=not run_validation_this_step,
-        )
+        if gradient_manager is None:
+            micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
+            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        else:
+            micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
+            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
+            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item() // cp_size
+            grad_scale = (
+                parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
+                if global_token_count_val > 0
+                else 1.0
+            )
+            prepare_gradient_offload(
+                gradient_manager,
+                grad_scale,
+                overlap_optimizer=not run_validation_this_step,
+            )
 
         routing_stats = []
         perf_counter = get_perf_counter(model)
@@ -451,15 +457,18 @@ def train(config: SFTConfig | PretrainConfig):
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, _ = compute_loss(micro_batch)
+                local_loss_sum, batch_token_count = compute_loss(micro_batch)
+
+            if gradient_manager is None:
+                step_local_token_count += batch_token_count
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
                 logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) * norm.loss_weights["ce"]
+                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0)
             else:
                 step_loss_sum += local_loss_sum.detach()
-                scaled_loss = local_loss_sum * norm.loss_weights["ce"]
+                scaled_loss = local_loss_sum
 
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
@@ -482,7 +491,12 @@ def train(config: SFTConfig | PretrainConfig):
             expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
 
         if gradient_manager is None:
-            scale_gradients_(None, model, norm.grad_scale)
+            global_step_token_count = step_local_token_count.clone()
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item()
+            if global_token_count_val > 0:
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
+                scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)

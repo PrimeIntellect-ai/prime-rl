@@ -403,7 +403,9 @@ def compute_loss(
     ce_weights: list[Float[Tensor, " seq_i"]] | None,
     ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
     rl_loss_fn: Loss,
-    loss_weights: dict[str, float],
+    rl_scale: float,
+    ce_scale: float,
+    ref_kl_scale: float,
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
@@ -437,7 +439,9 @@ def compute_loss(
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
         rl_loss_fn: RL loss object built by setup_rl_loss_fn()
-        loss_weights: Factor on each component's loss sum (keys rl, ce, ref_kl), from GradientNormalization
+        rl_scale: Divisor of the rl loss sum
+        ce_scale: Divisor of the ce loss sum
+        ref_kl_scale: Divisor of the ref_kl loss sum
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -518,7 +522,7 @@ def compute_loss(
             if bool(ref_kl_mask.any()):
                 ref_kl_loss = ref_kl_loss + run_loss_fn(ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w))
 
-    scaled_loss = rl_loss * loss_weights["rl"] + ce_loss * loss_weights["ce"] + ref_kl_loss * loss_weights["ref_kl"]
+    scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
 
     aggregated: dict[str, Any] = {}
     for k, v in all_metrics.items():

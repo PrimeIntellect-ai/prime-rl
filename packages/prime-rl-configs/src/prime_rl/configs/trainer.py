@@ -452,9 +452,6 @@ class BaseOptimizerConfig(BaseConfig):
     max_norm: float | None = Field(1.0, ge=0)
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
 
-    normalize: Literal["grads", "loss"] = "grads"
-    """Where to divide by the global loss-token counts: ``"grads"`` scales parameter gradients after backward, ``"loss"`` scales the loss before backward."""
-
 
 class AdamWConfig(BaseOptimizerConfig):
     type: Literal["adamw"] = "adamw"

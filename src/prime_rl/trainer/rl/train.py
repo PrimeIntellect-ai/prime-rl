@@ -49,7 +49,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.trainer.rl.annotations import AnnotationWriter
-from prime_rl.trainer.gradient_normalization import GradientNormalization, all_reduce_counts
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -354,27 +353,34 @@ def train(config: TrainerConfig):
         # Normalize each loss component by its own global (dp_cp) denominator, so every rank
         # divides by the same value. With a per-rank denominator, ranks with fewer loss
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
-        # FSDP's per-rank divide is undone through norm.grad_scale, which also carries the
-        # denominators when config.optim.normalize is "grads". One batched collective keeps
-        # every rank issuing the same op regardless of which components its samples carry. rl
-        # divides by the sum of its weights (the token count for 0/1 weights; the group count
-        # under prompt-mean aggregation); ce and ref_kl divide by their token counts, so a
-        # fractional ce weight (echo's alpha) scales the loss instead of cancelling out.
-        local_counts = {"rl": 0.0, "ce": 0.0, "ref_kl": 0.0}
+        # Backward runs on each component's loss sum times max_scale / its denominator, and
+        # grad_scale divides by max_scale after the microbatch loop (undoing FSDP's per-rank
+        # divide too), so activation gradients do not shrink as the batch grows. One batched
+        # collective keeps every rank issuing the same op regardless of which components its
+        # samples carry. rl divides by the sum of its weights (the token count for 0/1 weights;
+        # the group count under prompt-mean aggregation); ce and ref_kl divide by their token
+        # counts, so a fractional ce weight (echo's alpha) scales the loss instead of cancelling
+        # out.
+        local_rl_scale = 0.0
+        local_ce_scale = 0
+        local_ref_kl_scale = 0
         for micro_batch in micro_batches:
             mask = micro_batch["loss_mask"]
             rl_w = micro_batch["rl_weights"]
-            local_counts["rl"] += float(rl_w[mask].sum(dtype=torch.float64)) if rl_w is not None else int(mask.sum())
+            local_rl_scale += float(rl_w[mask].sum(dtype=torch.float64)) if rl_w is not None else int(mask.sum())
             if micro_batch["ce_weights"] is not None:
-                local_counts["ce"] += int((micro_batch["ce_weights"] != 0).sum())
+                local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
             if micro_batch["ref_kl_weights"] is not None:
-                local_counts["ref_kl"] += int((micro_batch["ref_kl_weights"] != 0).sum())
-        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        global_counts = all_reduce_counts(local_counts, dp_cp_group, cp_gathered=True, cp_size=parallel_dims.cp)
-        norm = GradientNormalization.from_counts(
-            global_counts, parallel_dims.fsdp_gradient_divide_factor, config.optim.normalize
+                local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
+        global_scales = torch.tensor(
+            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.float64, device="cuda"
         )
-        prepare_gradient_offload(gradient_manager, norm.grad_scale, overlap_optimizer=True)
+        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+        dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
+        max_scale = max(rl_scale, ce_scale, ref_kl_scale)
+        grad_scale = parallel_dims.fsdp_gradient_divide_factor / max_scale
+        prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensor_stats = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
@@ -569,7 +575,9 @@ def train(config: TrainerConfig):
                 ce_weights=ce_weights.squeeze().split(sequence_lengths) if ce_weights is not None else None,
                 ref_kl_weights=ref_kl_weights.squeeze().split(sequence_lengths) if ref_kl_weights is not None else None,
                 rl_loss_fn=rl_loss_fn,
-                loss_weights=norm.loss_weights,
+                rl_scale=rl_scale / max_scale,
+                ce_scale=ce_scale / max_scale,
+                ref_kl_scale=ref_kl_scale / max_scale,
                 trainer_topk_logprobs=trainer_topk.squeeze(0).split(sequence_lengths)
                 if trainer_topk is not None
                 else None,
@@ -592,7 +600,8 @@ def train(config: TrainerConfig):
 
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensor_stats.add("loss", norm.logged_loss(loss) * cp_size)
+            # The backward loss is max_scale times the normalized loss.
+            tensor_stats.add("loss", loss / max_scale * cp_size)
 
             tensor_stats.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
 
@@ -631,7 +640,7 @@ def train(config: TrainerConfig):
             logger.opt(lazy=True).debug(
                 "Micro Step {} | Loss {:.4f} | Entropy {:.4f} | Mismatch KL {:.4f}",
                 lambda: f"{micro_step + 1}/{len(micro_batches)}",
-                lambda: norm.logged_loss(loss).item() * cp_size,
+                lambda: loss.item() / max_scale * cp_size,
                 lambda: out["entropy"][loss_mask].mean().item(),
                 lambda: mismatch_kl[mismatch_mask].mean().item(),
             )
@@ -642,10 +651,10 @@ def train(config: TrainerConfig):
         # Invalid sampler evidence fails the step before the optimizer applies its gradients
         raise_score_centering_data_errors(score_centering_errors)
 
-        # Undo FSDP's per-rank averaging across dp_cp (and, for "grads", divide by the global
-        # denominator) so the final gradient is the true per-token mean over the global batch.
+        # Divide by max_scale and undo FSDP's per-rank averaging across dp_cp so the final
+        # gradient is the true per-token mean over the global batch.
         if gradient_manager is None:
-            scale_gradients_(None, model, norm.grad_scale)
+            scale_gradients_(None, model, grad_scale)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
