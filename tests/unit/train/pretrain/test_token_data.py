@@ -170,7 +170,7 @@ def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeyp
             (folder / f"{file}.metadata").write_text("tokenizer|4\n")
     warnings = []
     monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
-    tokenizer = SimpleNamespace(all_special_ids=[eos], bos_token_id=None, decode=str)
+    tokenizer = SimpleNamespace(all_special_ids=[eos], added_tokens_decoder={}, bos_token_id=None, decode=str)
     shards = TokenShards([tmp_path / "separated", tmp_path / "run-together"])
     assert detect_document_separator(shards, tokenizer, eod_mask_loss=False) is None
     assert len(warnings) == 1
@@ -215,8 +215,13 @@ def test_eod_mask_loss_masks_the_detected_separator(tmp_path):
     for name, separator in (("a", EOS), ("b", EOS), ("c", EOS + 1)):
         documents = [[*document, separator] for document in consecutive_documents([3, 5, 2] * 8)]
         write_shard(tmp_path / name / "00.ds", documents)
-    tokenizer = SimpleNamespace(all_special_ids=[EOS, EOS + 1], bos_token_id=None, decode=str)
+    # EOS + 1 is special only as an added token, like Qwen's <|endoftext|> once the trainer sets pad to EOS.
+    added_tokens_decoder = {EOS + 1: SimpleNamespace(special=True)}
+    tokenizer = SimpleNamespace(
+        all_special_ids=[EOS], added_tokens_decoder=added_tokens_decoder, bos_token_id=None, decode=str
+    )
     assert detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "b"]), tokenizer, True) == EOS
+    assert detect_document_separator(TokenShards([tmp_path / "c"]), tokenizer, True) == EOS + 1
     with pytest.raises(ValueError, match="end with .* and the documents in .*c with"):
         detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "c"]), tokenizer, True)
     config = DatatroveDataConfig(paths=[tmp_path / "a"], seq_len=8, batch_size=2, micro_batch_size=2)

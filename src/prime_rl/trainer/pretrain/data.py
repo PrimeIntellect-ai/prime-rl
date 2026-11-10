@@ -223,7 +223,9 @@ def detect_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenize
                     break
             begin = end
     ends = {folder: folder_ends for folder, folder_ends in ends.items() if folder_ends}
-    special_ids = set(tokenizer.all_special_ids)
+    # Added special tokens count too: the trainer sets pad to EOS, which drops Qwen's <|endoftext|> from all_special_ids.
+    special = {token for token, added in tokenizer.added_tokens_decoder.items() if added.special}
+    special_ids = special | set(tokenizer.all_special_ids)
 
     def name(token: int) -> str:
         return f"{tokenizer.decode([token])!r} ({token})"
