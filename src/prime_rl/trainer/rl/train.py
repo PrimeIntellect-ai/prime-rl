@@ -379,6 +379,8 @@ def train(config: TrainerConfig):
         rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
         max_scale = max(rl_scale, ce_scale, ref_kl_scale)
         grad_scale = parallel_dims.fsdp_gradient_divide_factor / max_scale
+        # Backward divides each component by its count relative to the largest count.
+        rl_scale, ce_scale, ref_kl_scale = (scale / max_scale for scale in (rl_scale, ce_scale, ref_kl_scale))
         prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
@@ -574,9 +576,9 @@ def train(config: TrainerConfig):
                 ce_weights=ce_weights.squeeze().split(sequence_lengths) if ce_weights is not None else None,
                 ref_kl_weights=ref_kl_weights.squeeze().split(sequence_lengths) if ref_kl_weights is not None else None,
                 rl_loss_fn=rl_loss_fn,
-                rl_scale=rl_scale / max_scale,
-                ce_scale=ce_scale / max_scale,
-                ref_kl_scale=ref_kl_scale / max_scale,
+                rl_scale=rl_scale,
+                ce_scale=ce_scale,
+                ref_kl_scale=ref_kl_scale,
                 trainer_topk_logprobs=trainer_topk.squeeze(0).split(sequence_lengths)
                 if trainer_topk is not None
                 else None,
