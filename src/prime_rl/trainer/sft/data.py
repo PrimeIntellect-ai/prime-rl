@@ -272,10 +272,13 @@ class SFTDataset(StatefulIterableDataset):
         messages = resolve_messages(example)
 
         # Tool schemas in OpenAI function-calling format, as a list of dicts or a
-        # JSON-encoded string of one.
+        # JSON-encoded string of one. Arrow fills a list of dicts with null keys from
+        # other rows' tools; a JSON string keeps its own nulls.
         tools = example.get(self.columns.tools) or []
         if isinstance(tools, str):
             tools = json.loads(tools)
+        else:
+            tools = _drop_null_fields(tools)
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
