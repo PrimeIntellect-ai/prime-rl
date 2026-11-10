@@ -49,7 +49,7 @@ class TrainSource(Reconfigurable):
         # Group id -> (env name, task key, group size), in draw order. The size is fixed at
         # draw time, so a live group size change never resizes an open group.
         self.open_groups: dict[str, tuple[str, str, int]] = {}
-        self.reopened: deque[tuple[str, vf.Task]] = deque()
+        self.reopened: deque[tuple[str, vf.Task, int]] = deque()
 
     def reconfigure(self, update: ConfigUpdate) -> None:
         ratios = {source.resolved_name: source.ratio for source in update.config.train.source}
@@ -58,12 +58,12 @@ class TrainSource(Reconfigurable):
     def next_task(self, *, step: int) -> TaskRequest:
         # A reopened group was already counted by its sampler, and its env is fixed.
         if self.reopened:
-            env_name, task = self.reopened.popleft()
+            env_name, task, group_size = self.reopened.popleft()
         else:
             env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
             task = next(self.curricula[env_name].sampler)
+            group_size = self.envs_by_name[env_name].config.group_size
         group_id = str(uuid.uuid4())
-        group_size = self.envs_by_name[env_name].config.group_size
         self.open_groups[group_id] = (env_name, task.key, group_size)
         return TaskRequest(env_name=env_name, task=task, step=step, rollouts=group_size, group_id=group_id)
 
@@ -108,8 +108,8 @@ class TrainSource(Reconfigurable):
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
             # Groups still waiting to re-run come last: no new task is drawn before they all re-run.
             "open_groups": [
-                *((env_name, task_key) for env_name, task_key, _ in self.open_groups.values()),
-                *((env_name, task.key) for env_name, task in self.reopened),
+                *self.open_groups.values(),
+                *((env_name, task.key, group_size) for env_name, task, group_size in self.reopened),
             ],
         }
 
@@ -132,16 +132,18 @@ class TrainSource(Reconfigurable):
             get_logger().info(f"Dropped the checkpointed curriculum state of env {name}, which is no longer configured")
         self._reopen(state_dict.get("open_groups", []))
 
-    def _reopen(self, open_groups: list[tuple[str, str]]) -> None:
+    def _reopen(self, open_groups: list[tuple[str, str] | tuple[str, str, int]]) -> None:
         removed_env: Counter[str] = Counter()
         removed_task: Counter[str] = Counter()
-        for env_name, task_key in open_groups:
+        for group in open_groups:
+            env_name, task_key = group[:2]
             if env_name not in self.curricula:
                 removed_env[env_name] += 1
             elif (task := self.curricula[env_name].sampler.find_task(task_key)) is None:
                 removed_task[env_name] += 1
             else:
-                self.reopened.append((env_name, task))
+                group_size = group[2] if len(group) == 3 else self.envs_by_name[env_name].config.group_size
+                self.reopened.append((env_name, task, group_size))
         for name, count in sorted(removed_env.items()):
             get_logger().info(f"Dropped {count} open group(s) of env {name}, which is no longer configured")
         for name, count in sorted(removed_task.items()):
