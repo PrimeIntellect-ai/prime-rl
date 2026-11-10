@@ -476,6 +476,13 @@ class OrchestratorControlConfig(ControlConfig):
     """Port the control API listens on, next to the trainer's 8040 on a single node."""
 
 
+class SpeculativeDecodingConfig(BaseConfig):
+    draft: Annotated[Path, Live()]
+    """Draft checkpoint the inference engines serve; at launch, the one they started with. A live update
+    loads the new draft on every engine at the next policy weight sync. It must keep the served draft's
+    architecture and tensor shapes. A failed load restores the previous draft and reverts this value."""
+
+
 class OrchestratorConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
@@ -571,6 +578,17 @@ class OrchestratorConfig(BaseConfig):
     control: OrchestratorControlConfig | None = None
     """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
     accepted, update the config live). If None, it takes no control requests."""
+
+    speculative_decoding: SpeculativeDecodingConfig | None = None
+    """Draft model served by the policy engines. Auto-filled by the ``rl`` entrypoint from the inference
+    servers' speculative config; set it for standalone orchestrator runs that should swap drafts."""
+
+    @model_validator(mode="after")
+    def validate_draft_swaps(self):
+        dynamo = self.model.client.dynamo
+        if self.speculative_decoding is not None and dynamo is not None and dynamo.enabled:
+            raise ValueError("Draft swaps use prime-rl's engine admin routes, which Dynamo deployments do not serve")
+        return self
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

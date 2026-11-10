@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -152,6 +152,24 @@ class RLConfig(BaseConfig):
 
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for manually started servers)."""
+
+    @model_validator(mode="after")
+    def auto_setup_draft_swaps(self):
+        """The orchestrator swaps drafts on the engines, starting from the draft they launch with."""
+        dynamo = self.orchestrator.model.client.dynamo
+        if self.inference is None or (dynamo is not None and dynamo.enabled):
+            return self
+        draft = (getattr(self.inference.vllm, "speculative_config", None) or {}).get("model")
+        if draft is None:
+            return self
+        if self.orchestrator.speculative_decoding is None:
+            self.orchestrator.speculative_decoding = SpeculativeDecodingConfig(draft=draft)
+        elif self.orchestrator.speculative_decoding.draft != Path(draft):
+            raise ValueError(
+                "orchestrator.speculative_decoding.draft must be the inference draft at launch; "
+                "change it live with update_config"
+            )
+        return self
 
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
