@@ -226,7 +226,7 @@ The cap starts from a safe bound derived from the engines (KV capacity divided b
 
 ## GPU Split Advice
 
-Once concurrency adapts, an RL run is a pipeline of GPU pools: the inference engines make rollouts (in P/D, prefill engines feed decode engines) and the trainer consumes them. The slowest pool sets the run's speed while the others idle part of each step, and which pool that is moves during a run as episodes grow longer. The orchestrator measures what each pool sustains at its current size, in train rollouts per minute, and logs under `balance/*` how fast the run would be with the same nodes (or, on one node, GPUs) split differently:
+Once concurrency adapts, an RL run is a pipeline of GPU pools: the inference engines make rollouts (in P/D, prefill engines feed decode engines) and the trainer consumes them. The slowest pool sets the run's speed while the others idle part of each step, and which pool that is moves during a run as episodes grow longer. The orchestrator measures what each pool sustains at its current size and logs under `balance/*` how fast the run would be with the same nodes (or, on one node, GPUs) split differently. Rates are trained tokens per second (padding included), which does not drift as rollouts grow longer; internally the pools are matched per train rollout, the unit both sides share (inference finishes rollouts, the trainer consumes them):
 
 - **Trainer** (`balance/trainer/capacity`): the rollouts it trained over its busy time, which runs from receiving a batch to requesting the next (training, broadcasting, checkpointing). `balance/trainer_busy` is its share of each step.
 - **Inference** (`balance/inference/capacity`): the tokens per second the engines generate at their knee (the concurrency controller's steps run, growth no longer pays, the cap binds, and no trainer-side bound holds admission back), over the tokens a finished train rollout costs. KV offload, Mooncake, HiSparse and P/D transfers are all inside that measurement. While the trainer is the bottleneck the engines run below their knee: the last knee measurement stands in for up to two hours, after that the current rate is only a lower bound (`balance/<pool>/lower_bound`).
@@ -237,11 +237,11 @@ Each pool's capacity is assumed to scale with its units, and the advisor searche
 
 ```
 [balance] Inference-bound for the last 31 min (trainer busy 62% of each step).
-  trainer   capacity    51.6 rollouts/min at 40 nodes (measured: busy time per step)
-  prefill   capacity    80.2 rollouts/min at 8 nodes (measured: at the knee now; prefill busy 40%)
-  decode    capacity    32.1 rollouts/min at 16 nodes (measured: at the knee now; decode queues at the knee)
-  current      trainer 40 / prefill 8 / decode 16 nodes  32.1 rollouts/min
-  recommended  trainer 36 / prefill 6 / decode 22 nodes  44.2 rollouts/min (+38%)
+  trainer   capacity   1.7M tok/s at 40 nodes (measured: busy time per step)
+  prefill   capacity   2.7M tok/s at 8 nodes (measured: at the knee now; prefill busy 40%)
+  decode    capacity   1.1M tok/s at 16 nodes (measured: at the knee now; decode queues at the knee)
+  current      trainer 40 / prefill 8 / decode 16 nodes  1.1M tok/s
+  recommended  trainer 36 / prefill 6 / decode 22 nodes  1.5M tok/s (+38%)
   restart ~20 min, saves ~19.4 h of the ~70.0 h left
   To apply, stop the run and resume it with: --deployment.num_train_nodes 36 --inference.deployment.num_prefill_replicas 6 --inference.deployment.num_decode_replicas 11 --deployment.num_infer_nodes 28
 ```

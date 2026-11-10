@@ -14,6 +14,7 @@ from prime_rl.orchestrator.balance import (
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 
 POLL_S = 5.0
+TRAINED_PER_ROLLOUT = 30_000
 
 
 class Clock:
@@ -82,7 +83,14 @@ def run(
         )
         if clock.now >= next_step:
             next_step += step_s
-            balance.observe_step(TrainerStep(rollouts=rollouts_per_step, period=step_s, busy=busy_s))
+            balance.observe_step(
+                TrainerStep(
+                    rollouts=rollouts_per_step,
+                    tokens=TRAINED_PER_ROLLOUT * rollouts_per_step,
+                    period=step_s,
+                    busy=busy_s,
+                )
+            )
             advice = balance.evaluate()
             if advice is not None and (notice := balance.notice(advice)) is not None:
                 notices.append(notice)
@@ -129,6 +137,10 @@ def test_inference_bound_run_moves_gpus_to_inference():
     # One notice once the split promised its gain for the sustain time, with the overrides to apply it
     assert len(notices) == 1
     assert "Inference-bound" in notices[0]
+    # Rates show as trained tokens per second: the trainer's 64 rollouts per 40 s busy, 30k tokens each
+    assert advice.tokens(advice.capacities["trainer"].rate) == pytest.approx(64 * TRAINED_PER_ROLLOUT / 40)
+    assert "48.0K tok/s at 2 GPUs" in notices[0]
+    assert "rollouts/min" not in notices[0]
     assert "--deployment.num_train_gpus 1 --deployment.num_infer_gpus 7" in notices[0]
 
 

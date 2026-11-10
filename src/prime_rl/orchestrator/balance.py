@@ -39,6 +39,7 @@ from enum import Enum
 
 from prime_rl.configs.orchestrator import BalanceConfig, BalancePoolConfig
 from prime_rl.orchestrator.concurrency import EngineLoadSample
+from prime_rl.utils.utils import format_num
 
 MIN_STEPS = 3
 """Trainer steps the window must hold before a pool is measured."""
@@ -130,6 +131,8 @@ class TrainerStep:
     """One shipped batch."""
 
     rollouts: int
+    tokens: int
+    """Tokens the trainer processes for the batch, padding included."""
     period: float
     """Seconds since the previous batch shipped."""
     busy: float | None
@@ -161,6 +164,13 @@ class Advice:
     rate: float
     """Train rollouts per second shipped over the window."""
     trainer_busy: float | None
+    trained_per_rollout: float
+    """Tokens the trainer processes per rollout over the window: shown rates are trained tokens per second, which
+    do not drift as rollouts grow longer. Rollouts are only the unit the pools are matched in."""
+
+    def tokens(self, rate: float) -> float:
+        """A rate in rollouts per second as trained tokens per second."""
+        return rate * self.trained_per_rollout
 
     @property
     def gain(self) -> float:
@@ -309,8 +319,9 @@ class BalanceAdvisor:
             return None
         steps = [s for _, s in self.steps]
         rollouts = sum(s.rollouts for s in steps)
+        trained = sum(s.tokens for s in steps)
         period = sum(s.period for s in steps)
-        if rollouts <= 0 or period <= 0:
+        if rollouts <= 0 or trained <= 0 or period <= 0:
             return None
         rate = rollouts / period
         # What a train rollout costs the engines: by the rollouts they finished, not the ones the trainer took, which
@@ -320,7 +331,7 @@ class BalanceAdvisor:
         finished = sum(p.finished for _, p in self.polls)
         if generated <= 0 or finished <= 0:
             return None
-        tokens_per_rollout = generated / finished
+        generated_per_rollout = generated / finished
 
         capacities: dict[str, Capacity] = {}
         busy = [s.busy for s in steps if s.busy is not None]
@@ -336,11 +347,11 @@ class BalanceAdvisor:
         env_seconds = sum(p.seconds for p in polls if p.env_bound)
         fresh = self.knee_at is not None and now - self.knee_at <= self.config.knee_max_age_minutes * 60
         if knee_seconds >= KNEE_SHARE * poll_seconds and self.knee_throughput is not None:
-            inference = Capacity(self.knee_throughput / tokens_per_rollout, Kind.MEASURED, "at the knee now")
+            inference = Capacity(self.knee_throughput / generated_per_rollout, Kind.MEASURED, "at the knee now")
         elif fresh and self.knee_throughput is not None:
             age = (now - self.knee_at) / 60
             inference = Capacity(
-                max(self.knee_throughput / tokens_per_rollout, rate), Kind.ESTIMATED, f"knee {age:.0f} min ago"
+                max(self.knee_throughput / generated_per_rollout, rate), Kind.ESTIMATED, f"knee {age:.0f} min ago"
             )
         else:
             inference = Capacity(rate, Kind.LOWER_BOUND, "below the knee, no recent knee measurement")
@@ -367,7 +378,7 @@ class BalanceAdvisor:
             close = [name for name, c in capacities.items() if c.rate <= (1 + BOTTLENECK_TOLERANCE) * slowest]
             known = [name for name in close if capacities[name].kind is not Kind.LOWER_BOUND] or close
             bottleneck = min(known, key=lambda name: capacities[name].rate)
-        self.advice = Advice(capacities, current, best, bottleneck, rate, trainer_busy)
+        self.advice = Advice(capacities, current, best, bottleneck, rate, trainer_busy, trained / rollouts)
         return self.advice
 
     # ── notice ───────────────────────────────────────────────────────────────
@@ -403,18 +414,22 @@ class BalanceAdvisor:
             f"[balance] {advice.bottleneck.capitalize()}-bound for the last {sustained:.0f} min"
             + (f" (trainer busy {advice.trainer_busy:.0%} of each step)." if advice.trainer_busy is not None else ".")
         ]
+
+        def rate(rollouts_per_s: float) -> str:
+            return f"{format_num(advice.tokens(rollouts_per_s), precision=1)} tok/s"
+
         for name, capacity in advice.capacities.items():
             lines.append(
-                f"  {name:<9} capacity {capacity.rate * 60:7.1f} rollouts/min at {advice.current.units[name]} "
+                f"  {name:<9} capacity {rate(capacity.rate):>11} at {advice.current.units[name]} "
                 f"{unit}s ({capacity.kind.value}: {capacity.source})"
             )
 
         def shape(split: Split) -> str:
             return " / ".join(f"{name} {split.units[name]}" for name in split.units) + f" {unit}s"
 
-        lines.append(f"  current      {shape(advice.current)}  {advice.current.speed * 60:.1f} rollouts/min")
+        lines.append(f"  current      {shape(advice.current)}  {rate(advice.current.speed)}")
         lines.append(
-            f"  recommended  {shape(advice.best)}  {advice.best.speed * 60:.1f} rollouts/min "
+            f"  recommended  {shape(advice.best)}  {rate(advice.best.speed)} "
             f"({'at least ' if bound else ''}+{advice.gain - 1:.0%})"
         )
         if saved is not None:
@@ -475,14 +490,15 @@ class BalanceAdvisor:
         advice = self.advice
         if advice is None:
             return gauges
-        gauges["balance/rate"] = advice.rate * 60
-        gauges["balance/speed"] = advice.current.speed * 60
-        gauges["balance/best_speed"] = advice.best.speed * 60
+        # Trained tokens per second throughout
+        gauges["balance/rate"] = advice.tokens(advice.rate)
+        gauges["balance/speed"] = advice.tokens(advice.current.speed)
+        gauges["balance/best_speed"] = advice.tokens(advice.best.speed)
         gauges["balance/gain"] = advice.gain
         if advice.trainer_busy is not None:
             gauges["balance/trainer_busy"] = advice.trainer_busy
         for name, capacity in advice.capacities.items():
-            gauges[f"balance/{name}/capacity"] = capacity.rate * 60
+            gauges[f"balance/{name}/capacity"] = advice.tokens(capacity.rate)
             gauges[f"balance/{name}/lower_bound"] = float(capacity.kind is Kind.LOWER_BOUND)
             gauges[f"balance/{name}/units"] = float(advice.current.units[name])
             gauges[f"balance/{name}/best_units"] = float(advice.best.units[name])

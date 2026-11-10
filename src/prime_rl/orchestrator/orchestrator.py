@@ -752,7 +752,8 @@ class Orchestrator:
         trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
-        self.observe_trainer_step(batch.cohort.num_traces, step)
+        trained = sum(len(micro_batch.input_ids) for row in micro_batch_grid for micro_batch in row)
+        self.observe_trainer_step(batch.cohort.num_traces, trained, step)
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
@@ -877,7 +878,7 @@ class Orchestrator:
             self.dispatcher.trainer_bounds_lifted = False
             get_logger().info("Balance probe ended: the trainer-side admission bounds apply again")
 
-    def observe_trainer_step(self, rollouts: int, step: int) -> None:
+    def observe_trainer_step(self, rollouts: int, tokens: int, step: int) -> None:
         """Record a shipped batch with the time the trainer spent before asking for it, then update the balance
         advice: log a notice when another split of the GPUs is clearly faster, and probe the engines' knee while
         the trainer is the bottleneck. The first two ships carry the trainer's warmup and are not recorded."""
@@ -895,7 +896,7 @@ class Orchestrator:
             busy = period
         else:
             busy = None
-        self.balance.observe_step(TrainerStep(rollouts=rollouts, period=period, busy=busy))
+        self.balance.observe_step(TrainerStep(rollouts=rollouts, tokens=tokens, period=period, busy=busy))
         advice = self.balance.evaluate()
         if advice is None:
             return
@@ -927,7 +928,7 @@ class Orchestrator:
             "gain": advice.gain,
             "bottleneck": advice.bottleneck,
             "capacities": {
-                name: {"rollouts_per_min": c.rate * 60, "kind": c.kind.value, "source": c.source}
+                name: {"tokens_per_s": advice.tokens(c.rate), "kind": c.kind.value, "source": c.source}
                 for name, c in advice.capacities.items()
             },
             "overrides": self.balance.overrides(advice.best),
