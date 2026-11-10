@@ -135,9 +135,12 @@ class TrainSink(Reconfigurable):
         batch_size: int,
         on_result: Callable[[list[vf.Episode]], bool] | None = None,
         on_groups_closed: Callable[[Iterable[str]], None] | None = None,
+        group_size: Callable[[str], int | None] | None = None,
     ) -> None:
         """``on_groups_closed`` receives the ids of every group that closes: a group
-        that finalized without anything to ship, or one whose batch shipped (`shipped`)."""
+        that finalized without anything to ship, or one whose batch shipped (`shipped`).
+        ``group_size`` returns the size a group was drawn with, or None if unknown; an
+        unknown group takes its env's current group size."""
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
@@ -145,6 +148,7 @@ class TrainSink(Reconfigurable):
         self.batch_size = batch_size
         self.on_result = on_result
         self.on_groups_closed = on_groups_closed
+        self.group_size = group_size
 
         self.rollout_window = RolloutWindow()
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
@@ -177,8 +181,9 @@ class TrainSink(Reconfigurable):
         """Delete the env workers' arrays of samples that will never ship."""
         self._release(sample_payload_urls(samples))
 
-    def group_size_for(self, env_name: str) -> int:
-        return self.train_envs.get(env_name).config.group_size
+    def group_size_for(self, group_id: str, env_name: str) -> int:
+        size = self.group_size(group_id) if self.group_size is not None else None
+        return size if size is not None else self.train_envs.get(env_name).config.group_size
 
     def batch_progress(self) -> tuple[int, int]:
         return len(self.pending_batch), self.batch_size
@@ -232,7 +237,7 @@ class TrainSink(Reconfigurable):
         cancellation = self.pending_group_cancellations.get(group_id)
         cancelled = cancellation.count if cancellation is not None else 0
         failed = len(self.pending_group_failures[group_id])
-        return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
+        return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(group_id, env_name)
 
     async def take_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
@@ -360,7 +365,7 @@ class TrainSink(Reconfigurable):
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and not _kept(sample, "sampling_mask"):
+                if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
@@ -369,11 +374,9 @@ class TrainSink(Reconfigurable):
                         "the inference server config (the rl entrypoint does this automatically) - "
                         f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_ARRAYS_HINT}"
                     )
-                if env.requires_top_logprobs and not (
-                    _kept(sample, "top_logprobs") or _kept(sample, "sampling_mask_logprobs")
-                ):
+                if env.requires_sampler_logprobs and not _kept(sample, "sampler_support_logprobs"):
                     raise RuntimeError(
-                        f"env {env_name!r} requested sampler top logprobs but returned none. {_KEEP_ARRAYS_HINT}"
+                        f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:

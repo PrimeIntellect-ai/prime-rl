@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -17,29 +17,29 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-certifi = false
-deep-ep = false
-deep-select = false
-dion = false
-fastokens = false
-flash-attn-3 = false
-flashinfer-python = false
-harbor = "2026-10-08T00:00:00Z"
-humming-kernels = false
-instanttensor = false
-modelexpress = false
-nixl-cu13 = false
-prime-kernels = false
-prime-pydantic-config = false
-prime-runs = false
-prime-sandboxes = false
-prime-traces = false
-prime-tunnel = false
-renderers = false
-tokenspeed-mla = false
-torchao = false
 verifiers = false
+prime-pydantic-config = false
+harbor = "2026-10-08T00:00:00Z"
+prime-traces = false
 vllm-router = false
+dion = false
+deep-select = false
+prime-runs = false
+flash-attn-3 = false
+prime-tunnel = false
+flashinfer-python = false
+humming-kernels = false
+torchao = false
+instanttensor = false
+tokenspeed-mla = false
+nixl-cu13 = false
+deep-ep = false
+certifi = false
+prime-sandboxes = false
+renderers = false
+modelexpress = false
+prime-kernels = false
+fastokens = false
 
 [manifest]
 members = [
@@ -5523,7 +5523,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.7"
+version = "0.5.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5535,9 +5535,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/86/9c99e77c78fdc7bd42342ee30e694789bf29b82b291e4e4bf3873a363067/prime_sandboxes-0.5.7.tar.gz", hash = "sha256:17db3cdd885088821c8b2d0af3262ef153a8f6e14727abdf4b3b7424faf869e0", size = 169870, upload-time = "2026-11-06T00:50:55.852Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/3d/6687eeb0e6937ede5ef7ba39ce6eb7261077742e2664802077a442df1a6a/prime_sandboxes-0.5.7-py3-none-any.whl", hash = "sha256:5daa25e9206aede20e052889eb62590ba10b2b9f827621b0258d3f725db1415e", size = 91919, upload-time = "2026-11-06T00:50:54.273Z" },
+    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
 ]
 
 [[package]]
@@ -8076,10 +8076,10 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-sandboxes", specifier = ">=0.5.7" },
+    { name = "prime-sandboxes", specifier = ">=0.5.9" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.0" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev9" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },

@@ -71,7 +71,7 @@ def _segment_logsumexp(values: Tensor, rows: Tensor, num_rows: int) -> Tensor:
     """Differentiable logsumexp per row of flat ``values``; -inf for empty rows (their gradient is zero)."""
     row_max = values.new_full((num_rows,), float("-inf")).scatter_reduce(0, rows, values.detach(), "amax")
     total = values.new_zeros(num_rows).index_add(0, rows, torch.exp(values - row_max[rows]))
-    return row_max + total.clamp_min(1.0).log()
+    return row_max + torch.where(total > 0, total, 1.0).log()
 
 
 def selective_log_softmax_with_support(

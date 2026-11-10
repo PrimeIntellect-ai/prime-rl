@@ -18,7 +18,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplingMask, TopLogprobs
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -50,12 +50,14 @@ class TensorMicroBatch(TypedDict):
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
     # Sampler support per token as CSR rows: token i owns entries support_offsets[i]:support_offsets[i + 1],
-    # its sampling mask (support_replayed) and/or its top logprobs. support_logprobs is None when some head
-    # carries no sampler logprobs.
+    # its sampling mask (support_replayed) or K i.i.d. draws from the sampler's distribution. support_logprobs
+    # is None when no packed sample carries sampler logprobs.
     support_ids: Int[Tensor, "entries"] | None
     support_logprobs: Float[Tensor, "entries"] | None
     support_offsets: Int[Tensor, "seq_plus_one"] | None
     support_replayed: Bool[Tensor, "seq"] | None
+    # Set by the trainer's micro batch preparation: whether the LM head may take its sparse backward
+    sparse_head_backward: NotRequired[bool]
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder).
@@ -296,7 +298,7 @@ class DataLoader:
                 .reshape(packed_routed_experts.shape)
                 .unsqueeze(0)
             )
-        support = _merge_support(micro_batch.top_logprobs, micro_batch.sampling_mask)
+        support = _decode_support(micro_batch.sampler_support)
 
         def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
             """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
@@ -331,31 +333,21 @@ class DataLoader:
         )
 
 
-def _merge_support(top_logprobs: TopLogprobs | None, sampling_mask: SamplingMask | None) -> dict[str, Tensor | None]:
-    """Merge the top-logprobs and sampling-mask heads into token-major CSR support fields."""
-    heads = [head for head in (top_logprobs, sampling_mask) if head is not None]
-    if not heads:
+def _decode_support(support: SamplerSupport | None) -> dict[str, Tensor | None]:
+    """The packed sampler support as token-major CSR tensors."""
+    if support is None:
         return dict(support_ids=None, support_logprobs=None, support_offsets=None, support_replayed=None)
-    head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
-    num_tokens = len(head_counts[0])
-    offsets = np.zeros(num_tokens + 1, dtype=np.int64)
-    np.cumsum(sum(head_counts), out=offsets[1:])
-    rows = np.concatenate([np.repeat(np.arange(num_tokens), counts) for counts in head_counts])
-    order = np.argsort(rows, kind="stable")
-    ids = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+    counts = np.frombuffer(support.counts, dtype=np.int32)
+    offsets = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
     logprobs = None
-    if all(head.logprobs is not None for head in heads):
-        logprobs = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
-    replayed = (
-        np.frombuffer(sampling_mask.counts, dtype=np.int32) > 0
-        if sampling_mask is not None
-        else np.zeros(num_tokens, dtype=np.bool_)
-    )
+    if support.logprobs is not None:
+        logprobs = torch.from_numpy(np.frombuffer(support.logprobs, dtype=np.float32).copy())
     return dict(
-        support_ids=torch.from_numpy(ids),
-        support_logprobs=torch.from_numpy(logprobs) if logprobs is not None else None,
+        support_ids=torch.from_numpy(np.frombuffer(support.ids, dtype=np.int32).copy()),
+        support_logprobs=logprobs,
         support_offsets=torch.from_numpy(offsets),
-        support_replayed=torch.from_numpy(replayed),
+        support_replayed=torch.from_numpy(np.frombuffer(support.replayed, dtype=np.bool_).copy()),
     )
 
 
@@ -387,14 +379,19 @@ def score_centering_data_errors(
     def any_per_token(flags: Tensor) -> Tensor:
         return torch.zeros(rl_mask.numel(), dtype=torch.int32, device=ids.device).index_add_(0, rows, flags.int()) > 0
 
-    keys = torch.where(replayed[rows], rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device))
+    in_vocab = (ids >= 0) & (ids < vocab_size)
+    # Sampler draws may repeat, so only replayed rows are checked for duplicates. Out-of-vocabulary ids get
+    # unique keys: they fail the first check, not this one
+    keys = torch.where(
+        replayed[rows] & in_vocab, rows * vocab_size + ids, -1 - torch.arange(ids.numel(), device=ids.device)
+    )
     sorted_keys, order = keys.sort()
-    duplicate = torch.zeros_like(keys, dtype=torch.bool)
+    duplicate = torch.zeros_like(ids, dtype=torch.bool)
     duplicate[order[1:]] = sorted_keys[1:] == sorted_keys[:-1]
     q = torch.zeros(rl_mask.numel(), dtype=values.dtype, device=values.device).index_add_(0, rows, values.exp())
     errors = torch.stack(
         [
-            ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token((ids < 0) | (ids >= vocab_size)),
+            ~any_per_token(torch.ones_like(rows, dtype=torch.bool)) | any_per_token(~in_vocab),
             any_per_token(~values.isfinite() | (values > 1e-6)),
             any_per_token(duplicate),
             replayed & ~torch.isclose(q, torch.ones_like(q), atol=1e-4, rtol=0),

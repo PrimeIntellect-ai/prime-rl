@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, ReinforceLossConfig
+from prime_rl.trainer.models.layers.lm_head import TokenSupport
 from prime_rl.trainer.rl.loss import (
     LossInputs,
     LossOutputs,
@@ -9,6 +10,7 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
     ref_kl_loss_fn,
+    selective_log_softmax_with_support,
     setup_rl_loss_fn,
 )
 
@@ -428,3 +430,43 @@ def _plain_pg_loss(inputs: LossInputs) -> LossOutputs:
     if inputs.loss_weights is not None:
         loss = loss * inputs.loss_weights[mask]
     return LossOutputs(loss=loss.sum(), metrics={"pg": loss.detach()})
+
+
+@pytest.mark.parametrize("constant_advantage", [False, True])
+def test_score_centering_replay_matches_exact_supported_gradient(constant_advantage):
+    logits = torch.tensor([0.2, -0.4, 0.8, 3.0], requires_grad=True)
+    labels = torch.arange(3)
+    q = torch.tensor([0.7, 0.2, 0.1])
+    support = TokenSupport(
+        ids=labels.repeat(3).int(),
+        offsets=torch.arange(4) * 3,
+        replayed=torch.ones(3, dtype=torch.bool),
+        logprobs=q.log().repeat(3),
+    )
+    sampled, head = selective_log_softmax_with_support(logits.expand(1, 3, -1), labels.unsqueeze(0), support)
+    logp = logits[:3].log_softmax(-1)
+    advantages = torch.ones(3) if constant_advantage else torch.tensor([1.0, -0.5, 2.0])
+    actual, metrics = compute_loss(
+        trainer_logprobs=[sampled[0]],
+        inference_logprobs=[q.log()],
+        ref_logprobs=None,
+        advantages=[advantages],
+        loss_mask=[torch.ones(3, dtype=torch.bool)],
+        rl_weights=[q],
+        ce_weights=None,
+        ref_kl_weights=None,
+        rl_loss_fn=setup_rl_loss_fn(ReinforceLossConfig(kl_coeff=0.0)),
+        rl_scale=1,
+        ce_scale=1,
+        ref_kl_scale=1,
+        support=support,
+        trainer_support_logprobs=head,
+    )
+    reference = -(q * advantages * (logp - (q * logp).sum())).sum()
+    actual_grad = torch.autograd.grad(actual, logits, retain_graph=True)[0]
+    expected_grad = torch.autograd.grad(reference, logits)[0]
+    torch.testing.assert_close(actual_grad, expected_grad)
+    assert actual_grad[3] == 0
+    assert (metrics["score_centering/replayed"] == 1).all()
+    if constant_advantage:
+        torch.testing.assert_close(actual_grad, torch.zeros_like(logits), atol=1e-7, rtol=0)

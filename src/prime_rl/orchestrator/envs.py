@@ -173,7 +173,7 @@ class TrainEnv(Env):
         self.sampling_by_step: dict[int, vf.SamplingConfig] = {0: self.sampling}
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
-        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+        self.requires_sampler_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
 
     def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
         return vf.SamplingConfig(

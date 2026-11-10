@@ -250,9 +250,10 @@ class TrainSourceConfig(EnvConfig):
     ratio: Annotated[float, Live()] = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
-    group_size: int = Field(1, ge=1)
+    group_size: Annotated[int, Live()] = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages. Overrides the
-    train group's ``group_size`` for this env, so envs can use different sizes."""
+    train group's ``group_size`` for this env, so envs can use different sizes. A live
+    change applies to groups drawn after it; open groups keep the size they started with."""
 
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm for this env: sampling plus the per-token training signal

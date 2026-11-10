@@ -26,6 +26,7 @@ from renderers.client import (
     _parse_compact_logprobs,
     _parse_completion_logprobs,
     _parse_completion_top_logprobs,
+    _parse_replayed_support,
     parse_generate_response,
 )
 from vllm import SamplingParams
@@ -233,7 +234,16 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, routed):
             if captured:
                 assert choice["logprobs"] is None
                 assert isinstance(choice["compact_logprobs"]["data"], memoryview)
-                evidence.append(_parse_compact_logprobs(choice, sampled_ids, 2))
+                sampled, support = _parse_replayed_support(choice, sampled_ids)
+                assert support["replayed"]
+                splits = np.cumsum(support["counts"])[:-1]
+                evidence.append(
+                    (
+                        sampled,
+                        [row.tolist() for row in np.split(support["ids"], splits)],
+                        [row.tolist() for row in np.split(support["logprobs"], splits)],
+                    )
+                )
             else:
                 assert choice.get("compact_logprobs") is None
                 evidence.append(
