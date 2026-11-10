@@ -9,7 +9,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import latest_finished_broadcast, prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import numpy as np
 import torch
@@ -91,7 +91,12 @@ from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import get_ckpt_dir, resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import (
+    get_ckpt_dir,
+    resolve_latest_ckpt_step,
+    resolve_latest_trainer_ckpt_step,
+    write_resolved_config,
+)
 from prime_rl.utils.utils import clean_exit
 
 
@@ -173,7 +178,10 @@ def train(config: TrainerConfig):
             checkpoint_step = config.resume.dir_step
         else:
             checkpoint_step = config.resume.step
-            if checkpoint_step is None:
+            if checkpoint_step is None and config.rollout_transport.retain:
+                # A trainer restarted on its own: the orchestrator may be steps ahead.
+                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_manager.ckpt_dir)
+            elif checkpoint_step is None:
                 # Fake data runs without an orchestrator, so there is no second half to wait for.
                 orchestrator_ckpt_dir = None if config.data.fake else get_ckpt_dir(config.output_dir)
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, orchestrator_ckpt_dir)
@@ -301,6 +309,14 @@ def train(config: TrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     start_step = progress.step
+    # One rank per data rank releases its micro batches' arrays.
+    is_data_master = world.rank % (world.world_size // parallel_dims.get_mesh("dp").size()) == 0
+    # A trainer restarted on its own trains the retained steps again, and inference already
+    # serves the policies they produced: publish only what it has not finished publishing.
+    published = -1
+    if config.rollout_transport.retain and weight_sender is not None:
+        published = latest_finished_broadcast(config.output_dir)
+        logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None)
@@ -322,7 +338,7 @@ def train(config: TrainerConfig):
         # rollouts so the trainer and inference pool join the same update lifecycle,
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
-        if progress.step == start_step and weight_sender is not None:
+        if progress.step == start_step and weight_sender is not None and progress.step - 1 > published:
             startup_version = progress.step - 1
             if world.is_master:
                 prune_broadcasts_beyond(config.output_dir, startup_version)
@@ -354,7 +370,7 @@ def train(config: TrainerConfig):
             # Every rank has fetched its arrays now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
-            if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
+            if is_data_master:
                 dataloader.release_payloads()
             # A step where no micro batch's arrays could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env worker pools): stop instead of
@@ -380,15 +396,15 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         perf_counter = get_perf_counter(model)
 
-        # Normalize each loss component by its own global (dp_cp) denominator, so every rank
-        # divides by the same value. With a per-rank denominator, ranks with fewer loss
-        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
-        # FSDP's per-rank divide is undone after the microbatch loop via
-        # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
-        # op regardless of which components its samples carry. rl divides by the sum of its
-        # weights (the token count for 0/1 weights; the group count under prompt-mean
-        # aggregation); ce and ref_kl divide by their token counts, so a fractional ce weight
-        # (echo's alpha) scales the loss instead of cancelling out.
+        # Each loss component c (rl, ce, ref_kl) is normalized by its global count N_c. A per-rank
+        # count would upweight ranks with fewer tokens after FSDP averaging. rl counts the sum of
+        # its weights (tokens for 0/1 weights, groups under prompt-mean aggregation). ce and
+        # ref_kl count member tokens, so a fractional ce weight scales the loss. One batched
+        # collective keeps every rank issuing the same op. To keep activation gradients
+        # independent of batch size, we defer the division until after backward, once per step:
+        #   max_scale = max_c N_c
+        #   backward on sum_c L_c * max_scale / N_c, with L_c the component's loss sum
+        #   grads *= grad_scale = fsdp_gradient_divide_factor / max_scale (also undoes FSDP's divide)
         local_rl_scale = 0.0
         local_ce_scale = 0
         local_ref_kl_scale = 0
@@ -406,11 +422,11 @@ def train(config: TrainerConfig):
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
         rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
-        prepare_gradient_offload(
-            gradient_manager,
-            parallel_dims.fsdp_gradient_divide_factor,
-            overlap_optimizer=True,
-        )
+        max_scale = max(rl_scale, ce_scale, ref_kl_scale)
+        grad_scale = parallel_dims.fsdp_gradient_divide_factor / max_scale
+        # Backward divides each component by its count relative to the largest count.
+        rl_scale, ce_scale, ref_kl_scale = (scale / max_scale for scale in (rl_scale, ce_scale, ref_kl_scale))
+        prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensor_stats = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
@@ -608,6 +624,10 @@ def train(config: TrainerConfig):
             )
 
             # Backward pass
+            if parallel_dims.dp_replicate_enabled and gradient_manager is None:
+                # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
+                # replicas once, after the last backward
+                model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
@@ -617,7 +637,8 @@ def train(config: TrainerConfig):
 
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensor_stats.add("loss", loss * cp_size)
+            # The backward loss is max_scale times the normalized loss.
+            tensor_stats.add("loss", loss / max_scale * cp_size)
 
             tensor_stats.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
 
@@ -656,7 +677,7 @@ def train(config: TrainerConfig):
             logger.opt(lazy=True).debug(
                 "Micro Step {} | Loss {:.4f} | Entropy {:.4f} | Mismatch KL {:.4f}",
                 lambda: f"{micro_step + 1}/{len(micro_batches)}",
-                lambda: loss.item() * cp_size,
+                lambda: loss.item() / max_scale * cp_size,
                 lambda: out["entropy"][loss_mask].mean().item(),
                 lambda: mismatch_kl[mismatch_mask].mean().item(),
             )
@@ -667,10 +688,10 @@ def train(config: TrainerConfig):
         # Invalid sampler evidence fails the step before the optimizer applies its gradients
         raise_score_centering_data_errors(score_centering_errors)
 
-        # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
-        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        # Divide by max_scale and undo FSDP's per-rank averaging across dp_cp so the final
+        # gradient is the true per-token mean over the global batch.
         if gradient_manager is None:
-            scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
+            scale_gradients_(None, model, grad_scale)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
@@ -689,7 +710,7 @@ def train(config: TrainerConfig):
 
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.
-        if weight_sender is None:
+        if weight_sender is None or progress.step <= published:
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
@@ -720,6 +741,7 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            dataloader.commit(progress.step, release=is_data_master)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
@@ -841,6 +863,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:

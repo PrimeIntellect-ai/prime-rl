@@ -105,9 +105,7 @@ def kept(hook: PayloadHook) -> vf.Trace:
 
 
 def restore_ref(trace_id: str, directory="/ckpt") -> RestoreRef:
-    return RestoreRef(
-        trace_id=trace_id, path=f"{directory}/{trace_id}.restore", snapshot={"id": f"s-{trace_id}"}
-    )
+    return RestoreRef(trace_id=trace_id, path=f"{directory}/{trace_id}.restore", snapshot={"id": f"s-{trace_id}"})
 
 
 def test_the_sink_state_round_trips_through_the_checkpoint_file(tmp_path):
@@ -438,8 +436,9 @@ def orchestrator() -> Orchestrator:
 def test_a_resumed_step_loop_ships_the_batch_then_the_saved_results_then_new_ones():
     async def run():
         o = orchestrator()
-        o.dispatcher = SimpleNamespace(out_q=asyncio.Queue(), is_idle=False)
-        o.dispatcher.out_q.put_nowait("new")
+        out_q = asyncio.Queue()
+        o.dispatcher = SimpleNamespace(out_q=out_q, get=out_q.get, is_idle=False)
+        out_q.put_nowait("new")
         o.staged.extend(["saved 1", "saved 2"])
         o.resumed_batch = "batch"
         seen = []
@@ -558,7 +557,7 @@ def test_a_checkpoint_with_rollouts_continues_its_open_groups_instead_of_rerunni
     manager = checkpoint(tmp_path / "off", rollouts=False)
     rerun = TrainSource([train_env("a")])
     assert manager.load(Progress(), rerun, step=6) is None
-    assert [(env_name, task.key) for env_name, task in rerun.reopened] == [("a", request.task.key)]
+    assert [(env_name, task.key) for env_name, task, _ in rerun.reopened] == [("a", request.task.key)]
 
 
 def test_a_forked_writer_completes_the_checkpoint(tmp_path):

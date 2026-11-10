@@ -12,6 +12,11 @@ step's blobs once every rank fetched them; the orchestrator deletes the blobs of
 and traces it drops without shipping; the env worker deletes the blobs of episodes it
 kept but did not deliver (`PayloadHook.discard`).
 
+With `rollout_transport.retain`, a pool's workers write their blobs as files into the
+directory of one `RolloutStore`, which serves them for the whole pool. The trainer then
+marks a step's blobs as trained instead of deleting them, and the store deletes them once
+a trainer checkpoint covers the step, so a restarted trainer fetches them again.
+
 A rollout checkpoint keeps the blobs of finished but unshipped episodes: the orchestrator
 has each env worker write them to the checkpoint (`persist_payloads`), and a resumed run
 references them by `file://` URL. Those files belong to the checkpoint: a DELETE of a
@@ -256,20 +261,6 @@ class PayloadServer:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                status, body = 404, b""
-                if self.path == "/persist":
-                    try:
-                        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                        body = json.dumps({"persisted": server.persist(request["dir"], request["ids"])}).encode()
-                        status = 200
-                    except (KeyError, TypeError, ValueError) as error:
-                        status, body = 400, str(error).encode()
-                self.send_response(status)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
             def do_GET(self) -> None:
                 blob = server.get(self.path.lstrip("/"))
                 self.send_response(200 if blob is not None else 404)
@@ -282,6 +273,22 @@ class PayloadServer:
                 server.delete(self.path.lstrip("/"))
                 self.send_response(204)
                 self.end_headers()
+
+            def do_POST(self) -> None:
+                data = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path != "/persist":
+                    self.send_response(204 if server.trained(_trained_decoder.decode(data)) else 501)
+                    self.end_headers()
+                    return
+                try:
+                    request = json.loads(data)
+                    status, body = 200, json.dumps({"persisted": server.persist(request["dir"], request["ids"])})
+                except (KeyError, TypeError, ValueError) as error:
+                    status, body = 400, str(error)
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body.encode())))
+                self.end_headers()
+                self.wfile.write(body.encode())
 
             def log_message(self, *args: Any) -> None:
                 pass
@@ -306,48 +313,146 @@ class PayloadServer:
         names are written, so nothing lands outside it."""
         target = confined(directory)
         target.mkdir(parents=True, exist_ok=True)
-        written = []
-        for key in keys:
-            if not isinstance(key, str) or not is_file_name(key):
-                continue
-            with self.lock:
-                blob, previous = self.blobs.get(key), self.persisted.get(key)
-            if blob is None:
-                continue
-            path = target / key
-            if previous is None or not link_or_copy(previous, path):
-                tmp = target / f".{key}.{uuid.uuid4().hex}.tmp"
-                tmp.write_bytes(blob)
-                tmp.replace(path)
-            with self.lock:
-                if key in self.blobs:
-                    self.persisted[key] = path
-            written.append(key)
-        return written
+        return [
+            key for key in keys if isinstance(key, str) and is_file_name(key) and self.persist_blob(key, target / key)
+        ]
+
+    def persist_blob(self, key: str, path: Path) -> bool:
+        """Make `path` hold the blob `key`; False if this server does not hold it."""
+        with self.lock:
+            blob, previous = self.blobs.get(key), self.persisted.get(key)
+        if blob is None:
+            return False
+        if previous is None or not link_or_copy(previous, path):
+            tmp = path.with_name(f".{key}.{uuid.uuid4().hex}.tmp")
+            tmp.write_bytes(blob)
+            tmp.replace(path)
+        with self.lock:
+            if key in self.blobs:
+                self.persisted[key] = path
+        return True
 
     def get(self, key: str) -> bytes | None:
         with self.lock:
             return self.blobs.get(key)
 
+    def trained(self, trained: Trained) -> bool:
+        """Whether this server retains trained arrays: only a `RolloutStore` does."""
+        return False
+
+
+class Trained(msgspec.Struct):
+    """A trainer telling a rollout store that `ids` went into `step`, and that a checkpoint
+    covers every step up to `committed`."""
+
+    step: int
+    ids: list[str]
+    committed: int
+
+
+_trained_decoder = msgspec.msgpack.Decoder(Trained)
+
+
+class RolloutStore(PayloadServer):
+    """One env worker pool's arrays as files, kept until a trainer checkpoint covers them.
+
+    The pool's workers write each blob to `live/<id>` (`StoreWriter`). A blob the trainer
+    trained on moves to `step_<N>/<id>` and stays fetchable; the step directories up to the
+    trainer's committed step are deleted."""
+
+    def __init__(self, directory: Path, bind_host: str, url_host: str | None = None):
+        self.directory = directory
+        self.live = directory / "live"
+        self.live.mkdir(parents=True)
+        self.steps: dict[str, int] = {}
+        """The step each trained blob went into."""
+        super().__init__(bind_host, url_host)
+
+    def path(self, key: str) -> Path:
+        if Path(key).name != key:
+            raise ValueError(f"Invalid blob id: {key}")
+        with self.lock:
+            step = self.steps.get(key)
+        return self.live / key if step is None else self.directory / f"step_{step}" / key
+
+    def get(self, key: str) -> bytes | None:
+        try:
+            return self.path(key).read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def delete(self, key: str) -> None:
+        """Free a blob that will never ship. A trained blob stays until its step is committed."""
+        path = self.path(key)
+        if path.parent == self.live:
+            path.unlink(missing_ok=True)
+
+    def persist_blob(self, key: str, path: Path) -> bool:
+        return link_or_copy(self.path(key), path)
+
+    def trained(self, trained: Trained) -> bool:
+        if trained.ids:
+            step_dir = self.directory / f"step_{trained.step}"
+            step_dir.mkdir(exist_ok=True)
+            for key in trained.ids:
+                path = self.path(key)
+                if path.parent != self.live:
+                    continue
+                # Another data rank may mark the same blob, and a step trained again after a
+                # trainer restart has its blobs there already.
+                try:
+                    path.rename(step_dir / key)
+                except FileNotFoundError:
+                    continue
+                with self.lock:
+                    self.steps[key] = trained.step
+        for step_dir in self.directory.glob("step_*"):
+            if int(step_dir.name.removeprefix("step_")) <= trained.committed:
+                shutil.rmtree(step_dir, ignore_errors=True)
+        with self.lock:
+            self.steps = {key: step for key, step in self.steps.items() if step > trained.committed}
+        return True
+
+
+class StoreWriter:
+    """An env worker's side of its pool's `RolloutStore`: blobs go straight to the store's
+    directory, and the store serves them at `url`."""
+
+    def __init__(self, directory: Path, url: str):
+        self.live = directory / "live"
+        self.url = url
+
+    def put(self, key: str, blob: bytes) -> None:
+        tmp = self.live / f".{key}.tmp"
+        tmp.write_bytes(blob)
+        tmp.rename(self.live / key)
+
+    def delete(self, key: str) -> None:
+        (self.live / key).unlink(missing_ok=True)
+
 
 def _fields(arrays: BranchArrays) -> set[str]:
     fields = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
-    if arrays.sampler_support is not None and arrays.sampler_support.logprobs is not None:
-        fields.add("sampler_support_logprobs")
+    if arrays.sampler_support is not None:
+        if np.frombuffer(arrays.sampler_support.replayed, dtype=np.bool_).any():
+            fields.add("sampler_support_replayed")
+        if arrays.sampler_support.logprobs is not None:
+            fields.add("sampler_support_logprobs")
     return fields
 
 
 class PayloadHook:
     """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's arrays."""
 
-    def __init__(self, bind_address: str | None = None):
+    def __init__(self, bind_address: str | None = None, store: StoreWriter | None = None):
         self._hosts = payload_host(bind_address)
-        self._server: PayloadServer | None = None
+        self._server: PayloadServer | StoreWriter | None = store
         self._lock = threading.Lock()
 
     @property
-    def server(self) -> PayloadServer:
-        """Started on first use: a pool broker installs the hook too but never keeps arrays."""
+    def server(self) -> PayloadServer | StoreWriter:
+        """The pool's rollout store if it has one, else this worker's own server, started on
+        first use: a pool broker installs the hook too but never keeps arrays."""
         with self._lock:
             if self._server is None:
                 self._server = PayloadServer(*self._hosts)
@@ -459,48 +564,75 @@ def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
     return None
 
 
-class _Deleter:
-    """Fire-and-forget DELETEs on daemon threads, so DELETEs still queued at exit (say,
-    to an env worker that is gone) never hold the process up."""
+class _Releaser:
+    """Fire-and-forget release requests on daemon threads, so requests still queued at exit
+    (say, to an env worker that is gone) never hold the process up."""
 
     def __init__(self, num_threads: int = 8) -> None:
         self.num_threads = num_threads
-        self.queue: queue.Queue[str] = queue.Queue()
+        self.queue: queue.Queue[urllib.request.Request] = queue.Queue()
         self._started = False
         self._lock = threading.Lock()
 
-    def submit(self, urls: Iterable[str]) -> None:
+    def submit(self, requests: Iterable[urllib.request.Request]) -> None:
         with self._lock:
             if not self._started:
                 for _ in range(self.num_threads):
-                    threading.Thread(target=self._run, daemon=True, name="payload-delete").start()
+                    threading.Thread(target=self._run, daemon=True, name="payload-release").start()
                 self._started = True
-        for url in urls:
-            self.queue.put(url)
+        for request in requests:
+            self.queue.put(request)
 
     def _run(self) -> None:
         while True:
-            url = self.queue.get()
+            request = self.queue.get()
             try:
-                _opener.open(urllib.request.Request(url, method="DELETE"), timeout=10).close()
+                _opener.open(request, timeout=10).close()
             except Exception:
                 pass
             finally:
                 self.queue.task_done()
 
 
-_deleter = _Deleter()
+_releaser = _Releaser()
 
 
 def delete_payloads(urls: Iterable[str]) -> None:
     """Free kept arrays on their env workers, without waiting. Call only once nothing will
     read them again. Arrays a checkpoint holds (`file://`) stay."""
-    _deleter.submit(url for url in urls if not url.startswith("file://"))
+    _releaser.submit(urllib.request.Request(url, method="DELETE") for url in urls if not url.startswith("file://"))
+
+
+def mark_trained(stores: Iterable[str], urls: Iterable[str], step: int, committed: int) -> None:
+    """Tell each of the rollout `stores` which of the blobs at `urls` it holds went into
+    `step`, and that a trainer checkpoint covers every step up to `committed`, without
+    waiting."""
+    ids: dict[str, list[str]] = {store: [] for store in stores}
+    for url in urls:
+        store, _, key = url.rpartition("/")
+        ids.setdefault(store, []).append(key)
+    _releaser.submit(
+        urllib.request.Request(store, data=msgspec.msgpack.encode(Trained(step, keys, committed)), method="POST")
+        for store, keys in ids.items()
+    )
+
+
+def require_rollout_store(url: str) -> None:
+    """Raise unless the env worker pool at `url` retains trained arrays. A pool without a
+    rollout store would neither keep nor free the arrays marked on it."""
+    request = urllib.request.Request(url, data=msgspec.msgpack.encode(Trained(0, [], -1)), method="POST")
+    try:
+        _opener.open(request, timeout=60).close()
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(
+            f"The env worker pool at {url} has no rollout store, which rollout_transport.retain needs: "
+            "set store_dir in its config"
+        ) from error
 
 
 def wait_for_deletes() -> None:
-    """Block until every queued DELETE has run."""
-    _deleter.queue.join()
+    """Block until every queued release request has run."""
+    _releaser.queue.join()
 
 
 def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> tuple[list[int], list[str]]:

@@ -3,6 +3,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ ORCHESTRATOR_CONFIG = "orchestrator.json"
 INFERENCE_CONFIG = "inference.json"
 
 ENVS_DIR = "envs"
+ROLLOUT_STORE_DIR = Path(tempfile.gettempdir()) / "prime-rl-rollout-store"
 
 MODELEXPRESS_BIN_DIR = Path(__file__).resolve().parents[3] / "third_party" / "modelexpress" / "bin"
 MODELEXPRESS_READY_TIMEOUT_S = 120
@@ -170,8 +172,13 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # One EnvWorkerPoolConfig per launcher-managed source: `env-worker-pool @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
+    # Train pools of a retaining run keep their arrays on node-local disk, not in memory.
+    retain = config.rollout_transport is not None and config.rollout_transport.retain
     for split, source in env_worker_pools(config):
-        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, config.orchestrator.output_dir)
+        store_dir = ROLLOUT_STORE_DIR if retain and split == "train" else None
+        write_env_worker_pool_config(
+            output_dir, split, source, config.orchestrator.log, config.orchestrator.output_dir, store_dir
+        )
 
 
 def rl_local(config: RLConfig):

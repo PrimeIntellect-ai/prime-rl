@@ -122,6 +122,8 @@ TARGET_LAG = 1
 # How long a rollout checkpoint waits for the env workers to take the memory
 # checkpoints of the running rollouts. The trainer waits in its broadcast meanwhile.
 SAVE_TIMEOUT_SECONDS = 300.0
+# A send that waited at least this long for the trainer's request means the trainer is the bottleneck.
+TRAINER_BOUND_WAIT_S = 0.5
 
 
 class Orchestrator:
@@ -222,6 +224,13 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        # Rollouts of the batch cut and waiting for the trainer to request it
+        self.unsent_rollouts = 0
+        # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
+        # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
+        self.ships = 0
+        self.shipped_at: float | None = None
+        self.trainer_rate: float | None = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -388,9 +397,19 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
+        self.train_sink = TrainSink(
+            config,
+            tokenizer=self.tokenizer,
+            train_envs=self.train_envs,
+            progress=self.progress,
+            batch_size=config.batch_size,
+            on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
+            group_size=self.train_source.group_size,
+        )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         if open_work is not None:
-            self.concurrency.resume(open_work["max_inflight"])
+            self.concurrency.restore(open_work["max_inflight"])
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -405,6 +424,12 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_call=self.concurrency.record_call,
+            on_pause=self.concurrency.pause,
+            on_resume=self.concurrency.resume,
+            unconsumed_train_rollouts=lambda: self.train_sink.unbatched_rollouts() + self.unsent_rollouts,
+            batch_size=lambda: self.train_sink.batch_size,
+            trainer_rate=lambda: self.trainer_rate,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
@@ -423,16 +448,6 @@ class Orchestrator:
         # One awaited scrape so the concurrency controller derives (and logs) its
         # initial limit before the loop-start line; failures are tolerated.
         await self.inference_metrics.probe()
-        self.train_sink = TrainSink(
-            config,
-            tokenizer=self.tokenizer,
-            train_envs=self.train_envs,
-            progress=self.progress,
-            batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
-            on_groups_closed=self.train_source.close_groups,
-            group_size=self.train_source.group_size,
-        )
 
         if open_work is not None:
             self.resume_open_work(open_work)
@@ -608,7 +623,7 @@ class Orchestrator:
                 try:
                     # Staged until the sink lock is held: a rollout checkpoint written
                     # before then still saves the result.
-                    self.staged.append(await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5))
+                    self.staged.append(await asyncio.wait_for(self.dispatcher.get(), timeout=0.5))
                 except asyncio.TimeoutError:
                     self._raise_if_component_stopped()
                     continue
@@ -802,8 +817,16 @@ class Orchestrator:
         self.shipping = batch
         self.unlock_sink()
         try:
+            self.unsent_rollouts = batch.cohort.num_traces
             send_batch_time = await self.sender.send(micro_batch_grid)
-            wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+            self.unsent_rollouts = 0
+            shipped_at = time.perf_counter()
+            # The trainer's first step in a process includes its warmup, so its pace counts from the second one
+            self.ships += 1
+            trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
+            self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
+            self.shipped_at = shipped_at
+            wait_for_policy_time = shipped_at - send_start_time - send_batch_time
             # No await since the trainer took the batch: a rollout checkpoint finds the
             # batch either unshipped or shipped.
             self.shipping = None
@@ -1246,7 +1269,7 @@ class Orchestrator:
             "groups": groups,
             "episodes": episodes,
             "open_groups": dict(self.train_source.open_groups),
-            "reopened": [(env_name, task.key) for env_name, task in self.train_source.reopened],
+            "reopened": [(env_name, task.key, size) for env_name, task, size in self.train_source.reopened],
             "max_inflight": int(self.concurrency.max_inflight),
         }
 

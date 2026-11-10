@@ -23,10 +23,14 @@ from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, MicroBatch, Payloa
 from prime_rl.transports.payload import (
     PayloadHook,
     PayloadServer,
+    RolloutStore,
+    StoreWriter,
     delete_payloads,
     encode_branch_arrays,
+    mark_trained,
     payload_host,
     persist_payloads,
+    require_rollout_store,
     resolve_payloads,
     wait_for_deletes,
 )
@@ -351,6 +355,33 @@ def test_store_serves_and_deletes():
     assert server.get("b") is None and server.get("a") is not None
 
 
+def test_rollout_store_keeps_trained_arrays_until_a_checkpoint_covers_them(tmp_path):
+    store = RolloutStore(tmp_path, "127.0.0.1")
+    writer = StoreWriter(tmp_path, store.url)
+    for key in ("trained", "dropped", "queued"):
+        writer.put(key, key.encode())
+
+    # Two data ranks can mark the same blob.
+    for _ in range(2):
+        mark_trained([store.url], [f"{store.url}/trained", f"{store.url}/missing"], step=3, committed=2)
+    wait_for_deletes()
+    delete_payloads([f"{store.url}/trained", f"{store.url}/dropped"])
+    wait_for_deletes()
+    with urllib.request.urlopen(f"{store.url}/trained") as response:
+        assert response.read() == b"trained"
+    assert store.get("dropped") is None
+
+    mark_trained([store.url], [], step=4, committed=3)
+    wait_for_deletes()
+    assert store.get("trained") is None and store.get("queued") == b"queued"
+
+
+def test_a_pool_without_a_rollout_store_rejects_retention(tmp_path):
+    require_rollout_store(RolloutStore(tmp_path, "127.0.0.1").url)
+    with pytest.raises(RuntimeError, match="no rollout store"):
+        require_rollout_store(PayloadServer("127.0.0.1").url)
+
+
 def test_discard_frees_what_keep_kept():
     hook = PayloadHook()
     episode = _episode(np.random.default_rng(2), 6, 8)
@@ -403,3 +434,14 @@ def test_a_checkpoints_arrays_survive_a_delete(tmp_path):
     # Blobs a checkpoint holds are linked into the next one; a missing one is not.
     assert persist_payloads(tmp_path.as_uri(), tmp_path / "next", ["t1-0", "gone"]) == ["t1-0"]
     assert (tmp_path / "next" / "t1-0").samefile(tmp_path / "t1-0")
+
+
+def test_a_rollout_store_persists_the_files_it_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    store = RolloutStore(tmp_path / "store", "127.0.0.1")
+    StoreWriter(tmp_path / "store", store.url).put("t1-0", b"arrays")
+    directory = tmp_path / "ckpt" / "arrays"
+    assert persist_payloads(store.url, directory, ["t1-0", "gone", "../evil"]) == ["t1-0"]
+    assert (directory / "t1-0").read_bytes() == b"arrays"
+    # The trainer's marks still reach the store on the same port.
+    require_rollout_store(store.url)
