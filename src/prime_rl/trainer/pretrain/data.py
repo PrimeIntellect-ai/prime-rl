@@ -138,6 +138,8 @@ class TokenDataset(StatefulIterableDataset):
         shards: TokenShards,
         seq_len: int,
         document_masking: bool = True,
+        packed_rows: bool = False,
+        mask_target_id: int | None = None,
         non_dp_size: int = 1,
         max_epochs: int | None = None,
         num_samples: int | None = None,
@@ -148,9 +150,12 @@ class TokenDataset(StatefulIterableDataset):
         self.shards = shards
         self.seq_len = seq_len
         self.document_masking = document_masking
+        self.packed_rows = packed_rows
+        self.mask_target_id = mask_target_id
+        self.row_stride = seq_len + 1 if packed_rows else seq_len
         limits = [] if num_samples is None else [num_samples]
         if max_epochs is not None:
-            limits.append(max_epochs * (shards.num_tokens // seq_len))
+            limits.append(max_epochs * (shards.num_tokens // self.row_stride))
         self.max_step = min(limits, default=None)
 
     def state_dict(self) -> dict:
@@ -165,12 +170,17 @@ class TokenDataset(StatefulIterableDataset):
         while self.max_step is None or self.step < self.max_step:
             window = self.step
             self.step += 1
-            self.epoch = self.step * self.seq_len / self.shards.num_tokens
+            self.epoch = self.step * self.row_stride / self.shards.num_tokens
             if window % self.data_world_size != self.data_rank:
                 continue
-            start = self.shards.window_start(window * self.seq_len, self.seq_len)
-            tokens, doc_starts = self.shards.read(start, self.seq_len + 1)
-            doc_starts = [s for s in doc_starts if s < self.seq_len] if self.document_masking else []
+            if self.packed_rows:
+                start = (window % (self.shards.num_tokens // self.row_stride)) * self.row_stride
+                tokens, _ = self.shards.read(start, self.row_stride)
+                doc_starts = []
+            else:
+                start = self.shards.window_start(window * self.seq_len, self.seq_len)
+                tokens, doc_starts = self.shards.read(start, self.seq_len + 1)
+                doc_starts = [s for s in doc_starts if s < self.seq_len] if self.document_masking else []
             # An empty document repeats a start; its zero-length segment would repeat an attention offset.
             seq_lens = [length for length in np.diff([0, *doc_starts, self.seq_len]).tolist() if length > 0]
             ids = tokens.tolist()
@@ -178,7 +188,9 @@ class TokenDataset(StatefulIterableDataset):
                 "input_ids": ids[:-1],
                 "target_ids": ids[1:],
                 "position_ids": [position for length in seq_lens for position in range(length)],
-                "loss_mask": [True] * self.seq_len,
+                "loss_mask": [True] * self.seq_len
+                if self.mask_target_id is None
+                else [target != self.mask_target_id for target in ids[1:]],
                 "seq_lens": seq_lens,
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
@@ -224,6 +236,8 @@ def setup_token_dataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
         document_masking=config.document_masking,
+        packed_rows=config.packed_rows,
+        mask_target_id=config.mask_target_id,
         non_dp_size=non_dp_size,
         max_epochs=max_epochs,
         num_samples=num_samples,

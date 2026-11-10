@@ -6,12 +6,14 @@ from pydantic import Field
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
+    BaseOptimizerConfig,
     ConstantSchedulerConfig,
     CosineSchedulerConfig,
     LinearSchedulerConfig,
     MuonConfig,
     SignSGDConfig,
 )
+from prime_rl.utils.config import BaseConfig
 
 
 class DatatroveDataConfig(BaseDataConfig):
@@ -32,6 +34,13 @@ class DatatroveDataConfig(BaseDataConfig):
     """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
     whole sample and positions run over it."""
 
+    packed_rows: bool = False
+    """Every document of the shards is one pre-packed row of ``seq_len + 1`` tokens. Rows are read consecutively in
+    shard order without shuffling, row ``r`` by data rank ``r % data_world_size``, one input/target pair per row."""
+
+    mask_target_id: int | None = None
+    """Exclude targets equal to this token id from the loss. For metrics that count every token but this one."""
+
 
 class PretrainValConfig(BaseValConfig):
     data: DatatroveDataConfig
@@ -51,8 +60,52 @@ class PretrainMuonConfig(MuonConfig):
     """Peak learning rate. Defaults to 1e-3, as for AdamW."""
 
 
+class NanochatMuonAdamWConfig(BaseOptimizerConfig):
+    """nanochat's combined optimizer (``nanochat/optim.py`` @ ff46300): Muon on the block matrices with polar-express
+    orthogonalization, NorMuon variance reduction and cautious weight decay, AdamW on embeddings, unembedding and
+    per-layer scalars. Needs fully replicated weights, so ``model.dp_replicate`` must equal the number of GPUs."""
+
+    type: Literal["nanochat_muon"] = "nanochat_muon"
+
+    lr: float = Field(1.0, gt=0)
+    """Unused: every parameter group has its own learning rate below. The scheduler scales them all."""
+
+    max_norm: float | None = None
+
+    weight_decay: float = Field(0.0, ge=0)
+    """Muon cautious weight decay at step 0, scaled down linearly to 0 over ``total_steps``."""
+
+    matrix_lr: float = Field(0.02, gt=0)
+    """Muon learning rate of the block matrices."""
+
+    embedding_lr: float = Field(0.3, gt=0)
+    """AdamW learning rate of the token and value embeddings."""
+
+    unembedding_lr: float = Field(0.004, gt=0)
+    """AdamW learning rate of the LM head."""
+
+    scalar_lr: float = Field(0.5, gt=0)
+    """AdamW learning rate of the per-layer scalars: ``x0_lambda`` gets ``scalar_lr``, ``resid_lambda`` 1% of it."""
+
+    extra_scalar_lr: float = Field(0.02, gt=0)
+    """AdamW learning rate of the 1-D parameters of the residual connection."""
+
+    connection_matrix_optimizer: Literal["adamw", "muon"] = "adamw"
+    """Optimizer of the residual connection's matrices (the gated residual's low-rank projections)."""
+
+    connection_lr: float = Field(0.004, gt=0)
+    """AdamW learning rate of the residual connection's matrices."""
+
+    adam_betas: tuple[float, float] = (0.8, 0.95)
+
+    x0_beta1: float = Field(0.96, ge=0)
+
+    total_steps: int = Field(ge=1)
+    """Number of optimizer steps of the run: the horizon of the weight decay schedule."""
+
+
 PretrainOptimizerConfig: TypeAlias = Annotated[
-    PretrainAdamWConfig | PretrainMuonConfig | SignSGDConfig, Field(discriminator="type")
+    PretrainAdamWConfig | PretrainMuonConfig | SignSGDConfig | NanochatMuonAdamWConfig, Field(discriminator="type")
 ]
 
 
@@ -62,8 +115,21 @@ class PretrainLinearSchedulerConfig(LinearSchedulerConfig):
     ``max_steps``."""
 
 
+class PretrainWarmdownSchedulerConfig(BaseConfig):
+    """Nanochat's schedule: linear warmup, flat, linear warmdown, as fractions of ``max_steps``."""
+
+    type: Literal["warmdown"] = "warmdown"
+
+    warmup_ratio: float = Field(0.0, ge=0, le=1)
+
+    warmdown_ratio: float = Field(0.5, ge=0, le=1)
+
+    final_lr_frac: float = Field(0.0, ge=0)
+
+
 PretrainSchedulerConfig: TypeAlias = Annotated[
-    ConstantSchedulerConfig | PretrainLinearSchedulerConfig | CosineSchedulerConfig, Field(discriminator="type")
+    ConstantSchedulerConfig | PretrainLinearSchedulerConfig | CosineSchedulerConfig | PretrainWarmdownSchedulerConfig,
+    Field(discriminator="type"),
 ]
 
 
