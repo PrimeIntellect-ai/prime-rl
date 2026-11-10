@@ -74,6 +74,7 @@ keep_last = 1
 
 [model]
 name = "/home/artzhuravel/nemotron-sft-thailand/models/nemotron-3.5-super-text"
+conversion_dir = "/home/artzhuravel/nemotron-sft-thailand/models/nemotron-3.5-super-text-conversion"   # pre-built PrimeRL cache (.prime-v1); unset, the master would re-convert from CephFS
 attn = "flash_attention_3"
 # seq_len 1048576 (1M, the model's max) at cp=16 / ep=16 on 32 GPUs: as the swe-marathon, nl2repo and GeneBench
 # 1M runs.
