@@ -74,7 +74,7 @@ def episode(traces, *, group="g", version=0):
     )
 
 
-def sink(*, constant=True, admitted=True, batch_size=100, closed=None):
+def sink(*, constant=True, admitted=True, batch_size=100, closed=None, group_size=None):
     config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1),
@@ -91,6 +91,7 @@ def sink(*, constant=True, admitted=True, batch_size=100, closed=None):
         batch_size=batch_size,
         on_result=lambda group: admitted,
         on_groups_closed=closed.extend if closed is not None else None,
+        group_size=group_size,
     )
 
 
@@ -369,3 +370,26 @@ def test_zero_output_warning_names_the_drop_reason(monkeypatch, make_trace, admi
     assert warnings == [
         f"No admitted train payload after 4 finalized units (1 zero-output batch equivalents), by drop reason: {reason}=4"
     ]
+
+
+def test_open_group_closes_at_the_size_it_was_drawn_with():
+    async def run():
+        closed = []
+        sizes = {"old": 2, "new": 3}
+        s = sink(batch_size=100, closed=closed, group_size=sizes.get)
+        # A live update raises the env's group size while group "old" is open.
+        s.train_envs.get("test").config.group_size = 3
+        for _ in range(2):
+            await s.add(episode([trace()], group="old"))
+        assert "old" not in s.pending_groups
+        for _ in range(2):
+            await s.add(episode([trace()], group="new"))
+        assert len(s.pending_groups["new"]) == 2
+        await s.add(episode([trace()], group="new"))
+        assert "new" not in s.pending_groups
+        # A group the source does not know takes the env's current size.
+        for _ in range(2):
+            await s.add(episode([trace()], group="unknown"))
+        assert len(s.pending_groups["unknown"]) == 2
+
+    asyncio.run(run())

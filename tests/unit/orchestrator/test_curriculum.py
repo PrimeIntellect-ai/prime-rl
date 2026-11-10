@@ -110,6 +110,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     pools = {"all": DifficultyPoolConfig(threshold=1.0, weight=1.0)}
     config = SimpleNamespace(
         ratio=1.0,
+        group_size=1,
         curriculum=CurriculumConfig(
             sampler=DifficultyPoolSamplerConfig(pools=pools),
             gates={
@@ -331,8 +332,23 @@ def test_difficulty_pool_sampler_drops_rewards_of_removed_tasks() -> None:
 
 
 def make_env(name: str, tasks: list[vf.Task]) -> SimpleNamespace:
-    config = SimpleNamespace(ratio=1.0, curriculum=None)
+    config = SimpleNamespace(ratio=1.0, group_size=1, curriculum=None)
     return SimpleNamespace(name=name, tasks=iter(tasks), num_tasks=len(tasks), config=config)
+
+
+def test_train_source_records_group_size_at_draw_time() -> None:
+    env = make_env("a", reload_tasks(list(range(4))))
+    env.config.group_size = 2
+    source = TrainSource([env])
+    old = source.next_task(step=1)
+    env.config = SimpleNamespace(ratio=1.0, group_size=4, curriculum=None)
+    new = source.next_task(step=2)
+
+    assert (old.rollouts, new.rollouts) == (2, 4)
+    assert (source.group_size(old.group_id), source.group_size(new.group_id)) == (2, 4)
+    assert source.state_dict()["open_groups"] == [("a", old.task.key), ("a", new.task.key)]
+    source.close_groups([old.group_id])
+    assert source.group_size(old.group_id) is None
 
 
 def test_train_source_matches_envs_by_name() -> None:

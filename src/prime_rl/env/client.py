@@ -2,7 +2,7 @@
 
 A DEALER socket + msgpack, with a single receive loop matching replies to
 per-request futures by `request_id` and routing a run's `delta` frames to its
-assembly (`env/delta.py`). The loop drains every queued frame per wakeup and
+assembly (`verifiers.v1.delta`). The loop drains every queued frame per wakeup and
 handles the batch in arrival order, so a busy event loop costs one turn per batch
 rather than one per delta. Speaks the typed pydantic request/response models
 (`env/types.py`) end-to-end: a request is `model_dump`ed onto the wire; a run's
@@ -24,9 +24,10 @@ import zmq
 import zmq.asyncio
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.delta import EpisodeAssembly
 from verifiers.v1.episode import WireEpisode
 
-from prime_rl.env.delta import EpisodeAssembly, unpack
+from prime_rl.env.encoding import unpack
 from prime_rl.env.types import (
     BaseRequest,
     BaseResponse,
@@ -35,6 +36,7 @@ from prime_rl.env.types import (
     HealthResponse,
     RunRequest,
     RunResponse,
+    TraceSummary,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -58,6 +60,25 @@ def _unpack_all(payloads: list[memoryview]) -> list[object]:
         except Exception as e:  # noqa: BLE001 - logged by the caller, in arrival order
             decoded.append(e)
     return decoded
+
+
+def assemble_episode(assembly: EpisodeAssembly, head: dict, summaries: list[TraceSummary]) -> dict:
+    """The full episode record: `head` (the episode without its traces) joined with the
+    assembled traces in the server's order. A count mismatch means a delta was lost,
+    which the wire never does in a live connection — fail loudly."""
+    traces = []
+    for summary in summaries:
+        trace = assembly.traces.get(summary.id)
+        if trace is None:
+            raise RuntimeError(f"served episode is missing trace {summary.id}")
+        trace = {key: value for key, value in trace.items() if key != "pending"}
+        if len(trace["nodes"]) != summary.nodes or len(trace["calls"]) != summary.calls:
+            raise RuntimeError(
+                f"served trace {summary.id} assembled {len(trace['nodes'])} nodes / "
+                f"{len(trace['calls'])} calls, server reports {summary.nodes} / {summary.calls}"
+            )
+        traces.append(trace)
+    return {**head, "traces": traces}
 
 
 class EnvClient:
@@ -248,7 +269,7 @@ class EnvClient:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The worker takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
-        rollout runs, one delta per turn or phase change (`env.delta`); `on_delta`
+        rollout runs, one delta per turn or phase change (`verifiers.v1.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
         episode returned is assembled from the same deltas."""
         assembly = EpisodeAssembly()
@@ -274,7 +295,7 @@ class EnvClient:
         try:
             return await self._decode(
                 WireEpisode.model_validate,
-                assembly.finish(response.head, response.traces),
+                assemble_episode(assembly, response.head, response.traces),
             )
         except BaseException:
             # The reply already arrived, so the worker counts the episode delivered;
