@@ -26,8 +26,8 @@ in full only once it completes (its context grows call by call), so the controll
   windows' geometric midpoint. From there the cap moves in steps from a measured level: a step is kept when it was
   worth its units and the next one grows by how clearly it paid; a rejected step returns to the level and shrinks,
   down to ``STEP_MIN``.
-- **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond the target, without cancelling. A
-  queue still above ``QUEUE_CANCEL`` once a trim has drained cancels the excess.
+- **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond the target while the cap binds,
+  without cancelling. A queue still above ``QUEUE_CANCEL`` once a trim has drained cancels the excess.
 - **Throughput drop**: two windows in a row ``THROUGHPUT_DROP`` below the best window's throughput with as many units
   in flight (a KV thrash, a collapsed frontend) trim the cap in proportion to the throughput lost, without
   cancelling. A third, with the engines the bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue
@@ -736,7 +736,8 @@ class ConcurrencyController(Reconfigurable):
 
     def queue_trim(self, inflight: int) -> bool:
         """Trim the units queued beyond the target once the pool has drained from the last trim and turned over,
-        unless growth was last measured to pay; cancel them when a drained trim did not clear the queue."""
+        unless growth was last measured to pay or the cap does not bind (admission is held back elsewhere, and a
+        trim from the smaller pool would undercut the cap); cancel them when a drained trim did not clear the queue."""
         if self.draining or self.trim_wait > 0:
             return False
         share = self.queued_share
@@ -745,7 +746,8 @@ class ConcurrencyController(Reconfigurable):
             return False
         cancel = self.queue_trimmed and share > QUEUE_CANCEL
         # Past a cliff units finish too slowly for a turnover to come: an overloaded queue does not wait for it
-        if not cancel and (self.paying or self.turnover - self.trim_turnover < 1.0):
+        binding = inflight >= BINDING_FRACTION * self.max_inflight
+        if not cancel and (self.paying or not binding or self.turnover - self.trim_turnover < 1.0):
             return False
         self.trim(
             self.projected(inflight * (1.0 - share + QUEUE_TARGET)),

@@ -103,6 +103,9 @@ SHUTDOWN_TIMEOUT_S = 300
 # trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
 
+# A send that waited at least this long for the trainer's request means the trainer is the bottleneck.
+TRAINER_BOUND_WAIT_S = 0.5
+
 
 class Orchestrator:
     # Set in ``__init__``
@@ -184,6 +187,11 @@ class Orchestrator:
         self.release_future: asyncio.Future | None = None
         # Rollouts of the batch cut and waiting for the trainer to request it
         self.unsent_rollouts = 0
+        # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
+        # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
+        self.ships = 0
+        self.shipped_at: float | None = None
+        self.trainer_rate: float | None = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -371,10 +379,11 @@ class Orchestrator:
             on_resume=self.concurrency.resume,
             unconsumed_train_rollouts=lambda: self.train_sink.unbatched_rollouts() + self.unsent_rollouts,
             batch_size=lambda: self.train_sink.batch_size,
+            trainer_rate=lambda: self.trainer_rate,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
-            get_inflight=lambda: self.dispatcher.permits_in_use,
+            get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
@@ -727,7 +736,13 @@ class Orchestrator:
         self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
         self.unsent_rollouts = 0
-        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        shipped_at = time.perf_counter()
+        # The trainer's first step in a process includes its warmup, so its pace counts from the second one
+        self.ships += 1
+        trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
+        self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
+        self.shipped_at = shipped_at
+        wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()

@@ -7,10 +7,12 @@
   once.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
 - A finished train rollout keeps its permit until the trainer takes it, past a
-  buffer of ``BUFFERED_BATCHES`` batches (``held_permits``). When the trainer is
-  the bottleneck, the cap then bounds the finished backlog too, instead of it
-  growing until its tokens age past ``max_staleness``. Held permits only block
-  opening train groups; eval and open groups schedule as before.
+  buffer of ``BUFFERED_BATCHES`` batches (``held_permits``), so the finished
+  backlog cannot grow until its tokens age past ``max_staleness``. While the
+  trainer is the bottleneck, train episodes in flight are also held to what
+  keeps it fed (``trainer_target``). Both only block opening train groups; eval
+  and open groups schedule as before, and the concurrency controller sees only
+  the episodes in flight.
 - Every dispatched attempt reaches ``out_q`` exactly once: as the native
   episode returned by the environment, as a ``DispatchFailure`` when no
   episode was produced, or under the group's ``GroupCancellation`` when the
@@ -69,6 +71,13 @@ LIVE_EVENT_CAP = 20_000
 BUFFERED_BATCHES = 1
 """Batches of finished train rollouts that free their permits while they wait for the trainer: enough that the
 trainer finds its next batch ready."""
+
+TRAINER_MARGIN = 0.1
+"""Train episodes in flight beyond what a bottlenecked trainer consumes over a generation lifetime: rollouts made
+faster than it takes them only wait, while the held permits drain any surplus."""
+
+GENERATION_EWMA = 0.05
+"""Weight of each finished train episode in the generation lifetime average."""
 
 
 class DispatcherMode(Enum):
@@ -156,6 +165,7 @@ class Dispatcher:
         on_resume: Callable[[], None] | None = None,
         unconsumed_train_rollouts: Callable[[], int] | None = None,
         batch_size: Callable[[], int] | None = None,
+        trainer_rate: Callable[[], float | None] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -177,12 +187,16 @@ class Dispatcher:
         # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
         self.on_pause = on_pause
         self.on_resume = on_resume
-        # The consumer's finished train rollouts the trainer has not taken yet (``out_q`` excluded), and the live
-        # batch size; both unset without a trainer
+        # The consumer's finished train rollouts the trainer has not taken yet (``out_q`` excluded), the live
+        # batch size, and the rollouts per second the trainer takes while it is the bottleneck (else None); all
+        # unset without a trainer
         self.unconsumed_train_rollouts = unconsumed_train_rollouts
         self.batch_size = batch_size
+        self.trainer_rate = trainer_rate
         # Rollouts of the train episodes waiting in ``out_q``
         self.queued_train_rollouts = 0
+        # Average seconds from dispatch to completion of a train episode
+        self.generation_s: float | None = None
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -268,9 +282,21 @@ class Dispatcher:
         return max(0, waiting - BUFFERED_BATCHES * self.batch_size())
 
     @property
-    def permits_in_use(self) -> int:
-        """Units the concurrency controller sees: episodes in flight plus the held permits."""
-        return self.current_inflight + self.held_permits
+    def trainer_target(self) -> float | None:
+        """Train episodes in flight that keep a bottlenecked trainer fed, by Little's law: the rollouts per second it
+        takes times the generation lifetime, plus ``TRAINER_MARGIN``. None while the trainer is not the bottleneck."""
+        rate = self.trainer_rate() if self.trainer_rate is not None else None
+        if rate is None or self.generation_s is None:
+            return None
+        return (1 + TRAINER_MARGIN) * rate * self.generation_s
+
+    def train_admission_open(self) -> bool:
+        """Whether a train group may open: held permits count against the cap and against the trainer target."""
+        held = self.held_permits
+        if self.current_inflight + held >= self.max_inflight:
+            return False
+        target = self.trainer_target
+        return target is None or self.inflight_train_count + held < target
 
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
@@ -282,11 +308,8 @@ class Dispatcher:
         """Cancel roughly ``n`` in-flight train episodes, youngest groups
         first (least inference spend so far). Called on an overload cut so
         the working set shrinks immediately instead of waiting for the
-        over-admitted episodes to finish at thrashed throughput. ``n`` counts
-        the held permits, which free as the trainer takes their rollouts."""
-        n -= self.held_permits
-        if n > 0:
-            asyncio.create_task(self._cancel_inflight(n))
+        over-admitted episodes to finish at thrashed throughput."""
+        asyncio.create_task(self._cancel_inflight(n))
 
     async def _cancel_inflight(self, n: int) -> None:
         # A group's age is its OLDEST member's start: max() would make a
@@ -504,7 +527,7 @@ class Dispatcher:
                 continue
             return await self.schedule_group_episode(gid, group)
 
-        if kind == "train" and self.permits_in_use >= self.max_inflight:
+        if kind == "train" and not self.train_admission_open():
             return False
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
@@ -669,6 +692,13 @@ class Dispatcher:
         self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
+        if meta.kind == "train" and not task.cancelled():
+            seconds = time.monotonic() - meta.started_at
+            self.generation_s = (
+                seconds
+                if self.generation_s is None
+                else self.generation_s + GENERATION_EWMA * (seconds - self.generation_s)
+            )
 
         if task.cancelled():
             return
@@ -930,6 +960,7 @@ class Dispatcher:
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/held_permits": float(self.held_permits),
+            "dispatcher/trainer_target": self.trainer_target or 0.0,
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
         }

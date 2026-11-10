@@ -296,8 +296,8 @@ def test_call_context_is_the_history_it_extends():
     assert context(trace, usage(500, 0)) == 0  # chain restarts
 
 
-def test_finished_train_rollouts_past_one_batch_hold_their_permits():
-    unbatched = [0]
+def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
+    unbatched, rate = [0], [None]
     dispatcher = Dispatcher(
         train_envs=None,
         eval_envs=None,
@@ -313,20 +313,31 @@ def test_finished_train_rollouts_past_one_batch_hold_their_permits():
         run_name=None,
         unconsumed_train_rollouts=lambda: unbatched[0],
         batch_size=lambda: 8,
+        trainer_rate=lambda: rate[0],
     )
     dispatcher.current_inflight = 10
+    dispatcher.inflight = {object(): SimpleNamespace(kind="train") for _ in range(10)}
     # Up to one batch waiting frees its permits: the trainer finds its next batch ready
     dispatcher.queued_train_rollouts = 3
     unbatched[0] = 5
     assert dispatcher.held_permits == 0
-    assert dispatcher.permits_in_use == 10
+    assert dispatcher.train_admission_open()
     # Past it, every finished rollout holds its permit until the trainer takes it
     unbatched[0] = 11
     assert dispatcher.held_permits == 6
-    assert dispatcher.permits_in_use == 16
+    assert not dispatcher.train_admission_open()
+
+    # A bottlenecked trainer taking 0.5 rollouts/s over a 20 s generation lifetime needs 10 in flight, plus 10 %
+    unbatched[0], rate[0] = 5, 0.5
+    dispatcher.generation_s = 20.0
+    assert dispatcher.trainer_target == pytest.approx(11.0)
+    assert dispatcher.train_admission_open()
+    unbatched[0] = 6
+    assert not dispatcher.train_admission_open()
+    rate[0] = None
+    assert dispatcher.train_admission_open()
 
     episode = SimpleNamespace(run=SimpleNamespace(work=SimpleNamespace(type="train")), traces=[object(), object()])
     dispatcher.out_q.put_nowait(episode)
     assert asyncio.run(dispatcher.get()) is episode
     assert dispatcher.queued_train_rollouts == 1
-    assert dispatcher.held_permits == 4
