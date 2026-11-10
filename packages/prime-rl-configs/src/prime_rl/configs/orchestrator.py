@@ -232,6 +232,16 @@ class CurriculumConfig(BaseConfig):
     and a group trains only when every gate admits it."""
 
 
+INFRA_RETRIES = {
+    "rules": [
+        {"type": "ProviderError", "status_code": ["5xx", 408, 429], "max_retries": 2},
+        {"type": "SandboxError", "max_retries": 2},
+        {"type": "InterceptionError", "max_retries": 2},
+        {"type": "TunnelError", "max_retries": 2},
+    ]
+}
+
+
 class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -253,6 +263,17 @@ class TrainSourceConfig(EnvConfig):
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_infra_retries(cls, data: Any) -> Any:
+        """Rerun an episode that failed on infra (an exhausted provider 5xx/408/429, a
+        sandbox, interception or tunnel failure) up to twice per kind, unless
+        ``env.retries`` is set. Errored members are dropped from their group, so without
+        retries long multi-turn rollouts are the ones lost to an outage."""
+        if isinstance(data, dict) and isinstance(data.get("env"), dict):
+            data["env"] = {"retries": INFRA_RETRIES, **data["env"]}
+        return data
 
     @model_validator(mode="after")
     def validate_policy_sampling(self):
@@ -444,7 +465,7 @@ class CheckpointConfig(BaseConfig):
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
-    in-flight episode cap from engine KV pressure; these fields only bound and
+    in-flight episode cap from engine load; these fields only bound and
     seed it."""
 
     initial_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
@@ -453,8 +474,8 @@ class ConcurrencyConfig(BaseConfig):
     min_inflight: Annotated[int, Live()] = Field(1, ge=1)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: Annotated[int | None, Live()] = Field(1024, ge=1)
-    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
+    max_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
+    """Maximum number of in-flight episodes. None (the default) leaves the cap to the controller. Set it to bound other external resources the episodes hold (e.g. sandboxes)."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
@@ -464,6 +485,24 @@ class ConcurrencyConfig(BaseConfig):
             if self.min_inflight > self.max_inflight:
                 raise ValueError("concurrency.min_inflight must not exceed concurrency.max_inflight")
         return self
+
+
+class CircuitBreakerConfig(BaseConfig):
+    """Per-env circuit breaker for train dispatch. An env whose episodes keep
+    failing on infrastructure (sandbox, tool server, model interception, a frozen
+    or external model provider, or the env worker pool itself) stops getting new
+    rollouts, so the other envs keep filling batches; after ``cooldown`` one
+    probe episode tests whether it recovered. Harness, task and env-hook errors
+    and stage timeouts do not count, since the policy's output can cause them."""
+
+    failures: int = Field(8, ge=1)
+    """Consecutive failed groups of one env that open its breaker."""
+
+    cooldown: float = Field(60.0, gt=0)
+    """Seconds an open breaker waits before letting one probe episode through. Doubles after each failed probe."""
+
+    max_cooldown: float = Field(1800.0, gt=0)
+    """Upper bound on the cooldown."""
 
 
 # Top-k injected on truncated policy sampling that has none, and the hard upper
@@ -572,6 +611,8 @@ class OrchestratorConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
+    circuit_breaker: CircuitBreakerConfig | None = CircuitBreakerConfig()
+    """Pause a train env whose episodes keep failing so the other envs keep training. None disables it."""
     control: OrchestratorControlConfig | None = None
     """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
     accepted, update the config live). If None, it takes no control requests."""

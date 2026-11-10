@@ -55,12 +55,19 @@ class TrainSource(Reconfigurable):
         ratios = {source.resolved_name: source.ratio for source in update.config.train.source}
         self.weights = [float(ratios[name]) for name in self.env_names]
 
-    def next_task(self, *, step: int) -> TaskRequest:
+    def next_task(self, *, step: int, exclude: set[str] = frozenset()) -> TaskRequest | None:
+        """Draw the next task from an env not in ``exclude``; None when every env is excluded."""
         # A reopened group was already counted by its sampler, and its env is fixed.
-        if self.reopened:
-            env_name, task = self.reopened.popleft()
+        reopened = next((entry for entry in self.reopened if entry[0] not in exclude), None)
+        if reopened is not None:
+            self.reopened.remove(reopened)
+            env_name, task = reopened
         else:
-            env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
+            candidates = [(name, weight) for name, weight in zip(self.env_names, self.weights) if name not in exclude]
+            if not candidates:
+                return None
+            names, weights = zip(*candidates)
+            env_name = self.rng.choices(names, weights=weights, k=1)[0]
             task = next(self.curricula[env_name].sampler)
         group_id = str(uuid.uuid4())
         group_size = self.envs_by_name[env_name].config.group_size
