@@ -3,19 +3,15 @@ from fastapi.testclient import TestClient
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.eval.control import create_app
-from prime_rl.orchestrator.concurrency import ConcurrencyController, EngineLoadSample
+from prime_rl.orchestrator.concurrency import LOAD_WINDOW_POLLS, ConcurrencyController, EngineLoadSample
 
 INFLIGHT = 1800
-PREEMPTED = EngineLoadSample(
+QUEUED = EngineLoadSample(
     engine_id="engine-0",
     role=None,
     kv_capacity_tokens=1_000_000,
     max_model_len=8192,
-    kv_usage=0.95,
-    running=INFLIGHT,
-    waiting=0,
-    waiting_capacity=0,
-    preemptions_delta=4,
+    waiting=INFLIGHT // 2,
 )
 
 
@@ -66,11 +62,12 @@ def test_set_concurrency_invalid(client, body):
     assert response.status_code == 422, response.text
 
 
-@pytest.mark.parametrize(("target", "expected_cap"), [(1500, 1500), (None, 1440)], ids=["pinned", "adaptive"])
+@pytest.mark.parametrize(("target", "expected_cap"), [(1500, 1500), (None, 1080)], ids=["pinned", "adaptive"])
 def test_target_holds_under_overload(concurrency, target, expected_cap):
     if target is not None:
         concurrency.set_target(target)
 
-    concurrency.observe([PREEMPTED])
+    for _ in range(LOAD_WINDOW_POLLS):
+        concurrency.observe([QUEUED])
 
     assert concurrency.max_inflight == expected_cap

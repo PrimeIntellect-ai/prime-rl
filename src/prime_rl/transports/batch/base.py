@@ -21,6 +21,8 @@ class BatchSender(ABC):
         self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
         self.output_dir = output_dir
         self.data_world_size = data_world_size
+        # Seconds the last send waited for the trainer to request its step
+        self.last_wait_s = 0.0
 
     @abstractmethod
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:

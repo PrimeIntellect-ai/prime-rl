@@ -9,12 +9,12 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.delta import DeltaStreamer, dump
 from verifiers.v1.episode import Episode
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
-from prime_rl.env.delta import DeltaStreamer, TraceSummary, dump, pack
-from prime_rl.env.encoding import msgpack_encoder
+from prime_rl.env.encoding import pack
 from prime_rl.env.types import (
     BaseResponse,
     CancelRequest,
@@ -22,6 +22,7 @@ from prime_rl.env.types import (
     HealthResponse,
     RunRequest,
     RunResponse,
+    TraceSummary,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -207,11 +208,7 @@ class EnvWorker:
             )
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
         try:
-            data = msgpack.packb(
-                response.model_dump(mode="python"),
-                default=msgpack_encoder,
-                use_bin_type=True,
-            )
+            data = pack(response.model_dump(mode="python"))
         except Exception as e:
             # Encoding failures must also reply so clients don't wait indefinitely.
             get_logger().opt(exception=True).warning(f"Failed to encode response - {type(e).__name__}: {e}")
