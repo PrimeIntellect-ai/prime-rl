@@ -39,7 +39,11 @@ from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
-from prime_rl.trainer.pretrain.data import setup_token_dataset, warn_if_no_document_separator
+from prime_rl.trainer.pretrain.data import (
+    setup_document_dataset,
+    setup_token_dataset,
+    warn_if_no_document_separator,
+)
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -199,6 +203,12 @@ def train(config: SFTConfig | PretrainConfig):
     if config.val is not None and isinstance(config, SFTConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
+    if config.val is not None and isinstance(config, PretrainConfig):
+        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
+        logger.info(
+            f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
+            f"in {len(val_document_dataset.rows)} rows"
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -327,9 +337,7 @@ def train(config: SFTConfig | PretrainConfig):
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
-            val_dataset = setup_token_dataset(
-                config.val.data, config.model.cp, max_epochs=1, num_samples=config.val.num_samples
-            )
+            val_dataset = val_document_dataset
         else:
             val_dataset = setup_sft_dataset(
                 tokenizer,

@@ -1,4 +1,5 @@
-"""Pretraining data: datatrove tokenized shards read as one token pool and cut into windows of ``seq_len`` tokens."""
+"""Pretraining data: datatrove tokenized shards read as one token pool and cut into windows of ``seq_len`` tokens,
+and for validation every held-out document scored on its own."""
 
 from collections import OrderedDict
 from pathlib import Path
@@ -9,6 +10,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sequence import repeat_to_length
 
 MAX_OPEN_FILES = 256
 
@@ -130,28 +132,15 @@ class TokenDataset(StatefulIterableDataset):
     """``seq_len`` windows of a token pool, window ``w`` read from ``shards.window_start(w * seq_len)``. With
     ``document_masking``, a window has one segment per document (``seq_lens``) and positions restart at every
     document; without, it is one segment. Every data rank walks the whole window sequence but reads only its own
-    windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read. With
-    ``max_epochs`` or ``num_samples`` (windows over all ranks), every rank stops at the same window."""
+    windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read."""
 
-    def __init__(
-        self,
-        shards: TokenShards,
-        seq_len: int,
-        document_masking: bool = True,
-        non_dp_size: int = 1,
-        max_epochs: int | None = None,
-        num_samples: int | None = None,
-    ):
+    def __init__(self, shards: TokenShards, seq_len: int, document_masking: bool = True, non_dp_size: int = 1):
         super().__init__(non_dp_size)
         if shards.num_tokens < seq_len:
             raise ValueError(f"The token pool has {shards.num_tokens} tokens, fewer than seq_len ({seq_len})")
         self.shards = shards
         self.seq_len = seq_len
         self.document_masking = document_masking
-        limits = [] if num_samples is None else [num_samples]
-        if max_epochs is not None:
-            limits.append(max_epochs * (shards.num_tokens // seq_len))
-        self.max_step = min(limits, default=None)
 
     def state_dict(self) -> dict:
         # A checkpoint follows a whole optimizer step, after which every data rank has read the same number of
@@ -162,7 +151,7 @@ class TokenDataset(StatefulIterableDataset):
 
     def __iter__(self):
         self._setup_world_info()
-        while self.max_step is None or self.step < self.max_step:
+        while True:
             window = self.step
             self.step += 1
             self.epoch = self.step * self.seq_len / self.shards.num_tokens
@@ -183,6 +172,96 @@ class TokenDataset(StatefulIterableDataset):
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
+
+
+Window = tuple[int, int, int]
+"""File index and the token range ``[start, end)`` of a window in the file."""
+
+
+def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[Window]:
+    """Every document of ``shards`` as stored (or the first ``num_documents``), cut into non-overlapping windows of
+    ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
+    window starts at the last token of the one before and sees none of the tokens before it."""
+    windows, documents = [], 0
+    for file_index in range(len(shards.files)):
+        if shards.starts[file_index + 1] == shards.starts[file_index]:
+            continue
+        _, doc_ends = shards.open(file_index)
+        begin = 0
+        for end in doc_ends.tolist():
+            if documents == num_documents:
+                return windows
+            documents += 1
+            for window in range(begin, end - 1, seq_len):
+                windows.append((file_index, window, min(window + seq_len + 1, end)))
+            begin = end
+    return windows
+
+
+def pack_windows(lengths: list[int], token_budget: int) -> list[list[int]]:
+    """Window indices grouped into rows of at most ``token_budget`` tokens, longest first."""
+    order = sorted(range(len(lengths)), key=lambda i: -lengths[i])
+    rows, row, total = [], [], 0
+    for index in order:
+        if row and total + lengths[index] > token_budget:
+            rows.append(row)
+            row, total = [], 0
+        row.append(index)
+        total += lengths[index]
+    if row:
+        rows.append(row)
+    return rows
+
+
+class DocumentDataset(StatefulIterableDataset):
+    """Rows of ``row_len`` tokens that score every document of held-out shards on its own (`document_windows`). The
+    windows are packed longest first, one segment per window with positions from 0; the rest of a row is unscored
+    padding. Rows are dealt round-robin over the data ranks, and every rank yields the same number of rows, because
+    under FSDP every forward is a collective: a rank short of a row repeats the first one, unscored. Full rows pass
+    through the micro-batch packing unchanged."""
+
+    def __init__(
+        self, shards: TokenShards, seq_len: int, row_len: int, non_dp_size: int = 1, num_documents: int | None = None
+    ):
+        super().__init__(non_dp_size)
+        self.shards = shards
+        self.row_len = row_len
+        self.windows = document_windows(shards, seq_len, num_documents)
+        if not self.windows:
+            raise ValueError("The held-out shards have no document of two or more tokens")
+        self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
+
+    def sample(self, row: list[int], scored: bool) -> dict:
+        input_ids, target_ids, seq_lens = [], [], []
+        for index in row:
+            file_index, start, end = self.windows[index]
+            ids = self.shards.open(file_index)[0][start:end].astype(np.int64).tolist()
+            input_ids += ids[:-1]
+            target_ids += ids[1:]
+            seq_lens.append(len(ids) - 1)
+        loss_mask = [scored] * len(input_ids)
+        padding = self.row_len - len(input_ids)
+        if padding > 0:
+            # The row's own tokens, as in CatDataset: identical pad tokens would all route to the same MoE experts.
+            input_ids += repeat_to_length(input_ids, padding)
+            target_ids += [0] * padding
+            loss_mask += [False] * padding
+            seq_lens.append(padding)
+        return {
+            "input_ids": input_ids,
+            "target_ids": target_ids,
+            "position_ids": [position for length in seq_lens for position in range(length)],
+            "loss_mask": loss_mask,
+            "seq_lens": seq_lens,
+            "mm_kwargs": None,
+            "mm_token_type_ids": None,
+        }
+
+    def __iter__(self):
+        self._setup_world_info()
+        mine = self.rows[self.data_rank :: self.data_world_size]
+        for i in range(-(-len(self.rows) // self.data_world_size)):
+            yield self.sample(mine[i], scored=True) if i < len(mine) else self.sample(self.rows[0], scored=False)
 
 
 def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> None:
@@ -214,17 +293,22 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
         )
 
 
-def setup_token_dataset(
-    config: DatatroveDataConfig,
-    non_dp_size: int = 1,
-    max_epochs: int | None = None,
-    num_samples: int | None = None,
-) -> TokenDataset:
+def setup_token_dataset(config: DatatroveDataConfig, non_dp_size: int = 1) -> TokenDataset:
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
         document_masking=config.document_masking,
         non_dp_size=non_dp_size,
-        max_epochs=max_epochs,
-        num_samples=num_samples,
+    )
+
+
+def setup_document_dataset(
+    config: DatatroveDataConfig, non_dp_size: int = 1, num_documents: int | None = None
+) -> DocumentDataset:
+    return DocumentDataset(
+        TokenShards(config.paths),
+        seq_len=config.seq_len,
+        row_len=config.seq_len * config.micro_batch_size,
+        non_dp_size=non_dp_size,
+        num_documents=num_documents,
     )
