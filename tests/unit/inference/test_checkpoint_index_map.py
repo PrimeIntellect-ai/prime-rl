@@ -140,6 +140,67 @@ def test_fused_apply_matches_torch_apply():
     assert running.tolist() == gpu_map.checksums(full=True)[1].cpu().tolist()
 
 
+def test_probed_permutations_split_into_row_and_column_tables():
+    from prime_rl.inference.vllm.worker.weight_transfer import _probe_permutation, _separable
+
+    rows, cols = torch.randperm(6), torch.randperm(10)
+
+    def kernel_layout(x):  # rows and columns permuted, into a padded [8, 12] output
+        out = torch.zeros(8, 12, dtype=x.dtype)
+        out[:6, :10] = x[rows][:, cols]
+        return out
+
+    where = _probe_permutation(kernel_layout, (6, 10), "cpu")
+    x = torch.randint(0, 255, (6, 10), dtype=torch.uint8)
+    flat = torch.zeros(96, dtype=torch.uint8)
+    flat[where] = x.view(-1)
+    assert torch.equal(flat, kernel_layout(x).view(-1))
+    row_offsets, col_offsets = _separable(where, 6, 10)
+    assert torch.equal(row_offsets[:, None] + col_offsets[None, :], where.view(6, 10))
+    with pytest.raises(NotImplementedError):
+        _probe_permutation(lambda x: x[:3], (6, 10), "cpu")  # drops elements
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("slot", ["w13", "w2"])
+def test_trtllm_mxfp8_moe_layout_tables_match_vllm(slot):
+    # fused_moe first: importing flashinfer_utils on its own hits a circular import in vLLM
+    import vllm.model_executor.layers.fused_moe  # noqa: F401
+    from vllm.model_executor.layers.quantization.utils.flashinfer_utils import (
+        _shuffle_mxfp8_moe_weights,
+        swap_w13_to_w31,
+    )
+
+    from prime_rl.inference.vllm.worker.weight_transfer import trtllm_mxfp8_moe_layouts
+    from prime_rl.utils.sparse_weights import quantize_mx_blocks
+
+    intermediate, hidden = 256, 512
+    shapes = {"w13": (2 * intermediate, hidden), "w2": (hidden, intermediate)}
+    plain = {}
+    for key, (num_rows, num_cols) in shapes.items():
+        quantized, scales = quantize_mx_blocks(torch.randn(num_rows, num_cols, dtype=torch.bfloat16, device="cuda"))
+        plain[key], plain[f"{key}_scale"] = quantized[None], scales[None]
+    w13, w13_scale = swap_w13_to_w31(plain["w13"]), swap_w13_to_w31(plain["w13_scale"])
+    kernel = dict(
+        zip(
+            ("w13", "w2", "w13_scale", "w2_scale"),
+            _shuffle_mxfp8_moe_weights(w13, plain["w2"], w13_scale, plain["w2_scale"], True),
+        )
+    )
+    num_rows, num_cols = shapes[slot]
+    matches = []
+    for weight_rows, scale_rows, scale_cols in trtllm_mxfp8_moe_layouts(num_rows, num_cols, "cuda"):
+        weight = torch.zeros(num_rows * num_cols, dtype=torch.uint8, device="cuda")
+        weight[(weight_rows[:, None] + torch.arange(num_cols)[None, :]).cuda().view(-1)] = plain[slot][0].reshape(-1)
+        scales = torch.zeros(kernel[f"{slot}_scale"].numel(), dtype=torch.uint8, device="cuda")
+        scales[(scale_rows[:, None] + scale_cols[None, :]).cuda().view(-1)] = plain[f"{slot}_scale"][0].reshape(-1)
+        matches.append(
+            torch.equal(weight, kernel[slot].view(torch.uint8).reshape(-1))
+            and torch.equal(scales, kernel[f"{slot}_scale"].view(torch.uint8).reshape(-1))
+        )
+    assert any(matches)
+
+
 class FusedExperts(nn.Module):
     """Two experts' gate and up projections loaded into one fused ``[experts, gate; up, hidden]`` param, then, like
     FlashInfer CUTLASS's processing after loading, swapped to ``[up; gate]``."""
