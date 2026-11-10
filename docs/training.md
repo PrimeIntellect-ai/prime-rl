@@ -21,7 +21,6 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
-  - [Restarting Only the Trainer](#restarting-only-the-trainer)
   - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
@@ -476,29 +475,6 @@ A resume can add, remove or change train and eval sources.
 - A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task.
 - A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
 - Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
-
-### Restarting Only the Trainer
-
-With `rollout_transport.retain`, a trainer that dies can be restarted on its own while the orchestrator, inference and env worker pools keep running:
-
-```toml
-[ckpt]
-interval = 25
-
-[rollout_transport]
-retain = true
-```
-
-- The orchestrator keeps every step it ships under `<output_dir>/batches/step_<N>/` until a trainer checkpoint covers it.
-- Each train env worker pool keeps its training arrays (routing rows, sampling masks, top-k heads) as files in one rollout store for the whole pool, under `/tmp/prime-rl-rollout-store`. The trainer marks a step's arrays as trained, and the store deletes them once a checkpoint covers the step.
-- Restart the trainer with the same command plus `--resume`. It loads its newest complete checkpoint, trains the retained steps again, and then asks the orchestrator for new ones.
-
-Limits:
-
-- Retained steps trained again are not broadcast: inference keeps the policies the failed trainer published, and the restarted trainer publishes from the first version that was not finished. The two differ by the nondeterminism of a training step.
-- A restarted trainer needs a weight transport it can rejoin: `filesystem` works, the `nccl` and `nixl` transfer groups are fixed at startup.
-- The orchestrator and the trainer must share the run directory.
-- A rollout store lives as long as its env worker pool. Once the pool is gone, a retained step trains without the micro batches whose arrays it held, and fails if none are left.
 
 ### Pausing or Checkpointing a Live Run
 
