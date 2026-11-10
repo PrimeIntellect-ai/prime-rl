@@ -45,6 +45,14 @@ class PrefillScorer:
             await self._client.close()
 
 
+# Concurrent session releases per endpoint. The release client has one connection per slot, so
+# requests never wait in httpx's pool, where a pool timeout can leak connections for good
+# (encode/httpcore#1099). A release that waits longer than the queue timeout for a slot is
+# dropped, which bounds how long a slow router can delay episode completion.
+SESSION_RELEASE_CONCURRENCY = 32
+SESSION_RELEASE_QUEUE_TIMEOUT_S = 30.0
+
+
 class InferenceClient:
     """Data-plane clients for one inference endpoint (the router of the policy
     deployment, or an external API for frozen models)."""
@@ -68,11 +76,17 @@ class InferenceClient:
         self._scorer = PrefillScorer()
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
-        self._session_client = (
-            setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))[0]
+        self._session_client_config = (
+            client_config.model_copy(update={"admin_base_url": None})
             if client_config.admin_base_url is not None
             else None
         )
+        self._session_client = (
+            _setup_session_client(self._session_client_config) if self._session_client_config is not None else None
+        )
+        self._session_release_slots = asyncio.Semaphore(SESSION_RELEASE_CONCURRENCY)
+        self.sessions_released = 0
+        self.session_releases_failed = 0
         self.model_name = model_name
 
     async def score(self, token_ids: list[int]) -> list[float]:
@@ -90,18 +104,49 @@ class InferenceClient:
         if self._session_client is None or not session_ids:
             return
 
-        async def finish_session(session_id: str) -> None:
+        async def finish_session(session_id: str) -> Exception | None:
+            try:
+                await asyncio.wait_for(self._session_release_slots.acquire(), SESSION_RELEASE_QUEUE_TIMEOUT_S)
+            except TimeoutError as error:
+                return error
+            client = self._session_client
             try:
                 await _admin_post(
-                    self._session_client,
+                    client,
                     "/finish_session",
                     timeout_s=5.0,
                     params={"session_id": session_id},
                 )
+            except httpx.PoolTimeout as error:
+                # Releases never outnumber the pool's connections, so a pool timeout means httpcore
+                # leaked connections some other way. Only a new client recovers.
+                if client is self._session_client:
+                    get_logger().warning(f"Replacing the inference session release client after {error!r}")
+                    self._session_client = _setup_session_client(self._session_client_config)
+                    await client.aclose()
+                return error
             except Exception as error:
-                get_logger().debug(f"Failed to release inference session {session_id}: {error!r}")
+                return error
+            finally:
+                self._session_release_slots.release()
 
-        await asyncio.gather(*(finish_session(session_id) for session_id in session_ids))
+        errors = await asyncio.gather(*(finish_session(session_id) for session_id in session_ids))
+        failed = [error for error in errors if error is not None]
+        failed_before = self.session_releases_failed
+        self.sessions_released += len(session_ids) - len(failed)
+        self.session_releases_failed += len(failed)
+        # Log each time the total doubles, so a burst of failures logs a handful of lines.
+        if self.session_releases_failed.bit_length() > failed_before.bit_length():
+            get_logger().warning(
+                f"{self.session_releases_failed} inference session releases have failed in total; the router "
+                f"expires unreleased sessions after its session TTL. Latest error: {failed[0]!r}"
+            )
+
+    def session_release_gauges(self) -> dict[str, float]:
+        return {
+            "sessions/released": float(self.sessions_released),
+            "sessions/release_failed": float(self.session_releases_failed),
+        }
 
 
 class AdminPlane:
@@ -353,7 +398,17 @@ def setup_client(
     return config_cls(**client_config.model_dump(include=set(BaseClientConfig.model_fields)), **renderer_extra)
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
+def _setup_session_client(client_config: ClientConfig) -> AsyncClient:
+    """Create the client that releases router sessions, with a connection per release slot."""
+    limits = httpx.Limits(
+        max_connections=SESSION_RELEASE_CONCURRENCY, max_keepalive_connections=SESSION_RELEASE_CONCURRENCY
+    )
+    return setup_admin_clients(client_config, limits=limits)[0]
+
+
+def setup_admin_clients(
+    client_config: ClientConfig, limits: httpx.Limits = httpx.Limits(max_connections=4, max_keepalive_connections=1)
+) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
@@ -375,7 +430,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         return AsyncClient(
             base_url=base_url,
             headers=headers,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+            limits=limits,
             timeout=httpx.Timeout(None),
         )
 

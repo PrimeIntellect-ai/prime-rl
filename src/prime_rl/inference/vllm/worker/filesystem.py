@@ -480,8 +480,15 @@ class FileSystemWeightUpdateWorker(Worker):
 
 
 def _read_rows(index_map: CheckpointIndexMap, step_dir: Path, device) -> Iterator[tuple[str, int, torch.Tensor]]:
-    """``(name, begin, rows)``: the ``row_ranges`` rows of each checkpoint tensor in ``step_dir``, on ``device``."""
+    """``(name, begin, rows)``: the ``row_ranges`` rows of each checkpoint tensor in ``step_dir``, on ``device``. A
+    tied name the checkpoint omits is skipped: its elements come with a tied name it has."""
     index = checkpoint_index(step_dir)
+    ranges = []
+    for name, rows in index_map.row_ranges().items():
+        if name in index:
+            ranges.append((name, rows))
+        elif not any(tied in index for tied in index_map.tied.get(name, ())):
+            raise KeyError(f"{step_dir} has no {name}")
 
     def read(name: str, begin: int, end: int) -> torch.Tensor:
         num_cols, dtype = index_map.num_cols[name], index[name][1]
@@ -489,7 +496,6 @@ def _read_rows(index_map: CheckpointIndexMap, step_dir: Path, device) -> Iterato
         read_checkpoint_range(index[name], begin * num_cols, end * num_cols, data)
         return torch.from_numpy(data).view(dtype).view(end - begin, num_cols)
 
-    ranges = list(index_map.row_ranges().items())
     with ThreadPoolExecutor(16) as pool:
         # A bounded window of reads ahead of the GPU writes
         for window in itertools.batched(ranges, 64):

@@ -1,5 +1,7 @@
+import verifiers.v1 as vf
+
 from prime_rl.dashboard.server import project_episode_timeline
-from prime_rl.monitors.file.traces.index import index_row, summarize_episode
+from prime_rl.monitors.file.traces.index import index_record, index_row, summarize_episode
 
 
 def _node(
@@ -55,17 +57,24 @@ def test_episode_summary_excludes_copied_assistant_context_from_turns() -> None:
         {"parent": None, "message": {"role": "user", "content": "Find a property"}},
         {"parent": 0, "message": response, "sampled": True},
         {"parent": 0, "message": response.copy(), "sampled": False},
-        {"parent": 2, "message": {"role": "tool", "content": "Property details"}},
+        {"parent": 2, "message": {"role": "tool", "tool_call_id": "call-0", "content": "Property details"}},
         {"parent": 3, "message": {"role": "assistant", "content": "Found it"}, "sampled": True},
         {"parent": 0, "message": response.copy()},
     ]
-    episode = _episode(nodes, [_call(1, 0.0, 1.0), _call(4, 2.0, 3.0)])
-    episode["traces"].append(
-        {"nodes": [{"parent": None, "message": response.copy(), "sampled": True}], "calls": [_call(0, 0.0, 1.0)]}
+    task = {"type": "Task", "data": {"idx": 0}}
+    trace = {"task": task, "agent": {"config": {}}}
+    episode = vf.WireEpisode.model_validate(
+        {
+            "task": task,
+            "traces": [
+                {**trace, "nodes": nodes},
+                {**trace, "nodes": [{"parent": None, "message": response.copy(), "sampled": True}]},
+            ],
+        }
     )
 
-    assert summarize_episode(1, episode)["turns"] == 3
-    assert index_row(1, episode, chunk=0, offset=0)["turns"] == 3
+    assert summarize_episode(1, episode.to_record())["turns"] == 3
+    assert index_row(1, index_record(episode), chunk=0, offset=0)["turns"] == 3
 
 
 def test_semantic_timeline_projects_concurrent_fork_join() -> None:
@@ -106,7 +115,7 @@ def test_semantic_timeline_projects_concurrent_fork_join() -> None:
         1,
     ]
     assert [lane["usage"]["total_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
-        260,
+        140,
         130,
         130,
     ]
@@ -155,7 +164,7 @@ def test_semantic_timeline_starts_new_context_after_compaction() -> None:
         1,
     ]
     assert [lane["usage"]["total_tokens"] for lane in timeline["semantic_lanes"][1:]] == [
-        310,
+        190,
         70,
     ]
     assert [lane["usage"]["latest_context_tokens"] for lane in timeline["semantic_lanes"][1:]] == [

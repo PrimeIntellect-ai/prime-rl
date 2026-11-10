@@ -103,8 +103,8 @@ class _PackedOutputs:
             not self._paired
             and not self._compact
             and sampling_params.flat_logprobs
-            and sampling_params.logprobs is not None
-            and sampling_params.logprobs <= 1
+            and sampling_params.logprobs in (0, 1)
+            and not sampling_params.logprob_token_ids
         )
         self.fields: dict[int, dict[str, Any]] = {}
 
@@ -172,9 +172,9 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
         if (sampling_params.extra_args or {}).get("prl_compact_logprobs", False):
-            if request.stream or sampling_params.logprobs is None:
+            if request.stream or request.output_mode != "tokens" or sampling_params.logprobs is None:
                 return self.create_error_response(
-                    "Compact logprobs require a non-streaming request with logprobs enabled"
+                    "Compact logprobs require a non-streaming tokens request with logprobs enabled"
                 )
         extra_args = sampling_params.extra_args or {}
         paired = (

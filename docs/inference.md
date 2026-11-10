@@ -192,7 +192,7 @@ Both backends support the 2 most important things:
 
 ### Routing policies
 The policies you might want to configure are:
-- `sticky_least_loaded` - the default policy. A new `X-Session-ID` is assigned to the least-loaded replica, then every later turn in that rollout remains on the same replica for KV cache reuse. The orchestrator releases sessions when rollouts complete, fail, or are cancelled, including traces discarded during retries. Failed release requests are logged without disabling future cleanup.
+- `sticky_least_loaded` - the default policy. A new `X-Session-ID` is assigned to the least-loaded replica, then every later turn in that rollout remains on the same replica for KV cache reuse. The orchestrator releases sessions when rollouts complete, fail, or are cancelled, including traces discarded during retries. Releases run with bounded concurrency; a release that waits too long for a slot, or fails, is dropped, and the router expires the session after its TTL. Failed releases are logged as a warning and counted in the cumulative `sessions/released` and `sessions/release_failed` metrics.
 
 - `consistent_hash` - hashes the `X-Session-ID` request header (sent per rollout by the verifiers clients) to pick a replica, preserving KV cache reuse without considering current load.
 
@@ -275,7 +275,7 @@ HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV i
 host_pool_gib = 160   # pinned host RAM per GPU worker
 ```
 
-prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM 0.32 also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
+prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
 
 ### Optimized P/D disaggregation deployment
 
@@ -326,7 +326,7 @@ enable_router_replay = true # this will also auto-set inference.vllm.enable_retu
 enable_return_routed_experts = true
 ```
 
-This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env server pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
+This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env worker pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
 Router replay works with `inference.kv_cache_offload` (native and Mooncake). vLLM keeps routing rows in a local store keyed by block hash, and no connector moves them with the KV, so a loaded block has no rows on this instance. prime-rl therefore limits an offload load to the prompt tokens the client already has routing for: the blocks before `routed_experts_prompt_start`. Multi-turn rollouts keep their offload hits, because the reloaded earlier turns sit before that position. Offloaded prefixes past it (first turns, prompts shared across a group or across nodes) are recomputed. Loaded blocks then serve local GPU prefix hits like any other block, so a local hit is cut at the first loaded block that a request needs routing from (for example a first turn that hits a prefix reloaded by another rollout's later turn), and the rest is recomputed. Under P/D, decode-side loads are not limited: decode requests emit routing only from their first forward.
 
