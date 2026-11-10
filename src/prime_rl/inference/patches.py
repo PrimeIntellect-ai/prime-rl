@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 
@@ -37,9 +38,63 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
+    monkey_patch_block_outermost_mla_stride()
+    monkey_patch_dspark_dp_compile_cache()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def monkey_patch_block_outermost_mla_stride():
+    """Align the shared block stride of packed KV caches to DeepSeek V4's MLA pages.
+
+    Block-outermost groups share one block stride: the widest group's bytes per block, rounded to
+    each layer's ``block_stride_alignment``. DeepSeek V4's MLA specs declare their 576 B FlashMLA
+    alignment only as page padding (``alignment``), so a wider group of another kind, such as a
+    draft's KV cache, leaves the stride unaligned and FlashMLA rejects it.
+    """
+    from vllm.utils.math_utils import round_up
+    from vllm.v1.core import kv_cache_planning
+
+    original = kv_cache_planning._get_kv_cache_bytes_per_block
+    if getattr(original, "_prime_rl_aligns_mla_stride", False):
+        return
+
+    def _get_kv_cache_bytes_per_block(kv_cache_groups, layout):
+        bytes_per_block = original(kv_cache_groups, layout)
+        if not layout.is_block_outermost:
+            return bytes_per_block
+        alignments = {
+            alignment
+            for group in kv_cache_groups
+            for name in group.layer_names
+            if (alignment := getattr(kv_cache_planning._get_per_layer_spec(group, name), "alignment", None))
+        }
+        return round_up(bytes_per_block, math.lcm(*alignments)) if alignments else bytes_per_block
+
+    _get_kv_cache_bytes_per_block._prime_rl_aligns_mla_stride = True
+    kv_cache_planning._get_kv_cache_bytes_per_block = _get_kv_cache_bytes_per_block
+
+
+def monkey_patch_dspark_dp_compile_cache():
+    """Keep independent DP replicas in distinct draft compilation caches."""
+    from functools import wraps
+
+    from vllm.v1.worker.gpu.spec_decode.dspark import utils
+
+    original = utils._get_dspark_parallel_config
+    if getattr(original, "_prime_rl_preserves_dp_cache_index", False):
+        return
+
+    @wraps(original)
+    def _get_dspark_parallel_config(parallel_config, tensor_parallel_size, draft_model_config):
+        draft = original(parallel_config, tensor_parallel_size, draft_model_config)
+        # Config replacement reconstructs this init=False field from the local rank.
+        draft.data_parallel_index = parallel_config.data_parallel_index
+        return draft
+
+    _get_dspark_parallel_config._prime_rl_preserves_dp_cache_index = True
+    utils._get_dspark_parallel_config = _get_dspark_parallel_config
 
 
 @dataclass
