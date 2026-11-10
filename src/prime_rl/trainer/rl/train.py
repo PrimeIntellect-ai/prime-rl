@@ -350,16 +350,15 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         perf_counter = get_perf_counter(model)
 
-        # Normalize each loss component by its own global (dp_cp) denominator, so every rank
-        # divides by the same value. With a per-rank denominator, ranks with fewer loss
-        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
-        # Backward runs on each component's loss sum times max_scale / its denominator. After
-        # the microbatch loop, grad_scale divides by max_scale and undoes FSDP's per-rank divide.
-        # This keeps activation gradients independent of batch size. One batched collective
-        # keeps every rank issuing the same op, whatever components its samples carry. rl
-        # divides by the sum of its weights. That is the token count for 0/1 weights and the
-        # group count under prompt-mean aggregation. ce and ref_kl divide by their token counts,
-        # so a fractional ce weight (echo's alpha) scales the loss instead of cancelling out.
+        # Each loss component c (rl, ce, ref_kl) is normalized by its global count N_c. A per-rank
+        # count would upweight ranks with fewer tokens after FSDP averaging. rl counts the sum of
+        # its weights (tokens for 0/1 weights, groups under prompt-mean aggregation). ce and
+        # ref_kl count member tokens, so a fractional ce weight scales the loss. One batched
+        # collective keeps every rank issuing the same op. To keep activation gradients
+        # independent of batch size, we defer the division until after backward, once per step:
+        #   max_scale = max_c N_c
+        #   backward on sum_c L_c * max_scale / N_c, with L_c the component's loss sum
+        #   grads *= grad_scale = fsdp_gradient_divide_factor / max_scale (also undoes FSDP's divide)
         local_rl_scale = 0.0
         local_ce_scale = 0
         local_ref_kl_scale = 0
