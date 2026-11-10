@@ -1,0 +1,31 @@
+# Multi-node templates start the components directly, without the `rl` / `sft` launcher.
+# On a restart, and when the run resumes from its latest checkpoint, resolve that step once
+# here and clean up like the launcher does on resume: rollouts and broadcasts past the step
+# are deleted, and checkpoints past it are moved to abandoned/. Every component then
+# resumes from this step. Without checkpoints the run restarts from scratch, so all
+# rollouts and broadcasts of the failed attempt are deleted.
+{%- if not resume_latest %}
+if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ]; then
+{%- endif %}
+RESUME_STEP=$(python -c "
+import sys
+sys.stdout = sys.stderr
+from pathlib import Path
+from prime_rl.utils.pathing import abandon_future_ckpts, clean_future_steps, resolve_latest_ckpt_step
+{%- if ckpt_dir %}
+ckpt_dir = Path('{{ ckpt_dir }}')
+step = resolve_latest_ckpt_step(ckpt_dir, with_orchestrator={{ ckpt_with_orchestrator }})
+if step is not None:
+    abandon_future_ckpts(ckpt_dir, step)
+{%- else %}
+step = None
+{%- endif %}
+clean_future_steps(Path('{{ output_dir }}'), -1 if step is None else step)
+print(step, file=sys.__stdout__)
+")
+export RESUME_STEP
+export RESUME_ARGS="--resume.step $RESUME_STEP --resume.dir None"
+echo "Resuming from step $RESUME_STEP"
+{%- if not resume_latest %}
+fi
+{%- endif %}

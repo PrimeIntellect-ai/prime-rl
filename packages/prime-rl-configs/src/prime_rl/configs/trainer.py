@@ -517,6 +517,13 @@ class CheckpointConfig(BaseConfig):
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
 
+    async_save: bool = False
+    """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
+    buffers and returns; a background thread writes the copy while training continues. The buffers are kept for
+    the next save, so this costs pinned host memory about the size of the rank's checkpoint shard. Without
+    optimizer offload the copy also overlaps the next step, until its optimizer step. A save first waits for the
+    previous write to finish."""
+
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"

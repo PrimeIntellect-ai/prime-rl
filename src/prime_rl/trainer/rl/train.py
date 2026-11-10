@@ -91,7 +91,7 @@ from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import get_trainer_step_path, resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -138,6 +138,11 @@ def train(config: TrainerConfig):
         )
     )
 
+    # The SLURM watchdog reads this file to see that training advances
+    trainer_step_path = get_trainer_step_path(config.output_dir)
+    if world.is_master:
+        trainer_step_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Setup heartbeat (only on rank 0)
     heart = None
     if config.heartbeat is not None and world.is_master:
@@ -166,7 +171,9 @@ def train(config: TrainerConfig):
     # Check for checkpoint to resume from
     checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
+    ckpt_manager = setup_ckpt_manager(
+        config.output_dir, config.ckpt, resume=config.resume, with_orchestrator=config.data.fake is None
+    )
 
     if config.resume is not None:
         if config.resume.dir is not None:
@@ -174,7 +181,15 @@ def train(config: TrainerConfig):
         else:
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ckpt_manager.with_orchestrator)
+
+    # A run resumed from its final checkpoint (e.g. a requeued job that failed after
+    # finishing) has nothing left to train. Return before the weight broadcast setup,
+    # which would wait for an inference server the orchestrator never connects.
+    if config.max_steps is not None and checkpoint_step is not None and checkpoint_step >= config.max_steps:
+        logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        asyncio.run(monitors.finalize())
+        return
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
@@ -675,6 +690,9 @@ def train(config: TrainerConfig):
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
+        # An async checkpoint must finish copying the state before the optimizer step mutates it
+        ckpt_manager.wait_for_staging()
+
         # Update the model parameters
         optimizer.step()
         optimizer.zero_grad()
@@ -718,9 +736,11 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
+                # The action commits once the checkpoint is on storage
+                ckpt_manager.wait()
                 controller.mark_saved(progress.step)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
         else:
@@ -822,6 +842,8 @@ def train(config: TrainerConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+        if world.is_master:
+            trainer_step_path.write_text(f"step {progress.step}")
 
         if is_last_step:
             break
@@ -839,10 +861,14 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
             ckpt_manager.maybe_clean()
+    # The SLURM watchdog stops at "done": what runs after (final evals draining) has no step bound
+    if world.is_master:
+        trainer_step_path.write_text(f"done {progress.step}")
 
     if gradient_manager is not None:
         gradient_manager.close()

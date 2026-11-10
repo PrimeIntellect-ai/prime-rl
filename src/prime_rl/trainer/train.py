@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_trainer_step_path, resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -90,6 +90,11 @@ def train(config: SFTConfig | PretrainConfig):
         )
     )
 
+    # The SLURM watchdog reads this file to see that training advances
+    trainer_step_path = get_trainer_step_path(config.run_dir)
+    if world.is_master:
+        trainer_step_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Setup heartbeat (only on rank 0)
     heart = None
     if config.heartbeat is not None and world.rank == 0:
@@ -137,7 +142,7 @@ def train(config: SFTConfig | PretrainConfig):
         else:
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, with_orchestrator=False)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -389,6 +394,14 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
         weight_sender.broadcast(model, startup_version)
 
+    # A run resumed from its final checkpoint (e.g. a requeued job that failed after
+    # finishing) has nothing left to train. The startup broadcast above still runs so
+    # online evals can finish.
+    if config.max_steps is not None and progress.step > config.max_steps:
+        logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        asyncio.run(monitors.finalize())
+        return
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
@@ -520,6 +533,8 @@ def train(config: SFTConfig | PretrainConfig):
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+        # An async checkpoint must finish copying the state before the optimizer step mutates it
+        ckpt_manager.wait_for_staging()
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -546,9 +561,11 @@ def train(config: SFTConfig | PretrainConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
+                # The action commits once the checkpoint is on storage
+                ckpt_manager.wait()
                 controller.mark_saved(progress.step)
+            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
 
@@ -666,6 +683,8 @@ def train(config: SFTConfig | PretrainConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+        if world.is_master:
+            trainer_step_path.write_text(f"step {progress.step}")
 
         if is_last_step:
             break
@@ -683,10 +702,14 @@ def train(config: SFTConfig | PretrainConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
             ckpt_manager.maybe_clean()
+    # The SLURM watchdog stops at "done": what runs after (final evals draining) has no step bound
+    if world.is_master:
+        trainer_step_path.write_text(f"done {progress.step}")
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.

@@ -85,7 +85,7 @@ class SharedMonitorsConfig(BaseConfig):
 
 class SharedCheckpointConfig(BaseConfig):
     output_dir: Path | None = None
-    """Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir``."""
+    """Override directory for checkpoints and weights. When set, trainer and orchestrator checkpoints and weight snapshots are written here instead of under the run directory."""
 
     interval: int | None = None
     """Interval at which to save checkpoints."""
@@ -95,6 +95,9 @@ class SharedCheckpointConfig(BaseConfig):
 
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
+
+    async_save: bool | None = None
+    """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
 
 
 class SharedModelConfig(BaseConfig):
@@ -400,6 +403,14 @@ class RLConfig(BaseConfig):
                 {
                     "trainer.ckpt.interval": trainer.ckpt.interval,
                     "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
+                },
+            )
+            # A resumable step needs both checkpoints in the same step directory.
+            require_equal(
+                "ckpt.output_dir",
+                {
+                    "trainer.ckpt.output_dir": trainer.ckpt.output_dir,
+                    "orchestrator.ckpt.output_dir": orchestrator.ckpt.output_dir,
                 },
             )
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb

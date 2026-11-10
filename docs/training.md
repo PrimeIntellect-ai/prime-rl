@@ -432,9 +432,30 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
+### Asynchronous Checkpoints
+
+By default a trainer step waits until its checkpoint is written to storage. With `--ckpt.async-save` (`--trainer.ckpt.async-save` also works for `rl`), a save only copies each rank's model and optimizer state into pinned host memory. A background thread then writes the copy to storage while training continues:
+
+```bash
+uv run rl @ rl.toml --ckpt.interval 2 --ckpt.async-save
+uv run sft @ sft.toml --ckpt.interval 2 --ckpt.async-save
+```
+
+The checkpoint holds the same state that a synchronous save at that step would write. It works with every `model.offload` mode:
+
+- With `model.offload = "none"`, the copy from GPU memory runs alongside the next step's forward and backward passes. The trainer waits for it to finish before the optimizer step changes the state. Until then, any temporary GPU tensors the checkpoint is built from, such as gathered entries of fused parameters, stay allocated.
+- With `optimizer` or `full` offload, the save copies the CPU optimizer state and returns once the copy is done, because offloaded state changes outside the optimizer step. The copy reads the state where it lives, without moving it through the GPU as a synchronous save does.
+
+Some things to know:
+
+- **Host memory.** Each rank keeps pinned host buffers about the size of its checkpoint shard (model plus optimizer state), and reuses them for every save. On a node, this adds up to the node's share of the full checkpoint. With optimizer offload, this comes on top of the offloaded state itself.
+- **One save at a time.** A save first waits for the previous write to finish. If the checkpoint interval is shorter than a write takes, the trainer waits for the write.
+- **Completeness.** DCP writes `trainer/.metadata` after every rank has written its shards. A resume skips any step whose trainer checkpoint has no `.metadata`, for example one that was still being written when the job died. `keep_last` and `keep_interval` only count checkpoints that finished writing, so cleanup never deletes the newest finished checkpoint to make room for one that is still in flight.
+- **Failures.** If a background write fails, the trainer raises its error at the next optimizer step, the next save or the end of training, and stops. The final checkpoint, and any checkpoint requested through the control API, is written before the trainer exits or reports it as saved.
+
 ### Resuming a Run
 
-Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
+Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. The latest checkpoint is the newest complete step: one with `trainer/.metadata` (DCP writes it last, after every rank's shards) and, in RL, `orchestrator/progress.pt`. A save that was killed mid-write is skipped. `keep_last` never deletes the newest complete step. Resuming moves the run's checkpoints past the resume step to `checkpoints/abandoned/<UTC time>/`, where resume does not look; move them back to undo a rollback. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
 ```bash
 # First run: steps 1–10
