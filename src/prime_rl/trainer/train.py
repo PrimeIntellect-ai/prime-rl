@@ -39,7 +39,7 @@ from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenShards, setup_token_dataset, warn_if_no_document_separator
+from prime_rl.trainer.pretrain.data import TokenShards, detect_document_separator, setup_token_dataset
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -182,10 +182,13 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
-        dataset = setup_token_dataset(config.data, tokenizer.eos_token_id, config.model.cp)
-        warn_if_no_document_separator(dataset.shards, tokenizer, dataset.eod_mask_token)
-        if config.val is not None and config.val.data.eod_mask_loss:
-            warn_if_no_document_separator(TokenShards(config.val.data.paths), tokenizer, tokenizer.eos_token_id)
+        data_configs = [config.data] + ([config.val.data] if config.val is not None else [])
+        separator = detect_document_separator(
+            TokenShards([path for data in data_configs for path in data.paths]),
+            tokenizer,
+            eod_mask_loss=any(data.eod_mask_loss for data in data_configs),
+        )
+        dataset = setup_token_dataset(config.data, separator, config.model.cp)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
@@ -329,7 +332,7 @@ def train(config: SFTConfig | PretrainConfig):
         if isinstance(config, PretrainConfig):
             val_dataset = setup_token_dataset(
                 config.val.data,
-                tokenizer.eos_token_id,
+                separator,
                 config.model.cp,
                 max_epochs=1,
                 num_samples=config.val.num_samples,

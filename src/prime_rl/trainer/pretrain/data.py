@@ -196,53 +196,77 @@ def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | 
     return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
 
 
-def warn_if_no_document_separator(
-    shards: TokenShards, tokenizer: PreTrainedTokenizer, eod_mask_token: int | None = None
-) -> None:
-    """Warn when the first non-empty document of a folder neither ends with a special token nor starts with BOS:
-    prime-rl reads documents as they are, so shards tokenized without a separator run their documents together. With
-    ``eod_mask_token`` (``eod_mask_loss``), fail when the documents end with another token, which the mask misses."""
-    first_documents = {}
+SEPARATOR_CHECK_DOCUMENTS = 16
+
+
+def detect_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer, eod_mask_loss: bool) -> int | None:
+    """The token the documents end with: the last token of the first 16 non-empty documents of every folder, read
+    through the index. With ``eod_mask_loss`` all of them must be one special token, the separator to mask, else this
+    fails. Without, it warns when the first document of a folder neither ends with a special token nor starts with
+    BOS: prime-rl reads documents as they are, so shards tokenized without a separator run their documents together."""
+    ends: dict[Path, list[int]] = {}
+    first_tokens: dict[Path, int] = {}
     for index, file in enumerate(shards.files):
-        # Empty files and empty documents carry no separator to check.
-        if file.parent in first_documents or shards.starts[index + 1] == shards.starts[index]:
+        folder_ends = ends.setdefault(file.parent, [])
+        # Empty files have no documents to check.
+        if len(folder_ends) == SEPARATOR_CHECK_DOCUMENTS or shards.starts[index + 1] == shards.starts[index]:
             continue
         tokens, doc_ends = shards.open(index)
         begin = 0
         for end in doc_ends:
+            end = int(end)
+            # An empty document repeats an end and has no token to check.
             if end > begin:
-                break
+                first_tokens.setdefault(file.parent, int(tokens[begin]))
+                folder_ends.append(int(tokens[end - 1]))
+                if len(folder_ends) == SEPARATOR_CHECK_DOCUMENTS:
+                    break
             begin = end
-        first_documents[file.parent] = tokens[int(begin) : int(end)]
+    ends = {folder: folder_ends for folder, folder_ends in ends.items() if folder_ends}
     special_ids = set(tokenizer.all_special_ids)
-    for folder, document in first_documents.items():
-        last = int(document[-1])
-        if eod_mask_token is not None and last != eod_mask_token:
+
+    def name(token: int) -> str:
+        return f"{tokenizer.decode([token])!r} ({token})"
+
+    if eod_mask_loss:
+        first_folder = next(iter(ends))
+        separator = ends[first_folder][0]
+        for folder, folder_ends in ends.items():
+            other = next((token for token in folder_ends if token != separator), None)
+            if other is not None:
+                where = "" if folder == first_folder else f"the documents in {folder} with "
+                raise ValueError(
+                    f"eod_mask_loss: the documents in {first_folder} end with {name(separator)} and {where}"
+                    f"{name(other)}; tokenize with one separator or set data.eod_mask_loss = false"
+                )
+        if separator not in special_ids:
             raise ValueError(
-                f"eod_mask_loss masks EOS {tokenizer.decode([eod_mask_token])!r} ({eod_mask_token}), but the documents "
-                f"in {folder} end with {tokenizer.decode([last])!r} ({last}); set [tokenizer] so its EOS is the "
-                "separator, or turn eod_mask_loss off"
+                f"eod_mask_loss: the documents in {first_folder} end with {name(separator)}, not a special token (no "
+                "document separator); tokenize with a separator or set data.eod_mask_loss = false"
             )
-        if last in special_ids or int(document[0]) == tokenizer.bos_token_id:
+        return separator
+    for folder, folder_ends in ends.items():
+        if folder_ends[0] in special_ids or first_tokens[folder] == tokenizer.bos_token_id:
             continue
         get_logger().warning(
-            f"The documents in {folder} have no separator: the first one ends with token {int(document[-1])} "
-            f"({tokenizer.decode([int(document[-1])])!r}), not a special token, and does not start with BOS.\n"
+            f"The documents in {folder} have no separator: the first one ends with token {folder_ends[0]} "
+            f"({tokenizer.decode([folder_ends[0]])!r}), not a special token, and does not start with BOS.\n"
             "The documents run together, so the model will not learn where a document ends and will not learn to "
             "stop.\n"
             "Tokenize again with datatrove's DocumentTokenizer and set eos_token to the tokenizer's end-of-text "
             "token (e.g. <|endoftext|> for Qwen)."
         )
+    return None
 
 
 def setup_token_dataset(
     config: DatatroveDataConfig,
-    eos_token_id: int,
+    separator: int | None,
     non_dp_size: int = 1,
     max_epochs: int | None = None,
     num_samples: int | None = None,
 ) -> TokenDataset:
-    eod_mask_token = eos_token_id if config.eod_mask_loss else None
+    eod_mask_token = separator if config.eod_mask_loss else None
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,

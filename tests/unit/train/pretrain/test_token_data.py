@@ -8,7 +8,12 @@ import pytest
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
-from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, warn_if_no_document_separator
+from prime_rl.trainer.pretrain.data import (
+    TokenDataset,
+    TokenShards,
+    detect_document_separator,
+    setup_token_dataset,
+)
 from prime_rl.trainer.world import reset_world
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
@@ -153,8 +158,8 @@ def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders
 
 
 def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):
-    """Both folders start with an empty file and an empty document; only the one whose first real document has no
-    separator warns."""
+    """Both folders start with an empty file and an empty document; without eod_mask_loss only the one whose first
+    real document has no separator warns, with it the check fails there."""
     eos = 1
     for name, document in (("separated", [5, 6, eos]), ("run-together", [5, 6, 7])):
         folder = tmp_path / name
@@ -166,9 +171,12 @@ def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeyp
     warnings = []
     monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     tokenizer = SimpleNamespace(all_special_ids=[eos], bos_token_id=None, decode=str)
-    warn_if_no_document_separator(TokenShards([tmp_path / "separated", tmp_path / "run-together"]), tokenizer)
+    shards = TokenShards([tmp_path / "separated", tmp_path / "run-together"])
+    assert detect_document_separator(shards, tokenizer, eod_mask_loss=False) is None
     assert len(warnings) == 1
     assert "run-together" in warnings[0]
+    with pytest.raises(ValueError, match="not a special token"):
+        detect_document_separator(TokenShards([tmp_path / "run-together"]), tokenizer, eod_mask_loss=True)
 
 
 EOS = 999  # every document ends with it, as the tokenizer writes the shards
@@ -202,9 +210,15 @@ def test_eod_mask_loss(tmp_path):
     assert eos_inputs > 0 and word_to_eos > 0
 
 
-def test_eod_mask_loss_fails_when_the_documents_end_with_another_token(tmp_path):
-    write_shard(tmp_path / "a" / "00.ds", [[*document, EOS] for document in consecutive_documents([3, 5, 2])])
-    tokenizer = SimpleNamespace(all_special_ids=[EOS], bos_token_id=None, decode=str)
-    warn_if_no_document_separator(TokenShards([tmp_path / "a"]), tokenizer, eod_mask_token=EOS)
-    with pytest.raises(ValueError, match="eod_mask_loss masks EOS .* end with .* \\(999\\)"):
-        warn_if_no_document_separator(TokenShards([tmp_path / "a"]), tokenizer, eod_mask_token=EOS + 1)
+def test_eod_mask_loss_masks_the_detected_separator(tmp_path):
+    """The separator is the special token all checked documents of all folders end with; the datasets mask it."""
+    for name, separator in (("a", EOS), ("b", EOS), ("c", EOS + 1)):
+        documents = [[*document, separator] for document in consecutive_documents([3, 5, 2] * 8)]
+        write_shard(tmp_path / name / "00.ds", documents)
+    tokenizer = SimpleNamespace(all_special_ids=[EOS, EOS + 1], bos_token_id=None, decode=str)
+    assert detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "b"]), tokenizer, True) == EOS
+    with pytest.raises(ValueError, match="end with .* and the documents in .*c with"):
+        detect_document_separator(TokenShards([tmp_path / "a", tmp_path / "c"]), tokenizer, True)
+    config = DatatroveDataConfig(paths=[tmp_path / "a"], seq_len=8, batch_size=2, micro_batch_size=2)
+    assert setup_token_dataset(config, EOS).eod_mask_token == EOS
+    assert setup_token_dataset(config.model_copy(update={"eod_mask_loss": False}), EOS).eod_mask_token is None
