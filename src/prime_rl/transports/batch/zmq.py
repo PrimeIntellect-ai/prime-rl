@@ -14,10 +14,17 @@ LOG_POLL_INTERVAL_MS = 1000
 
 
 class ZMQBatchSender(BatchSender):
-    def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
+    def __init__(
+        self,
+        output_dir: Path,
+        data_world_size: int,
+        current_step: int,
+        transport: ZMQTransportConfig,
+        micro_batch_multiple: int = 1,
+    ):
         """ZMQ micro batch sender. One ROUTER socket in the orchestrator answers the DEALER socket of
         every trainer rank, replying to each rank on the connection it asked on."""
-        super().__init__(output_dir, data_world_size, transport.retain)
+        super().__init__(output_dir, data_world_size, micro_batch_multiple, transport.retain)
         # Async context so ``send`` yields instead of blocking the orchestrator event loop
         self.context = zmq.asyncio.Context.instance()
         self.socket: zmq.asyncio.Socket = self.context.socket(zmq.ROUTER)
@@ -41,8 +48,9 @@ class ZMQBatchSender(BatchSender):
         wait_start = time.perf_counter()
         rank_to_request = await self._wait_for_requests()
         _, request = next(iter(rank_to_request.values()))
-        if request.data_world_size != self.data_world_size:
-            buffers = await asyncio.to_thread(self.deal, micro_batch_grid, buffers, request.data_world_size)
+        fitted = await asyncio.to_thread(self.fit, micro_batch_grid, buffers, request)
+        if fitted is not buffers:
+            buffers = fitted
             if self.retain:
                 await asyncio.to_thread(self.log.write, self.current_step, buffers)
         send_start = time.perf_counter()
@@ -109,6 +117,7 @@ class ZMQBatchReceiver(BatchReceiver):
         output_dir: Path,
         data_rank: int,
         data_world_size: int,
+        micro_batch_multiple: int,
         rank: int,
         world_size: int,
         current_step: int,
@@ -117,7 +126,7 @@ class ZMQBatchReceiver(BatchReceiver):
         """ZMQ micro batch receiver. Every trainer rank owns one DEALER socket and requests each step
         before reading it. With ``transport.retain``, a step the sender already published is read
         from the log instead, which is how a restarted trainer gets the steps since its checkpoint."""
-        super().__init__(output_dir, data_rank, data_world_size, rank, world_size, current_step)
+        super().__init__(output_dir, data_rank, data_world_size, micro_batch_multiple, rank, world_size, current_step)
         self.context = zmq.Context.instance()
         self.socket: zmq.Socket = self.context.socket(zmq.DEALER)
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")

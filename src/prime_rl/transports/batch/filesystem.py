@@ -22,8 +22,15 @@ class FileSystemBatchSender(BatchSender):
     drops its request into the step directory, and the step is published only once every rank's
     request is there."""
 
-    def __init__(self, output_dir: Path, data_world_size: int, current_step: int = 0, retain: bool = False):
-        super().__init__(output_dir, data_world_size, retain)
+    def __init__(
+        self,
+        output_dir: Path,
+        data_world_size: int,
+        current_step: int = 0,
+        retain: bool = False,
+        micro_batch_multiple: int = 1,
+    ):
+        super().__init__(output_dir, data_world_size, micro_batch_multiple, retain)
         self.current_step = current_step
 
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
@@ -36,10 +43,10 @@ class FileSystemBatchSender(BatchSender):
 
         buffers = await asyncio.to_thread(self._encode_and_write, micro_batch_grid)
         wait_start = time.perf_counter()
-        committed, data_world_size = await self._wait_for_requests()
-        if data_world_size != self.data_world_size:
-            buffers = await asyncio.to_thread(self.deal, micro_batch_grid, buffers, data_world_size)
-            await asyncio.to_thread(self.log.write, self.current_step, buffers)
+        committed, request = await self._wait_for_requests()
+        fitted = await asyncio.to_thread(self.fit, micro_batch_grid, buffers, request)
+        if fitted is not buffers:
+            await asyncio.to_thread(self.log.write, self.current_step, fitted)
         send_start = time.perf_counter()
         self.last_wait_s = send_start - wait_start
         self.log.publish(self.current_step, self.data_world_size)
@@ -55,9 +62,9 @@ class FileSystemBatchSender(BatchSender):
         self.log.write(self.current_step, buffers)
         return buffers
 
-    async def _wait_for_requests(self) -> tuple[int, int]:
+    async def _wait_for_requests(self) -> tuple[int, BatchRequest]:
         """Block until every trainer rank requested the step; returns the step the trainer has
-        committed and its number of data ranks. Each request holds the trainer world size. The
+        committed and one of its requests. Each request holds the trainer world size. The
         newest request says how many to wait for: requests a trainer of another size left behind
         do not count."""
         step_path = get_step_path(self.log.dir, self.current_step)
@@ -68,7 +75,7 @@ class FileSystemBatchSender(BatchSender):
                 world_size = requests[-1].world_size
                 requests = [r for r in requests if r.world_size == world_size and r.rank < world_size]
                 if len(requests) == world_size:
-                    return max(request.committed for request in requests), requests[0].data_world_size
+                    return max(request.committed for request in requests), requests[0]
             await asyncio.sleep(REQUEST_POLL_INTERVAL_S)
 
 
@@ -80,11 +87,12 @@ class FileSystemBatchReceiver(BatchReceiver):
         output_dir: Path,
         data_rank: int,
         data_world_size: int,
+        micro_batch_multiple: int,
         rank: int,
         world_size: int,
         current_step: int = 0,
     ):
-        super().__init__(output_dir, data_rank, data_world_size, rank, world_size, current_step)
+        super().__init__(output_dir, data_rank, data_world_size, micro_batch_multiple, rank, world_size, current_step)
         self.micro_batches: list[MicroBatch] | None = None
 
     def wait(self) -> None:

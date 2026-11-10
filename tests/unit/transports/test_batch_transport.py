@@ -39,11 +39,19 @@ def _free_port() -> int:
 
 
 def _filesystem_receivers(
-    output_dir: Path, transport: None = None, rank_to_data_rank: list[int] = RANK_TO_DATA_RANK
+    output_dir: Path,
+    transport: None = None,
+    rank_to_data_rank: list[int] = RANK_TO_DATA_RANK,
+    micro_batch_multiple: int = 1,
 ) -> list[BatchReceiver]:
     return [
         FileSystemBatchReceiver(
-            output_dir, data_rank, len(set(rank_to_data_rank)), rank, world_size=len(rank_to_data_rank)
+            output_dir,
+            data_rank,
+            len(set(rank_to_data_rank)),
+            micro_batch_multiple,
+            rank,
+            world_size=len(rank_to_data_rank),
         )
         for rank, data_rank in enumerate(rank_to_data_rank)
     ]
@@ -55,13 +63,17 @@ def _filesystem(output_dir: Path, retain: bool = False) -> tuple[BatchSender, li
 
 
 def _zmq_receivers(
-    output_dir: Path, transport: ZMQTransportConfig, rank_to_data_rank: list[int] = RANK_TO_DATA_RANK
+    output_dir: Path,
+    transport: ZMQTransportConfig,
+    rank_to_data_rank: list[int] = RANK_TO_DATA_RANK,
+    micro_batch_multiple: int = 1,
 ) -> list[BatchReceiver]:
     return [
         ZMQBatchReceiver(
             output_dir,
             data_rank,
             len(set(rank_to_data_rank)),
+            micro_batch_multiple,
             rank,
             world_size=len(rank_to_data_rank),
             current_step=0,
@@ -232,3 +244,44 @@ def test_redistribute_drops_old_dummies_and_keeps_modalities_aligned():
     trained = [mb for rank in three_ranks for mb in rank if np.asarray(mb.loss_mask).any()]
     assert sorted(int(mb.input_ids[0]) for mb in trained) == [0, 1, 2]
     assert redistribute(two_ranks, 1) == [[image, long, short]]
+
+
+@pytest.mark.parametrize(
+    "setup_transport, setup_receivers",
+    [(_filesystem, _filesystem_receivers), (_zmq, _zmq_receivers)],
+    ids=["filesystem", "zmq"],
+)
+def test_a_trainer_restarted_with_more_context_parallel_ranks_gets_longer_micro_batches(
+    tmp_path: Path, setup_transport: Callable, setup_receivers: Callable
+):
+    sender, receivers, transport = setup_transport(tmp_path, retain=True)
+    asyncio.run(_send(sender, receivers))
+
+    # Two data ranks of two context-parallel ranks each become one data rank of four.
+    restarted = setup_receivers(tmp_path, transport, rank_to_data_rank=[0, 0, 0, 0], micro_batch_multiple=4)
+
+    async def send_live() -> None:
+        grid = [[_micro_batch(_tokens(1, data_rank))] for data_rank in range(2)]
+        waits = [asyncio.to_thread(receiver.wait) for receiver in restarted]
+        await asyncio.wait_for(asyncio.gather(sender.send(grid), *waits), timeout=10)
+
+    for step, send in ((0, None), (1, send_live)):
+        if send is None:
+            for receiver in restarted:
+                receiver.wait()
+        else:
+            asyncio.run(send())
+        for receiver in restarted:
+            micro_batches = receiver.receive()
+            assert [mb.sequence_lengths for mb in micro_batches] == [[4], [4]]
+            assert [mb.padding for mb in micro_batches] == [3, 3]
+            assert [np.frombuffer(mb.loss_mask, np.bool_).tolist() for mb in micro_batches] == [
+                [True, False, False, False]
+            ] * 2
+            assert sorted(int(np.frombuffer(mb.input_ids, np.int32)[0]) for mb in micro_batches) == [
+                _tokens(step, 0),
+                _tokens(step, 1),
+            ]
+    assert (sender.data_world_size, sender.micro_batch_multiple) == (1, 4)
+    for transport in [sender, *receivers, *restarted]:
+        transport.close()

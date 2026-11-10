@@ -21,12 +21,12 @@ from prime_rl.transports.batch.zmq import (
 
 
 def setup_batch_sender(
-    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfig
+    output_dir: Path, data_world_size: int, micro_batch_multiple: int, current_step: int, transport: TransportConfig
 ) -> BatchSender:
     if transport.type == "filesystem":
-        return FileSystemBatchSender(output_dir, data_world_size, current_step, transport.retain)
+        return FileSystemBatchSender(output_dir, data_world_size, current_step, transport.retain, micro_batch_multiple)
     elif transport.type == "zmq":
-        return ZMQBatchSender(output_dir, data_world_size, current_step, transport)
+        return ZMQBatchSender(output_dir, data_world_size, current_step, transport, micro_batch_multiple)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
@@ -35,15 +35,20 @@ def setup_batch_receiver(
     output_dir: Path,
     data_rank: int,
     data_world_size: int,
+    micro_batch_multiple: int,
     rank: int,
     world_size: int,
     current_step: int,
     transport: TransportConfig,
 ) -> BatchReceiver:
     if transport.type == "filesystem":
-        return FileSystemBatchReceiver(output_dir, data_rank, data_world_size, rank, world_size, current_step)
+        return FileSystemBatchReceiver(
+            output_dir, data_rank, data_world_size, micro_batch_multiple, rank, world_size, current_step
+        )
     elif transport.type == "zmq":
-        return ZMQBatchReceiver(output_dir, data_rank, data_world_size, rank, world_size, current_step, transport)
+        return ZMQBatchReceiver(
+            output_dir, data_rank, data_world_size, micro_batch_multiple, rank, world_size, current_step, transport
+        )
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
