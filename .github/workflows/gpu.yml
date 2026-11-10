@@ -58,9 +58,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
       - parallel:
           - name: Init public submodules
+            env:
+              GITHUB_TOKEN: ${{ github.token }}
             run: |
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
@@ -116,9 +120,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
       - parallel:
           - name: Init public submodules
+            env:
+              GITHUB_TOKEN: ${{ github.token }}
             run: |
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
