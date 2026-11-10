@@ -606,6 +606,10 @@ def train(config: TrainerConfig):
             )
 
             # Backward pass
+            if parallel_dims.dp_replicate_enabled and gradient_manager is None:
+                # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
+                # replicas once, after the last backward
+                model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
