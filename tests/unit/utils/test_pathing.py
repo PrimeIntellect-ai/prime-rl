@@ -1,11 +1,13 @@
 import pytest
 
+from prime_rl.transports.weights.base import FINISHED_MARKER, SENDER_READY_MARKER, latest_finished_broadcast
 from prime_rl.utils.pathing import (
     clean_future_steps,
     create_attempt_dirs,
     get_batch_dir,
     get_broadcast_dir,
     get_step_path,
+    resolve_latest_trainer_ckpt_step,
     validate_run_dir,
 )
 
@@ -117,3 +119,22 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+def test_latest_trainer_checkpoint_skips_steps_without_a_complete_trainer_save(tmp_path):
+    assert resolve_latest_trainer_ckpt_step(tmp_path) is None
+    (tmp_path / "step_4/trainer").mkdir(parents=True)
+    (tmp_path / "step_4/trainer/.metadata").touch()
+    (tmp_path / "step_8/orchestrator").mkdir(parents=True)
+    (tmp_path / "step_12/trainer").mkdir(parents=True)
+    assert resolve_latest_trainer_ckpt_step(tmp_path) == 4
+
+
+def test_latest_finished_broadcast_skips_an_offer_that_never_finished(tmp_path):
+    assert latest_finished_broadcast(tmp_path) == -1
+    for step, markers in {10: [SENDER_READY_MARKER, FINISHED_MARKER], 11: [SENDER_READY_MARKER]}.items():
+        step_dir = get_step_path(get_broadcast_dir(tmp_path), step)
+        step_dir.mkdir(parents=True)
+        for marker in markers:
+            (step_dir / marker).touch()
+    assert latest_finished_broadcast(tmp_path) == 10

@@ -413,11 +413,13 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
         Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
-        inference server is configured.
+        filesystem when LoRA is enabled (not yet supported by in-memory transfer), when no
+        inference server is configured, or with ``rollout_transport.retain`` (a restarted
+        trainer cannot rejoin an in-memory transfer group).
         """
+        retain = self.trainer.rollout_transport.retain
         if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None:
+            if self.trainer.model.lora is not None or self.inference is None or retain:
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
@@ -426,6 +428,12 @@ class RLConfig(BaseConfig):
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
+            )
+        if self.weight_broadcast.type != "filesystem" and retain:
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
             )
         # host and inference_world_size are filled in per deployment after this copy.
         launcher_set = {"host", "inference_world_size"}
@@ -482,6 +490,11 @@ class RLConfig(BaseConfig):
                 f"({self.trainer.rollout_transport.type!r}) != orchestrator.rollout_transport.type "
                 f"({self.orchestrator.rollout_transport.type!r}); set the shared [rollout_transport] "
                 "block or make both sub-configs the same type."
+            )
+        if self.trainer.rollout_transport.retain != self.orchestrator.rollout_transport.retain:
+            raise ValueError(
+                "trainer.rollout_transport.retain != orchestrator.rollout_transport.retain; set the "
+                "shared [rollout_transport] instead."
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
