@@ -1,0 +1,196 @@
+# Nemotron 3.5 Super (text backbone): compound distillation SFT C3 on GLM-5.3 trajectories: all six SFT datasets (2,675 tasks).
+# Extension B of the Nvidia QC plan, on the recipe of the single runs (1M context, cp16/ep16, batch 6, lr 1e-5, warmup,
+# cosine to 1e-6, held-out tasks validated ~10 times, best/last retention, text-only HF export at the end).
+# User, 2026-11-07: each dataset's share = its best single-run epochs rounded to the nearest whole number; most recent
+# export of every dataset.
+# Slurm (Thailand: 6 of the 10 nodes of partition `all`, 8x H100 80GB each), from the prime-rl checkout:
+#   uv run sft @ configs/advanced/nemotron-3-super/sft-slurm-compound-c3-1m.toml
+# Relaunching the same command resumes from the latest complete checkpoint ([resume] below) in
+#   /home/artzhuravel/nemotron-sft-thailand/runs/nemotron-3.5-super-sft-compound-c3-1m/checkpoints
+# output_dir and run.name are fixed for that (an unset run.name gets a random suffix, i.e. a fresh run dir and a
+# silent restart from step 0).
+# HF_TOKEN must be in the sbatch environment or in the checkout's .env (the template sources it on every node),
+# otherwise the HF export stays on disk only (export failures are logged, never raised).
+# cp/ep, batch and [model.ac] are the H200 recipe, unchanged: confirm the memory fit on H100 80GB (Thailand speed
+# experiments) before launch.
+# The C3 dataset is not on Thailand yet: copy datasets/nemotron-distill-sft-compound-c3-1m there first.
+#
+# Starting checkpoint: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 @ fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe,
+# trained as its text-only language model, extracted with extract_nemotron_backbone.py (NemotronHForCausalLM,
+# 42,683 tensors in 47 shards, 1,040 of them mtp.*): /home/artzhuravel/nemotron-sft-thailand/models/nemotron-3.5-super-text.
+#
+# Data: datasets/nemotron-distill-sft-compound-c3-1m, built by handoff/nemotron-3.5-super-sft-compound/data-prep. Subset `mix` holds every train row
+# k times in a fixed order (each dataset's copies are its epochs, spread evenly over the run), so shuffle = false and one
+# pass is the whole run; the trainer's subsets + probabilities cannot give exact repeats. No re-render: rows and token
+# counts are the single datasets'. No reward or teacher filter; only interrupted streams and rows over 1M were dropped
+# at build.
+#   dataset                k  best at (epochs)  export
+#   swe-marathon           3  2.95 (step 160)  swe-marathon-glm53-measure-sft-20261026
+#   swe-marathon-100       2  1.91 (step 120)  swe-marathon-100-glm53-measure-sft-20261103
+#   tb4                    2  1.80 (step 140)  tb4-glm53-measure-sft-20261027
+#   programbench           2  1.96 (step 1000, run capped at 2 epochs)  programbench-glm53-measure-sft-20261031
+#   abundant-programbench  2  2.00 (step 1117 = last, run m7js89ttdf85m4s6r3gccg4v, capped at 2 epochs)  abundant-programbench-glm53-measure-sft-20261106
+#   nl2repo                2  1.95 (step 200)  nl2repo-glm53-measure-sft-20261106
+#   43,941 rows (20,172 distinct), 13,577.3M tokens, 9,977.2M loss tokens
+#
+# Disk: a full checkpoint is ~1.45 TB, the best snapshot ~0.48 TB, each HF export ~0.25 TB. Peak ~3.4 TB for this run
+# (previous checkpoint + the one being written + best), plus up to 6 arrow copies of the mix.
+output_dir = "/home/artzhuravel/nemotron-sft-thailand/runs"   # shared CephFS (/home), the same path on every node
+
+# cp16 on 6 nodes = 3 data ranks x 2 workers = 6 streams (cp8 ran out of GPU memory in step 1, job 25). The mix was re-balanced for 6 streams (33 neighbour swaps of the 4-stream
+# order, scratchpad c3-6streams, verified against main's packer): all 6 streams pack into 2,768 rows, so 2,768 steps, every row
+# trains exactly k times. Exactly 2768: at 2764, 56 row instances would never train; at 2769, 6 next-pass rows would repeat.
+max_steps = 2768
+dist_timeout_seconds = 7200   # first step compiles (checkpoint saves use their own 4 h gloo timeout)
+
+[run]
+name = "nemotron-3.5-super-sft-compound-c3-1m-cp16"   # fixed: the run dir is output_dir/run.name, so a relaunch resumes
+
+[scheduler]
+type = "cosine"
+warmup_steps = 136   # 10% of one pass over all rows (the sum of the single runs' warmups); linear 1e-6 (step 1) -> 1e-5 (step 137)
+min_lr = 1e-6       # then cosine decay to 1e-6 at max_steps
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"   # no pinned_max_cached_size_mb cap: -13% step time vs the Denver 128 MiB cap
+PRIME_RUNS_MODE = "disabled"   # no Prime platform run (no API key on Slurm); metrics go to the file monitor
+WANDB_MODE = "offline"   # as C1 on Denver; sync afterwards
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 6
+
+[slurm]
+partition = "all"   # no account or time limit needed on Thailand
+
+[monitors.wandb]
+project = "nemotron-3.5-super-sft"
+name = "nemotron-3.5-super-distill-sft-compound-c3-1m-cp16"
+
+[ckpt]
+# Resumable checkpoints for crash recovery every 62 steps: 62, 124, ..., 2728. None falls on a validation step
+# (multiples of 277). The final step is saved once, after the loop.
+interval = 62
+# Each full checkpoint is ~1.45 TB: keep only the latest (two exist while a new one is written). The final step
+# is always saved. The best weights are kept separately ([val] keep_best).
+keep_last = 1
+
+[resume]
+
+[model]
+name = "/home/artzhuravel/nemotron-sft-thailand/models/nemotron-3.5-super-text"
+conversion_dir = "/home/artzhuravel/nemotron-sft-thailand/models/nemotron-3.5-super-text-conversion"   # pre-built PrimeRL cache (.prime-v1); unset, the master would re-convert from CephFS
+attn = "flash_attention_3"
+# seq_len 1048576 (1M, the model's max) at cp=16 / ep=16 on 32 GPUs: as the swe-marathon, nl2repo and GeneBench
+# 1M runs.
+cp = 16   # cp8 OOMed on H100 80GB in step 1's backward (job 25, 68 GiB allocated + 3.8 GiB request, offloading on): 3 data ranks x 2 micro-steps
+ep = 16   # main's token-chunked AC needs ep == cp
+fused_lm_head_token_chunk_size = 1024
+
+[model.ac]
+# Selective AC: keep only the FlashAttention-3 forward outputs (out, lse) of the 8 attention layers, so the backward recompute
+# skips the 1M-token causal FA forward (~6-8% step time expected, +~4 GiB GPU). Same math (store vs recompute); Mamba and MoE
+# blocks keep the full-AC policy. Applied from the step-62 resume of job 26; revert = the plain cp16 config, same run.name.
+mode = "selective"
+targets = ["prime_rl_attn"]
+token_chunk_size = 16384   # Thailand 2-node tests 2026-11-10: -2% step time vs 8192 at equal loss and GPU peak; 32768 gave no more
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[renderer]
+name = "nemotron-3.5"
+# GLM-5.3 saw its past reasoning during collection (Nemotron tokens per row / GLM's last prompt ~1.10, with reasoning
+# ~76% of the characters), so past reasoning stays in the rendered history.
+truncate_history_thinking = false
+
+[data]
+type = "sft"
+name = "/home/artzhuravel/nemotron-sft-thailand/datasets/nemotron-distill-sft-compound-c3-1m-6streams"
+seq_len = 1048576
+batch_size = 6   # packed rows: ~4.9M tokens per step; 3 data ranks x 2 grad-accum micro-steps
+micro_batch_size = 1
+num_workers = 2   # 3 data ranks x 2 = the 6 streams the order was balanced for
+stopping_strategy = "all_exhausted"
+shuffle = false   # the file order is the plan
+seed = 42
+subsets = [
+    "mix",
+]
+probabilities = [
+    1.0,
+]
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# Validation on the held-out tasks: 908 packed rows per pass, ~113 min. [val] per_subset validates each dataset's split on its own,
+# in its stored order, as in its single run: val/<dataset>/loss per dataset, and val/loss = their token-weighted mean, which
+# keep_best compares. The rows are stored in an order that packs evenly on 6 streams (here 3 data ranks x
+# num_workers 2): keep shuffle = false.
+# after_optimizer_step: base (ran once at launch with eval_on_start), then after steps 277, 554, ..., 2493 and 2768. keep_best: the lowest of
+# those losses keeps a weights-only snapshot in <output_dir>/<run.name>/best-weights/; the eval_on_start pass is not a candidate.
+[val]
+interval = 277
+per_subset = true
+eval_on_start = false   # the base pass ran at launch (job 23 / 26); false so a resume does not re-validate the loaded weights (~1.5-2 h)
+after_optimizer_step = true
+keep_best = true
+
+[val.data]
+type = "sft"
+name = "/home/artzhuravel/nemotron-sft-thailand/datasets/nemotron-distill-sft-compound-c3-1m-6streams"
+subsets = [
+    "swe-marathon",
+    "swe-marathon-100",
+    "tb4",
+    "programbench",
+    "abundant-programbench",
+    "nl2repo",
+]
+splits = [
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+]
+seq_len = 1048576
+batch_size = 6
+micro_batch_size = 1
+num_workers = 2
+shuffle = false
+
+[val.data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+# After the final step and checkpoint: the best and the last weights as text-only NemotronHForCausalLM models,
+# written into the layout of
+# /home/artzhuravel/nemotron-sft-thailand/models/nemotron-3.5-super-text (47 shards, 42,683 tensors; the untrained
+# mtp.* tensors copied as they are) under <output_dir>/<run.name>/hf-export/{best,last}/, then pushed to private repos.
+[hf_export]
+checkpoints = ["best", "last"]
+best_repo = "PrimeIntellect/Nemotron-3.5-Super-compound-c3-sft-best"
+last_repo = "PrimeIntellect/Nemotron-3.5-Super-compound-c3-sft-last"
+private = true
+model_card = """
+- Base: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision fb0ee0bc), its language model only.
+- Data: compound C3 of GLM-5.3 trajectories, every row repeated k times: swe-marathon x3, swe-marathon-100 x2, tb4 x2, programbench x2, abundant-programbench x2, nl2repo x2 (exports 20261026, 20261103, 20261027, 20261031, 20261106, 20261106; no reward or teacher filter, interrupted streams and conversations over 1M tokens dropped), 2,768 steps,
+  1M-token packed sequences, AdamW, peak learning rate 1e-5, cosine decay to 1e-6.
+- Training rendered past assistant turns with their reasoning kept. To match it at inference, pass
+  `chat_template_kwargs={"truncate_history_thinking": false}`.
+"""

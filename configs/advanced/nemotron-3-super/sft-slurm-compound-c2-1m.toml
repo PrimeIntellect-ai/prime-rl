@@ -127,12 +127,12 @@ tool = false
 # in its stored order, as in its single run: val/<dataset>/loss per dataset, and val/loss = their token-weighted mean, which
 # keep_best compares. The rows are stored in an order that packs evenly on the 2 data ranks: keep shuffle = false and
 # num_workers = 1.
-# after_optimizer_step: base (eval_on_start, before step 1), then after steps 235, 470, ..., 2350 and 2350. keep_best: the lowest of
+# after_optimizer_step: base (ran once at launch with eval_on_start), then after steps 235, 470, ..., 2350 and 2350. keep_best: the lowest of
 # those losses keeps a weights-only snapshot in <output_dir>/<run.name>/best-weights/; the eval_on_start pass is not a candidate.
 [val]
 interval = 235
 per_subset = true
-eval_on_start = true
+eval_on_start = false   # the base pass ran at launch (job 23 / 26); false so a resume does not re-validate the loaded weights (~1.5-2 h)
 after_optimizer_step = true
 keep_best = true
 
