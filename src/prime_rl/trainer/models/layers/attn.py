@@ -49,6 +49,7 @@ def _flash_attn_4_varlen(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int | None,
     max_seqlen_k: int | None,
+    softmax_scale: float | None,
     causal: bool,
     window_size_left: int | None,
     window_size_right: int | None,
@@ -61,6 +62,7 @@ def _flash_attn_4_varlen(
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_q=max_seqlen_q,
         max_seqlen_k=max_seqlen_k,
+        softmax_scale=softmax_scale,
         causal=causal,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -88,6 +90,7 @@ def _flash_attn_4_varlen_backward(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int | None,
     max_seqlen_k: int | None,
+    softmax_scale: float | None,
     causal: bool,
     window_size_left: int | None,
     window_size_right: int | None,
@@ -99,6 +102,7 @@ def _flash_attn_4_varlen_backward(
         out,
         dout,
         lse,
+        softmax_scale=softmax_scale,
         causal=causal,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -116,12 +120,23 @@ def _(dout, q, k, v, *args):
 
 
 def _flash_attn_4_varlen_setup_context(ctx, inputs, output) -> None:
-    q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size_left, window_size_right = (
-        inputs
-    )
+    (
+        q,
+        k,
+        v,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        causal,
+        window_size_left,
+        window_size_right,
+    ) = inputs
     out, lse = output
     ctx.save_for_backward(q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k)
     ctx.max_seqlen = (max_seqlen_q, max_seqlen_k)
+    ctx.softmax_scale = softmax_scale
     ctx.causal = causal
     ctx.window_size = (window_size_left, window_size_right)
 
@@ -129,9 +144,20 @@ def _flash_attn_4_varlen_setup_context(ctx, inputs, output) -> None:
 def _flash_attn_4_varlen_autograd(ctx, dout: torch.Tensor, _dlse: torch.Tensor | None):
     q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
     dq, dk, dv = _flash_attn_4_varlen_backward(
-        dout.contiguous(), q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k, *ctx.max_seqlen, ctx.causal, *ctx.window_size
+        dout.contiguous(),
+        q,
+        k,
+        v,
+        out,
+        lse,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        *ctx.max_seqlen,
+        ctx.softmax_scale,
+        ctx.causal,
+        *ctx.window_size,
     )
-    return dq, dk, dv, None, None, None, None, None, None, None
+    return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
 _flash_attn_4_varlen.register_autograd(_flash_attn_4_varlen_autograd, setup_context=_flash_attn_4_varlen_setup_context)
@@ -146,12 +172,23 @@ def flash_attn_4_varlen_op(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int | None = None,
     max_seqlen_k: int | None = None,
+    softmax_scale: float | None = None,
     causal: bool = False,
     window_size: tuple[int | None, int | None] = (None, None),
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Drop-in for FA4's ``flash_attn_varlen_func`` as called by ``FlashAttention``, routed through the custom op."""
     return _flash_attn_4_varlen(
-        q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size[0], window_size[1]
+        q,
+        k,
+        v,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        causal,
+        window_size[0],
+        window_size[1],
     )
 
 
