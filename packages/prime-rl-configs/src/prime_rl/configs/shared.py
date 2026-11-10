@@ -67,14 +67,23 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Port for the NCCL broadcast rendezvous."""
 
 
+# ModelExpress listens on a base port plus each process's CUDA device index. Every process counts devices from 0, so
+# processes on one node offset their base by their first physical GPU, which prime-rl never shares between
+# processes. The ranges hold a node of up to 16 GPUs.
+MODELEXPRESS_TRAINER_METADATA_PORT = 5700
+MODELEXPRESS_INFERENCE_METADATA_PORT = 5800
+MODELEXPRESS_INFERENCE_WORKER_GRPC_PORT = 6800
+MODELEXPRESS_PORT_SPAN = 16
+
+
 class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["modelexpress"] = "modelexpress"
 
     port: int = 8001
     """ModelExpress gRPC port."""
 
-    metadata_port: int = 5655
-    """Base port of the trainer's NIXL metadata listener. Each local rank listens on this plus its device id."""
+    metadata_port: int = MODELEXPRESS_TRAINER_METADATA_PORT
+    """Base port of the trainer's NIXL metadata listener. Offset by the process's first physical GPU, plus each local rank's device id."""
 
     staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
     """Trainer storage policy passed to ModelExpress."""
@@ -84,6 +93,29 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
     staging_buffers_count: int = Field(1, ge=1)
     """Number of receiver buffers. Two overlap the next read with installation."""
+
+    mode: Literal["push", "pull"] = "push"
+    """``push``: the orchestrator installs every version on every engine and the trainer waits for it. ``pull``:
+    every engine installs published versions on its own, from the trainer or from a peer that already installed
+    it; the trainer waits only for an engine still reading its previous copy, the orchestrator follows the newest
+    published version, and every token records the version that sampled it. Engines install every
+    version in place, so pull needs ``staging_buffer_bytes``."""
+
+    @model_validator(mode="after")
+    def validate_pull_staging(self):
+        if self.mode != "pull":
+            return self
+        if self.staging_buffer_bytes is None:
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' streams each version into the live weights; set "
+                "weight_broadcast.staging_buffer_bytes, e.g. 4294967296"
+            )
+        if self.staging_mode == "IN_PLACE":
+            raise ValueError(
+                "weight_broadcast.mode = 'pull' keeps training while engines read a version, so the trainer "
+                "must publish a copy; set weight_broadcast.staging_mode to 'COPY_TO_HOST' or 'COPY_TO_DEVICE'"
+            )
+        return self
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

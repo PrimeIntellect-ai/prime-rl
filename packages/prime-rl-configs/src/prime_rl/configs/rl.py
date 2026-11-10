@@ -5,11 +5,13 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
-from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.inference import InferenceConfig, inference_weight_broadcast, setup_dummy_load
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
+    MODELEXPRESS_INFERENCE_METADATA_PORT,
+    MODELEXPRESS_INFERENCE_WORKER_GRPC_PORT,
+    MODELEXPRESS_PORT_SPAN,
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
     EnvVars,
@@ -486,12 +488,32 @@ class RLConfig(BaseConfig):
                     f"{name}.weight_broadcast conflicts with the shared weight_broadcast. Under the rl "
                     "entrypoint it is copied from [weight_broadcast]; set that instead."
                 )
+        if self.weight_broadcast.type == "modelexpress" and self.weight_broadcast.mode == "pull":
+            # Each inference server installs versions on its own, so every DP rank of one expert-parallel group must
+            # live in one server: vLLM completes a DP pause only once every rank pauses, which separate servers
+            # following versions independently never agree on.
+            if self.inference is not None and self.inference.deployment.type == "disaggregated":
+                raise ValueError("weight_broadcast.mode = 'pull' does not support disaggregated prefill/decode.")
+            if (
+                self.deployment.type == "multi_node"
+                and self.inference is not None
+                and self.inference.vllm.enable_expert_parallel
+            ):
+                ranks_per_server_group = self.deployment.infer_nodes_per_replica * (
+                    self.deployment.gpus_per_node // self.inference.vllm.tensor_parallel_size
+                )
+                if ranks_per_server_group > 1:
+                    raise ValueError(
+                        "weight_broadcast.mode = 'pull' needs each expert-parallel DP group in one inference server, but "
+                        f"the multi-node launcher starts one server per DP rank ({ranks_per_server_group} per replica); "
+                        "use one DP rank per replica (tensor_parallel_size = gpus_per_node, one node per replica)."
+                    )
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
         )
         if self.inference is not None:
-            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+            self.inference.weight_broadcast = inference_weight_broadcast(self.weight_broadcast)
         return self
 
     @model_validator(mode="after")
@@ -522,6 +544,23 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
+    def validate_rollout_port_clear_of_modelexpress(self):
+        if self.weight_broadcast.type != "modelexpress":
+            return self
+        port = self.rollout_transport.port
+        for base in (
+            self.weight_broadcast.metadata_port,
+            MODELEXPRESS_INFERENCE_METADATA_PORT,
+            MODELEXPRESS_INFERENCE_WORKER_GRPC_PORT,
+        ):
+            if base <= port < base + MODELEXPRESS_PORT_SPAN:
+                raise ValueError(
+                    f"rollout_transport.port {port} collides with ModelExpress's listeners at "
+                    f"{base}-{base + MODELEXPRESS_PORT_SPAN - 1}; pick a port outside them."
+                )
         return self
 
     @model_validator(mode="after")

@@ -206,6 +206,41 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
     asyncio.run(run())
 
 
+def test_tokens_newer_than_the_trainer_are_masked():
+    async def run():
+        s = sink(batch_size=1)
+        s.progress.step = 4
+        t = trace()
+        # v5 can only come from an engine that outlived a trainer restarted from v3.
+        t.nodes[2].weight_versions = [
+            WeightVersionSpan(version="3", start=0, end=1),
+            WeightVersionSpan(version="5", start=1, end=2),
+        ]
+        batch = await s.add(episode([t], version=3))
+        [sample] = trained(batch, step=4)
+        assert sample.mask.tolist() == [False, False, True, False]
+        assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
+
+    asyncio.run(run())
+
+
+def test_queued_tokens_older_than_their_dispatch_version_go_stale():
+    async def run():
+        s = sink(batch_size=2)
+        s.progress.step = 2
+        t = trace()
+        # Dispatched under v1, sampled by an engine still installing it.
+        t.nodes[2].weight_versions = [WeightVersionSpan(version="0", start=0, end=2)]
+        await s.add(episode([t], version=1))
+        assert s.pending_batch
+
+        s.progress.step = 3
+        await s.take_batch()
+        assert not s.pending_batch
+
+    asyncio.run(run())
+
+
 def test_partially_stale_trace_ships_fresh_tokens():
     async def run():
         s = sink(batch_size=1)
