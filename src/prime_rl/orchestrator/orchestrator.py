@@ -26,7 +26,7 @@ import json
 import os
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -296,6 +296,13 @@ class Orchestrator:
             renderer_config=config.renderer,
             replicas=config.env_worker_pool_replicas,
         )
+        if self.saves_rollouts:
+            for env in self.train_envs:
+                if (reason := env.unsaveable()) is not None:
+                    get_logger().warning(
+                        f"ckpt.rollouts cannot continue the in-flight rollouts of {env.name} after a resume: "
+                        f"{reason}. They start over; its finished episodes are still restored."
+                    )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(
                 config.eval.source, config.env_addresses, config_dir, replicas=config.env_worker_pool_replicas
@@ -1296,6 +1303,13 @@ class Orchestrator:
             + " ".join(f"{name}={format_time(value)}" for name, value in seconds.items())
             + f" | {size / 2**20:.1f} MiB"
         )
+        skipped = sum((env.save_skipped for env in self.train_envs), Counter())
+        if counts["restart"]:
+            reasons = "; ".join(f"{count}x {reason}" for reason, count in skipped.most_common())
+            get_logger().warning(
+                f"{counts['restart']} in-flight rollouts of step {step} have no restore point and start over on "
+                f"resume: {reasons or 'they were dispatched after the env workers saved, or their worker did not reply'}"
+            )
         if step in self.control_steps:
             self.controller.mark_saved(step)
         await self.sweep_snapshots()

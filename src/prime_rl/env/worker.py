@@ -158,6 +158,7 @@ class EnvWorker:
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
+        self._warned_skips: set[str] = set()
         # The slot of each run in flight by wire request_id, so a `save` can tell which
         # run a restore point continues.
         self._slots: dict[str, RunSlot] = {}
@@ -231,7 +232,8 @@ class EnvWorker:
         of each run with a single trace. Every other snapshot taken is deleted here: a
         multi-trace episode cannot continue from one trace, and a run that ended while
         the checkpoints were taken has nothing left to continue."""
-        points = await save_all()
+        reasons: dict[str, int] = {}
+        points = await save_all(reasons)
         slots = {
             slot.traces[0].id: (request_id, slot) for request_id, slot in self._slots.items() if len(slot.traces) == 1
         }
@@ -242,6 +244,8 @@ class EnvWorker:
                 saved.append(point)
             else:
                 orphans.append(point.snapshot)
+                reason = "its episode has more than one trace, or it ended during the save"
+                reasons[reason] = reasons.get(reason, 0) + 1
         try:
             paths = await asyncio.to_thread(
                 write_restores, Path(req.dir), [(slots[point.id][1].id, point) for point in saved]
@@ -250,17 +254,27 @@ class EnvWorker:
             # Without their files nothing restores these rollouts: they start over.
             get_logger().warning(f"Failed to write {len(saved)} restore files to {req.dir} - {e!r}")
             orphans += [point.snapshot for point in saved]
+            reasons["its restore file could not be written"] = len(saved)
             saved, paths = [], []
         if orphans:
             try:
                 await PrimeBackend.discard([Snapshot.model_validate(snapshot) for snapshot in orphans])
             except Exception as e:  # noqa: BLE001 - the restore points written must still be reported
                 get_logger().warning(f"Failed to delete {len(orphans)} unused snapshots {orphans} - {e!r}")
+        for reason, count in reasons.items():
+            # Once per reason: a config that rules restore points out does so at every save.
+            if reason not in self._warned_skips:
+                self._warned_skips.add(reason)
+                get_logger().warning(
+                    f"{count} running rollout(s) of {self.taskset_id} took no restore point and start over on "
+                    f"resume: {reason}"
+                )
         return SaveResponse(
+            skipped=[reason for reason, count in reasons.items() for _ in range(count)],
             restores={
                 slots[point.id][0]: RestoreRef(trace_id=point.id, path=str(path), snapshot=point.snapshot)
                 for point, path in zip(saved, paths)
-            }
+            },
         )
 
     async def _handle(self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes) -> None:

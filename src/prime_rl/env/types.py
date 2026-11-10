@@ -72,6 +72,8 @@ class SaveResponse(BaseResponse):
     restores: dict[str, RestoreRef] = Field(default_factory=dict)
     """The restore points taken, by the wire ``request_id`` of the run they continue.
     A running rollout without an entry took none and starts over."""
+    skipped: list[str] = Field(default_factory=list)
+    """Why a running rollout took no restore point: one reason per such rollout."""
 
 
 class DiscardRequest(BaseRequest):

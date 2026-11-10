@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
+from verifiers.v1.restore import unsaveable
+from verifiers.v1.utils.loaders import default_harness_id, harness_class
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
@@ -77,6 +80,8 @@ class Env:
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
         self.late_restores: list[RestoreRef] = []
+        self.save_skipped: Counter[str] = Counter()
+        """Why running rollouts took no restore point at the last ``save``, counted."""
         """Restore points of replicas that answered a ``save`` after its timeout: nothing
         resumes from them, so their owner deletes their snapshots and files."""
         self._late_saves: set[asyncio.Task] = set()
@@ -167,11 +172,13 @@ class Env:
         saves = [asyncio.create_task(client.save(directory)) for client in self.env_clients]
         done, pending = await asyncio.wait(saves, timeout=timeout)
         restores: dict[str, RestoreRef] = {}
+        self.save_skipped = Counter()
         for save in done:
             if save.exception() is not None:
                 get_logger().warning(f"Saving the running rollouts of {self.name} failed: {save.exception()!r}")
             else:
                 restores |= save.result().restores
+                self.save_skipped.update(save.result().skipped)
         for save in pending:
             self._late_saves.add(save)
             save.add_done_callback(self._collect_late_save)
@@ -186,6 +193,20 @@ class Env:
         self._late_saves.discard(save)
         if not save.cancelled() and save.exception() is None:
             self.late_restores.extend(save.result().restores.values())
+
+    def unsaveable(self) -> str | None:
+        """Why this env's running rollouts can take no restore point, so a resume starts
+        them over; None when its config allows them. Only a single-agent env's rollouts
+        continue from a restore point."""
+        agent = getattr(self.config.env, "agent", None)
+        if not isinstance(agent, vf.AgentConfig):
+            return "its env has more than one agent"
+        reason = unsaveable(agent)
+        if reason is None and agent.harness is None:
+            harness = default_harness_id(self.config.env.taskset.id)
+            if not harness_class(harness).SUPPORTS_MEMORY_RESTORE:
+                reason = f"harness {harness!r} cannot continue from a memory snapshot"
+        return reason
 
     async def discard(self, snapshots: list[dict]) -> list[str]:
         """Delete box snapshots this run owns; returns the ids of the deleted."""
