@@ -2,7 +2,7 @@ name: Regression
 
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
-#   parallel: test_parallel_invariance.py on the 2xH100 runners
+#   parallel: test_parallel_invariance.py on the 4xH100 runners
 #   eval:     every configs/eval/*.toml through `uv run eval` against Prime
 #             Inference, compared against baselines/eval/. reports/eval/ holds
 #             the error bars of each baseline. Also runs on PRs that touch the
@@ -60,7 +60,7 @@ jobs:
     parallel:
         name: Parallel / Invariance
         if: ${{ github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'parallel') }}
-        runs-on: prime-rl-2xh100
+        runs-on: prime-rl-4xh100
         container:
             image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
             options: --gpus all
