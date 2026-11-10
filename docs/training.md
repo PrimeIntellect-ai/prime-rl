@@ -483,7 +483,12 @@ A resume restores:
 
 These start over:
 
-- A running rollout that cannot take a memory checkpoint, for example one on the subprocess runtime, or one of a multi-agent episode. The resumed run runs its task from the start, in the same group.
+- A running rollout that cannot take a memory checkpoint. The resumed run runs its task from the start, in the same group. Restore points cover single-agent episodes with one harness on Prime sandboxes. These rollouts take none:
+  - A rollout on a runtime without memory snapshots, for example the subprocess runtime.
+  - A rollout of a harness that cannot continue from a memory snapshot. The null, bash and ACP harnesses (for example rlm) can.
+  - A rollout of an episode with more than one agent run.
+  - A rollout whose task has tool servers, shared tools or services of its own.
+  - A rollout that has not booted its sandbox yet, or that is in setup or scoring.
 - A running rollout whose env worker did not answer in 300 seconds.
 - All eval rollouts. Eval epochs are not checkpointed.
 

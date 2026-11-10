@@ -106,7 +106,7 @@ def kept(hook: PayloadHook) -> vf.Trace:
 
 def restore_ref(trace_id: str, directory="/ckpt") -> RestoreRef:
     return RestoreRef(
-        trace_id=trace_id, path=f"{directory}/{trace_id}.restore", snapshot={"id": f"s-{trace_id}", "type": "memory"}
+        trace_id=trace_id, path=f"{directory}/{trace_id}.restore", snapshot={"id": f"s-{trace_id}"}
     )
 
 
@@ -541,7 +541,7 @@ def test_a_checkpoint_with_rollouts_continues_its_open_groups_instead_of_rerunni
     # The restore file is found where the checkpoint is now, and read in this run.
     (restored,) = loaded["episodes"]
     assert restored.restore.path == str((manager.ckpt_dir / RESUMED_DIR / "t1.restore").resolve())
-    assert owned_snapshots(loaded) == [{"id": "s-t1", "type": "memory"}]
+    assert owned_snapshots(loaded) == [{"id": "s-t1"}]
     # The arrays and the restore file outlive the checkpoint directory.
     shutil.rmtree(manager.get_ckpt_path(6))
     assert (manager.ckpt_dir / RESUMED_DIR / "blob").read_bytes() == b"arrays"
@@ -598,7 +598,7 @@ def test_the_ledger_deletes_the_snapshots_of_pruned_steps(tmp_path):
             return ids
 
         def snapshot(name: str) -> dict:
-            return {"id": name, "type": "memory"}
+            return {"id": name}
 
         ledger = SnapshotLedger(ckpt_dir / "rollout_snapshots.json")
         for step in (2, 4):

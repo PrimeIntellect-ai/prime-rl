@@ -14,7 +14,7 @@ from prime_rl.utils import pathing
 
 
 def point(trace_id: str) -> RestorePoint:
-    checkpoint = {"id": f"c-{trace_id}", "snapshot": {"id": f"s-{trace_id}", "type": "memory"}}
+    checkpoint = {"id": f"c-{trace_id}", "snapshot": {"id": f"s-{trace_id}"}}
     return RestorePoint(
         trace={"id": trace_id, "checkpoints": [checkpoint]},
         checkpoint=checkpoint["id"],
@@ -63,7 +63,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
 
     assert set(response.restores) == {"r1"}
     ref = response.restores["r1"]
-    assert ref.trace_id == "t1" and ref.snapshot == {"id": "s-t1", "type": "memory"}
+    assert ref.trace_id == "t1" and ref.snapshot == {"id": "s-t1"}
     assert ref.path == str(directory / "t1.restore")
     assert [file.name for file in directory.iterdir()] == ["t1.restore"]
     episode_id, restored = read_restore(ref.path)
