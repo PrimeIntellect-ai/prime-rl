@@ -219,6 +219,8 @@ The queue serves the elasticity: while the last measured step showed that the ep
 
 While the engines are paused for a weight update the controller freezes, and it ignores the queue the pause leaves behind for the next 30 s.
 
+In RL, a finished train rollout keeps its permit until the trainer takes it, except for one batch of finished rollouts waiting (so the trainer finds its next batch ready). When the trainer is the bottleneck, the cap then bounds the episodes in flight plus the finished backlog beyond that batch, and the controller counts both as in flight; otherwise rollouts would pile up faster than the trainer consumes them, until their tokens age past `max_staleness`. Held permits only stop new train groups; eval episodes are not held back.
+
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`. `max_inflight` is unbounded by default; set it when episodes hold other scarce resources (e.g. sandboxes).
 
 ## Advanced Configuration

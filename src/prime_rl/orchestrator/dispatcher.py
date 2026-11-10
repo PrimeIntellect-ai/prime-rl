@@ -6,6 +6,11 @@
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
+- A finished train rollout keeps its permit until the trainer takes it, past a
+  buffer of ``BUFFERED_BATCHES`` batches (``held_permits``). When the trainer is
+  the bottleneck, the cap then bounds the finished backlog too, instead of it
+  growing until its tokens age past ``max_staleness``. Held permits only block
+  opening train groups; eval and open groups schedule as before.
 - Every dispatched attempt reaches ``out_q`` exactly once: as the native
   episode returned by the environment, as a ``DispatchFailure`` when no
   episode was produced, or under the group's ``GroupCancellation`` when the
@@ -60,6 +65,10 @@ from prime_rl.utils.logger import get_logger
 LIVE_INTERVAL_S = 0.5
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
+
+BUFFERED_BATCHES = 1
+"""Batches of finished train rollouts that free their permits while they wait for the trainer: enough that the
+trainer finds its next batch ready."""
 
 
 class DispatcherMode(Enum):
@@ -145,6 +154,8 @@ class Dispatcher:
         on_call: Callable[[int, int], None] | None = None,
         on_pause: Callable[[], None] | None = None,
         on_resume: Callable[[], None] | None = None,
+        unconsumed_train_rollouts: Callable[[], int] | None = None,
+        batch_size: Callable[[], int] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -166,6 +177,12 @@ class Dispatcher:
         # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
         self.on_pause = on_pause
         self.on_resume = on_resume
+        # The consumer's finished train rollouts the trainer has not taken yet (``out_q`` excluded), and the live
+        # batch size; both unset without a trainer
+        self.unconsumed_train_rollouts = unconsumed_train_rollouts
+        self.batch_size = batch_size
+        # Rollouts of the train episodes waiting in ``out_q``
+        self.queued_train_rollouts = 0
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -241,6 +258,20 @@ class Dispatcher:
     def available_permits(self) -> int:
         return self.max_inflight - self.current_inflight
 
+    @property
+    def held_permits(self) -> int:
+        """Permits still held by finished train rollouts: those beyond ``BUFFERED_BATCHES`` batches that the
+        trainer has not taken yet."""
+        if self.unconsumed_train_rollouts is None or self.batch_size is None:
+            return 0
+        waiting = self.queued_train_rollouts + self.unconsumed_train_rollouts()
+        return max(0, waiting - BUFFERED_BATCHES * self.batch_size())
+
+    @property
+    def permits_in_use(self) -> int:
+        """Units the concurrency controller sees: episodes in flight plus the held permits."""
+        return self.current_inflight + self.held_permits
+
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
         the current in-flight count sheds nothing — admissions just stay
@@ -251,8 +282,11 @@ class Dispatcher:
         """Cancel roughly ``n`` in-flight train episodes, youngest groups
         first (least inference spend so far). Called on an overload cut so
         the working set shrinks immediately instead of waiting for the
-        over-admitted episodes to finish at thrashed throughput."""
-        asyncio.create_task(self._cancel_inflight(n))
+        over-admitted episodes to finish at thrashed throughput. ``n`` counts
+        the held permits, which free as the trainer takes their rollouts."""
+        n -= self.held_permits
+        if n > 0:
+            asyncio.create_task(self._cancel_inflight(n))
 
     async def _cancel_inflight(self, n: int) -> None:
         # A group's age is its OLDEST member's start: max() would make a
@@ -470,6 +504,8 @@ class Dispatcher:
                 continue
             return await self.schedule_group_episode(gid, group)
 
+        if kind == "train" and self.permits_in_use >= self.max_inflight:
+            return False
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
@@ -727,7 +763,16 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
+        if meta.kind == "train":
+            self.queued_train_rollouts += len(episode.traces)
         await self.out_q.put(episode)
+
+    async def get(self) -> DispatchResult:
+        """Take the next terminal result off ``out_q``."""
+        item = await self.out_q.get()
+        if not isinstance(item, (DispatchFailure, GroupCancellation)) and item.run.work.type == "train":
+            self.queued_train_rollouts -= len(item.traces)
+        return item
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
         """Cancel this group's remaining in-flight tasks and emit one
@@ -884,6 +929,7 @@ class Dispatcher:
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
+            "dispatcher/held_permits": float(self.held_permits),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
         }

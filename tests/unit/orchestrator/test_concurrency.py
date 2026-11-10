@@ -1,3 +1,6 @@
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
@@ -14,8 +17,9 @@ from prime_rl.orchestrator.concurrency import (
     RoleLoad,
     Window,
 )
+from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.live import context
-from prime_rl.orchestrator.types import LiveTrace
+from prime_rl.orchestrator.types import LiveTrace, Policy
 
 POLL_SECONDS = 5.0
 DROP_WINDOW_POLLS = int(DWELL_SECONDS / POLL_SECONDS)
@@ -290,3 +294,39 @@ def test_call_context_is_the_history_it_extends():
     assert context(trace, usage(300, None)) == 0  # no cache usage reported: input unknown
     assert trace.prev_input is None
     assert context(trace, usage(500, 0)) == 0  # chain restarts
+
+
+def test_finished_train_rollouts_past_one_batch_hold_their_permits():
+    unbatched = [0]
+    dispatcher = Dispatcher(
+        train_envs=None,
+        eval_envs=None,
+        train_source=None,
+        eval_source=None,
+        policy_clients=None,
+        policy=Policy(version=0, model_name="policy"),
+        progress=None,
+        initial_max_inflight=16,
+        max_inflight_ceiling=None,
+        dispatch_per_minute=None,
+        run_id="run",
+        run_name=None,
+        unconsumed_train_rollouts=lambda: unbatched[0],
+        batch_size=lambda: 8,
+    )
+    dispatcher.current_inflight = 10
+    # Up to one batch waiting frees its permits: the trainer finds its next batch ready
+    dispatcher.queued_train_rollouts = 3
+    unbatched[0] = 5
+    assert dispatcher.held_permits == 0
+    assert dispatcher.permits_in_use == 10
+    # Past it, every finished rollout holds its permit until the trainer takes it
+    unbatched[0] = 11
+    assert dispatcher.held_permits == 6
+    assert dispatcher.permits_in_use == 16
+
+    episode = SimpleNamespace(run=SimpleNamespace(work=SimpleNamespace(type="train")), traces=[object(), object()])
+    dispatcher.out_q.put_nowait(episode)
+    assert asyncio.run(dispatcher.get()) is episode
+    assert dispatcher.queued_train_rollouts == 1
+    assert dispatcher.held_permits == 4

@@ -182,6 +182,8 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        # Rollouts of the batch cut and waiting for the trainer to request it
+        self.unsent_rollouts = 0
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -340,6 +342,15 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
+        self.train_sink = TrainSink(
+            config,
+            tokenizer=self.tokenizer,
+            train_envs=self.train_envs,
+            progress=self.progress,
+            batch_size=config.batch_size,
+            on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
+        )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
@@ -358,10 +369,12 @@ class Orchestrator:
             on_call=self.concurrency.record_call,
             on_pause=self.concurrency.pause,
             on_resume=self.concurrency.resume,
+            unconsumed_train_rollouts=lambda: self.train_sink.unbatched_rollouts() + self.unsent_rollouts,
+            batch_size=lambda: self.train_sink.batch_size,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
-            get_inflight=lambda: self.dispatcher.current_inflight,
+            get_inflight=lambda: self.dispatcher.permits_in_use,
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
@@ -376,15 +389,6 @@ class Orchestrator:
         # One awaited scrape so the concurrency controller derives (and logs) its
         # initial limit before the loop-start line; failures are tolerated.
         await self.inference_metrics.probe()
-        self.train_sink = TrainSink(
-            config,
-            tokenizer=self.tokenizer,
-            train_envs=self.train_envs,
-            progress=self.progress,
-            batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
-            on_groups_closed=self.train_source.close_groups,
-        )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -553,7 +557,7 @@ class Orchestrator:
                 break
 
             try:
-                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                item = await asyncio.wait_for(self.dispatcher.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
                 continue
@@ -720,7 +724,9 @@ class Orchestrator:
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
+        self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
+        self.unsent_rollouts = 0
         wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
