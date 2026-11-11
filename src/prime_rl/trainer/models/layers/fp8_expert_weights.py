@@ -7,6 +7,8 @@ is the one the GEMM did on the bf16 weight, and the input-gradient GEMM's blocks
 are unchanged.
 """
 
+from collections.abc import Callable
+
 import torch
 import torch.utils._pytree as pytree
 from torch import nn
@@ -215,15 +217,20 @@ class Fp8ExpertMaster(torch.Tensor):
     def __init__(self, tensor: torch.Tensor):
         self._tensor = tensor
 
+    def _rewrap(self, tensor: torch.Tensor) -> "Fp8ExpertMaster":
+        """The same kind of master around another tensor (subclasses carry their own settings along)."""
+        return type(self)(tensor)
+
     @classmethod
     def __torch_dispatch__(cls, func, types, args, kwargs=None):
+        master = next(t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, Fp8ExpertMaster))
         if func == torch.ops.aten.detach.default:
-            return Fp8ExpertMaster(args[0]._tensor)
+            return master._rewrap(args[0]._tensor)
         args, kwargs = pytree.tree_map_only(Fp8ExpertMaster, lambda t: t._tensor, (args, kwargs or {}))
         out = func(*args, **kwargs)
         if func not in _OPS_KEEPING_MASTER:
             return out
-        return pytree.tree_map_only(torch.Tensor, Fp8ExpertMaster, out)
+        return pytree.tree_map_only(torch.Tensor, master._rewrap, out)
 
     def __tensor_flatten__(self):
         return ["_tensor"], None
@@ -262,24 +269,29 @@ class Fp8ExpertMaster(torch.Tensor):
         return f"Fp8ExpertMaster({self._tensor})"
 
 
-def all_gather_expert_weights_in_fp8(experts: nn.Module, shard_size: int) -> None:
-    """Make FSDP all-gather ``experts``' 3-D weights as FP8 blocks. Call before ``fully_shard``, which shards them on
-    the expert dimension over ``shard_size`` ranks: each rank casts whole experts, so the blocks and their scales
-    line up after the all-gather only with equal shards."""
+def all_gather_expert_weights_in_fp8(
+    experts: nn.Module,
+    shard_size: int,
+    master: Callable[[torch.Tensor], Fp8ExpertMaster] = Fp8ExpertMaster,
+    option: str = "model.moe.compute.fp8_all_gather",
+) -> None:
+    """Make FSDP all-gather ``experts``' 3-D weights as FP8 blocks (or another ``master``'s quantized form). Call
+    before ``fully_shard``, which shards them on the expert dimension over ``shard_size`` ranks: each rank casts
+    whole experts, so the blocks and their scales line up after the all-gather only with equal shards."""
     for name, param in list(experts.named_parameters(recurse=False)):
         if param.ndim != 3:
             continue
         local_experts = param.to_local().shape[0] if isinstance(param, DTensor) else param.shape[0]
         if local_experts % shard_size:
             raise ValueError(
-                f"model.moe.compute.fp8_all_gather needs this rank's {local_experts} experts to split evenly over the "
+                f"{option} needs this rank's {local_experts} experts to split evenly over the "
                 f"{shard_size} FSDP ranks that shard them"
             )
         if isinstance(param, DTensor):
-            local = Fp8ExpertMaster(param.to_local())
+            local = master(param.to_local())
             wrapped = DTensor.from_local(
                 local, param.device_mesh, param.placements, run_check=False, shape=param.shape, stride=param.stride()
             )
         else:
-            wrapped = Fp8ExpertMaster(param.data)
+            wrapped = master(param.data)
         experts.register_parameter(name, nn.Parameter(wrapped, requires_grad=param.requires_grad))

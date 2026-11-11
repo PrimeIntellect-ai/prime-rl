@@ -200,6 +200,13 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
         if ep_mesh is not None:
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
+        if isinstance(compute, NVFP4ExpertCompute) and config.moe.compute.quantized_all_gather:
+            from prime_rl.trainer.models.layers.nvfp4_expert_weights import all_gather_expert_weights_in_nvfp4
+
+            shard_mesh = "dp_shard_mod_ep" if parallel_dims.ep_enabled else "dp_shard_cp"
+            all_gather_expert_weights_in_nvfp4(
+                moe.experts, parallel_dims.get_mesh(shard_mesh).size(), compute.quantize_weight
+            )
         if isinstance(compute, DeepGemmFP8ExpertCompute) and config.moe.compute.fp8_all_gather:
             from prime_rl.trainer.models.layers.fp8_expert_weights import all_gather_expert_weights_in_fp8
 

@@ -1568,6 +1568,10 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
         ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
         ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
         ({"moe": {"compute": {"type": "nvfp4", "backward": "fp4"}}}, "Input should be"),
+        (
+            {"moe": {"compute": {"type": "nvfp4", "backward": "bf16", "quantized_all_gather": True}}},
+            "gathers no BF16 expert weights",
+        ),
     ],
 )
 def test_nvfp4_trainer_rejects_unsupported_setups(model, message):

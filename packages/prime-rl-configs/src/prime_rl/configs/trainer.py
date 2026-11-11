@@ -221,6 +221,13 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
     quantizes like the sampler's."""
+    quantized_all_gather: bool = False
+    """FSDP all-gathers the routed experts' weights as the GEMMs' quantized operands (NVFP4, plus MXFP8 for the
+    ``mxfp8`` backward's input gradient) instead of BF16: each rank quantizes its shard once per all-gather, and the
+    forward, the activation-checkpoint recompute and the input gradient of every micro-step reuse it, with ~0.8x the
+    all-gather bytes (~0.3x with ``dequant_bf16``). Same numerics as quantizing the BF16 weight in the GEMM. Needs equal
+    whole-expert FSDP shards (no ``fusions.shard_fused_on_dim1``) and a backward that does not read BF16 weights (not
+    ``bf16``). Checkpoints hold plain tensors either way."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -408,6 +415,22 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_nvfp4_all_gather(self):
+        compute = self.moe.compute
+        if not (isinstance(compute, NVFP4MoEComputeConfig) and compute.quantized_all_gather):
+            return self
+        if compute.backward == "bf16":
+            raise ValueError(
+                "model.moe.compute.quantized_all_gather gathers no BF16 expert weights, which backward = 'bf16' reads."
+            )
+        if self.fusions.shard_fused_on_dim1:
+            raise ValueError(
+                "model.moe.compute.quantized_all_gather quantizes each FSDP shard of whole experts, but "
+                "model.fusions.shard_fused_on_dim1 shards the packed expert weights on dim 1."
+            )
         return self
 
     @model_validator(mode="after")

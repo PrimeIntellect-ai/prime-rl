@@ -134,11 +134,30 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool) -> None:
+        from prime_rl.trainer.models.layers.nvfp4_expert_weights import NVFP4ExpertWeight
+
         def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
-            return kernel.grouped_gemm(x, weight, offs=offsets, backward=backward, four_over_six=four_over_six)
+            # A weight FSDP all-gathered quantized (`quantized_all_gather`) is used as is.
+            quantized = None
+            if isinstance(weight, NVFP4ExpertWeight):
+                assert weight._transposed
+                quantized = kernel.QuantizedExpertWeight.from_tensors(weight.quantized)
+            return kernel.grouped_gemm(
+                x, weight, offs=offsets, backward=backward, four_over_six=four_over_six, weight_quantized=quantized
+            )
 
         super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
         self.kernel = kernel
+        self.backward = backward
+        self.four_over_six = four_over_six
+
+    def quantize_weight(self, weight_rows: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """An ``[experts, out, in]`` weight shard as the tensors the GEMMs read: what FSDP all-gathers with
+        ``quantized_all_gather``."""
+        quantized = self.kernel.quantize_expert_weight(
+            weight_rows, four_over_six=self.four_over_six, backward=self.backward
+        )
+        return quantized.tensors()
 
     def validate(self, experts: "GroupedExperts") -> None:
         """Gate and up projections share one set of weight scales, so they must be fused; the kernel tiles in
