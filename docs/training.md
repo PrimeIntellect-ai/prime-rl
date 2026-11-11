@@ -420,7 +420,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Trainer | The model's `config.json` and the tokenizer files | `<run_dir>/checkpoints/step_{n}/` |
+| Trainer | The model's `config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
