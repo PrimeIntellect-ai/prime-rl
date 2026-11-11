@@ -573,15 +573,18 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
                 tanh_logits = torch.tanh(logits.float() / softcap)
                 logits = softcap * tanh_logits
             grad_logits = _cross_entropy(logits, labels[start:end], loss[start:end], needs_hidden or needs_weight)
-            if grad_logits is None:
-                continue
+            if grad_logits is not None:
+                if softcap is not None:
+                    grad_logits = grad_logits.mul_(1 - tanh_logits.square())
+                grad_logits = grad_logits.to(hidden.dtype)
+                if needs_hidden:
+                    torch.mm(grad_logits, weight, out=grad_hidden[start:end])
+                if needs_weight:
+                    grad_weight.addmm_(grad_logits.t(), hidden_chunk)
+            # Free this chunk's logits before the next chunk's GEMM allocates its own.
+            del logits, grad_logits
             if softcap is not None:
-                grad_logits = grad_logits.mul_(1 - tanh_logits.square())
-            grad_logits = grad_logits.to(hidden.dtype)
-            if needs_hidden:
-                torch.mm(grad_logits, weight, out=grad_hidden[start:end])
-            if needs_weight:
-                grad_weight.addmm_(grad_logits.t(), hidden_chunk)
+                del tanh_logits
 
         ctx.save_for_backward(grad_hidden, grad_weight)
         return loss.sum()
