@@ -71,6 +71,8 @@ class GroupedGemmExpertCompute:
         token_group_alignment: int = 8,
     ) -> None:
         self.gemm = gemm
+        self.down_gemm = gemm
+        """The down projection's GEMM: the same unless its input is quantized differently (NVFP4's static scale)."""
         self.token_group_alignment = token_group_alignment
 
     def validate(self, experts: "GroupedExperts") -> None:
@@ -105,7 +107,7 @@ class GroupedGemmExpertCompute:
 
         hidden = experts.activation.apply(gate, up)
         down_proj = to_local(experts.down_proj).transpose(-2, -1)
-        output = self.gemm(hidden, down_proj.bfloat16(), offsets)
+        output = self.down_gemm(hidden, down_proj.bfloat16(), offsets)
         if experts.down_proj_bias is not None:
             down_proj_bias = to_local(experts.down_proj_bias)
             output = output + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()
@@ -133,29 +135,46 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
-    def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool) -> None:
+    def __init__(
+        self,
+        kernel: ModuleType,
+        backward: str,
+        four_over_six: bool,
+        exact_division: bool = False,
+        static_down_input_scale: bool = True,
+    ) -> None:
         from prime_rl.trainer.models.layers.nvfp4_expert_weights import NVFP4ExpertWeight
 
-        def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+        def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor, static: bool = False) -> torch.Tensor:
             # A weight FSDP all-gathered quantized (`quantized_all_gather`) is used as is.
             quantized = None
             if isinstance(weight, NVFP4ExpertWeight):
                 assert weight._transposed
                 quantized = kernel.QuantizedExpertWeight.from_tensors(weight.quantized)
             return kernel.grouped_gemm(
-                x, weight, offs=offsets, backward=backward, four_over_six=four_over_six, weight_quantized=quantized
+                x,
+                weight,
+                offs=offsets,
+                backward=backward,
+                four_over_six=four_over_six,
+                exact_division=exact_division,
+                static_input_scale=static,
+                weight_quantized=quantized,
             )
 
         super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
+        if static_down_input_scale:
+            self.down_gemm = lambda x, weight, offsets: gemm(x, weight, offsets, static=True)
         self.kernel = kernel
         self.backward = backward
         self.four_over_six = four_over_six
+        self.exact_division = exact_division
 
     def quantize_weight(self, weight_rows: torch.Tensor) -> tuple[torch.Tensor, ...]:
         """An ``[experts, out, in]`` weight shard as the tensors the GEMMs read: what FSDP all-gathers with
         ``quantized_all_gather``."""
         quantized = self.kernel.quantize_expert_weight(
-            weight_rows, four_over_six=self.four_over_six, backward=self.backward
+            weight_rows, four_over_six=self.four_over_six, backward=self.backward, exact_division=self.exact_division
         )
         return quantized.tensors()
 

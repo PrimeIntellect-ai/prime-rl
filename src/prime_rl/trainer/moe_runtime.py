@@ -11,10 +11,12 @@ from prime_rl.configs.trainer import (
     DeepGemmFP8MoEComputeConfig,
     MegaMoeMoEDispatchConfig,
     ModelConfig,
+    MoEComputeConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
     NVFP4MoEComputeConfig,
     TorchMoEDispatchConfig,
+    mega_moe_precision,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
 from prime_rl.trainer.distributed.token_dispatcher import (
@@ -89,12 +91,14 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             kernel=prime_kernels.load("nvfp4_moe"),
             backward=compute.backward,
             four_over_six=compute.four_over_six,
+            exact_division=compute.exact_division,
+            static_down_input_scale=compute.down_input_scale == "static",
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
 def _resolve_mega_moe_compute(
-    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup, dp_replicate: int
+    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, compute: MoEComputeConfig, group: ProcessGroup, dp_replicate: int
 ) -> MegaMoEExpertCompute:
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
@@ -109,7 +113,7 @@ def _resolve_mega_moe_compute(
         group=group,
         max_tokens_per_rank=dispatch.max_tokens_per_rank,
         num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(dp_replicate)),
-        precision=dispatch.precision,
+        precision=mega_moe_precision(compute),
     )
 
 
@@ -143,7 +147,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
         selected_moes = set(moe_layers)
-        selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group(), config.dp_replicate)
+        selected_compute = _resolve_mega_moe_compute(
+            moe_layers[0], dispatch, config.moe.compute, ep_mesh.get_group(), config.dp_replicate
+        )
     else:
         selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
 

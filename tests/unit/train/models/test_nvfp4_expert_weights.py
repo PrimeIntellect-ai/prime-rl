@@ -52,6 +52,8 @@ def test_gathered_quantized_shards_equal_the_whole_weight_quantized(ranks):
     transposed = gathered.transpose(-2, -1)
     assert transposed._transposed and transposed.shape == (8, 64, 32)
     assert transposed.detach().quantized is gathered.quantized
+    # The expert compute casts the GEMM weight to BF16: a same-dtype cast returns it as is, without dispatch
+    assert transposed.bfloat16() is transposed
 
 
 class Experts(nn.Module):

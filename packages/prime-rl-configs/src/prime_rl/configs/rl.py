@@ -25,6 +25,7 @@ from prime_rl.configs.shared import (
 from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
+    expert_engine_scheme,
     rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -511,13 +512,13 @@ class RLConfig(BaseConfig):
 
         model = self.trainer.model
         compute = model.moe.compute
-        if not isinstance(compute, NVFP4MoEComputeConfig):
+        if not isinstance(compute, NVFP4MoEComputeConfig) or compute.selects_none:
             return self
         if "enable_router_replay" not in self.trainer.model_fields_set:
             self.trainer.enable_router_replay = True
         linear = None
         if model.quantization is not None:
-            if not isinstance(model.quantization, MXFP8Config) or compute.apply_to != "all":
+            if not isinstance(model.quantization, MXFP8Config) or not compute.selects_all:
                 raise ValueError(
                     "NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization), on every layer "
                     "(moe.compute.apply_to = 'all'): the engines cannot match other combinations."
@@ -527,7 +528,22 @@ class RLConfig(BaseConfig):
                 model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
         if self.inference is None:
             return self
-        wanted = MoENVFP4Config(apply_to=compute.apply_to, four_over_six=compute.four_over_six, linear=linear)
+        if compute.down_input_scale == "per_token":
+            warnings.warn(
+                "trainer.model.moe.compute.down_input_scale = 'per_token' quantizes the down projection's input with "
+                "per-token scales, but vLLM's NVFP4 engines (TRTLLM) use a static one: rollouts are sampled with "
+                "different numerics than the trainer computes, until the engines quantize it per token too.",
+                stacklevel=2,
+            )
+        if compute.exact_division:
+            warnings.warn(
+                "trainer.model.moe.compute.exact_division quantizes NVFP4 experts with IEEE-rounded reciprocals, but "
+                "vLLM's NVFP4 engines keep FlashInfer's approximate ones: rollouts are sampled with slightly different "
+                "numerics than the trainer computes. Meant as an ablation.",
+                stacklevel=2,
+            )
+        apply_to = "all" if compute.selects_all else compute.apply_to
+        wanted = MoENVFP4Config(apply_to=apply_to, four_over_six=compute.four_over_six, linear=linear)
         current = self.inference.moe_nvfp4
         if current is None:
             if self.inference.vllm.quantization is not None:
@@ -542,6 +558,46 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 f"inference.moe_nvfp4 ({current}) differs from the trainer's NVFP4 experts ({wanted}): rollouts would "
                 "be sampled with other numerics than the trainer computes. Leave inference.moe_nvfp4 unset to match."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_expert_quantization(self):
+        """Quantized trainer experts (``model.moe.compute``, whatever the dispatch) need rollouts sampled with the
+        same expert quantization, or the trainer learns a policy the engines never ran. Without engine quantization,
+        quantize the routed experts alone (vLLM ``online`` with ``moe``); dense layers stay as configured. An engine
+        quantization set by hand must give the experts the same scheme. BF16 trainer experts leave the engines
+        alone: quantizing rollouts on purpose stays possible."""
+        if self.inference is None:
+            return self
+        compute = self.trainer.model.moe.compute
+        wanted = expert_engine_scheme(compute)
+        if wanted is None or compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
+            return self
+        vllm = self.inference.vllm
+        config = dict(getattr(vllm, "quantization_config", None) or {})
+        if vllm.quantization is None:
+            if not compute.selects_all:
+                raise ValueError(
+                    f"model.moe.compute.apply_to = {compute.apply_to!r} quantizes some MoE layers only: set "
+                    "inference.vllm.quantization = 'online' with quantization_config.targets on the same layers."
+                )
+            vllm.quantization = "online"
+            vllm.quantization_config = {**config, "moe": wanted}
+            return self
+        if "targets" in config:
+            warnings.warn(
+                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
+                f"({compute.apply_to}) with {wanted!r}.",
+                stacklevel=2,
+            )
+            return self
+        engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
+        if engines != wanted or not compute.selects_all:
+            raise ValueError(
+                f"The trainer's experts run {compute.type} ({compute.apply_to}), but the engines quantize experts "
+                f"with {engines!r}: rollouts would be sampled with other numerics than the trainer computes. "
+                f"Use {wanted!r} for the experts on all layers, or leave inference.vllm.quantization unset."
             )
         return self
 

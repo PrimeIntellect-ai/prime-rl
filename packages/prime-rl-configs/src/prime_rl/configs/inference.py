@@ -29,7 +29,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-QuantizationType = Literal["fp8_per_block", "mxfp8"]
+QuantizationType = Literal["fp8_per_block", "mxfp8", "online"]
 
 
 class VllmConfig(BaseConfig):
@@ -87,7 +87,9 @@ class VllmConfig(BaseConfig):
     """Enable prefix caching."""
 
     quantization: QuantizationType | None = None
-    """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+    """Online inference quantization method. If None, vLLM infers it from the checkpoint. ``online`` takes its
+    schemes from ``quantization_config`` (``linear``, ``moe``, ``ignore`` or ``targets``); ``rl`` sets it to quantize
+    the routed experts like the trainer's ``model.moe.compute``."""
 
     enable_lora: bool = False
     """Enable LoRA."""
@@ -482,7 +484,7 @@ class MoENVFP4Config(BaseConfig):
             return {"quantization": "online", "quantization_config": config}
         if self.apply_to == "all":
             return {"quantization": "nvfp4_per_token"}
-        if num_layers is None:
+        if num_layers is None and not isinstance(self.apply_to, list):
             raise ValueError("NVFP4 on a subset of layers needs the model's layer count")
         layers = self.resolve_layers(num_layers)
         if not layers:
@@ -794,7 +796,9 @@ class InferenceConfig(BaseConfig):
             namespace.served_model_name = [f"{self.vllm.model}-base"]
 
         if self.moe_nvfp4 is not None:
-            num_layers = None if self.moe_nvfp4.apply_to == "all" else self.num_hidden_layers()
+            # Only a percentage needs the model's layer count; explicit indices already name the layers
+            apply_to = self.moe_nvfp4.apply_to
+            num_layers = self.num_hidden_layers() if isinstance(apply_to, str) and apply_to != "all" else None
             for key, value in self.moe_nvfp4.quantization_args(num_layers).items():
                 setattr(namespace, key, value)
 
