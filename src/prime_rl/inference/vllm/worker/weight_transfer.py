@@ -39,8 +39,7 @@ def load_weights_checkpoint_layerwise(
                 moved_slots(fingerprint, num_routed_experts),
             )
             for experts, destinations in layers:
-                quant_method = experts.quant_method
-                moe_kernels.append((quant_method, quant_method.moe_quant_config, quant_method.moe_kernel))
+                moe_kernels += stash_moe_kernels([experts])
                 kernel_parameters, _ = get_layerwise_info(experts).kernel_tensors
                 for name, param in experts.named_parameters(recurse=False):
                     # vLLM reuses these metadata parameters on subsequent reloads.
@@ -52,15 +51,29 @@ def load_weights_checkpoint_layerwise(
                     kernel_param = kernel_parameters[name]
                     weight_loaders.append((kernel_param, kernel_param.weight_loader))
                     kernel_param.weight_loader = param.weight_loader
-        model.load_weights(state_iter)  # type: ignore
-        finalize_layerwise_reload(model, model_config)
-        for param, loader in weight_loaders:
-            param.weight_loader = loader
-        # Quantization rebuilds kernels against temporary scales. Keep the kernels
-        # that reference the restored storage registered with EPLB and NIXL.
-        for quant_method, quant_config, kernel in moe_kernels:
-            quant_method.moe_quant_config = quant_config
-            quant_method.moe_kernel = kernel
+        try:
+            model.load_weights(state_iter)  # type: ignore
+            finalize_layerwise_reload(model, model_config)
+        finally:
+            # Restored even when the update fails, so a retry does not remap already-physical expert ids
+            for param, loader in weight_loaders:
+                param.weight_loader = loader
+            restore_moe_kernels(moe_kernels)
+
+
+def stash_moe_kernels(experts_modules) -> list:
+    """The kernels EPLB registered for these routed experts: a reload's quantization rebuilds them against temporary
+    scales, and EPLB's expert moves must keep targeting the ones that reference the live storage."""
+    return [
+        (experts.quant_method, experts.quant_method.moe_quant_config, experts.quant_method.moe_kernel)
+        for experts in experts_modules
+    ]
+
+
+def restore_moe_kernels(moe_kernels: list) -> None:
+    for quant_method, quant_config, kernel in moe_kernels:
+        quant_method.moe_quant_config = quant_config
+        quant_method.moe_kernel = kernel
 
 
 @torch.no_grad()

@@ -18,7 +18,11 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.eplb import current_expert_placement, remap_expert_weight_loader
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import (
+    restore_moe_kernels,
+    stash_moe_kernels,
+    update_mla_absorbed_weights,
+)
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -516,9 +520,15 @@ class NIXLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
         plan = self.initialize_transfer()
+        placement = self.current_expert_placement()
+        moe_kernels = stash_moe_kernels([experts for experts, _ in placement[1]]) if placement is not None else []
 
         started = time.perf_counter()
-        self.apply_transfer_plan(plan)
+        try:
+            self.apply_transfer_plan(plan)
+        finally:
+            # As for NCCL and filesystem reloads: EPLB keeps the kernels it registered on the live storage
+            restore_moe_kernels(moe_kernels)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
         logger.info(
