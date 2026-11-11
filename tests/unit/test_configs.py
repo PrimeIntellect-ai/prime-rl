@@ -435,11 +435,9 @@ def test_invalid_moe_runtime_configs_fail(model, message):
 
 @pytest.mark.parametrize(("cp", "expected"), [(1, 262144), (8, 32768)])
 def test_mega_moe_buffer_defaults_to_a_cp_shard(cp, expected):
-    mega_moe = {"type": "mega_moe", "precision": "mxfp8"}
-    rl = TrainerConfig.model_validate({"model": {"seq_len": 262144, "cp": cp, "moe": {"dispatch": mega_moe}}})
-    sft = SFTConfig.model_validate(
-        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"type": "fake", "seq_len": 262144}}
-    )
+    moe = {"dispatch": {"type": "mega_moe"}, "compute": {"type": "mxfp8"}}
+    rl = TrainerConfig.model_validate({"model": {"seq_len": 262144, "cp": cp, "moe": moe}})
+    sft = SFTConfig.model_validate({"model": {"cp": cp, "moe": moe}, "data": {"type": "fake", "seq_len": 262144}})
 
     assert rl.model.moe.dispatch.max_tokens_per_rank == expected
     assert sft.model.moe.dispatch.max_tokens_per_rank == expected
@@ -453,12 +451,37 @@ def test_mega_moe_buffer_covers_mxfp8_padding():
                 "seq_len": 10000,
                 "cp": 8,
                 "quantization": {"type": "mxfp8"},
-                "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8"}},
+                "moe": {"dispatch": {"type": "mega_moe"}, "compute": {"type": "mxfp8"}},
             }
         }
     )
 
     assert config.model.moe.dispatch.max_tokens_per_rank == 1280
+
+
+@pytest.mark.parametrize(
+    "compute, expected",
+    [
+        ({}, "bf16"),
+        ({"type": "mxfp8"}, "mxfp8"),
+        ({"type": "deepgemm_fp8"}, "fp8"),
+        ({"type": "deepgemm_fp8", "forward": "bf16"}, "fp8_bwd"),
+        ({"type": "bf16", "backend": "sonicmoe"}, "cannot run"),
+        ({"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}, "cannot run"),
+        ({"type": "mxfp8", "apply_to": "50%"}, "apply_to must be 'all'"),
+    ],
+)
+def test_mega_moe_runs_the_expert_precision_of_moe_compute(compute, expected):
+    from prime_rl.configs.trainer import mega_moe_precision
+
+    model = {"moe": {"dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}, "compute": compute}}
+    if expected in ("bf16", "mxfp8", "fp8", "fp8_bwd"):
+        assert mega_moe_precision(TrainerModelConfig.model_validate(model).moe.compute) == expected
+    else:
+        with pytest.raises(ValidationError, match=expected):
+            TrainerModelConfig.model_validate(model)
+    with pytest.raises(ValidationError, match="needs model.moe.dispatch.type = 'mega_moe'"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "deepgemm_fp8", "forward": "bf16"}}})
 
 
 def test_mega_moe_buffer_smaller_than_a_cp_shard_fails():
@@ -1568,9 +1591,58 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
         ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
         ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
         ({"moe": {"compute": {"type": "nvfp4", "backward": "fp4"}}}, "Input should be"),
-        ({"moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "mega_moe"}}}, "does not run under"),
+        (
+            {"moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}}},
+            "Mega MoE cannot run",
+        ),
     ],
 )
 def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
     with pytest.raises(ValidationError, match=message):
         TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(
+    "compute, engines, expected",
+    [
+        # No engine quantization: the routed experts alone are quantized like the trainer's
+        ({"type": "mxfp8"}, {}, ("online", {"moe": "mxfp8"})),
+        (
+            {"type": "deepgemm_fp8"},
+            {"quantization_config": {"ignore": ["lm_head"]}},
+            ("online", {"ignore": ["lm_head"], "moe": "fp8_per_block"}),
+        ),
+        # Engine quantization set by hand that matches (GLM-5.3, DeepSeek-V4 configs) is kept
+        ({"type": "deepgemm_fp8"}, {"quantization": "fp8_per_block"}, ("fp8_per_block", None)),
+        (
+            {"type": "mxfp8"},
+            {"quantization": "mxfp8", "quantization_config": {"ignore": ["*.wo_a"]}},
+            ("mxfp8", {"ignore": ["*.wo_a"]}),
+        ),
+        # BF16 trainer experts: the engines may quantize rollouts on purpose
+        ({}, {"quantization": "mxfp8"}, ("mxfp8", None)),
+        ({"type": "deepgemm_fp8", "forward": "bf16"}, {}, (None, None)),
+    ],
+)
+def test_engines_quantize_experts_like_the_trainer(compute, engines, expected):
+    model = {"moe": {"compute": compute}}
+    if compute.get("forward") == "bf16":
+        model["moe"]["dispatch"] = {"type": "mega_moe", "max_tokens_per_rank": 8192}
+    config = RLConfig.model_validate({"trainer": {"model": model}, "orchestrator": {}, "inference": {"vllm": engines}})
+    vllm = config.inference.vllm
+    assert (vllm.quantization, getattr(vllm, "quantization_config", None)) == expected
+
+
+@pytest.mark.parametrize(
+    "compute, engines, message",
+    [
+        ({"type": "mxfp8"}, {"quantization": "fp8_per_block"}, "engines quantize experts with 'fp8_per_block'"),
+        ({"type": "deepgemm_fp8"}, {"quantization": "online", "quantization_config": {"linear": "mxfp8"}}, "with None"),
+        ({"type": "mxfp8", "apply_to": [0, 1]}, {}, "quantizes some MoE layers only"),
+    ],
+)
+def test_engines_that_quantize_experts_otherwise_are_rejected(compute, engines, message):
+    with pytest.raises(ValidationError, match=message):
+        RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {"vllm": engines}}
+        )

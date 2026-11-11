@@ -192,6 +192,9 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
+    forward: Literal["fp8", "bf16"] = "fp8"
+    """Forward GEMMs in blockwise FP8 (default), or in BF16 with only the backward in FP8 (Mega MoE on SM90)."""
+
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
@@ -240,10 +243,11 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
+    """Fused dispatch, expert MLP and combine. The expert precision comes from ``model.moe.compute``, as for every
+    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward
+    with an FP8 backward)."""
+
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -255,6 +259,35 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
     this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+
+
+def mega_moe_precision(compute: "MoEComputeConfig") -> str:
+    """The Mega MoE kernels that run ``compute``'s expert precision. Mega MoE runs every MoE layer with its own
+    kernels, so only precisions and settings it implements are accepted."""
+    if compute.apply_to != "all":
+        raise ValueError("Mega MoE runs every MoE layer; model.moe.compute.apply_to must be 'all'.")
+    if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
+        return "bf16"
+    if isinstance(compute, MXFP8MoEComputeConfig) and compute.recipe == "mxfp8_rceil":
+        return "mxfp8"
+    if isinstance(compute, DeepGemmFP8MoEComputeConfig):
+        return "fp8" if compute.forward == "fp8" else "fp8_bwd"
+    raise ValueError(
+        f"Mega MoE cannot run model.moe.compute {compute.model_dump(exclude={'apply_to'})}: it supports type 'bf16' "
+        "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil') and 'deepgemm_fp8'."
+    )
+
+
+def expert_engine_scheme(compute: "MoEComputeConfig") -> str | None:
+    """vLLM's online scheme that quantizes routed experts as ``compute`` runs them in the forward, so rollouts are
+    sampled with the numerics the trainer computes. None for BF16 forwards."""
+    if isinstance(compute, DeepGemmFP8MoEComputeConfig):
+        return "fp8_per_block" if compute.forward == "fp8" else None
+    if isinstance(compute, MXFP8MoEComputeConfig):
+        return "mxfp8"
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        return "nvfp4_per_token"
+    return None
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:
@@ -394,17 +427,15 @@ class ModelConfig(BaseModelConfig):
                 raise ValueError("NVFP4 expert compute does not support LoRA.")
             if self.compile is not None and self.compile.fullgraph:
                 raise ValueError("NVFP4 expert compute requires compile.fullgraph=false.")
-            if isinstance(self.moe.dispatch, MegaMoeMoEDispatchConfig):
-                raise ValueError(
-                    "NVFP4 expert compute does not run under moe.dispatch.type = 'mega_moe', which fuses its own expert "
-                    "GEMMs (bf16/mxfp8/fp8) and would train with other numerics than the NVFP4 engines sample with. "
-                    "Use the torch or deepep dispatch."
-                )
+        compute = self.moe.compute
+        dispatch = self.moe.dispatch
+        if isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            mega_moe_precision(compute)  # raises for what Mega MoE cannot run
+        elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
+            raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
         if self.ep == 1:
             return self
 
-        compute = self.moe.compute
-        dispatch = self.moe.dispatch
         if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
