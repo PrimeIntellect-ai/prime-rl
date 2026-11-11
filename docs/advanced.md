@@ -51,7 +51,7 @@ Both skip `lm_head`, the router and a few gate/projection modules by default (`i
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
-- `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100)
+- `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100). With `fp8_all_gather = true`, FSDP all-gathers the routed experts' weights as their 128x128-block FP8 casts instead of bf16: half the all-gather bytes, and one cast per all-gather instead of one per GEMM call, with the same numerics. It needs the expert weights sharded into equal whole-expert shards.
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 - `type = "nvfp4"` (requires a `prime-kernels` build with `nvfp4_moe`, and SM100/SM103: B200, GB200, B300). See [NVFP4 experts](#nvfp4-experts).
 
