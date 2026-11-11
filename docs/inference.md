@@ -306,6 +306,8 @@ Sampling replay works with a draft: each accepted position carries its own captu
 
 The `rl` entrypoint fills `[orchestrator.speculative_decoding] draft` with the inference draft. Change it live with the control API's `update_config`: the orchestrator loads the new draft on every engine at the next policy weight sync, while the engines are paused, and requires every worker to report the same draft fingerprint. A draft must keep the served draft's architecture and tensor shapes; others are rejected when submitted. If a load fails, the engines go back to the previous draft, the orchestrator reverts the setting as a new config revision, and `speculator/draft_load_failures` counts it. Cached draft KV from the previous draft stays in place; it lowers acceptance only for requests that started before the swap, since the target verifies every token.
 
+Set `[orchestrator.speculative_decoding] enabled = false` with `update_config` to stop drafting: from the next policy weight sync every engine decodes one token per step and verifies nothing, and `true` turns it back on the same way. The draft keeps its weights and KV cache, and its forward pass still runs each step, so drafting off is not as fast as a server without a draft. The engine route is `POST /speculative_decoding` with `{"enabled": false}`; W&B shows the state as `speculator/enabled`.
+
 The engine admin routes are `POST /update_draft_weights` with `{"weight_dir": "/path/to/draft"}` and `GET /weight_fingerprint/{model,draft}`. Acceptance is logged as `inference/{scope}/spec_decode_acceptance_rate` and `inference/{scope}/spec_decode_acceptance_length` (including the bonus token).
 
 ### Optimized P/D disaggregation deployment

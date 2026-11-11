@@ -42,9 +42,26 @@ def apply_shared_vllm_patches():
     monkey_patch_fit_sliding_window_pages()
     monkey_patch_flashinfer_fp8_ds_mla_draft()
     monkey_patch_dspark_dp_compile_cache()
+    monkey_patch_speculative_decoding_switch()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def monkey_patch_speculative_decoding_switch():
+    """EngineCore utility turning drafting off (0 draft tokens per step) or back on.
+
+    It reuses the scheduler's dynamic speculative-decoding lookup, which vLLM disables for data
+    parallelism because ranks pick different counts by batch size. One count applied to every engine
+    while paused cannot diverge. The draft keeps proposing (and caching its KV); the runner drops
+    proposals past the count, so the target decodes one token per step."""
+    from vllm.v1.engine.core import EngineCore
+
+    def set_speculative_decoding(self, enabled: bool) -> None:
+        scheduler = self.scheduler
+        scheduler.dynamic_sd_lookup = None if enabled else [0] * (scheduler.scheduler_config.max_num_seqs + 1)
+
+    EngineCore.set_speculative_decoding = set_speculative_decoding
 
 
 def monkey_patch_block_outermost_mla_stride():

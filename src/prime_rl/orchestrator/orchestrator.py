@@ -241,7 +241,12 @@ class Orchestrator:
         )
         if config.speculative_decoding is not None:
             # A draft restored from live updates loads with the startup policy.
-            self.draft_loader = DraftLoader(self.admin_plane, self.launch_draft, config.speculative_decoding.draft)
+            self.draft_loader = DraftLoader(
+                self.admin_plane,
+                self.launch_draft,
+                config.speculative_decoding.draft,
+                enabled=config.speculative_decoding.enabled,
+            )
             self.admin_plane.after_transfer = self.draft_loader.sync
 
         await monitors.setup(

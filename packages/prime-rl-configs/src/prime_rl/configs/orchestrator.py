@@ -482,6 +482,10 @@ class SpeculativeDecodingConfig(BaseConfig):
     loads the new draft on every engine at the next policy weight sync. It must keep the served draft's
     architecture and tensor shapes. A failed load restores the previous draft and reverts this value."""
 
+    enabled: Annotated[bool, Live()] = True
+    """Draft tokens on every engine. Turning it off live takes effect at the next policy weight sync: engines
+    then decode one token per step and verify nothing, while the draft keeps its weights and KV cache."""
+
 
 class OrchestratorConfig(BaseConfig):
     model: ModelConfig = ModelConfig()

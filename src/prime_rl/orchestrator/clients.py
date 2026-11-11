@@ -273,6 +273,10 @@ class AdminPlane:
             retry_errors=False,
         )
 
+    async def set_speculative_decoding(self, enabled: bool) -> None:
+        """Turn drafting off or back on, on every engine. Call while the engines are paused."""
+        await _post_all(self.clients, "/speculative_decoding", json={"enabled": enabled})
+
     async def draft_digests(self) -> list[str]:
         """One digest of the draft-owned tensors per inference worker."""
 

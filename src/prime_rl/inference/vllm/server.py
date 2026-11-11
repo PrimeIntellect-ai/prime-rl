@@ -92,6 +92,15 @@ async def update_draft_weights(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/speculative_decoding")
+async def speculative_decoding(request: Request):
+    """Turn drafting off or back on, on every engine. Pause the engines first so data-parallel ranks
+    switch together."""
+    enabled = (await request.json())["enabled"]
+    await engine_client(request).engine_core.call_utility_all_async("set_speculative_decoding", enabled)
+    return {"status": "ok"}
+
+
 @router.get("/weight_fingerprint/{target}")
 async def weight_fingerprint(request: Request, target: Literal["model", "draft"]):
     # vLLM's public collective RPC discards all but the first DP engine's result.
