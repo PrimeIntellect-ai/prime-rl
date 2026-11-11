@@ -1,0 +1,4 @@
+# BF16 gradient GEMMs on the dequantized forward operands, against the default MXFP8 backward.
+[trainer.model.moe.compute]
+type = "nvfp4"
+backward = "dequant_bf16"

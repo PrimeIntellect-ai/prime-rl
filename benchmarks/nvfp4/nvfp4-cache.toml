@@ -1,0 +1,4 @@
+# Speed only: the per-step weight cache. Numerics are identical to nvfp4.toml.
+[trainer.model.moe.compute]
+type = "nvfp4"
+cache_weights = true

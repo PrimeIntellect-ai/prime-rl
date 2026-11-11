@@ -1,0 +1,3 @@
+# The recipe: NVFP4 routed-expert forward (4/6 scaling), MXFP8 backward, router replay, dense layers BF16.
+[trainer.model.moe.compute]
+type = "nvfp4"

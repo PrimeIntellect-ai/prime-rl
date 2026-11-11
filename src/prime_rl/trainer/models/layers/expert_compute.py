@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Protocol
 import torch
 from torch.distributed.tensor import DTensor
 
+from prime_rl.utils.logger import get_logger
+
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
@@ -129,11 +131,36 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 _WEIGHT_CACHES: "weakref.WeakSet[NVFP4ExpertCompute]" = weakref.WeakSet()
 
 
+_cache_size_logged = False
+
+
 def clear_quantized_weight_caches() -> None:
     """Drop every cached quantized expert weight. The train loops call it after each optimizer step, the only place
-    trainer weights change (CPU-offload optimizers update weights without ``torch.optim.Optimizer.step`` hooks)."""
+    trainer weights change (CPU-offload optimizers update weights without ``torch.optim.Optimizer.step`` hooks). The
+    first time, log what the caches held: the memory ``cache_weights`` costs."""
+    global _cache_size_logged
+    if not _cache_size_logged and _WEIGHT_CACHES:
+        held = sum(
+            tensor.nbytes
+            for compute in _WEIGHT_CACHES
+            for slots in compute.caches.values()
+            for cache in slots
+            for value in cache.values()
+            for tensor in _tensors(value)
+        )
+        get_logger().info(f"NVFP4 weight cache held {held / 2**30:.1f} GiB of quantized expert weights this step")
+        _cache_size_logged = True
     for compute in _WEIGHT_CACHES:
         compute.caches.clear()
+
+
+def _tensors(value) -> list[torch.Tensor]:
+    """The tensors in a cached quantized weight: a tensor, a tuple of them, or a dataclass of them."""
+    if isinstance(value, torch.Tensor):
+        return [value]
+    if isinstance(value, (tuple, list)):
+        return [t for item in value for t in _tensors(item)]
+    return [t for t in vars(value).values() if isinstance(t, torch.Tensor)] if hasattr(value, "__dict__") else []
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
