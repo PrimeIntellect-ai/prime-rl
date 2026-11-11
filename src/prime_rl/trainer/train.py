@@ -491,8 +491,7 @@ def train(config: SFTConfig | PretrainConfig):
             logger.warning(f"{result.nan_count} micro-batches had a NaN loss and were excluded from the backward pass")
 
         # Count the step before checkpointing it, so a resume continues the counters from here.
-        num_tokens, num_flops = result.num_tokens, result.num_flops
-        progress.total_tokens += num_tokens
+        progress.total_tokens += result.num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
 
@@ -525,16 +524,17 @@ def train(config: SFTConfig | PretrainConfig):
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
-        perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
-        mfu = perf_counter.get_step_mfu(num_flops, step_time)
-        mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
+        perf_counter.count_tokens(result.num_tokens)
+        throughput = perf_counter.get_step_tokens_per_second(result.num_tokens, step_time)
+        mfu = perf_counter.get_step_mfu(result.num_flops, step_time)
+        mfu_6dn = perf_counter.get_step_mfu(
+            perf_counter.flop_counter.flops_per_token_6dn * result.num_tokens, step_time
+        )
         peak_memory, non_torch_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
-        batch_loss = result.loss
-        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {result.loss:.4f}"
         if grad_norm_value is not None:
             step_message += f" | Grad. Norm {grad_norm_value:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
@@ -594,8 +594,8 @@ def train(config: SFTConfig | PretrainConfig):
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
-            "loss/mean": batch_loss,
-            "loss/perplexity": math.exp(min(batch_loss, 20)),
+            "loss/mean": result.loss,
+            "loss/perplexity": math.exp(min(result.loss, 20)),
             "loss/nan_count": result.nan_count,
             "step": progress.step,
         }

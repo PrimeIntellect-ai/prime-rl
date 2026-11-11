@@ -11,9 +11,8 @@ from torch import Tensor, nn
 from torch.profiler import record_function
 
 from prime_rl.trainer.model import (
-    compute_ep_imbalance,
+    add_routing_stats,
     compute_expert_load_stats,
-    compute_max_vio_and_routing_confidence,
     iter_moe_blocks,
     take_moe_routing_stats,
 )
@@ -105,30 +104,6 @@ def run_micro_batches(
     return stats
 
 
-def add_routing_stats(
-    sums: dict[str, Tensor],
-    maxes: dict[str, Tensor],
-    routing_stats: list[Tensor],
-    top_k: int,
-    ep_group: dist.ProcessGroup | None,
-) -> None:
-    """Add the step's expert counts, and the max violation and routing confidence of every micro-batch's
-    `take_moe_routing_stats` snapshot over the EP group's tokens, to the statistics to reduce; with EP, also every
-    micro-batch's EP imbalance per layer."""
-    routing = torch.stack(routing_stats)
-    sums["expert_counts"] = routing[..., :-1].sum(dim=0)
-    if ep_group is not None:
-        dist.all_reduce(routing, group=ep_group)
-    max_vio, routing_confidence = compute_max_vio_and_routing_confidence(routing[..., :-1], routing[..., -1], top_k)
-    maxes["max_vio"] = max_vio.amax(dim=-1)
-    sums["routing_confidence"] = routing_confidence.mean(dim=-1)
-    if ep_group is not None:
-        # Every rank of an EP group holds the same imbalances. A layer waits for the busiest rank of its EP group and,
-        # through its FSDP collectives, for the slowest group: the max over DP groups, with the DP mean beside it.
-        rank_imbalance = compute_ep_imbalance(routing[..., :-1], dist.get_world_size(ep_group))
-        maxes["ep_imbalance/rank"] = sums["ep_imbalance/rank_dp_mean"] = rank_imbalance
-
-
 def reduce_stats(sums: dict[str, Tensor], maxes: dict[str, Tensor], group: dist.ProcessGroup) -> dict[str, Tensor]:
     """Sum or max per-rank statistics over ``group`` with one all-reduce per kind. The results stay on the device as
     float64."""
@@ -146,8 +121,6 @@ def reduce_stats(sums: dict[str, Tensor], maxes: dict[str, Tensor], group: dist.
 def to_host(*tensor_dicts: dict[str, Tensor]) -> list[dict[str, Tensor]]:
     """CPU float64 copies of the tensors in ``tensor_dicts``, in the same structure, through one device-to-host copy."""
     tensors = [tensor for tensor_dict in tensor_dicts for tensor in tensor_dict.values()]
-    if not tensors:
-        return [{} for _ in tensor_dicts]
     flat = torch.cat([tensor.detach().reshape(-1).to(torch.float64) for tensor in tensors]).cpu()
     values = iter(flat.split([tensor.numel() for tensor in tensors]))
     return [
