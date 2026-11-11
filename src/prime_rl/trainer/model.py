@@ -658,7 +658,7 @@ def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     if uninitialized:
         more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
         raise RuntimeError(
-            f'{type(model).__name__} does not support model.init.type = "scratch": its init does not reach '
+            f'{model.config.model_type!r} does not support model.init.type = "scratch": its init does not reach '
             f"{', '.join(uninitialized[:3])}{more}"
         )
 
