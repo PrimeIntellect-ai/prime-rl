@@ -255,14 +255,59 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     own ``kv_lease_duration``, not this lease. Under P/D the larger of the two roles' values applies, since one
     master serves both."""
 
+    lookup_async: bool = False
+    """Look up a request's prefix in the store off the scheduler thread (the connector's ``lookup_async``). By
+    default the scheduler blocks on each lookup, which hashes the whole prompt and grows with its length; under
+    DEP every rank then waits for the slowest. Async, the request is retried on a later step once its lookup
+    returns, and the other requests keep decoding."""
+
+    save_decode_cache: bool = False
+    """Also store the KV of generated tokens (the connector's ``save_decode_cache``), so a multi-turn prefix in the
+    store has no hole at the previous turn's completion. Costs about one more put per block of decoded tokens and
+    fills the store faster. Decode instances of a P/D deployment always set it."""
+
+    min_lookup_gain_tokens: int | None = Field(None, ge=1)
+    """Skip a request's store lookup when the store could add fewer than this many tokens past its local prefix hit
+    (a hit is capped one token short of the request and block-aligned). Any value is raised to the scheduler block
+    size, at which the skip is exact; larger values recompute up to this many tokens instead of looking them up.
+    None (default) looks up every request, as upstream does."""
+
+    lookup_memo_ttl_s: float | None = Field(None, gt=0)
+    """Keep a request's finished lookup for this long and reuse it while the request waits, instead of looking up
+    again on every step it is not admitted (``prefill_schedule_interval`` defers it on most steps, and upstream
+    drops each result once read). None (default) keeps upstream's behavior."""
+
+    lookup_timeout_s: float | None = Field(None, gt=0)
+    """With ``lookup_async``, admit a request on its local prefix hit when its lookup has been pending this long,
+    instead of deferring it until the lookup returns. None (default) waits."""
+
+    load_failure_policy: Literal["recompute", "fail"] = "recompute"
+    """What vLLM does when a load from the store fails (``kv_load_failure_policy``): ``recompute`` the failed blocks,
+    or ``fail`` the request (vLLM's default). A hit can fail to load when its keys are evicted or not fully written
+    between the lookup and the load; on a one-node replay of r12 trajectories ~1 in 5,000 requests hit this
+    (OBJECT_NOT_FOUND) and, under ``fail``, returned 400."""
+
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
         # content hash (no instance id), so the shared pool is reused across nodes/replicas.
+        extra: dict[str, Any] = {}
+        if self.lookup_async:
+            extra["lookup_async"] = True
+        if self.save_decode_cache:
+            extra["save_decode_cache"] = True
+        # Read by prime-rl's `monkey_patch_mooncake_lookup_economy`; the connector ignores unknown keys.
+        if self.min_lookup_gain_tokens is not None:
+            extra["prime_rl_min_lookup_gain_tokens"] = self.min_lookup_gain_tokens
+        if self.lookup_memo_ttl_s is not None:
+            extra["prime_rl_lookup_memo_ttl_s"] = self.lookup_memo_ttl_s
+        if self.lookup_timeout_s is not None:
+            extra["prime_rl_lookup_timeout_s"] = self.lookup_timeout_s
         return {
             "kv_connector": "MooncakeStoreConnector",
             "kv_role": "kv_both",
-            "kv_connector_extra_config": {},
+            "kv_connector_extra_config": extra,
+            "kv_load_failure_policy": self.load_failure_policy,
         }
 
 
@@ -637,11 +682,15 @@ class InferenceConfig(BaseConfig):
             return None
         if len(connectors) == 1:
             return connectors[0]
-        return {
+        multi: dict[str, Any] = {
             "kv_connector": "MultiConnector",
             "kv_role": "kv_both",
             "kv_connector_extra_config": {"connectors": connectors},
         }
+        # vLLM reads the load-failure policy from the top-level transfer config only.
+        if any(c.get("kv_load_failure_policy") == "recompute" for c in connectors):
+            multi["kv_load_failure_policy"] = "recompute"
+        return multi
 
     # Fields vLLM rejects as None — omitted from the namespace so vLLM applies its
     # own default (e.g. quantization is inferred from the checkpoint).
