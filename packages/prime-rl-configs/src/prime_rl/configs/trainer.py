@@ -189,10 +189,9 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
     fp8_all_gather: bool = False
-    """FSDP all-gathers the routed experts' weights as the GEMM's 128 x 128-block FP8 casts: half the all-gather bytes,
-    and the forward, the activation-checkpoint recompute and every micro-step reuse one cast per all-gather. Same
-    numerics as casting the bf16 weight in the GEMM. Needs FSDP to shard the expert weights on the expert dimension
-    into equal shards (no ``fusions.shard_fused_on_dim1``). Checkpoints hold plain tensors either way."""
+    """FSDP all-gathers the routed experts' weights as the GEMM's 128 x 128-block FP8 casts: half the all-gather bytes
+    and one cast per all-gather instead of one per GEMM call, with the same numerics. Needs equal whole-expert FSDP
+    shards (no ``fusions.shard_fused_on_dim1``). Checkpoints hold plain tensors either way."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):

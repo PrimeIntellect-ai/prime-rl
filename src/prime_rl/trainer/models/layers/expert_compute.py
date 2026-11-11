@@ -124,7 +124,6 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
         def gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-            # A weight FSDP all-gathered as FP8 blocks (`fp8_all_gather`) is used as is.
             if isinstance(weight, Fp8ExpertWeight):
                 return prequantized_grouped_fp8_gemm(x, weight, offs)
             return grouped_fp8_gemm(x, weight, offs)

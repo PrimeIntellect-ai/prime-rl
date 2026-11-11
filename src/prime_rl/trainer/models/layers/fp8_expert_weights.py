@@ -1,10 +1,8 @@
-"""FP8 all-gather of the routed experts' weights under FSDP2.
+"""FP8 all-gather of the routed experts' weights under FSDP2 (``moe.compute.fp8_all_gather``).
 
-With ``deepgemm_fp8`` expert compute, FSDP casts each expert weight's shard to 128 x 128-block FP8 once per
-all-gather and all-gathers the FP8 blocks with their scales. The grouped GEMMs use them directly, so the forward, the
-AC recompute and every micro-step reuse one cast of the weight, and the all-gather moves half the bytes. The cast
-is the one the GEMM did on the bf16 weight, and the input-gradient GEMM's blocks are its transpose, so the numerics
-are unchanged.
+FSDP casts each expert weight's local shard to the grouped GEMM's 128 x 128-block FP8 and all-gathers the blocks with
+their scales; the GEMMs use them as they are. The blocks are the ones the GEMM would make from the bf16 weight, and the
+input-gradient GEMM's blocks are their transpose, so the numerics are unchanged.
 """
 
 import torch
