@@ -1,0 +1,52 @@
+mode = "pretrain"
+max_steps = 2060
+gpu_type = "H200_141GB"
+volume = "<your-volume>"  # holds datasets/, models/tokenizer-rustbpe32k, eval_bundle/ and models/cfg/<name>/ (copy from ./models)
+
+# derived (launch.py): {"depth": 12, "flops_per_token": 802167552, "scaling_params": 110101632, "total_params": 286262424, "tokens": 1080033280, "total_flops": 866367652296130560, "weight_decay": 0.21407990983388958, "adamw_lr_scale": 1.0}
+[model]
+name = "/volume/models/cfg/d12-plain-a9165a38"
+offload = "none"
+ac = "None"
+ac_offloading = "None"
+dp_replicate = 8
+
+[tokenizer]
+name = "/volume/models/tokenizer-rustbpe32k"
+
+[data]
+paths = ["datasets/fineweb100b-packed/train"]
+seq_len = 2048
+batch_size = 256
+micro_batch_size = 16
+packed_rows = true
+
+[val]
+interval = 206
+num_samples = 10240
+bpb = true
+final_bpb = true
+core = true
+core_max_per_task = -1
+eval_bundle = "/volume/eval_bundle"
+
+[val.data]
+paths = ["datasets/fineweb100b-packed/val"]
+seq_len = 2048
+packed_rows = true
+micro_batch_size = 16
+
+[optim]
+type = "nanochat_muon"
+total_steps = 2060
+weight_decay = 0.21408
+embedding_lr = 0.3
+unembedding_lr = 0.004
+
+[scheduler]
+type = "warmdown"
+warmdown_ratio = 0.5
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
