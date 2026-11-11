@@ -1107,7 +1107,7 @@ class Orchestrator:
             return
         config = self.config.model_copy(deep=True)
         config.speculative_decoding.draft = self.draft_loader.good
-        change = ConfigChange(path="speculative_decoding.draft", old=rejected, new=self.draft_loader.good)
+        change = ConfigChange(path="speculative_decoding.draft", old=str(rejected), new=str(self.draft_loader.good))
         if self.controller is None:
             self.apply_config(config, [change])
             return
