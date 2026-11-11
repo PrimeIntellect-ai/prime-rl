@@ -13,8 +13,7 @@ from pathlib import Path
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
-from transformers import AutoConfig
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
@@ -140,10 +139,8 @@ def train(config: SFTConfig | PretrainConfig):
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    model_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-    ckpt_manager = setup_ckpt_manager(
-        config.run_dir, config.ckpt, model_config, tokenizer, processor, resume=config.resume
-    )
+    model_files = setup_model_files(config.model, tokenizer, processor)
+    ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
 
     checkpoint_step = None
     if config.resume is not None:

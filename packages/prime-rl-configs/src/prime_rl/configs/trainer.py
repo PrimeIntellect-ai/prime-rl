@@ -282,16 +282,11 @@ class InitConfig(BaseConfig):
     seed: int = 0
     """Seed for the ``scratch`` init: the same seed gives the same weights."""
 
-    scratch_fields: ClassVar[tuple[str, ...]] = ("seed",)
-
     @model_validator(mode="after")
-    def scratch_fields_require_scratch(self):
-        if self.type == "scratch":
-            return self
-        for name in self.scratch_fields:
-            # A resolved config writes every field, so a field at its default counts as unset.
-            if name in self.model_fields_set and getattr(self, name) != type(self).model_fields[name].default:
-                raise ValueError(f'model.init.{name} applies to type "scratch", not "{self.type}"')
+    def seed_requires_scratch(self):
+        # Resolved configs write the default seed for every type.
+        if self.type != "scratch" and self.seed != 0:
+            raise ValueError(f'model.init.seed applies to type "scratch", not "{self.type}"')
         return self
 
 

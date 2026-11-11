@@ -631,8 +631,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def clear_padding_idx(model: nn.Module) -> None:
-    """For a from-scratch init: a padding index (which falls back to the EOS id) would start that token's embedding at
-    zero and keep it frozen, also after a resume."""
+    """For weights that are not the HF model's: a padding index (which falls back to the EOS id) would start that
+    token's embedding at zero from scratch and keep it frozen, also when training on from a checkpoint."""
     for module in model.modules():
         if isinstance(module, nn.Embedding):
             module.padding_idx = None
@@ -1009,7 +1009,7 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if config.init.type == "scratch":
+    if config.init.type != "hf":
         clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
