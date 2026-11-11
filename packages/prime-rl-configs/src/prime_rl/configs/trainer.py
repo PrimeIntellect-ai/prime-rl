@@ -223,9 +223,10 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     ``nvfp4_moe``."""
 
     type: Literal["nvfp4"] = "nvfp4"
-    backward: Literal["mxfp8", "dequant_bf16", "bf16"] = "mxfp8"
-    """Gradient GEMMs: MXFP8 on the original BF16 operands (default; the backward never meets the sampler, so it trades
-    exactness for speed), or BF16 on the dequantized NVFP4 forward operands or on the original BF16 ones."""
+    backward: Literal["mxfp8", "dequant_mxfp8", "dequant_bf16", "bf16"] = "mxfp8"
+    """Gradient GEMMs: MXFP8 on the original BF16 operands (default, Composer 2's recipe; the backward never meets the
+    sampler, so it trades exactness for speed), MXFP8 or BF16 on the dequantized NVFP4 forward operands (the gradients
+    see the forward's rounding and clipping, which humans& found most stable), or BF16 on the original operands."""
     four_over_six: bool = True
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
