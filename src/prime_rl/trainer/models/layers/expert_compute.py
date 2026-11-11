@@ -126,7 +126,6 @@ class GroupedGemmExpertCompute:
         return output.type_as(x)
 
     def bind_gemm(self, host_num_tokens_per_expert: torch.Tensor | None) -> Callable:
-        """The grouped GEMM of one expert-compute call, given the dispatch's host counts (if any)."""
         return self.gemm
 
 
@@ -138,13 +137,20 @@ class BF16ExpertCompute(GroupedGemmExpertCompute):
 class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self) -> None:
         from prime_rl.trainer.models.kernels.fp8_utils import GROUP_ALIGNMENT
+        from prime_rl.trainer.models.layers.fp8_expert_weights import Fp8ExpertWeight, prequantized_grouped_fp8_gemm
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
         super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
+        self.fp8_weight_type = Fp8ExpertWeight
+        self.prequantized_gemm = prequantized_grouped_fp8_gemm
 
     def bind_gemm(self, host_num_tokens_per_expert: torch.Tensor | None) -> Callable:
-        """The FP8 grouped GEMM, whose backward reads the host counts instead of copying the counts to the host."""
-        return partial(self.gemm, host_num_tokens_per_expert=host_num_tokens_per_expert)
+        def gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+            if isinstance(weight, self.fp8_weight_type):
+                return self.prequantized_gemm(x, weight, offs, host_num_tokens_per_expert)
+            return self.gemm(x, weight, offs, host_num_tokens_per_expert)
+
+        return gemm
 
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):
