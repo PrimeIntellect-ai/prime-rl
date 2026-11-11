@@ -7,7 +7,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
 from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
 
-from prime_rl.inference.vllm.eplb import local_expert_destinations, remap_expert_weight_loader
+from prime_rl.inference.vllm.eplb import current_expert_placement, moved_slots, remap_expert_weight_loader
 
 if TYPE_CHECKING:
     from vllm.distributed.eplb.eplb_state import EplbState
@@ -32,21 +32,15 @@ def load_weights_checkpoint_layerwise(
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
         if eplb_state is not None:
-            state = eplb_state.model_states[model_config.compute_hash()]
-            placements = state.physical_to_logical_map.cpu().tolist()
-            moved = sum(
-                logical_id != physical_id % state.model.num_routed_experts
-                for placement in placements
-                for physical_id, logical_id in enumerate(placement)
+            fingerprint, layers = current_expert_placement(eplb_state, model_config)
+            num_routed_experts = eplb_state.model_states[model_config.compute_hash()].model.num_routed_experts
+            logger.info(
+                "Reloading EPLB experts with %d physical slots moved from their initial placement",
+                moved_slots(fingerprint, num_routed_experts),
             )
-            logger.info("Reloading EPLB experts with %d physical slots moved from their initial placement", moved)
-            for layer, placement in zip(state.model.moe_layers, placements, strict=True):
-                experts = layer.routed_experts
+            for experts, destinations in layers:
                 quant_method = experts.quant_method
                 moe_kernels.append((quant_method, quant_method.moe_quant_config, quant_method.moe_kernel))
-                expert_map = experts._expert_map
-                global_to_local = expert_map.cpu().tolist() if expert_map is not None else list(range(len(placement)))
-                destinations = local_expert_destinations(placement, global_to_local, state.model.num_routed_experts)
                 kernel_parameters, _ = get_layerwise_info(experts).kernel_tensors
                 for name, param in experts.named_parameters(recurse=False):
                     # vLLM reuses these metadata parameters on subsequent reloads.

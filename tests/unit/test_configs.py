@@ -867,7 +867,7 @@ def test_rl_nccl_broadcast_needs_two_gpus():
         )
 
 
-@pytest.mark.parametrize("transport", ["nccl", "nixl", "filesystem"])
+@pytest.mark.parametrize("transport", ["nccl", "nixl", "filesystem", "modelexpress"])
 def test_eplb_needs_placement_aware_weight_updates(transport):
     data = {
         "trainer": {},
@@ -875,12 +875,12 @@ def test_eplb_needs_placement_aware_weight_updates(transport):
         "weight_broadcast": {"type": transport},
         "inference": {"vllm": {"enable_eplb": True}},
     }
-    if transport in ("nccl", "filesystem"):
+    if transport != "modelexpress":
         config = RLConfig.model_validate(data)
         assert config.inference.vllm.enable_eplb
         assert config.trainer.weight_broadcast.type == transport
     else:
-        with pytest.raises(ValueError, match="enable_eplb needs NCCL or filesystem weight updates"):
+        with pytest.raises(ValueError, match="enable_eplb needs NCCL, filesystem or NIXL weight updates"):
             RLConfig.model_validate(data)
 
 

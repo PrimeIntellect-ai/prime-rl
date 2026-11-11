@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from math import prod
 from threading import Event
@@ -17,6 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
+from prime_rl.inference.vllm.eplb import current_expert_placement, remap_expert_weight_loader
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
@@ -81,6 +82,9 @@ class WeightTransferPlan:
     receive_buffer_count: int
     trainer_peers: list[NixlPeer]
     groups: list[WeightTransferGroup]
+    registrations: list[Any] = field(default_factory=list)
+    placement: tuple | None = None
+    """EPLB's expert placement the plan was traced for (None without EPLB)."""
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -122,10 +126,34 @@ class NIXLWeightUpdateWorker(Worker):
             session_id,
         )
 
+    def current_expert_placement(self) -> tuple[tuple, list] | None:
+        eplb_state = getattr(self.model_runner, "eplb_state", None)
+        if eplb_state is None:
+            return None
+        return current_expert_placement(eplb_state, self.model_runner.model_config)
+
+    def release_transfer_plan(self, plan: WeightTransferPlan) -> None:
+        for group in plan.groups:
+            for read in group.pulls:
+                self.nixl_agent.release_read(read)
+        for registration in plan.registrations:
+            self.nixl_agent.deregister(registration)
+        plan.receive_arenas.clear()
+
     @torch.no_grad()
     def initialize_transfer(self) -> WeightTransferPlan:
+        """The plan for the next pull. A plan replays copies traced into fixed expert slots, so when EPLB has moved
+        experts since it was traced, it is traced again for the current placement. Group generations carry over:
+        they count the trainer's publications, not plans."""
+        placement = self.current_expert_placement()
+        fingerprint = placement[0] if placement is not None else None
         if self.weight_transfer_plan is not None:
-            return self.weight_transfer_plan
+            if self.weight_transfer_plan.placement == fingerprint:
+                return self.weight_transfer_plan
+            torch.cuda.synchronize(self.device)
+            self.release_transfer_plan(self.weight_transfer_plan)
+            self.weight_transfer_plan = None
+            logger.info("EPLB moved experts since the NIXL transfer plan was traced; tracing it again")
 
         trainer_ref = self.model_express.wait_for(
             "trainer",
@@ -133,10 +161,12 @@ class NIXLWeightUpdateWorker(Worker):
             timeout=self.weight_transfer_timeout,
         )[0]
         table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
-        copies = self.trace_weight_loads(table)
+        copies = self.trace_weight_loads(table, placement[1] if placement is not None else [])
         plan = self.build_transfer_plan(table, copies)
+        plan.placement = fingerprint
         self.weight_transfer_plan = plan
-        self.group_generations = [0] * len(plan.groups)
+        if len(getattr(self, "group_generations", [])) != len(plan.groups):
+            self.group_generations = [0] * len(plan.groups)
         logger.info(
             "Initialized NIXL transfer plan on rank %d with %d groups",
             self.model_express.rank,
@@ -147,8 +177,11 @@ class NIXLWeightUpdateWorker(Worker):
     def trace_weight_loads(
         self,
         table: TrainerTensorTable,
+        expert_destinations: list[tuple[nn.Module, list[list[int]]]] = (),
     ) -> list[RecordedCopy]:
-        """Trace vLLM weight loading into source-to-destination copies."""
+        """Trace vLLM weight loading into source-to-destination copies. With EPLB, routed experts load into each
+        logical expert's current slots (``expert_destinations``), not the startup placement vLLM's loader assumes."""
+        destinations_by_module = {id(module): destinations for module, destinations in expert_destinations}
         from vllm.model_executor.model_loader.reload.layerwise import (
             _get_original_loader,
             initialize_layerwise_reload,
@@ -171,6 +204,8 @@ class NIXLWeightUpdateWorker(Worker):
                             recorder.register_destination_storage(destination)
                         loader = _get_original_loader(tensor)
                         original_loaders.append((tensor, loader))
+                        if id(module) in destinations_by_module:
+                            loader = remap_expert_weight_loader(loader, destinations_by_module[id(module)])
                         tensor.weight_loader = self.wrap_weight_loader_for_recording(
                             recorder,
                             destination,
@@ -247,11 +282,15 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_elements,
             receive_buffer_count,
         )
+        # A plan traced again (EPLB moved experts) keeps the trainer connections it already has
+        known = self.__dict__.setdefault("trainer_peers_by_metadata", {})
         peers: list[NixlPeer] = []
         for agent in table.agents:
-            peer = self.nixl_agent.add_remote_agent(agent.metadata)
-            self.nixl_agent.make_connection(peer)
-            peers.append(peer)
+            if agent.metadata not in known:
+                peer = self.nixl_agent.add_remote_agent(agent.metadata)
+                self.nixl_agent.make_connection(peer)
+                known[agent.metadata] = peer
+            peers.append(known[agent.metadata])
         groups = self.build_transfer_groups(
             table,
             copies,
@@ -266,6 +305,7 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_count=receive_buffer_count,
             trainer_peers=peers,
             groups=groups,
+            registrations=self.arena_registrations,
         )
 
     def plan_tensor_replays(
@@ -316,8 +356,7 @@ class NIXLWeightUpdateWorker(Worker):
                 for dtype, elements in receive_buffer_elements.items()
                 if elements
             }
-        for arena in receive_arenas.values():
-            self.nixl_agent.register_tensor(arena)
+        self.arena_registrations = [self.nixl_agent.register_tensor(arena) for arena in receive_arenas.values()]
         return receive_arenas
 
     def build_transfer_groups(

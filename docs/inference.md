@@ -228,7 +228,7 @@ The cap starts from a safe bound derived from the engines (KV capacity divided b
 
 ### Expert Load Balancing
 
-vLLM's expert parallel load balancer (EPLB) moves and replicates MoE experts across expert parallel ranks by their measured load, so no rank waits on a hot expert. RL supports it with NCCL and filesystem weight updates: a reload writes each expert into every slot EPLB currently gives it, and drains asynchronous expert moves first so none can overwrite the incoming policy. Routed-experts replay is unaffected, since vLLM records logical expert ids before EPLB's mapping. NIXL and ModelExpress replay a load plan traced before any rearrangement and are rejected.
+vLLM's expert parallel load balancer (EPLB) moves and replicates MoE experts across expert parallel ranks by their measured load, so no rank waits on a hot expert. RL supports it with NCCL, filesystem and NIXL weight updates: a reload writes each expert into every slot EPLB currently gives it, and drains asynchronous expert moves first so none can overwrite the incoming policy. NIXL replays a load plan traced for one placement, so an engine traces it again on the first update after EPLB moves experts. Routed-experts replay is unaffected, since vLLM records logical expert ids before EPLB's mapping. ModelExpress replays a plan traced before any rearrangement and is rejected.
 
 One switch turns it on, with defaults chosen for RL:
 
