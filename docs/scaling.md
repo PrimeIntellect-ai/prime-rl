@@ -104,20 +104,19 @@ type = "torch"
 transport = "bf16"
 ```
 
-For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
+For DeepEP, set `type = "deepep"` and tune `num_sms` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
-Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel installed as the top-level `deep_gemm` package (`uv pip install --no-deps <wheel>` after syncing). vLLM prefers a top-level `deep_gemm` over the copy it bundles, so inference then uses the fork too. Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
 
-The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches, so the trainer refuses to start unless it is set to at most `num_reserved_sms`. 16 is enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so match the two rather than over-reserving. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to the micro batch (`model.seq_len` for RL, `data.micro_batch_size * data.seq_len` for SFT); a smaller value is rejected at startup.
+The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches. In the worst case each NCCL kernel uses all `NCCL_MAX_CTAS`, so at most `num_reserved_sms // NCCL_MAX_CTAS` NCCL kernels can run concurrently. FSDP overlaps an all-gather and a reduce-scatter, and HSDP (`dp_replicate > 1`) adds an all-reduce, so the trainer sets `NCCL_MAX_CTAS` to `num_reserved_sms // 2` (`// 3` under HSDP) when it is unset, and refuses to start if it is set higher than that. The default 16 reserved SMs (8 CTAs, 5 under HSDP) are enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so raise `num_reserved_sms` only if NCCL needs more. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to a rank's share of the micro batch under context parallelism (`model.seq_len / model.cp` for RL, `data.micro_batch_size * data.seq_len / model.cp` for SFT); a smaller value is rejected at startup.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "mega_moe"
 precision = "bf16"     # or "mxfp8" (SM100), "fp8" / "fp8_bwd" (SM90)
-num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS must be <= this
+num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS defaults to this // 2 (// 3 under HSDP)
 
 [trainer.env_vars]
-NCCL_MAX_CTAS = "16"
 CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 ```
@@ -142,7 +141,7 @@ cp = 2                       # CP degree
 | `trainer.model.ac.mode = "selective"` | medium | small | 
 | `trainer.model.ac_offloading` | extra | a bit more |
 
-AC and AC offloading are enabled by default (full mode). Both AC modes retain stateful MoE routing updates and DeepEP communication that cannot safely replay. Selective AC uses the same transformer-block boundaries and additionally retains distributed communication, expensive matrix multiplications, grouped GEMMs, and supported attention kernels:
+AC and AC offloading are enabled by default (full mode). Both AC modes retain stateful MoE routing updates that cannot safely replay; full AC recomputes MoE dispatch communication. Selective AC uses the same transformer-block boundaries and additionally retains distributed communication, expensive matrix multiplications, grouped GEMMs, and supported attention kernels:
 
 ```toml
 [trainer.model.ac]
@@ -152,6 +151,15 @@ mode = "selective"
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
 
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
+
+For long sequences, a MoE layer's routed-expert activations (tokens × `top_k` × expert hidden size) dominate the recompute and backward peak. Token-chunked checkpointing checkpoints a block in token chunks, so recompute and backward hold one chunk at a time. It is experimental and only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models:
+
+```toml
+[trainer.model.ac]
+token_chunk_size = 8192      # tokens per rank per chunk
+```
+
+Every chunk runs the MoE's EP all-to-alls, so all ranks of an EP group must run the same number of chunks: chunking requires `ep == 1` or `ep == cp` (the EP group is then the CP group, whose ranks hold slices of the same row). Other blocks keep whole-block checkpointing.
 
 `ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only losing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
 
@@ -248,7 +256,6 @@ type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1              # optional when inference.deployment defines the node topology
 gpus_per_node = 8                # default
-nodes_per_fsdp_group = 1         # optional — controls FSDP island size
 ```
 
 SFT multi-node:
@@ -270,6 +277,10 @@ Full multi-node configs ship under [`examples/advanced/`](https://github.com/Pri
 - [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
+
+### ModelExpress weight broadcast
+
+See [ModelExpress](model-express.md) for the `modelexpress` weight transport.
 
 ### NIXL weight broadcast
 
@@ -308,7 +319,9 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 uv run sft @ sft.toml --data.type fake --max-steps 4
 
 # RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
-uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4
+uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4 --no-monitors.prime
 ```
+
+With `--data.fake.generate-samples`, fake RL data packs random-length samples into each row; add `--data.fake.doc-len N` to make every sample N tokens instead (the last one cut to fill the row), e.g. two 262k-token rollouts in a 524k-token row.
 
 Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup.

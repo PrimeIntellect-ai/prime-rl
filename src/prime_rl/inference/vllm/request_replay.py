@@ -1,5 +1,6 @@
 """Request-scoped replay for vLLM's V2 non-speculative sampler."""
 
+import os
 from contextvars import ContextVar
 from copy import copy
 from functools import wraps
@@ -8,40 +9,28 @@ import numpy as np
 import torch
 
 REPLAY_KEY = "prl_replay"
-_paired: ContextVar[np.ndarray | None] = ContextVar("prl_paired", default=None)
-_capture: ContextVar[tuple[np.ndarray, np.ndarray] | None] = ContextVar("prl_capture", default=None)
+SAMPLER_ROWS_KEY = "prl_sampler_rows"
+CAPACITY_ENV = "PRIME_SAMPLING_SUPPORT_CAPACITY"
+_capture: ContextVar[list | None] = ContextVar("prl_capture", default=None)
 
 
 def wants_replay(params) -> bool:
     return params is not None and (params.extra_args or {}).get(REPLAY_KEY, False) is True
 
 
-def capture_selected_supports(original, logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request=1):
-    selection = _capture.get()
-    if selection is None:
-        return original(logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request)
-    enabled, top_k = selection
-    if not enabled.any():
-        return None
-    # Zero committed tokens makes vLLM's capture kernel skip eval rows before
-    # reading any logits. Only replay requests contribute to the support bound.
-    keep = torch.as_tensor(enabled, device=num_sampled_tokens.device)
-    committed = torch.where(keep, num_sampled_tokens, 0)
-    tensors = original(logits, cu_num_logits, committed, int(top_k[enabled].max()), rows_per_request)
-    paired = _paired.get()
-    if paired is not None and paired.any():
-        from prime_rl.inference.vllm.paired_capture import pack_support_logprobs
-
-        tensors = pack_support_logprobs(tensors, logits, cu_num_logits, paired & enabled)
-    return tensors
+def sampler_rows(params) -> int:
+    return 0 if params is None else (params.extra_args or {}).get(SAMPLER_ROWS_KEY, 0)
 
 
 def patch_request_replay():
-    from vllm.sampling_params import SamplingParams
+    from vllm.exceptions import VLLMValidationError
+    from vllm.sampling_params import RequestOutputKind, SamplingParams
     from vllm.v1.engine.input_processor import InputProcessor
     from vllm.v1.engine.output_processor import RequestState
     from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
     from vllm.v1.worker.gpu.sample.sampler import Sampler
+
+    from prime_rl.inference.vllm.paired_capture import capture_supports, pack_sampler_rows
 
     if getattr(Sampler, "_prime_request_replay", False):
         return
@@ -51,17 +40,29 @@ def patch_request_replay():
     @wraps(validate)
     def validate_params(self, params, supported_tasks):
         if isinstance(params, SamplingParams):
-            if self.model_config.return_sampling_mask and self.speculative_config is not None:
-                raise ValueError("Request-scoped sampling replay does not support speculative decoding")
-            if wants_replay(params):
-                if not self.model_config.return_sampling_mask:
-                    raise ValueError("Replay requests require enable_return_sampling_mask")
-            else:
+            rows = sampler_rows(params)
+            if type(rows) is not int or not 0 <= rows <= self.model_config.get_vocab_size():
+                raise VLLMValidationError(
+                    "Sampler rows must be an integer between 0 and the vocabulary size",
+                    parameter=SAMPLER_ROWS_KEY,
+                    value=rows,
+                )
+            if rows and wants_replay(params):
+                raise VLLMValidationError("A request captures its replayed support or sampler rows, not both")
+            if self.model_config.return_sampling_mask:
+                if self.speculative_config is not None:
+                    raise VLLMValidationError("Request-scoped sampling replay does not support speculative decoding")
+                if wants_replay(params) and params.temperature <= 0:
+                    raise VLLMValidationError("Replay requests require temperature > 0")
+                if wants_replay(params) and params.output_kind != RequestOutputKind.FINAL_ONLY:
+                    raise VLLMValidationError("Replay requests do not support streaming")
                 # Validate against a private view; never toggle shared engine
                 # configuration while concurrent requests are being admitted.
                 self = copy(self)
                 self.model_config = copy(self.model_config)
                 self.model_config.return_sampling_mask = False
+            elif wants_replay(params) or rows:
+                raise VLLMValidationError("Sampling-support capture requires enable_return_sampling_mask")
         return validate(self, params, supported_tasks)
 
     add_request = Sampler.add_request
@@ -70,31 +71,46 @@ def patch_request_replay():
     def add(self, req_idx, sampling_params):
         if not hasattr(self, "_prime_capture"):
             self._prime_capture = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
-            self._prime_paired = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
+            self._prime_sampler_rows = np.zeros(self.sampling_states.max_num_reqs, dtype=np.int64)
         self._prime_capture[req_idx] = wants_replay(sampling_params)
-        self._prime_paired[req_idx] = (sampling_params.extra_args or {}).get("prl_paired_capture", False)
+        self._prime_sampler_rows[req_idx] = sampler_rows(sampling_params)
         return add_request(self, req_idx, sampling_params)
 
     call = Sampler.__call__
 
     @wraps(call)
     def sample(self, logits, input_batch):
-        indices = input_batch.idx_mapping_np
-        enabled = getattr(self, "_prime_capture", np.zeros(self.sampling_states.max_num_reqs, dtype=bool))
-        token = _capture.set((enabled[indices], self.sampling_states.top_k.np[indices]))
-        paired = getattr(self, "_prime_paired", None)
-        paired_token = _paired.set(paired[indices] if paired is not None else None)
-        try:
+        if not hasattr(self, "_prime_capture"):
             return call(self, logits, input_batch)
+        indices = input_batch.idx_mapping_np
+        replay, num_rows = self._prime_capture[indices], self._prime_sampler_rows[indices]
+        stash = []
+        token = _capture.set(stash)
+        try:
+            output = call(self, logits, input_batch)
         finally:
             _capture.reset(token)
-            _paired.reset(paired_token)
+        if not stash or not (replay.any() or num_rows.any()):
+            return output
+        processed, cu_num_logits, num_sampled = stash
+        keep = torch.from_numpy(replay).pin_memory().to(num_sampled.device, non_blocking=True)
+        rows = None
+        if num_rows.any():
+            rows = pack_sampler_rows(processed, cu_num_logits, num_sampled, output.sampled_token_ids, num_rows)
+        output.sampling_mask_tensors = capture_supports(
+            processed, cu_num_logits, torch.where(keep, num_sampled, 0), int(os.environ[CAPACITY_ENV]), rows
+        )
+        return output
 
     from_logits = SamplingMaskTensors.from_logits
 
     @classmethod
-    def capture(cls, *args, **kwargs):
-        return capture_selected_supports(from_logits, *args, **kwargs)
+    def capture(cls, logits, cu_num_logits, num_sampled_tokens, *args, **kwargs):
+        stash = _capture.get()
+        if stash is None:
+            return from_logits(logits, cu_num_logits, num_sampled_tokens, *args, **kwargs)
+        stash.extend([logits, cu_num_logits, num_sampled_tokens])
+        return None
 
     class DiscardChunks(list):
         def append(self, chunk):
@@ -106,7 +122,8 @@ def patch_request_replay():
     @wraps(from_new_request)
     def new_request(cls, tokenizer, request, *args, **kwargs):
         state = from_new_request(cls, tokenizer, request, *args, **kwargs)
-        if not wants_replay(request.sampling_params):
+        params = request.sampling_params
+        if not (wants_replay(params) or sampler_rows(params)):
             state.sampling_mask_chunks = DiscardChunks()
         return state
 

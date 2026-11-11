@@ -108,14 +108,18 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
 # NIXL's [build-system] requires are unpinned, so pip's build isolation picks up
 # new backends as they are released. meson-python 0.22.0 stopped keeping Meson's
 # build RPATH in wheel libraries, which dropped RUNPATH=/opt/ucx/lib and failed
-# the linkage check below on every build. Pin the validated backend.
+# the linkage check below on every build. Pin the validated backend. Only the
+# optional `nixl_ep` (off by default) builds against torch, so drop its pinned
+# torch from the build requires instead of downloading it into the build env.
 ARG INCLUDE_NIXL_FROM_SOURCE=1
-ARG NIXL_VERSION=0.10.1
+# NIXL tags carry a `v` prefix from 1.0 on.
+ARG NIXL_VERSION=v1.5.0
 RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         VIRTUAL_ENV=/app/.venv uv pip install pip \
         && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
         && cd /tmp/nixl \
         && uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml \
+        && sed -i '/^requires = /s/, *"torch[^"]*"//' pyproject.toml \
         && printf 'meson-python==0.21.1\n' > /tmp/nixl-build-constraints.txt \
         && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
            /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/tmp/nixl-whl \
@@ -225,6 +229,14 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
 # Install uv for development use
 COPY --from=uv /uv /uvx /usr/local/bin/
 
+# The platform installs Hub environments with `uv run --no-sync prime env install`.
+# The CLI gets its own tool venv so its dependencies stay out of prime-rl's lock;
+# `prime env install` still installs into the project venv (/app/.venv).
+ARG PRIME_CLI_VERSION=0.19.2
+RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
+    uv tool install --no-cache --python /usr/bin/python3.12 "prime==${PRIME_CLI_VERSION}" \
+    && prime --version
+
 USER appuser
 ENV PATH="/usr/local/bin:$PATH"
 WORKDIR /app
@@ -243,10 +255,7 @@ COPY --from=builder --chown=appuser:appuser \
     --exclude=lib/python3.12/site-packages/flash_attn \
     --exclude=lib/python3.12/site-packages/flash_attn_2_cuda*.so \
     /app/.venv /app/.venv
-RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]' \
-    && if [ "$(uname -m)" = "x86_64" ]; then \
-        /app/.venv/bin/python -c 'from importlib.metadata import version; version("flash-mla")'; \
-    fi
+RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"

@@ -134,7 +134,7 @@ def format_log_message(
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
-    # Env servers, by split (``envs/<split>/<name>.log``); one split lists its envs
+    # Env worker pools, by split (``envs/<split>/<name>.log``); one split lists its envs
     # directly, several list them under the split.
     splits = {split: names for split, names in (env_names or {}).items() if names}
     if splits:
@@ -229,7 +229,7 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     launch_toml = attempt_dir / f"{name}.toml"
     if launch_toml.is_file():
         lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
-    # A label starting with a space is a sub-entry (an env server under its split), cut
+    # A label starting with a space is a sub-entry (an env worker pool under its split), cut
     # to the column like the Logs block cuts env names.
     for label, path in components:
         if label.startswith(" "):
@@ -244,30 +244,37 @@ def write_launch_artifacts(config_dir: Path, name: str) -> None:
     write_launch_toml(config_dir, name)
 
 
-def env_address_file(config_dir: Path, split: str, name: str) -> Path:
-    """Where a launcher-managed env server publishes the address it bound
-    (``envs/<split>/<name>.address``, next to its config). The server binds an
-    OS-assigned port, so two runs on one host never race for the same one; a client
-    waits for this file instead of assuming a port."""
-    return config_dir / "envs" / split / f"{name}.address"
+def env_address_file(config_dir: Path, split: str, name: str, replica: int | None = None) -> Path:
+    """Where a launcher-managed env worker pool publishes the address it bound
+    (``envs/<split>/<name>.address``, next to its config, or ``<name>.<replica>.address``
+    for one of several replicas). The pool's broker binds an OS-assigned port, so two runs on one
+    host never race for the same one; a client waits for this file instead of assuming a
+    port."""
+    stem = name if replica is None else f"{name}.{replica}"
+    return config_dir / "envs" / split / f"{stem}.address"
 
 
-def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
-    """Write the ``EnvServerConfig`` of a launcher-managed source
+def write_env_worker_pool_config(
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, store_dir: Path | None = None
+) -> Path:
+    """Write the ``EnvWorkerPoolConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
-    server publishes the OS-assigned port it binds to the address file next to it."""
+    broker publishes the OS-assigned port it binds to the address file next to it. With
+    ``store_dir``, the pool keeps its training arrays in a rollout store under it."""
     env_dir = config_dir / "envs" / split
     env_dir.mkdir(parents=True, exist_ok=True)
     source_dict = dump_resolved_config(source)
-    server_config = {
+    pool_config = {
         "env": source_dict["env"],
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
-        "log": {"level": log.vf_level, "json_logging": log.json_logging},
+        "log": {"level": log.level, "json_logging": log.json_logging},
     }
+    if store_dir is not None:
+        pool_config["store_dir"] = store_dir.as_posix()
     path = env_dir / f"{source.resolved_name}.json"
-    path.write_text(json.dumps(server_config, indent=2))
+    path.write_text(json.dumps(pool_config, indent=2))
     return path
 
 
@@ -334,6 +341,15 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
+
+
+def resolve_latest_trainer_ckpt_step(ckpt_dir: Path) -> int | None:
+    """The newest step whose trainer checkpoint is complete (DCP writes ``.metadata`` last). A
+    newer step directory may hold only the orchestrator's checkpoint, or an interrupted save."""
+    steps = [
+        step for step in get_all_ckpt_steps(ckpt_dir) if (get_step_path(ckpt_dir, step) / "trainer/.metadata").exists()
+    ]
+    return max(steps, default=None)
 
 
 def has_checkpoints(output_dir: Path) -> bool:

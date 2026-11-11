@@ -25,7 +25,6 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from copy import copy
 from typing import Any
@@ -34,6 +33,7 @@ import numpy as np
 import pybase64
 from fastapi import Request
 from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
@@ -45,7 +45,6 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
-from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
 from prime_rl.inference.vllm.paired_capture import serialize_paired_support
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
@@ -84,15 +83,29 @@ def pack_sampled_logprobs(logprobs: FlatLogprobs) -> np.ndarray:
 
 class _PackedOutputs:
     """Wraps the result generator: takes the per-token payloads off each final
-    output (so upstream builds no per-token objects) and keeps them packed."""
+    output (so upstream builds no per-token objects) and keeps them packed.
+
+    ``request`` is the engine's request; ``serve_tokens_full_generator`` hands upstream a copy
+    whose logprobs are already off when they are packed here, since upstream reads
+    ``sampling_params.logprobs`` before it consumes the generator."""
 
     def __init__(self, generator: AsyncIterator[RequestOutput], request: GenerateRequest):
+        sampling_params = request.sampling_params
+        extra_args = sampling_params.extra_args or {}
         self._generator = generator
-        self._request = request
-        self._num_logprobs = request.sampling_params.logprobs
-        self._compact = (request.sampling_params.extra_args or {}).get("prl_compact_logprobs", False)
-        self._paired = (request.sampling_params.extra_args or {}).get("prl_paired_capture", False)
+        self._paired = extra_args.get("prl_paired_capture", False)
+        self._sampler_rows = extra_args.get("prl_sampler_rows", 0)
+        # ``serve_tokens`` asks for flat logprobs, so the engine returns FlatLogprobs here.
+        self._flat = (
+            sampling_params.flat_logprobs
+            and sampling_params.logprobs in (0, 1)
+            and not sampling_params.logprob_token_ids
+        )
         self.fields: dict[int, dict[str, Any]] = {}
+
+    @property
+    def strips_logprobs(self) -> bool:
+        return self._flat
 
     async def __aiter__(self):
         async for request_output in self._generator:
@@ -107,25 +120,25 @@ class _PackedOutputs:
                         "start": num_tokens - 1 - len(output.routed_experts),
                     }
                     output.routed_experts = None
-                if self._paired:
-                    mask = output.sampling_mask
-                    if mask is None or mask.ids.dtype != np.int64:
-                        raise ValueError("Missing paired sampling-support evidence")
-                    mask.ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
-                    output.logprobs = None
-                elif self._compact:
-                    assert output.logprobs is not None, "Did not output logprobs"
-                    assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
-                    fields["compact_logprobs"] = serialize_compact_logprobs(
-                        output.logprobs, self._num_logprobs, drop_filtered=output.sampling_mask is not None
+                mask = output.sampling_mask
+                if mask is not None and (mask.counts <= 0).any():
+                    raise ValueError(
+                        "Missing sampling support: the step's supports exceeded inference.sampling_support_capacity"
                     )
+                if self._paired or self._sampler_rows:
+                    if mask is None or mask.ids.dtype != np.int64:
+                        raise ValueError("Missing paired sampling-support evidence (needs enable_return_sampling_mask)")
+                    ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
+                    if self._paired:
+                        mask.ids = ids
+                    else:
+                        # Sampler rows are compact logprobs, not a support to replay.
+                        output.sampling_mask = None
                     output.logprobs = None
-                    self._request.sampling_params.logprobs = None
-                elif isinstance(output.logprobs, FlatLogprobs) and (self._num_logprobs or 0) <= 1:
+                elif self._flat:
+                    assert isinstance(output.logprobs, FlatLogprobs), "Did not output flat logprobs"
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
                     output.logprobs = None
-                    # Upstream would build ``logprobs.content`` from the logprobs we took.
-                    self._request.sampling_params.logprobs = None
                 mask = output.sampling_mask
                 if mask is not None:
                     fields["sampling_mask"] = {
@@ -155,23 +168,24 @@ class PrimeRlServingTokens(ServingTokens):
         raw_request: Request | None = None,
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
-        if (sampling_params.extra_args or {}).get("prl_compact_logprobs", False):
-            if request.stream or sampling_params.logprobs is None:
-                return self.create_error_response(
-                    "Compact logprobs require a non-streaming request with logprobs enabled"
-                )
         extra_args = sampling_params.extra_args or {}
-        paired = (
-            not request.stream
-            and extra_args.get("prl_replay", False)
-            and extra_args.get("prl_compact_logprobs", False)
-            and os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1"
-        )
-        sampling_params.extra_args = {**extra_args, "prl_paired_capture": paired}
-        if paired:
-            # Full support evidence supplies both sampled and candidate logprobs.
-            sampling_params.logprobs = None
-        if not request.stream:
+        captures = extra_args.get("prl_replay", False) or extra_args.get("prl_sampler_rows", 0)
+        if captures and (request.stream or request.output_mode != "tokens"):
+            return self.create_error_response("Sampling-support capture requires a non-streaming tokens request")
+        if extra_args.get("prl_compact_logprobs", False):
+            if request.stream or request.output_mode != "tokens" or sampling_params.logprobs is None:
+                return self.create_error_response(
+                    "Compact logprobs require a non-streaming tokens request with logprobs enabled"
+                )
+            # Captured on the GPU: the replayed support, or the sampled token plus the top ids.
+            # logprobs = 0 (sampled token only) keeps vLLM's flat logprobs.
+            if extra_args.get("prl_replay", False):
+                sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
+                sampling_params.logprobs = None
+            elif rows := sampling_params.logprobs:
+                sampling_params.extra_args = {**extra_args, "prl_sampler_rows": rows}
+                sampling_params.logprobs = None
+        if not request.stream and request.output_mode == "tokens":
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
             if not sampling_params.stop:
@@ -185,16 +199,26 @@ class PrimeRlServingTokens(ServingTokens):
         request_id: str,
         model_name: str,
         request_metadata: RequestResponseMetadata,
+        derender_request: ChatCompletionRequest | None = None,
     ) -> ErrorResponse | GenerateResponse:
-        # The engine still needs the original sampling params while formatting strips payloads.
-        request = request.model_copy(update={"sampling_params": copy(request.sampling_params)})
+        if request.output_mode != "tokens":
+            return await super().serve_tokens_full_generator(
+                request, result_generator, request_id, model_name, request_metadata, derender_request=derender_request
+            )
         packed = _PackedOutputs(result_generator, request)
+        # The engine still needs the original sampling params; upstream formats from a copy without
+        # the logprobs we pack, or it would build ``logprobs.content`` from them.
+        sampling_params = copy(request.sampling_params)
+        if packed.strips_logprobs:
+            sampling_params.logprobs = None
+        request = request.model_copy(update={"sampling_params": sampling_params})
         response = await super().serve_tokens_full_generator(
             request,
             packed,
             request_id,
             model_name,
             request_metadata,
+            derender_request=derender_request,
         )
         if isinstance(response, GenerateTokensResponse):
             response = packed.post_process(response)

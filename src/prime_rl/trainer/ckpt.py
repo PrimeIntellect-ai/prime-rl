@@ -1,5 +1,6 @@
 import bisect
 import gc
+import json
 import shutil
 import time
 from dataclasses import asdict, dataclass
@@ -8,7 +9,12 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict, set_state_dict
+from torch.distributed.checkpoint.state_dict import (
+    get_model_state_dict,
+    get_state_dict,
+    set_model_state_dict,
+    set_state_dict,
+)
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
@@ -19,6 +25,9 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
     join_loaded_optimizer_state_for_runtime,
     split_packed_optimizer_state_for_checkpoint,
@@ -130,6 +139,12 @@ class AppState(Stateful):
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
+            # The in-place load reaches tensors only: restore the param groups' values too (dion's Muon keeps its
+            # step count there, so AdamW's bias correction would restart).
+            loaded_groups = iter(state_dict["optimizers"]["param_groups"])
+            for optimizer in checkpoint_optimizers:
+                for group in optimizer.param_groups:
+                    group.update({key: value for key, value in next(loaded_groups).items() if key != "params"})
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
@@ -200,10 +215,26 @@ class CheckpointManager:
             torch.distributed.barrier(group=get_dcp_group())
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
-        # Save sharded state
+        # Before the sharded state, so the mapping is in place once .metadata appears
+        self._save_mapping(path, model)
         dcp_save(state_dict, checkpoint_id=path, process_group=get_dcp_group())
 
         self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
+
+    def _save_mapping(self, path: Path, model: nn.Module) -> None:
+        """Write the prime -> HF conversion of the saved model weights as views, so a reader can
+        serve the checkpoint in HF names without converting it."""
+        if not isinstance(model, PreTrainedModelPrimeRL) or has_lora_layers(model):
+            self.logger.info("Not writing mapping.json: only full-weight PrimeRL models declare their HF conversion")
+            return
+        shapes = {key: value.shape for key, value in get_model_state_dict(model).items()}
+        tensors = view_mapping(model.conversion_chain(model.config), shapes)
+        if tensors is None:
+            self.logger.info("Not writing mapping.json: the conversion to HF is more than views")
+            return
+        if self.world.is_master:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "mapping.json").write_text(json.dumps({"prefix": "app.model.", "tensors": tensors}))
 
     def load_from_path(
         self,
@@ -218,19 +249,7 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
-        # Load sharded state
-        app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
-        state_dict = {"app": app_state}
-        dcp_load(state_dict=state_dict, checkpoint_id=path, process_group=get_dcp_group())
-        # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
-        # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
-        # reserves on top of them instead of reusing them.
-        gc.collect()
-        torch.cuda.empty_cache()
-        if self.skip_optimizer:
-            for optimizer in optimizers:
-                if isinstance(optimizer, OffloadOptimizer):
-                    optimizer.finish_model_only_checkpoint_load()
+        _load_app_state(path, model, optimizers, scheduler, progress, model_only=self.skip_optimizer)
 
         # Load the dataloader
         if dataloader is not None:
@@ -247,6 +266,15 @@ class CheckpointManager:
             dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
 
         self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
+
+    def load_weights(self, path: Path, model: nn.Module, optimizers: list[OptimizerLike]) -> None:
+        """Load only the model weights of the trainer checkpoint at ``path`` (in-place)."""
+        if not path.exists():
+            raise FileNotFoundError(f"model.init_from has no trainer checkpoint at {path}")
+        self.logger.info(f"Initializing weights from {path}")
+        start_time = time.perf_counter()
+        _load_app_state(path, model, optimizers, scheduler=None, progress=None, model_only=True)
+        self.logger.debug(f"Loaded weights in {format_time(time.perf_counter() - start_time)}")
 
     def load(
         self,
@@ -329,3 +357,25 @@ def setup_ckpt_manager(
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
     return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+
+
+def _load_app_state(
+    path: Path,
+    model: nn.Module,
+    optimizers: list[OptimizerLike],
+    scheduler: LRScheduler | None,
+    progress: Progress | None,
+    *,
+    model_only: bool,
+) -> None:
+    app_state = AppState(model, [] if model_only else optimizers, scheduler, progress)
+    dcp_load(state_dict={"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
+    # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
+    # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
+    # reserves on top of them instead of reusing them.
+    gc.collect()
+    torch.cuda.empty_cache()
+    if model_only:
+        for optimizer in optimizers:
+            if isinstance(optimizer, OffloadOptimizer):
+                optimizer.finish_model_only_checkpoint_load()

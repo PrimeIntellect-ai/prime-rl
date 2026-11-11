@@ -2,7 +2,7 @@ import pytest
 
 from prime_rl.trainer.models import get_custom_vlm_cls, supports_custom_impl
 from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerForCausalLM, MuseGlimmerTextConfig
-from prime_rl.utils.vlm import get_language_model, get_layer_prefix
+from prime_rl.trainer.vlm import get_language_model, get_layer_prefix
 
 
 def _text_config(**overrides) -> MuseGlimmerTextConfig:
@@ -38,7 +38,6 @@ def test_composite_config_roundtrip_keeps_vision_config():
     assert restored.vision_config == {"hidden_size": 32}
     assert supports_custom_impl(restored)
     assert get_custom_vlm_cls(restored) is MuseGlimmerForCausalLM
-    assert get_layer_prefix(restored) == "model.language_model.layers."
 
 
 def test_state_dict_uses_checkpoint_names():
@@ -46,6 +45,7 @@ def test_state_dict_uses_checkpoint_names():
     config._attn_implementation = "flash_attention_2"
     model = MuseGlimmerForCausalLM(config)
     assert len(get_language_model(model).layers) == 1
+    assert get_layer_prefix(model) == "model.language_model.layers."
     layer = "model.language_model.layers.0"
     assert set(model.state_dict()) == {
         "lm_head.weight",

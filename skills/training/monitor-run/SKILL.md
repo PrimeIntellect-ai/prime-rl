@@ -1,9 +1,11 @@
 ---
 name: monitor-run
-description: Monitor an ongoing prime-rl training run — find the output directory, tail logs, check key metrics, inspect SLURM jobs, and restart safely. Use when asked to check on a run, debug training, or investigate performance.
+description: Monitor a local or SLURM prime-rl training run — find the output directory, tail logs, check key metrics, inspect jobs, and restart safely. Model Factory monitoring uses model-factory.
 ---
 
 # Monitor a run
+
+For a managed Model Factory run ID or dashboard link, use the [model-factory skill](../../model-factory/SKILL.md) for `prime train` status, logs, metrics, and stop commands.
 
 ## Runbook
 
@@ -106,7 +108,7 @@ grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 
 ### Live rollouts
 
-`{run_dir}/monitors/file/traces/live/<trace_id>.jsonl` holds the env server's streamed deltas of one live rollout (train or eval) and disappears when its episode lands in the stream, so the directory is the live set. `uv run python -m prime_rl.monitors.file.traces {run_dir}` prints one row per live trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), turns, tokens, elapsed and the latest message; with a trace id it prints the assembled trace. The dashboard's traces tab shows them in the episode table (tinted, phase badge, growing counts; filter status → in flight) and opens them in the viewer.
+`{run_dir}/monitors/file/traces/live/<trace_id>.jsonl` holds the env worker pool's streamed deltas of one live rollout (train or eval) and disappears when its episode lands in the stream, so the directory is the live set. `uv run python -m prime_rl.monitors.file.traces {run_dir}` prints one row per live trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), turns, tokens, elapsed and the latest message; with a trace id it prints the assembled trace. The dashboard's traces tab shows them in the episode table (tinted, phase badge, growing counts; filter status → in flight) and opens them in the viewer.
 
 ### Metrics
 
@@ -138,6 +140,7 @@ All metrics print to the console log (and W&B when configured).
 | Metric | Description |
 |--------|-------------|
 | `mismatch_kl/{all,env}/{mean,std,max}` | KL between trainer and (old) inference policy over trainable tokens |
+| `mismatch_kl_by_staleness/{bin}/{mean,std,max}` | the same KL per log2 token-staleness bin (`0`, `1`, `2-3`, `4-7`, …); bin `0` is numerical mismatch alone, the rise across bins is staleness drift |
 | `entropy/{all,env}/{mean,std,max}` | policy entropy over trainable tokens |
 | `is_masked/mean` | fraction of tokens masked by the IPO trust region |
 | `optim/grad_norm` | spikes may precede divergence |
@@ -154,7 +157,7 @@ All metrics print to the console log (and W&B when configured).
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
 | orchestrator | `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
 | orchestrator | `staleness/token/{mean,masked}`, `staleness/rollout/{mean,max}`, `staleness/rollout/{in_flight,in_queue}/{mean,max}`, `staleness/rollout/dropped` | per-step token and rollout staleness of trained rollouts (rollout = max token staleness) |
-| env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
+| env worker pool | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window and reports stale, errored, and no-signal counts.
 
@@ -214,7 +217,7 @@ stream records, newest winning.
 wc -l {run_dir}/monitors/file/traces/stream.index.jsonl
 zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq '.traces[].rewards'
 zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq 'select(.ok | not) | {id, env: .env.id, errors}'
-jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orch.index.jsonl
+jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orchestrator.index.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).
@@ -235,9 +238,9 @@ All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 ```
 PRL::Launcher
 ├── PRL::Inference          (vLLM server, GPU 0)
-├── PRL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
-│   └── Verifiers::EnvWorker0..N
-├── PRL::Orchestrator       (CPU-only; connects to each env server)
+├── PRL::EnvBroker          (one worker pool replica per train/eval source)
+│   └── PRL::EnvWorker      (spawned processes, 1..N per pool; execute episodes)
+├── PRL::Orchestrator       (CPU-only; connects to each env worker pool)
 ├── torchrun
 │   └── PRL::Trainer        (GPU 1+)
 └── tail trainer.log

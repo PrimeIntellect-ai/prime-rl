@@ -12,8 +12,6 @@ ep = 8                      # keep in sync with deployment.num_train_gpus
 name = "auto"
 
 [model.vlm]
-vision_encoder_attr = "model.visual"
-language_model_attr = "model.language_model"
 freeze_vision_encoder = true
 
 [model.lora]
