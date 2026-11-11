@@ -218,6 +218,10 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
     quantizes like the sampler's."""
+    down_input_scale: Literal["static", "per_token"] = "static"
+    """Global scale of the down projection's input (the SwiGLU output). ``static``: 1.0 for every token, how vLLM's
+    online NVFP4 engines (FlashInfer TRTLLM) quantize it, so rollouts sample-match. ``per_token``: each token's
+    amax / 2688, as for the first GEMM's input (Composer 2's choice), for engines that quantize it per token too."""
     exact_division: bool = False
     """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
     IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
