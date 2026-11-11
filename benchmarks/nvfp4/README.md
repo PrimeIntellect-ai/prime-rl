@@ -48,12 +48,18 @@ One expert layer forward and backward per shape and tokens per expert (T). Read:
   removes `top_k - 1` of every `top_k` activation quantizations of the gate_up input); `grad_quant_one_pass`
   against `two_pass` the gradient fusion.
 
+Then compare against TransformerEngine's NVFP4 (humans&'s implementation: 4/6, dequantized backward, bit-exact with
+FlashInfer per their post) as the trainer-side kernel, at the same shapes, for speed and for bytes against vLLM's
+TRTLLM engines. If it matches the engines and is faster or equally fast, it is a maintained alternative to
+prime-kernels' NVFP4 GEMM; engines stay on vLLM either way.
+
 ## 3. RL numerics (hours per run)
 
 Math RL on Qwen3-30B-A3B, one 8-GPU node, 200 steps per variant:
 
 ```bash
-for variant in bf16 bf16-replay nvfp4 nvfp4-no-replay nvfp4-no-4over6 nvfp4-dequant-bwd nvfp4-dense-mxfp8; do
+for variant in bf16 bf16-replay nvfp4 nvfp4-no-replay nvfp4-no-4over6 nvfp4-dequant-bwd nvfp4-dequant-mxfp8 \
+    nvfp4-85pct nvfp4-humans nvfp4-dense-mxfp8; do
   uv run rl @ benchmarks/nvfp4/base.toml @ benchmarks/nvfp4/$variant.toml --output-dir outputs/nvfp4-$variant
 done
 python benchmarks/nvfp4/compare.py outputs/nvfp4-bf16-replay outputs/nvfp4-*
@@ -66,6 +72,9 @@ python benchmarks/nvfp4/compare.py outputs/nvfp4-bf16-replay outputs/nvfp4-*
 | `nvfp4-no-replay` | is router replay needed? |
 | `nvfp4-no-4over6` | does 4/6 scaling matter? |
 | `nvfp4-dequant-bwd` | MXFP8 backward against BF16 gradients on the dequantized operands |
+| `nvfp4-dequant-mxfp8` | MXFP8 gradients on the dequantized operands: humans&'s gradient consistency at MXFP8 speed |
+| `nvfp4-85pct` | last 15% of MoE layers in BF16 |
+| `nvfp4-humans` | humans&'s full recipe (dequantized BF16 backward + 4/6 + last 15% BF16); they saw no grad-norm spikes only with all three |
 | `nvfp4-dense-mxfp8` | dense layers in MXFP8 too (shared experts, router, LM head stay BF16) |
 
 The bar: `nvfp4` reward within run-to-run noise of `bf16-replay`, mismatch KL of the same order (a few times
