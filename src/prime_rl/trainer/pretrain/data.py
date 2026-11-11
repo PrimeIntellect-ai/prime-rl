@@ -1,13 +1,14 @@
-"""Pretraining data: datatrove tokenized shards read as one token pool and cut into windows of ``seq_len`` tokens,
-and for validation every held-out document scored on its own."""
+"""Pretraining data: datatrove tokenized shards read as one token pool and cut into samples of ``seq_len`` tokens
+(windows or best-fit packing), and for validation every held-out document scored on its own."""
 
+import bisect
 from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import DatatroveDataConfig
+from prime_rl.configs.pretrain import DatatroveDataConfig, PretrainDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
@@ -61,7 +62,8 @@ class TokenShards:
 
     Each epoch reads all ``num_tokens // seq_len`` windows of the stream once, in a random order and from a random
     offset drawn from ``seed`` and the epoch, so epochs differ in order and window boundaries. The last
-    ``num_tokens % seq_len`` tokens of an epoch are skipped."""
+    ``num_tokens % seq_len`` tokens of an epoch are skipped. ``documents`` finds the documents that start in given
+    windows."""
 
     def __init__(self, paths: list[Path], seed: int = 0):
         self.files = []
@@ -74,6 +76,8 @@ class TokenShards:
         sizes = [file.stat().st_size // dtype.itemsize for file, dtype in zip(self.files, self.dtypes)]
         self.starts = np.cumsum([0, *sizes])
         self.num_tokens = int(self.starts[-1])
+        # The index of every file's first document in the stream.
+        self.doc_offsets = np.cumsum([0, *(Path(f"{file}.index").stat().st_size // 8 for file in self.files)])
         self.seed = seed
         self.memmaps: OrderedDict[int, tuple[np.memmap, np.memmap]] = OrderedDict()
 
@@ -116,16 +120,55 @@ class TokenShards:
             offset += size
         return np.concatenate(pieces).astype(np.int64), doc_starts
 
-    def window_start(self, position: int, seq_len: int) -> int:
-        """Stream offset of the window to read when ``position`` tokens have been read: the epoch reads its
-        ``num_tokens // seq_len`` windows in a pseudo-random order and from a random offset, both drawn from ``seed``
-        and the epoch. Every window is computed on its own, so neither time nor memory grow with the pool."""
-        num_windows = self.num_tokens // seq_len
-        epoch, window = divmod(position // seq_len, num_windows)
+    def window_starts(self, epoch: int, windows: np.ndarray, seq_len: int) -> np.ndarray:
+        """Stream offsets of ``windows`` of ``epoch``: the epoch reads its ``num_tokens // seq_len`` windows in a
+        pseudo-random order and from a random offset, both drawn from ``seed`` and the epoch. Every window is computed
+        on its own, so neither time nor memory grow with the pool or with the position in it."""
         key = mix(mix(np.array([self.seed], dtype=np.uint64)) + np.uint64(epoch))
         offset = int(mix(key ^ np.uint64(1))[0] % np.uint64(self.num_tokens))
-        order = int(permute(np.array([window]), num_windows, int(key[0]))[0])
+        order = permute(windows, self.num_tokens // seq_len, int(key[0]))
         return (offset + order * seq_len) % self.num_tokens
+
+    def window_start(self, position: int, seq_len: int) -> int:
+        """Stream offset of the window to read when ``position`` tokens have been read."""
+        epoch, window = divmod(position // seq_len, self.num_tokens // seq_len)
+        return int(self.window_starts(epoch, np.array([window]), seq_len)[0])
+
+    def documents_before(self, positions: np.ndarray) -> np.ndarray:
+        """The number of documents of the stream that start before each of ``positions`` (0 to ``num_tokens``)."""
+        files = np.searchsorted(self.starts, positions, side="right") - 1
+        counts = np.full(len(positions), self.doc_offsets[-1])
+        for file_index in np.unique(files[files < len(self.files)]):
+            selected = files == file_index
+            # uint64 like the index, so that searchsorted does not convert the whole index.
+            local = (positions[selected] - self.starts[file_index]).astype(np.uint64)
+            _, doc_ends = self.open(int(file_index))
+            # Document i starts where document i - 1 ends, document 0 at 0.
+            counts[selected] = self.doc_offsets[file_index] + np.where(
+                local > 0, np.searchsorted(doc_ends, local) + 1, 0
+            )
+        return counts
+
+    def documents(self, starts: np.ndarray, length: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """File index, offset in the file and length of the documents that start in the ranges ``[start, start +
+        length)`` of the cyclic stream, range by range and in stream order within a range."""
+        ends = starts + length
+        first = self.documents_before(starts)
+        last = self.documents_before(np.minimum(ends, self.num_tokens))
+        # A range past the end of the stream continues at its start.
+        wrapped = self.documents_before(np.maximum(ends - self.num_tokens, 0))
+        low = np.stack([first, np.zeros_like(first)], axis=1).ravel()
+        counts = np.stack([last, wrapped], axis=1).ravel() - low
+        index = np.repeat(low - (np.cumsum(counts) - counts), counts) + np.arange(counts.sum())
+        files = np.searchsorted(self.doc_offsets, index, side="right") - 1
+        begins, lengths = np.empty(len(index), dtype=np.int64), np.empty(len(index), dtype=np.int64)
+        for file_index in np.unique(files):
+            selected = files == file_index
+            local = index[selected] - self.doc_offsets[file_index]
+            _, doc_ends = self.open(int(file_index))
+            begin = np.where(local > 0, doc_ends[np.maximum(local - 1, 0)].astype(np.int64), 0)
+            begins[selected], lengths[selected] = begin, doc_ends[local].astype(np.int64) - begin
+        return files, begins, lengths
 
 
 class TokenDataset(StatefulIterableDataset):
@@ -187,6 +230,139 @@ def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | 
     if eod_token is None:
         return loss_mask
     return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
+
+
+def best_fit_decreasing(lengths: list[int], capacity: int) -> list[list[int]]:
+    """Best-fit decreasing bin packing: the items, longest first, each go into the fullest bin with room for them, else
+    into a new bin. Returns the items of every bin. Bins are found by their free space, which has at most ``capacity``
+    values (Ding et al., 2024)."""
+    bins: list[list[int]] = []
+    by_space: dict[int, list[int]] = {}  # free space -> the bins with that much free space
+    spaces: list[int] = []  # the keys of by_space, sorted
+    for item in sorted(range(len(lengths)), key=lambda item: -lengths[item]):
+        length = lengths[item]
+        k = bisect.bisect_left(spaces, length)
+        if k == len(spaces):
+            bin_index, space = len(bins), capacity
+            bins.append([item])
+        else:
+            space = spaces[k]
+            bin_index = by_space[space].pop()
+            if not by_space[space]:
+                del by_space[space], spaces[k]
+            bins[bin_index].append(item)
+        space -= length
+        if space:
+            if space not in by_space:
+                by_space[space] = []
+                bisect.insort(spaces, space)
+            by_space[space].append(bin_index)
+    return bins
+
+
+class BestFitTokenDataset(TokenDataset):
+    """Rows of whole documents, packed by best-fit decreasing (Best-fit Packing, Ding et al., "Fewer Truncations
+    Improve Language Modeling", 2024). A row holds ``seq_len + 1`` tokens: the inputs and, shifted by one, the targets.
+    Only a document longer than a row is cut, into pieces of a row's length that start every ``seq_len`` tokens: a
+    piece's first token is the previous piece's last target, so no prediction is lost, and the target that would
+    predict it from another document is masked. A row that is not full ends in padding without loss, in a segment of
+    its own.
+
+    Each epoch takes the windows of the token pool in TokenDataset's order, in groups of ``group_windows``, packs the
+    documents that start in a group's windows together and shuffles the group's rows. Every data rank packs every group
+    (from the document lengths only) but reads only its own rows, so ``step`` counts the rows of all ranks;
+    ``group_start`` (epoch, group, index of the group's first row) is where a resumed run starts walking."""
+
+    def __init__(
+        self,
+        shards: TokenShards,
+        seq_len: int,
+        document_masking: bool = True,
+        non_dp_size: int = 1,
+        eod_mask_token: int | None = None,
+        group_windows: int = 4096,
+    ):
+        super().__init__(shards, seq_len, document_masking, non_dp_size, eod_mask_token)
+        self.group_windows = group_windows
+        self.group_start = (0, 0, 0)
+
+    def state_dict(self) -> dict:
+        return {**super().state_dict(), "group_start": self.group_start}
+
+    def load_state_dict(self, state_dict: dict):
+        super().load_state_dict(state_dict)
+        self.group_start = tuple(state_dict["group_start"])
+
+    def pack(self, epoch: int, group: int) -> list[list[tuple[int, int, int, bool]]]:
+        """The rows of a group, in their order: every piece's file index, offset in the file, length, and whether it
+        continues a document."""
+        num_windows = self.shards.num_tokens // self.seq_len
+        windows = np.arange(group * self.group_windows, min((group + 1) * self.group_windows, num_windows))
+        files, begins, lengths = self.shards.documents(
+            self.shards.window_starts(epoch, windows, self.seq_len), self.seq_len
+        )
+        # An empty document would be a row of its own when all other rows are full.
+        nonempty = lengths > 0
+        files, begins, lengths = files[nonempty], begins[nonempty], lengths[nonempty]
+        num_pieces = np.maximum(-(-(lengths - 1) // self.seq_len), 1)
+        document = np.repeat(np.arange(len(lengths)), num_pieces)
+        piece = np.arange(len(document)) - np.repeat(np.cumsum(num_pieces) - num_pieces, num_pieces)
+        pieces = list(
+            zip(
+                files[document].tolist(),
+                (begins[document] + piece * self.seq_len).tolist(),
+                np.minimum(lengths[document] - piece * self.seq_len, self.seq_len + 1).tolist(),
+                (piece > 0).tolist(),
+            )
+        )
+        bins = best_fit_decreasing([length for _, _, length, _ in pieces], self.seq_len + 1)
+        rng = np.random.default_rng([self.shards.seed, epoch, group])
+        return [[pieces[i] for i in bins[b]] for b in rng.permutation(len(bins))]
+
+    def sample(self, row: list[tuple[int, int, int, bool]]) -> dict:
+        ids = np.concatenate([self.shards.open(file)[0][begin : begin + length] for file, begin, length, _ in row])
+        ids = ids.astype(np.int64).tolist()
+        num_inputs, num_targets = min(len(ids), self.seq_len), min(len(ids) - 1, self.seq_len)
+        loss_mask = [True] * num_targets + [False] * (self.seq_len - num_targets)
+        seq_lens, end = [], 0
+        for _, _, length, continued in row:
+            if continued and end > 0:
+                loss_mask[end - 1] = False
+            seq_lens.append(min(length, num_inputs - end))
+            end += length
+        seq_lens = [length for length in seq_lens if length > 0] if self.document_masking else [num_inputs]
+        input_ids = ids[:num_inputs]
+        loss_mask = eod_loss_mask(input_ids + [None] * (self.seq_len - num_inputs), loss_mask, self.eod_mask_token)
+        padding = self.seq_len - num_inputs
+        if padding:
+            # As CatDataset: identical pad tokens would route to the same MoE experts.
+            input_ids += repeat_to_length(input_ids, padding)
+            seq_lens.append(padding)
+        return {
+            "input_ids": input_ids,
+            "target_ids": ids[1 : num_targets + 1] + [0] * (self.seq_len - num_targets),
+            "position_ids": [position for length in seq_lens for position in range(length)],
+            "loss_mask": loss_mask,
+            "seq_lens": seq_lens,
+            "mm_kwargs": None,
+            "mm_token_type_ids": None,
+        }
+
+    def __iter__(self):
+        self._setup_world_info()
+        num_groups = -(-(self.shards.num_tokens // self.seq_len) // self.group_windows)
+        epoch, group, first = self.group_start
+        while True:
+            rows = self.pack(epoch, group)
+            while self.step < first + len(rows):
+                row = self.step
+                self.step += 1
+                self.epoch = epoch + (group + (self.step - first) / len(rows)) / num_groups
+                if row % self.data_world_size == self.data_rank:
+                    yield self.sample(rows[row - first])
+            first += len(rows)
+            epoch, group = divmod(epoch * num_groups + group + 1, num_groups)
+            self.group_start = (epoch, group, first)
 
 
 Window = tuple[int, int, int]
@@ -346,9 +522,10 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 
 def setup_token_dataset(
-    config: DatatroveDataConfig, non_dp_size: int = 1, eod_mask_token: int | None = None
+    config: PretrainDataConfig, non_dp_size: int = 1, eod_mask_token: int | None = None
 ) -> TokenDataset:
-    return TokenDataset(
+    token_dataset = BestFitTokenDataset if config.packing == "best_fit" else TokenDataset
+    return token_dataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
         document_masking=config.document_masking,

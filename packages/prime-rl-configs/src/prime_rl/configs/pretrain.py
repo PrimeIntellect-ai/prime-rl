@@ -26,7 +26,7 @@ class DatatroveDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
-    and from a new random offset."""
+    and from a new random offset. Best-fit packing also shuffles its samples with it."""
 
     document_masking: bool = True
     """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
@@ -35,6 +35,12 @@ class DatatroveDataConfig(BaseDataConfig):
 
 class PretrainDataConfig(DatatroveDataConfig):
     """Training shards."""
+
+    packing: Literal["windows", "best_fit"] = "windows"
+    """How documents become samples. ``windows``: the pool's ``seq_len`` windows; documents are cut at window edges,
+    and every token is trained on. ``best_fit``: whole documents packed into samples by best-fit decreasing (Ding et
+    al., 2024); only documents longer than ``seq_len`` are cut, and samples that are not full end in padding without
+    loss."""
 
     eod_mask_loss: bool = True
     """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
