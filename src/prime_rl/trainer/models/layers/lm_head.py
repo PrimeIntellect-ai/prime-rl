@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from prime_rl.trainer.models.kernels.segment_reduce import csr_matmul, segment_logsumexp, segment_sum
+from prime_rl.trainer.models.layers.fp32_linear import FP32OutputMatmulBF16Backward, fp32_output_mm
 from prime_rl.utils.logger import get_logger
 
 # Same as torch's cross entropy loss
@@ -161,7 +162,7 @@ class FusedOutputLinear(torch.nn.Linear):
 class VanillaOutputLinear(torch.nn.Linear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
     cross-entropy over labels != IGNORE_INDEX as ``loss``. The logits are FP32, also from BF16 operands (see
-    ``_logits``); with ``softcap`` they are capped first."""
+    ``fp32_output_mm``); with ``softcap`` they are capped first."""
 
     def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
         super().__init__(in_features, out_features, bias=False)
@@ -174,7 +175,9 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         support: TokenSupport | None = None,
     ) -> PrimeLmOutput:
-        logits = _LogitsFn.apply(hidden_states.flatten(0, -2), self.weight).unflatten(0, hidden_states.shape[:-1])
+        logits = FP32OutputMatmulBF16Backward.apply(hidden_states.flatten(0, -2), self.weight).unflatten(
+            0, hidden_states.shape[:-1]
+        )
         if self.softcap is not None:
             logits = self.softcap * torch.tanh(logits / self.softcap)
         if labels is not None and temperature is None:
@@ -188,32 +191,6 @@ def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
     return F.cross_entropy(
         logits.view(-1, logits.shape[-1]).float(), labels.reshape(-1), ignore_index=IGNORE_INDEX, reduction="sum"
     )
-
-
-def _logits(hidden: Tensor, weight: Tensor) -> Tensor:
-    """``hidden @ weight.T`` for 2D operands. CUDA BF16/FP16 operands get FP32 logits from the GEMM instead of logits
-    rounded to their dtype, like vLLM's FP32 LM head."""
-    if hidden.is_cuda and hidden.dtype in (torch.bfloat16, torch.float16):
-        return torch.mm(hidden, weight.t(), out_dtype=torch.float32)
-    return hidden @ weight.t()
-
-
-class _LogitsFn(torch.autograd.Function):
-    """``_logits`` with autograd (``torch.mm`` with ``out_dtype`` has none). The backward casts the logit gradient to
-    the operands' dtype, so its GEMMs are the ones of BF16 logits."""
-
-    @staticmethod
-    def forward(ctx, hidden: Tensor, weight: Tensor) -> Tensor:
-        ctx.save_for_backward(hidden, weight)
-        return _logits(hidden, weight)
-
-    @staticmethod
-    def backward(ctx, grad_logits: Tensor) -> tuple[Tensor | None, Tensor | None]:
-        hidden, weight = ctx.saved_tensors
-        grad_logits = grad_logits.to(hidden.dtype)
-        grad_hidden = grad_logits @ weight if ctx.needs_input_grad[0] else None
-        grad_weight = grad_logits.t() @ hidden if ctx.needs_input_grad[1] else None
-        return grad_hidden, grad_weight
 
 
 def _online_logsumexp_and_weighted_update(
@@ -373,7 +350,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                scaled_logits = _logits(hidden_chunk, weight_chunk).to(torch.float32)
+                scaled_logits = fp32_output_mm(hidden_chunk, weight_chunk).to(torch.float32)
                 if softcap is not None:
                     scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
                 scaled_logits = scaled_logits * inv_t_chunk
@@ -479,7 +456,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                scaled_logits = _logits(hidden_chunk, weight_chunk).to(torch.float32)
+                scaled_logits = fp32_output_mm(hidden_chunk, weight_chunk).to(torch.float32)
                 if softcap is not None:
                     tanh_logits = torch.tanh(scaled_logits / softcap)
                     scaled_logits = softcap * tanh_logits
@@ -553,7 +530,7 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
             valid = labels_chunk != IGNORE_INDEX
             target = labels_chunk.clamp(min=0).unsqueeze(-1)
 
-            logits = _logits(hidden_chunk, weight).float()
+            logits = fp32_output_mm(hidden_chunk, weight).float()
             if softcap is not None:
                 tanh_logits = torch.tanh(logits / softcap)
                 logits = softcap * tanh_logits
