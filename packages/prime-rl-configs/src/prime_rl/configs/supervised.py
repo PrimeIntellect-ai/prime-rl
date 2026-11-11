@@ -201,6 +201,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 )
 
         # Weights other than the HF model's reach the server with the trainer's startup broadcast.
+        if self.model.init.type != "hf" and self.model.lora is not None:
+            raise ValueError(
+                'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
+            )
         if self.inference is not None and self.model.init.type != "hf":
             check_derived(self.inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
             self.inference.vllm.load_format = "dummy"

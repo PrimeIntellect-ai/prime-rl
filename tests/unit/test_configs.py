@@ -1491,6 +1491,17 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_ty
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_lora_requires_the_hf_init():
+    with pytest.raises(ValidationError, match="LoRA broadcasts only the adapter"):
+        RLConfig.model_validate(
+            {
+                "model": {"init": {"type": "scratch"}},
+                "trainer": {"model": {"lora": {}}},
+                "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            }
+        )
+
+
 def test_score_centering_replays_top_p_alone():
     config = RLConfig.model_validate(
         {

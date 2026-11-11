@@ -416,6 +416,10 @@ class RLConfig(BaseConfig):
     def auto_setup_dummy_load(self):
         """Weights other than the HF model's reach inference with the trainer's startup broadcast, so vLLM loads
         none."""
+        if self.trainer.model.init.type != "hf" and self.trainer.model.lora is not None:
+            raise ValueError(
+                'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
+            )
         if self.inference is not None and self.trainer.model.init.type != "hf":
             check_derived(self.inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
             self.inference.vllm.load_format = "dummy"
