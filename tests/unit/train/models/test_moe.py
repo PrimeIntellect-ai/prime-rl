@@ -11,6 +11,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     BF16ExpertCompute,
     GroupedGemmExpertCompute,
     NVFP4ExpertCompute,
+    clear_quantized_weight_caches,
 )
 from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -361,12 +362,11 @@ def test_nvfp4_expert_compute_quantizes_weights_once_per_optimizer_step():
     moe = MoE.from_args(MoEArgs(num_experts=2), dim=64, hidden_dim=64, shared_expert=None)
     fuse_gate_up_projections(moe.experts)
     moe.experts.set_compute(compute)
-    optimizer = torch.optim.SGD(moe.parameters(), lr=0.1)
     tokens = torch.tensor([32, 32])
     _FakeNVFP4Kernel.quantized = 0
     for _ in range(3):  # micro-batches: gate_up and down quantized on the first only
         compute(moe.experts, torch.randn(64, 64, dtype=torch.bfloat16), tokens)
     assert _FakeNVFP4Kernel.quantized == 2
-    optimizer.step()  # new weights: quantized again
+    clear_quantized_weight_caches()  # after the optimizer step: new weights, quantized again
     compute(moe.experts, torch.randn(64, 64, dtype=torch.bfloat16), tokens)
     assert _FakeNVFP4Kernel.quantized == 4

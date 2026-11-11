@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Protocol
 
 import torch
 from torch.distributed.tensor import DTensor
-from torch.optim.optimizer import register_optimizer_step_post_hook
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -127,10 +126,20 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
         super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
 
 
+_WEIGHT_CACHES: "weakref.WeakSet[NVFP4ExpertCompute]" = weakref.WeakSet()
+
+
+def clear_quantized_weight_caches() -> None:
+    """Drop every cached quantized expert weight. The train loops call it after each optimizer step, the only place
+    trainer weights change (CPU-offload optimizers update weights without ``torch.optim.Optimizer.step`` hooks)."""
+    for compute in _WEIGHT_CACHES:
+        compute.caches.clear()
+
+
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
     """With ``cache_weights``, each expert weight is quantized once per optimizer step instead of on every
-    micro-batch and recompute: the caches, one per GEMM of each experts module, are dropped after every optimizer
-    step, the only place trainer weights change."""
+    micro-batch and recompute: the caches, one per GEMM of each experts module, live until
+    ``clear_quantized_weight_caches``."""
 
     def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool, cache_weights: bool) -> None:
         def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
@@ -145,7 +154,7 @@ class NVFP4ExpertCompute(GroupedGemmExpertCompute):
         self.caches: weakref.WeakKeyDictionary | None = None
         if cache_weights:
             self.caches = weakref.WeakKeyDictionary()
-            register_optimizer_step_post_hook(lambda *_: self.caches.clear())
+            _WEIGHT_CACHES.add(self)
 
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         if self.caches is None:

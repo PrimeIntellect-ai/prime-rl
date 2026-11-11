@@ -12,6 +12,7 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
+from prime_rl.trainer.models.layers.expert_compute import clear_quantized_weight_caches
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
@@ -534,6 +535,7 @@ def train(config: SFTConfig | PretrainConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
         optimizer.step()
+        clear_quantized_weight_caches()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
