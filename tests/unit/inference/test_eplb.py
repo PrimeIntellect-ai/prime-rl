@@ -81,7 +81,9 @@ def test_nixl_plan_is_traced_again_when_eplb_moves_experts():
     worker.weight_transfer_timeout = 1
     worker.device = "cpu"
     worker.current_expert_placement = lambda: (next(placements), [])
-    worker.model_express = SimpleNamespace(rank=0, wait_for=lambda *a, **k: ["trainer"], fetch=lambda ref: SimpleNamespace(nixl_metadata=b""))
+    worker.model_express = SimpleNamespace(
+        rank=0, wait_for=lambda *a, **k: ["trainer"], fetch=lambda ref: SimpleNamespace(nixl_metadata=b"")
+    )
     worker.trace_weight_loads = lambda table, destinations: traced.append(table) or []
     worker.build_transfer_plan = lambda table, copies: WeightTransferPlan({}, 1, [], [SimpleNamespace(pulls=[])] * 2)
     worker.release_transfer_plan = lambda plan: released.append(plan)
