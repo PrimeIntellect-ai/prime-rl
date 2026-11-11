@@ -16,7 +16,7 @@ from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.delta import DeltaStreamer, dump
 from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode
-from verifiers.v1.restore import RestorePoint, release_all, save_all
+from verifiers.v1.restore import release_all, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
@@ -100,17 +100,17 @@ class _Keeping:
             self.hook.discard(self.episode)
 
 
-def write_restores(directory: Path, restores: list[tuple[str, RestorePoint]]) -> list[Path]:
-    """Write each `(episode id, restore point)` to `<directory>/<trace id>.restore`. A
+def write_restores(directory: Path, restores: list[tuple[str, dict]]) -> list[Path]:
+    """Write each `(episode id, saved trace)` to `<directory>/<trace id>.restore`. A
     reader never sees a partial file."""
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
-    for episode_id, point in restores:
-        path = directory / f"{point.id}.restore"
+    for episode_id, trace in restores:
+        path = directory / f"{trace['id']}.restore"
         fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                pickle.dump({"episode_id": episode_id, "point": point}, f, protocol=5)
+                pickle.dump({"episode_id": episode_id, "trace": trace}, f, protocol=5)
             os.replace(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
@@ -119,13 +119,13 @@ def write_restores(directory: Path, restores: list[tuple[str, RestorePoint]]) ->
     return paths
 
 
-def read_restore(path: str) -> tuple[str, RestorePoint] | None:
-    """The episode id and restore point `write_restores` wrote to `path`; None if the
+def read_restore(path: str) -> tuple[str, dict] | None:
+    """The episode id and saved trace `write_restores` wrote to `path`; None if the
     file cannot be read or is outside the run directory."""
     try:
         with open(confined(path), "rb") as f:
             saved = pickle.load(f)
-        return saved["episode_id"], saved["point"]
+        return saved["episode_id"], saved["trace"]
     except Exception as e:  # noqa: BLE001 - the rollout starts over instead
         get_logger().warning(f"Could not read restore file {path}, so its rollout starts over - {e!r}")
         return None
@@ -193,8 +193,8 @@ class EnvWorker:
         task = self._build_task(req.task_data)
         restored = await asyncio.to_thread(read_restore, req.restore) if req.restore is not None else None
         if restored is not None:
-            episode_id, point = restored
-            slot = RunSlot(task, id=episode_id, restore=point)
+            episode_id, trace = restored
+            slot = RunSlot(task, id=episode_id, restore=trace)
         else:
             (slot,) = self.env.slots(task)
 
@@ -235,27 +235,27 @@ class EnvWorker:
         reasons: dict[str, int] = {}
         # Held at their restore points until the client's `release`: a saved rollout
         # must still run when the client records what is in flight.
-        points = await save_all(reasons, hold=True)
+        traces = await save_all(reasons, hold=True)
         slots = {
             slot.traces[0].id: (request_id, slot) for request_id, slot in self._slots.items() if len(slot.traces) == 1
         }
-        saved: list[RestorePoint] = []
+        saved: list[dict] = []
         orphans: list[dict] = []
-        for point in points:
-            if point.id in slots and is_file_name(point.id):
-                saved.append(point)
+        for trace in traces:
+            if trace["id"] in slots and is_file_name(trace["id"]):
+                saved.append(trace)
             else:
-                orphans.append(point.snapshot)
+                orphans.append(restore_entry(trace)["snapshot"])
                 reason = "its episode has more than one trace, or it ended during the save"
                 reasons[reason] = reasons.get(reason, 0) + 1
         try:
             paths = await asyncio.to_thread(
-                write_restores, confined(req.dir), [(slots[point.id][1].id, point) for point in saved]
+                write_restores, confined(req.dir), [(slots[trace["id"]][1].id, trace) for trace in saved]
             )
         except (OSError, ValueError) as e:
             # Without their files nothing restores these rollouts: they start over.
             get_logger().warning(f"Failed to write {len(saved)} restore files to {req.dir} - {e!r}")
-            orphans += [point.snapshot for point in saved]
+            orphans += [restore_entry(trace)["snapshot"] for trace in saved]
             reasons["its restore file could not be written"] = len(saved)
             saved, paths = [], []
         if orphans:
@@ -274,8 +274,10 @@ class EnvWorker:
         return SaveResponse(
             skipped=[reason for reason, count in reasons.items() for _ in range(count)],
             restores={
-                slots[point.id][0]: RestoreRef(trace_id=point.id, path=str(path), snapshot=point.snapshot)
-                for point, path in zip(saved, paths)
+                slots[trace["id"]][0]: RestoreRef(
+                    trace_id=trace["id"], path=str(path), snapshot=restore_entry(trace)["snapshot"]
+                )
+                for trace, path in zip(saved, paths)
             },
         )
 

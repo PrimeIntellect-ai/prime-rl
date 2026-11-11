@@ -5,7 +5,6 @@ import asyncio
 from types import SimpleNamespace
 
 from verifiers.v1.env import RunSlot
-from verifiers.v1.restore import RestorePoint
 
 from prime_rl.env import worker
 from prime_rl.env.types import SaveRequest
@@ -13,17 +12,10 @@ from prime_rl.env.worker import EnvWorker, read_restore
 from prime_rl.utils import pathing
 
 
-def point(trace_id: str) -> RestorePoint:
-    checkpoint = {"id": f"c-{trace_id}", "snapshot": {"id": f"s-{trace_id}"}}
-    return RestorePoint(
-        trace={"id": trace_id, "checkpoints": [checkpoint]},
-        checkpoint=checkpoint["id"],
-        state=None,
-        info={},
-        pins=[],
-        replays={},
-        live={},
-    )
+def point(trace_id: str) -> dict:
+    """A saved trace: the restore fields are on the entry of its checkpoint."""
+    checkpoint = {"id": f"c-{trace_id}", "snapshot": {"id": f"s-{trace_id}"}, "restore": {}}
+    return {"id": trace_id, "checkpoints": [checkpoint]}
 
 
 def slot(episode_id: str, *trace_ids: str) -> RunSlot:
@@ -39,7 +31,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
             discarded.extend(snapshot.id for snapshot in snapshots)
             return [snapshot.id for snapshot in snapshots]
 
-    async def save_all(skipped: dict[str, int], *, hold: bool) -> list[RestorePoint]:
+    async def save_all(skipped: dict[str, int], *, hold: bool) -> list[dict]:
         # t9's run ended while the checkpoints were taken; t2 is one trace of a multi-agent episode.
         assert hold
         skipped["the 'subprocess' runtime takes no memory snapshots"] = 2
@@ -67,7 +59,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
     assert ref.path == str(directory / "t1.restore")
     assert [file.name for file in directory.iterdir()] == ["t1.restore"]
     episode_id, restored = read_restore(ref.path)
-    assert episode_id == "e1" and restored.trace == point("t1").trace and restored.snapshot == ref.snapshot
+    assert episode_id == "e1" and restored == point("t1")
     assert discarded == ["s-t2", "s-t9", "s-../t4"]
     # One reason per running rollout without a restore point.
     assert sorted(response.skipped) == [
