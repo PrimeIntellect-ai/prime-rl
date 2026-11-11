@@ -1,8 +1,9 @@
 """FP8 all-gather of the routed experts' weights under FSDP2 (``moe.compute.fp8_all_gather``).
 
 FSDP casts each expert weight's local shard to the grouped GEMM's 128 x 128-block FP8 and all-gathers the blocks with
-their scales; the GEMMs use them as they are. The blocks are the ones the GEMM would make from the bf16 weight, and the
-input-gradient GEMM's blocks are their transpose, so the numerics are unchanged.
+their scales; the forward and the activation-checkpoint recompute use them as they are. The blocks are the ones the GEMM
+would make from the bf16 weight, and the input-gradient GEMM's blocks are their transpose, so the numerics are
+unchanged.
 """
 
 import torch
@@ -48,19 +49,6 @@ def _prequantized_gemm_fake(
     return x.new_empty((x.shape[0], weight_data.shape[1]))
 
 
-# The input-gradient GEMM's blocks (the transpose of the all-gathered ones), made once per all-gather. Keyed by the
-# gathered data's address: under torch.compile the op sees new tensor objects for the same buffer. Every all-gather
-# clears the cache, so an address is never reused for other data while its entry lives.
-_TRANSPOSED_BLOCKS: dict[tuple[int, torch.Size], tuple[torch.Tensor, torch.Tensor]] = {}
-
-
-def _transposed_blocks(weight_data: torch.Tensor, weight_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    key = (weight_data.data_ptr(), weight_data.shape)
-    if key not in _TRANSPOSED_BLOCKS:
-        _TRANSPOSED_BLOCKS[key] = (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous())
-    return _TRANSPOSED_BLOCKS[key]
-
-
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm_prequantized_backward", mutates_args=())
 def _prequantized_backward(
     grad_output: torch.Tensor,
@@ -75,13 +63,13 @@ def _prequantized_backward(
     return _backward(
         grad_output,
         x,
-        lambda: _transposed_blocks(weight_data, weight_scale),
+        lambda: (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous()),
         torch.Size((groups, cols, rows)),
         torch.bfloat16,
         offs,
         needs_grad_x,
         needs_grad_weight,
-        True,
+        grad_weight_transposed=True,
     )
 
 
@@ -240,7 +228,6 @@ class Fp8ExpertMaster(torch.Tensor):
         return (data, scale), None
 
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
-        _TRANSPOSED_BLOCKS.clear()
         if out is not None:  # FSDP refilled the same buffers that the weight views
             return
         if len(all_gather_outputs) == 1:

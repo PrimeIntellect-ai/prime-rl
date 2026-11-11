@@ -189,9 +189,7 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
     fp8_all_gather: bool = False
-    """FSDP all-gathers the routed experts' weights as the GEMM's 128 x 128-block FP8 casts: half the all-gather bytes
-    and one cast per all-gather instead of one per GEMM call, with the same numerics. Needs equal whole-expert FSDP
-    shards (no ``fusions.shard_fused_on_dim1``). Checkpoints hold plain tensors either way."""
+    """FSDP all-gathers the routed experts' weights as the GEMM's 128 x 128-block FP8 casts instead of bf16."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
@@ -399,6 +397,8 @@ class ModelConfig(BaseModelConfig):
                 "model.moe.compute.fp8_all_gather does not support LoRA: LoRA experts hold their adapters, "
                 "not the expert weights, as their parameters."
             )
+        if isinstance(self.moe.dispatch, MegaMoeMoEDispatchConfig):
+            raise ValueError("model.moe.compute.fp8_all_gather does not apply to Mega MoE dispatch.")
         return self
 
 

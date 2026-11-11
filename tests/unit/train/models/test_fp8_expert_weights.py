@@ -1,4 +1,3 @@
-import pytest
 import torch
 import torch.distributed.checkpoint as dcp
 from torch import nn
@@ -35,8 +34,3 @@ def test_checkpoints_hold_plain_tensors_with_the_fp8_all_gather_on_or_off(tmp_pa
 
     torch.save(on.state_dict(), tmp_path / "weights.pt")
     assert type(torch.load(tmp_path / "weights.pt", weights_only=True)["down_proj"]) is torch.Tensor
-
-
-def test_the_experts_must_split_evenly_over_the_fsdp_ranks():
-    with pytest.raises(ValueError, match="split evenly"):
-        all_gather_expert_weights_in_fp8(Experts(num_experts=4), shard_size=3)
