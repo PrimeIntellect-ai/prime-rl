@@ -47,6 +47,7 @@ from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import Deep
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import VLLM_SWA_KV_AMAX_FLOOR, dsv4_kv_fake_quant
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv41_nvfp4_kv_fake_quant import dsv41_nvfp4_kv_fake_quant
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
 from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
     IndexerSegments,
@@ -330,6 +331,12 @@ def kv_fake_quant(kv: Tensor, rope_dim: int) -> Tensor:
     return dsv4_kv_fake_quant(kv, rope_dim, VLLM_SWA_KV_AMAX_FLOOR, 0.0)
 
 
+def mxfp8_kv_fake_quant(kv: Tensor) -> Tensor:
+    """`kv` as vLLM's V4.1 MXFP8 record stores it: all 512 channels, RoPE included, in 32-wide UE8M0 tiles. The
+    `nvfp4_ds_mla` cache keeps it for the sliding window whatever the trainer's GPU, since only SM100 engines run it."""
+    return dsv4_kv_fake_quant(kv, 0, VLLM_SWA_KV_AMAX_FLOOR, 0.0, 32)
+
+
 class DeepseekV41Attention(nn.Module):
     def __init__(self, config: DeepseekV41TextConfig, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
         super().__init__()
@@ -375,8 +382,9 @@ class DeepseekV41Attention(nn.Module):
             and torch.cuda.get_device_capability()[0] == 10
         ):
             raise NotImplementedError(
-                "On SM100, vLLM stores V4.1's compressed KV entries as NVFP4 (`nvfp4_ds_mla`), which the trainer "
-                'does not model yet. Set `model.dsv4_kv_precision = "bf16"` to train without KV rounding.'
+                "On SM100, vLLM's default V4.1 attention backend stores compressed KV entries as NVFP4 "
+                '(`nvfp4_ds_mla`). Set `model.dsv4_kv_precision = "nvfp4"` to match it, or set '
+                '`inference.vllm.kv_cache_dtype = "fp8_ds_mla"` and `model.dsv4_kv_precision = "bf16"`.'
             )
         self.compressor = (
             DeepseekV41Compressor(config, self.compress_ratio, rotary_emb)
@@ -426,6 +434,8 @@ class DeepseekV41Attention(nn.Module):
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
         if self.kv_precision == "fp8":
             kv = kv_fake_quant(kv, self.config.qk_rope_head_dim)
+        elif self.kv_precision == "nvfp4":
+            kv = mxfp8_kv_fake_quant(kv)
         if cp.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor/indexer work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -444,6 +454,8 @@ class DeepseekV41Attention(nn.Module):
                 )
                 if self.kv_precision == "fp8":
                     entries = kv_fake_quant(entries, self.config.qk_rope_head_dim)
+                elif self.kv_precision == "nvfp4":
+                    entries = dsv41_nvfp4_kv_fake_quant(entries)
                 state = SharedAttnState(entries[None, None], state.index_k, state.top_k_indices, state.candidates)
             if self.indexer is not None:
                 top_k, index_k, candidates = self.indexer(hidden_states, q_residual, latent, packed, state)

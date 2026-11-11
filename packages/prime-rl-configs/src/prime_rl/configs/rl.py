@@ -471,6 +471,30 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_dsv4_kv_precision(self):
+        """DeepSeek V4.1 rounds its KV like the engines' cache (``model.dsv4_kv_precision``). An explicit
+        ``nvfp4_ds_mla`` or ``fp8_ds_mla`` cache sets it; an NVFP4 trainer pins an unspecified engine cache to
+        ``nvfp4_ds_mla``, since ``auto`` / ``fp8`` resolve per attention backend."""
+        if self.inference is None:
+            return self
+        model = self.trainer.model
+        vllm = self.inference.vllm
+        cache = getattr(vllm, "kv_cache_dtype", None) or "auto"
+        explicit = "dsv4_kv_precision" in model.model_fields_set
+        wanted = {"nvfp4_ds_mla": "nvfp4", "fp8_ds_mla": "fp8"}.get(cache)
+        if wanted is not None and not explicit:
+            model.dsv4_kv_precision = wanted
+        elif model.dsv4_kv_precision == "nvfp4":
+            if cache in ("auto", "fp8"):
+                vllm.kv_cache_dtype = "nvfp4_ds_mla"
+            elif cache != "nvfp4_ds_mla":
+                raise ValueError(
+                    f'model.dsv4_kv_precision = "nvfp4" models vLLM\'s `nvfp4_ds_mla` cache, but the engines use '
+                    f"inference.vllm.kv_cache_dtype = {cache!r}."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb(self):
         if self.inference is not None and self.inference.vllm.enable_eplb:
             raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
