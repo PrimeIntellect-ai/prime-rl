@@ -348,8 +348,8 @@ class ModelConfig(BaseModelConfig):
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
-    enable_fp32_lm_head: bool = False
-    """Compute the fused LM head's logits in FP32: the BF16 hidden states and head weight go through one GEMM that writes FP32 logits (``torch.mm`` with ``out_dtype=torch.float32``) instead of rounding them to BF16. The trainer counterpart of the inference ``enable_fp32_lm_head``. Requires the fused LM head (``fused_lm_head_token_chunk_size`` set)."""
+    enable_fp32_lm_head: bool = True
+    """Compute the LM-head logits in FP32: the BF16 hidden states and head weight go through one GEMM that writes FP32 logits (``torch.mm`` with ``out_dtype=torch.float32``) instead of rounding them to BF16. Gradients stay BF16. Matches the inference default ``enable_fp32_lm_head``, and is not slower than BF16 logits."""
 
     @model_validator(mode="after")
     def validate_init_from(self):

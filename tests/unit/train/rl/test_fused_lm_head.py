@@ -238,27 +238,44 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
 
 
 @pytest.mark.gpu
-def test_fp32_output_head_matches_fp32_logits():
+@pytest.mark.parametrize("head", ["fused", "vanilla"])
+def test_fp32_output_head_matches_fp32_logits(head):
     """BF16 operands: with ``fp32_output`` the logprobs and cross-entropy match FP32 logits of the same operands, while
-    BF16 logits are off by their rounding; the gradients stay BF16 either way."""
+    BF16 logits are off by their rounding. The gradients stay BF16 either way."""
     torch.manual_seed(0)
     n, h, v = 64, 256, 8203
     hidden = torch.randn(1, n, h, device="cuda").bfloat16().requires_grad_()
     weight = (torch.randn(v, h, device="cuda") * 0.5).bfloat16()
     labels = torch.randint(0, v, (1, n), device="cuda")
     temperature = torch.ones(1, n, device="cuda")
-    logits = hidden.detach().float() @ weight.float().t()
+    coefficient = torch.randn(1, n, device="cuda")
+    ref_hidden, ref_weight = hidden.detach().float().requires_grad_(), weight.float().requires_grad_()
+    logits = ref_hidden @ ref_weight.t()
     expected_logprobs = torch.log_softmax(logits, dim=-1).gather(-1, labels[..., None]).squeeze(-1)
     expected_loss = torch.nn.functional.cross_entropy(logits[0], labels[0], reduction="sum")
+    expected_grads = torch.autograd.grad(
+        (expected_logprobs * coefficient).sum() + expected_loss, (ref_hidden, ref_weight)
+    )
 
     errors = {}
     for fp32_output in (False, True):
-        lm = FusedOutputLinear(h, v, chunk_size=16, fp32_output=fp32_output).to("cuda", torch.bfloat16)
+        if head == "fused":
+            lm = FusedOutputLinear(h, v, chunk_size=16, fp32_output=fp32_output)
+        else:
+            lm = VanillaOutputLinear(h, v, fp32_output=fp32_output)
+        lm = lm.to("cuda", torch.bfloat16)
         lm.weight.data.copy_(weight)
-        logprobs = lm(hidden, labels, temperature)["logprobs"]
+        out = lm(hidden, labels, temperature)
+        if head == "fused":
+            logprobs = out["logprobs"]
+        else:
+            logprobs = torch.log_softmax(out["logits"].float(), dim=-1).gather(-1, labels[..., None]).squeeze(-1)
         loss = lm(hidden, labels)["loss"]
-        grads = torch.autograd.grad(logprobs.sum() + loss, (hidden, lm.weight))
+        grads = torch.autograd.grad((logprobs * coefficient).sum() + loss, (hidden, lm.weight))
         assert [grad.dtype for grad in grads] == [torch.bfloat16, torch.bfloat16]
+        if fp32_output:
+            for grad, expected in zip(grads, expected_grads, strict=True):
+                torch.testing.assert_close(grad.float(), expected, atol=1e-2, rtol=3e-2)
         errors[fp32_output] = ((logprobs - expected_logprobs).abs().max(), (loss - expected_loss).abs())
 
     torch.testing.assert_close(errors[True], (torch.tensor(0.0, device="cuda"),) * 2, rtol=0, atol=1e-3)

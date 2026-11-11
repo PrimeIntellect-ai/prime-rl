@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Router Precision](#router-precision)
+  - [LM Head Precision](#lm-head-precision)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
@@ -119,6 +120,10 @@ This also covers MXFP8 expert compute with Torch dispatch. With DeepEP, each ran
 outputs for a token in FP32 and casts once, then DeepEP's combine adds these per-rank BF16 sums in FP32
 (across nodes, after summing each node's ranks in FP32 and casting to BF16). MegaMoE uses its own combine
 kernels and does not share this accumulation guarantee.
+
+### LM head precision
+
+The LM head computes its logits in FP32 from its BF16 operands by default (`trainer.model.enable_fp32_lm_head = true`): one GEMM writes FP32 logits instead of rounding them to BF16. Its gradients stay BF16. This matches inference, whose `enable_fp32_lm_head` defaults to `true` (vLLM's FP32 head). It lowers the trainer–inference mismatch and is not slower than BF16 logits.
 
 ### Expert Parallelism Backends
 

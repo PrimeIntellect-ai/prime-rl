@@ -173,11 +173,13 @@ class FusedOutputLinear(torch.nn.Linear):
 
 class VanillaOutputLinear(torch.nn.Linear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
-    cross-entropy over labels != IGNORE_INDEX as ``loss``. With ``softcap`` the logits are capped first."""
+    cross-entropy over labels != IGNORE_INDEX as ``loss``. With ``softcap`` the logits are capped first; with
+    ``fp32_output`` they are FP32 even from BF16 operands (see ``_project``)."""
 
-    def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
+    def __init__(self, in_features: int, out_features: int, softcap: float | None = None, fp32_output: bool = False):
         super().__init__(in_features, out_features, bias=False)
         self.softcap = softcap
+        self.fp32_output = fp32_output
 
     def forward(
         self,
@@ -186,7 +188,7 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         support: TokenSupport | None = None,
     ) -> PrimeLmOutput:
-        logits = super().forward(hidden_states)
+        logits = _project(hidden_states, self.weight, self.fp32_output)
         if self.softcap is not None:
             logits = self.softcap * torch.tanh(logits / self.softcap)
         if labels is not None and temperature is None:
@@ -202,13 +204,32 @@ def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
     )
 
 
+class _FP32LogitsFn(torch.autograd.Function):
+    """FP32 logits from 2D BF16 operands. The backward casts the logit gradient back to BF16, so its GEMMs are the
+    same as without FP32 logits."""
+
+    @staticmethod
+    def forward(ctx, hidden: Tensor, weight: Tensor) -> Tensor:
+        ctx.save_for_backward(hidden, weight)
+        return torch.mm(hidden, weight.t(), out_dtype=torch.float32)
+
+    @staticmethod
+    def backward(ctx, grad_logits: Tensor) -> tuple[Tensor | None, Tensor | None]:
+        hidden, weight = ctx.saved_tensors
+        grad_logits = grad_logits.to(hidden.dtype)
+        grad_hidden = grad_logits @ weight if ctx.needs_input_grad[0] else None
+        grad_weight = grad_logits.t() @ hidden if ctx.needs_input_grad[1] else None
+        return grad_hidden, grad_weight
+
+
 def _project(hidden: Tensor, weight: Tensor, fp32_output: bool) -> Tensor:
     """``hidden @ weight.T``. With ``fp32_output`` the GEMM writes FP32 logits instead of rounding them to the
     operands' dtype (BF16 logits between 16 and 32 are spaced 1/8 apart)."""
     if not fp32_output:
         return hidden @ weight.t()
     if hidden.is_cuda and hidden.dtype == torch.bfloat16:
-        return torch.mm(hidden, weight.t(), out_dtype=torch.float32)
+        logits = _FP32LogitsFn.apply(hidden.reshape(-1, hidden.shape[-1]), weight)
+        return logits.reshape(*hidden.shape[:-1], weight.shape[0])
     return hidden.float() @ weight.float().t()
 
 
@@ -601,7 +622,7 @@ def inject_prime_lm_head(
         model: The model to wrap.
         chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
             loss/logprob/entropy computation.
-        fp32_output: Compute the logits of the fused head in FP32 even from BF16 operands.
+        fp32_output: Compute the logits in FP32 even from BF16 operands.
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
@@ -628,9 +649,11 @@ def inject_prime_lm_head(
         )
     else:
         logger.info("Injecting vanilla LM head")
-        assert not fp32_output, "FP32 logits need the fused LM head"
         model.lm_head = VanillaOutputLinear(
-            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, softcap=softcap
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+            softcap=softcap,
+            fp32_output=fp32_output,
         )
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
