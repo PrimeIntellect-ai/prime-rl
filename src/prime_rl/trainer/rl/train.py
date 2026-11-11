@@ -175,7 +175,14 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     model_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
     tokenizer = setup_tokenizer(config.tokenizer)
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_config, tokenizer, resume=config.resume)
+    processor = None
+    if config.model.vlm is not None:
+        processor = setup_processor(config.model)
+        if processor is None:
+            raise ValueError("Multimodal training requires a model image processor")
+    ckpt_manager = setup_ckpt_manager(
+        config.output_dir, config.ckpt, model_config, tokenizer, processor, resume=config.resume
+    )
 
     if config.resume is not None:
         if config.resume.dir is not None:
@@ -199,9 +206,6 @@ def train(config: TrainerConfig):
     if config.model.vlm is not None:
         if not getattr(model, "supports_packed_multimodal_training", False):
             raise ValueError("Packed multimodal training requires model support")
-        processor = setup_processor(config.model)
-        if processor is None:
-            raise ValueError("Multimodal training requires a model image processor")
         materialize_images = partial(model.materialize_images, processor=processor)
     # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
     sparse_backward_allowed = config.loss.type != "custom"
