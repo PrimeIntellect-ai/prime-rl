@@ -502,6 +502,13 @@ curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{
 curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint", "step": 12}'
 ```
 
+The trainer also lists the checkpoints in its checkpoint dir, ascending by step. A step is `complete` once the trainer finished saving it; an incomplete one is still being written (or was interrupted):
+
+```bash
+curl localhost:8040/v1/checkpoints
+# {"checkpoints": [{"step": 10, "complete": true}, {"step": 12, "complete": false}]}
+```
+
 ### Updating the Config Live
 
 With `--orchestrator.control`, you can also resubmit the full orchestrator config while the run is going. Read the current config, edit it, and submit it back as an `update_config` action:

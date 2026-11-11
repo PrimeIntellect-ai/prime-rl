@@ -316,7 +316,7 @@ def train(config: TrainerConfig):
         logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
-    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     while True:
         # Reset peak memory stats
