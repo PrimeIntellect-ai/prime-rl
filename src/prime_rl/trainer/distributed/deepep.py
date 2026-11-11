@@ -15,6 +15,7 @@ from prime_rl.trainer.distributed.token_dispatcher import (
 )
 
 _buffer: Buffer | None = None
+_buffer_mnnvl = False
 # DeepEP handles are tuples of tensors, so the custom ops carry them as a one-element CPU tensor ID.
 _handles: dict[int, tuple] = {}
 _next_handle_id = 0
@@ -150,7 +151,7 @@ _combine.register_autograd(_combine_backward, setup_context=_combine_setup_conte
 
 
 def _create_buffer(group: ProcessGroup, hidden_bytes: int, mnnvl: bool = False) -> None:
-    global _buffer
+    global _buffer, _buffer_mnnvl
 
     num_nvl_bytes, num_rdma_bytes = 0, 0
     for config in (Buffer.get_dispatch_config(group.size()), Buffer.get_combine_config(group.size())):
@@ -162,6 +163,7 @@ def _create_buffer(group: ProcessGroup, hidden_bytes: int, mnnvl: bool = False) 
         or _buffer.group != group
         or _buffer.num_nvl_bytes < num_nvl_bytes
         or _buffer.num_rdma_bytes < num_rdma_bytes
+        or _buffer_mnnvl != mnnvl
     ):
         # Internode kernels need at least one RDMA queue pair per SM. With `mnnvl` (an NVLink domain spanning nodes,
         # e.g. NVL72), NVSHMEM carries the "RDMA" ranks over multi-node NVLink and the buffers use fabric handles,
@@ -174,6 +176,7 @@ def _create_buffer(group: ProcessGroup, hidden_bytes: int, mnnvl: bool = False) 
             allow_mnnvl=mnnvl,
             use_fabric=mnnvl,
         )
+        _buffer_mnnvl = mnnvl
 
 
 class _SumRoutes(torch.autograd.Function):
