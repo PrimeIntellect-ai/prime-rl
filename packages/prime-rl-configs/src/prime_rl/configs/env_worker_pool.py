@@ -9,7 +9,7 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
 class StaticPoolConfig(BaseConfig):
-    """Fixed env-server pool: pre-spawn `num_workers` workers up front."""
+    """Fixed env worker pool: pre-spawn `num_workers` workers up front."""
 
     type: Literal["static"] = "static"
     num_workers: int = Field(4, ge=1)
@@ -17,7 +17,7 @@ class StaticPoolConfig(BaseConfig):
 
 
 class ElasticPoolConfig(BaseConfig):
-    """Elastic env-server pool: start at one worker and scale up on demand."""
+    """Elastic env worker pool: start at one worker and scale up on demand."""
 
     type: Literal["elastic"] = "elastic"
     max_workers: int | None = Field(None, ge=1)
@@ -39,17 +39,17 @@ class ServeConfig(BaseConfig):
     """Worker-pool sizing. `elastic` (default) starts at one worker and scales up on
     demand; `static` pre-spawns a fixed `num_workers`."""
     address: str | None = None
-    """ZMQ address the ROUTER binds (and clients connect to). None binds an OS-assigned
-    loopback port and publishes it through the server's address file."""
+    """ZMQ address the pool's broker binds (and clients connect to). None binds an
+    OS-assigned loopback port and publishes it through the pool's address file."""
     max_concurrent: int | None = Field(None, ge=1)
     """Episodes in flight per worker (None = unbounded). How many agent runs one episode
     carries is the env's own (`--env.max-concurrent-agents`, one at a time by default)."""
 
 
-class EnvServerConfig(BaseConfig):
-    """``uv run env-server``: what to serve (``[env]``) and how it's hosted (``[serve]``).
-    The launchers write one of these per train/eval source they manage, with
-    ``address_file`` set: the server binds an OS-assigned port and publishes it there."""
+class EnvWorkerPoolConfig(BaseConfig):
+    """``uv run env-worker-pool``: one source's env and its broker/worker pool replica.
+    Launchers write one config per managed train/eval source. Each replica's broker
+    publishes its bound address to ``address_file``; its workers execute episodes."""
 
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
@@ -59,8 +59,15 @@ class EnvServerConfig(BaseConfig):
 
     address_file: Path | None = None
     """Publish the bound address to this file once serving. Set by the launchers for the
-    servers they spawn, so the address never has to be agreed on up front (``serve.address``
+    pools they spawn, so the address never has to be agreed on up front (``serve.address``
     unset binds an OS-assigned port)."""
+
+    store_dir: Path | None = None
+    """Keep finished episodes' training arrays as files in a directory of this pool's
+    under ``store_dir``, served by one rollout store for the whole pool, instead of in
+    each worker's memory. The directory is local to the node and deleted when the pool
+    exits; a pool that died without deleting it is cleaned up by the next pool that starts
+    on the node. Set by the ``rl`` launcher for ``rollout_transport.retain``."""
 
     log: LogConfig = LogConfig()
 

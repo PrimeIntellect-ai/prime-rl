@@ -1,3 +1,4 @@
+mode = "rl"
 max_steps = 20
 seq_len = 2048
 

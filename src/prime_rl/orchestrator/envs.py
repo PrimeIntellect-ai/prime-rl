@@ -1,19 +1,15 @@
-"""Env wrappers over a v1 env server.
+"""Clients for each source's env worker pool replicas.
 
-Each ``Env`` holds an ``EnvClient`` onto each replica of its source's env server
-(``OrchestratorConfig.env_server_replicas``; multi-node runs start one per inference
-node) and routes each run to the least loaded one. A source's own ``serve.address``
-names a single external server (``OrchestratorConfig.env_addresses``); otherwise each
-launcher-managed replica publishes the address it bound, and the orchestrator connects. The
-orchestrator never *runs* an environment — the agents and their runtimes live only
-in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
-once, and each dispatched episode ships its task's data on the request
-(``task_data``); the server pydantic-validates it into the taskset's declared
-``TaskData`` type and runs it. That keeps the server (and every worker in its
-pool) stateless about data — no per-worker dataset loads, no idx-addressed task
-cache — and gives the orchestrator real tasks to sample.
+Each source has its own env configuration and one or more pool replicas
+(``OrchestratorConfig.env_worker_pool_replicas``; one per inference node on multi-node
+runs). The orchestrator routes to the least-loaded replica; its broker dispatches to
+the least-busy worker. A source's ``serve.address`` instead names one external pool.
 
-The server answers one ``Episode`` per run request, whose traces we validate into
+The orchestrator owns task selection and loads the dataset once. Requests carry
+``task_data``; each worker validates it into the taskset's declared ``TaskData`` type
+and executes it through its own Verifiers env. Workers do not load the dataset.
+
+The pool returns one ``Episode`` per run request, whose traces we validate into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
 keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 """
@@ -38,15 +34,14 @@ from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
 
-# Max wait for the env server to answer health. Generous because the launcher spawns
-# servers concurrently with the orchestrator, and a server imports its env package
-# before serving.
-ENV_SERVER_STARTUP_TIMEOUT = 600.0
+# Pool replicas start concurrently with the orchestrator. Health checks reach the
+# broker; a reply does not establish worker readiness.
+ENV_WORKER_POOL_STARTUP_TIMEOUT = 600.0
 
 
 async def wait_for_address(path: Path, timeout: float) -> str:
-    """The address a launcher-managed env server published, polling for the file the
-    server writes once it has bound (it starts concurrently with this process)."""
+    """The address a launcher-managed env worker pool published, polling for the file the
+    broker writes once it has bound (it starts concurrently with this process)."""
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -55,19 +50,19 @@ async def wait_for_address(path: Path, timeout: float) -> str:
         except FileNotFoundError:
             pass
         if time.monotonic() > deadline:
-            raise TimeoutError(f"env server never published its address to {path} within {timeout}s")
+            raise TimeoutError(f"env worker pool never published its address to {path} within {timeout}s")
         await asyncio.sleep(0.5)
 
 
 class Env:
-    """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
-    client-side); the server owns agent/harness execution."""
+    """Client onto a v1 env worker pool. The orchestrator owns the taskset (loaded once,
+    client-side); the pool's workers own agent/harness execution."""
 
     def __init__(self, config: EnvConfig, address: str | None, address_files: list[Path]):
         self.config = config
         self.address = address
         self.address_files = address_files
-        """Where the replicas of a launcher-managed server publish their addresses; read
+        """Where the replicas of a launcher-managed pool publish their addresses; read
         when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
         self.num_tasks: int | None = 0
@@ -92,21 +87,21 @@ class Env:
         return self._env_clients
 
     async def start(self) -> None:
-        """Connect to the env server's replicas and load the taskset client-side."""
+        """Connect to the env worker pool's replicas and load the taskset client-side."""
         t0 = time.perf_counter()
         if self.address is not None:
             addresses = [self.address]
         else:
             addresses = await asyncio.gather(
-                *(wait_for_address(path, timeout=ENV_SERVER_STARTUP_TIMEOUT) for path in self.address_files)
+                *(wait_for_address(path, timeout=ENV_WORKER_POOL_STARTUP_TIMEOUT) for path in self.address_files)
             )
-        get_logger().debug(f"Connecting {self.name} to env servers {addresses}")
+        get_logger().debug(f"Connecting {self.name} to env worker pools {addresses}")
         self._env_clients = [EnvClient(address=address) for address in addresses]
         self._in_flight = [0] * len(addresses)
-        # The servers may still be coming up (the launcher spawns them concurrently with
+        # The pools may still be coming up (the launcher spawns them concurrently with
         # the orchestrator), so poll until they answer.
         await asyncio.gather(
-            *(client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT) for client in self.env_clients)
+            *(client.wait_for_pool_startup(timeout=ENV_WORKER_POOL_STARTUP_TIMEOUT) for client in self.env_clients)
         )
         taskset = vf.load_taskset(self.config.env.taskset).select(self.config.select)
         if taskset.bounded:
@@ -134,7 +129,7 @@ class Env:
         on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
-        ``on_delta`` sees each delta of the env server's stream — a turn or a phase
+        ``on_delta`` sees each delta of the env worker pool's stream — a turn or a phase
         change of one of the episode's traces — as it lands. The run goes to the replica
         with the fewest runs in flight."""
         if cache_salt is not None:
@@ -167,18 +162,18 @@ class TrainEnv(Env):
     ):
         super().__init__(config, address, address_files)
         # Train rollouts are generated from `clients`: the policy, or the frozen
-        # `sampling.source` connected in setup() with the renderer (token-in/out) client.
+        # `algo.rollout_model` connected in setup() with the renderer (token-in/out) client.
         self.clients = clients
         self.renderer_config = renderer_config
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
-        self.uses_live_policy = config.algo.sampling.source == "policy"
+        self.uses_live_policy = config.algo.rollout_model == "policy"
         self.sampling = self.build_sampling(config)
         # Sampling by the first step it applies to; live updates add entries.
         self.sampling_by_step: dict[int, vf.SamplingConfig] = {0: self.sampling}
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
-        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+        self.requires_sampler_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
 
     def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
         return vf.SamplingConfig(
@@ -204,7 +199,7 @@ class TrainEnv(Env):
 
     async def setup(self) -> None:
         async def connect_source() -> None:
-            source = self.config.algo.sampling.source
+            source = self.config.algo.rollout_model
             if isinstance(source, FrozenModelConfig):
                 self.connected = await connect_frozen_client(source, renderer_config=self.renderer_config)
                 self.clients = self.connected
@@ -265,7 +260,7 @@ class Envs(Generic[EnvT]):
         return len(self._envs)
 
     async def start(self) -> None:
-        """Connect to all env servers in parallel — every address is known up front,
+        """Connect to all env worker pools in parallel — every address is known up front,
         so there's nothing to serialize on."""
         # When several env.start()s load_dataset() concurrently, datasets' parallel arrow read
         # (tqdm thread_map) races in ensure_lock's `del tqdm_class._lock` and crashes with

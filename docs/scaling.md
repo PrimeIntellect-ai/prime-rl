@@ -152,6 +152,15 @@ Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for e
 
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
 
+For long sequences, a MoE layer's routed-expert activations (tokens × `top_k` × expert hidden size) dominate the recompute and backward peak. Token-chunked checkpointing checkpoints a block in token chunks, so recompute and backward hold one chunk at a time. It is experimental and only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models:
+
+```toml
+[trainer.model.ac]
+token_chunk_size = 8192      # tokens per rank per chunk
+```
+
+Every chunk runs the MoE's EP all-to-alls, so all ranks of an EP group must run the same number of chunks: chunking requires `ep == 1` or `ep == cp` (the EP group is then the CP group, whose ranks hold slices of the same row). Other blocks keep whole-block checkpointing.
+
 `ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only losing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
 
 ### Optimizer Offloading

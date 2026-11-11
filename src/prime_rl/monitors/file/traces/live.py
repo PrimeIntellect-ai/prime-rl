@@ -1,6 +1,6 @@
 """Live traces: the in-flight rollouts, one file of deltas per trace.
 
-Env servers stream every rollout as it happens (``prime_rl.env.delta``): the
+Env worker pools stream every rollout as it happens (``verifiers.v1.delta``): the
 trace's header when it is minted, then each committed turn and each phase change. The
 file monitor appends those deltas to ``traces/live/<trace_id>.jsonl`` — the first line
 also carries the ``dispatch`` identity (kind, env, group, task, step) — and deletes the
@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import orjson
+from verifiers.v1.delta import EpisodeAssembly
 
-from prime_rl.env import EpisodeAssembly
 from prime_rl.monitors.file.traces import get_trace_dir
 
 STAGES = ("pending", "boot", "setup", "running", "finalize", "scoring", "done", "error")
@@ -69,7 +69,9 @@ def fold_lines(data: bytes, dispatch: dict[str, Any], assembly: EpisodeAssembly)
             continue
         delta = orjson.loads(line)
         dispatch = delta.pop("dispatch", dispatch)
-        assembly.apply(delta)  # KeyError("open") when a file lost its header line
+        # KeyError("open") when a file lost its header line, IndexError when it lost a
+        # delta that later links point into (the live buffer drops the oldest under load)
+        assembly.apply(delta)
     return end, dispatch
 
 
@@ -83,7 +85,7 @@ def read_live(path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     assembly = EpisodeAssembly()
     try:
         _, dispatch = fold_lines(data, {}, assembly)
-    except (orjson.JSONDecodeError, KeyError):
+    except (orjson.JSONDecodeError, KeyError, IndexError):
         return None
     if not assembly.traces:
         return None
@@ -110,7 +112,7 @@ class LiveFolds:
                 self._folds.pop(path, None)
                 return None
             consumed, dispatch, assembly = self._folds.get(path) or (0, {}, EpisodeAssembly())
-            if size < consumed:  # replaced by a new attempt's file
+            if size < consumed:  # the file was replaced
                 consumed, dispatch, assembly = 0, {}, EpisodeAssembly()
             if size > consumed:
                 try:
@@ -122,7 +124,7 @@ class LiveFolds:
                     return None
                 try:
                     read, dispatch = fold_lines(data, dispatch, assembly)
-                except (orjson.JSONDecodeError, KeyError):
+                except (orjson.JSONDecodeError, KeyError, IndexError):
                     self._folds.pop(path, None)
                     return None
                 consumed += read
@@ -182,26 +184,21 @@ def message_text(message: dict[str, Any]) -> str:
 
 def trace_row(record: dict[str, Any]) -> dict[str, Any]:
     """The live table's view of one trace: phase, turns, tokens, cost, last message."""
-    calls = record.get("calls") or []
-    usage = [call.get("usage") or {} for call in calls]
     # The newest node is usually a tool result; the assistant's latest words say more.
     last = ""
     for node in reversed(record.get("nodes") or []):
         message = node.get("message") or {}
         if message.get("role") == "assistant" and (last := " ".join(message_text(message).split())):
             break
-    costs = [u["cost"] for u in usage if u.get("cost") is not None]
-    nodes = record.get("nodes") or []
-    parents = {node.get("parent") for node in nodes if node.get("parent") is not None}
     return {
         "trace": record.get("id"),
         "agent": (record.get("agent") or {}).get("name", "agent"),
         "stage": stage(record),
-        "turns": len(calls),
-        "branches": sum(1 for index in range(len(nodes)) if index not in parents),
+        "turns": record.get("num_turns"),
+        "branches": record.get("num_branches"),
         "input_tokens": record.get("num_input_tokens"),
         "output_tokens": record.get("num_output_tokens"),
-        "cost": sum(costs) if costs else None,
+        "cost": (record.get("usage") or {}).get("cost"),
         "stop_condition": record.get("stop_condition"),
         "errors": len(record.get("errors") or []),
         "pending": len(record.get("pending") or []),

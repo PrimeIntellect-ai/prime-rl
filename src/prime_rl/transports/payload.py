@@ -1,7 +1,7 @@
 """Per-token training arrays passed by reference.
 
-Training arrays (routing rows, sampling masks, top-k heads) never leave an env server
-inline. When a train episode finishes, each env-server worker (`PayloadHook`) encodes every
+Training arrays (routing rows, sampling masks, top-k heads) never leave an env worker
+inline. When a train episode finishes, each env worker (`PayloadHook`) encodes every
 trainable branch's arrays, keeps the blob and serves it over HTTP; the trace carries only
 references in `trace.info[PAYLOAD_INFO_KEY]`. The orchestrator packs one `PayloadSlice` per
 sample, and each trainer rank fetches its micro batches' blobs before the step and assembles
@@ -9,15 +9,21 @@ them into the micro batch's array fields.
 
 Every kept blob is deleted exactly once, by whoever holds it last: the trainer deletes a
 step's blobs once every rank fetched them; the orchestrator deletes the blobs of samples
-and traces it drops without shipping; the env server deletes the blobs of episodes it
+and traces it drops without shipping; the env worker deletes the blobs of episodes it
 kept but did not deliver (`PayloadHook.discard`).
 
-Nothing here imports torch: every env-server worker imports this module.
+With `rollout_transport.retain`, a pool's workers write their blobs as files into the
+directory of one `RolloutStore`, which serves them for the whole pool. The trainer then
+marks a step's blobs as trained instead of deleting them, and the store deletes them once
+a trainer checkpoint covers the step, so a restarted trainer fetches them again.
+
+Nothing here imports torch: every env worker imports this module.
 """
 
 from __future__ import annotations
 
 import queue
+import shutil
 import socket
 import threading
 import time
@@ -26,6 +32,7 @@ import urllib.request
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -39,8 +46,7 @@ from prime_rl.transports.batch.types import (
     MicroBatch,
     PayloadSlice,
     RoutedExperts,
-    SamplingMask,
-    TopLogprobs,
+    SamplerSupport,
     TrainingSample,
 )
 from prime_rl.utils.logger import get_logger
@@ -71,80 +77,35 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
-def _encode_sampler_evidence(
-    mask: vf.SamplingMask | None, head: vf.TopLogprobs | None, num_tokens: int
-) -> tuple[SamplingMask | None, TopLogprobs | None]:
-    """Encode a branch's sampling mask and sampler top logprobs for a fixed token count.
-
-    The mask stores row sizes in `counts` and concatenates every row in `ids`.
-    For example, `counts=[2, 1]` and `ids=[4, 7, 9]` become `counts=[2]` and
-    `ids=[4, 7]` for one token. For three tokens, they become
-    `counts=[2, 1, 0]` with unchanged ids. Zero-count rows disable replay.
-
-    A masked token's top logprobs cover exactly its mask, so they move onto the
-    mask; the remaining top-logprob rows are heads of untruncated distributions.
-    """
-    if head is not None and (
-        len(head.counts) != num_tokens or int(head.counts.sum()) != len(head.ids) or len(head.ids) != len(head.logprobs)
-    ):
-        raise ValueError("Top logprobs are not aligned to branch tokens")
-    if mask is None:
-        if head is None:
-            return None, None
-        return None, TopLogprobs(
-            ids=np.ascontiguousarray(head.ids, dtype=np.int32).tobytes(),
-            logprobs=np.ascontiguousarray(head.logprobs, dtype=np.float32).tobytes(),
-            counts=np.ascontiguousarray(head.counts, dtype=np.int32).tobytes(),
-        )
-
-    mask_ids, mask_counts = np.asarray(mask.ids), np.asarray(mask.counts)
-    if len(mask_counts) > num_tokens:
-        mask_counts = mask_counts[:num_tokens]
-        mask_ids = mask_ids[: int(mask_counts.sum())]
-    elif len(mask_counts) < num_tokens:
-        mask_counts = np.concatenate([mask_counts, np.zeros(num_tokens - len(mask_counts), dtype=np.int32)])
-    if head is None:
-        return SamplingMask(
-            ids=np.ascontiguousarray(mask_ids, dtype=np.int32).tobytes(),
-            counts=np.ascontiguousarray(mask_counts, dtype=np.int32).tobytes(),
-        ), None
-
-    head_ids, head_logprobs, head_counts = np.asarray(head.ids), np.asarray(head.logprobs), np.asarray(head.counts)
-    if np.array_equal(mask_counts, head_counts) and np.array_equal(mask_ids, head_ids):
-        return SamplingMask(
-            ids=np.ascontiguousarray(head_ids, dtype=np.int32).tobytes(),
-            counts=np.ascontiguousarray(mask_counts, dtype=np.int32).tobytes(),
-            logprobs=np.ascontiguousarray(head_logprobs, dtype=np.float32).tobytes(),
-        ), None
-    rows = np.arange(num_tokens, dtype=np.int64)
-    head_rows = np.repeat(rows, head_counts)
-    masked = mask_counts > 0
-    on_mask = masked[head_rows]
-    mask_keys = np.repeat(rows, mask_counts) << 32 | mask_ids.astype(np.int64)
-    head_keys = head_rows[on_mask] << 32 | head_ids[on_mask].astype(np.int64)
-    if not np.array_equal(np.sort(mask_keys), np.sort(head_keys)):
-        raise ValueError("Top logprobs must cover exactly the recorded sampling support")
-    sampling_mask = SamplingMask(
-        ids=np.ascontiguousarray(head_ids[on_mask], dtype=np.int32).tobytes(),
-        counts=np.ascontiguousarray(mask_counts, dtype=np.int32).tobytes(),
-        logprobs=np.ascontiguousarray(head_logprobs[on_mask], dtype=np.float32).tobytes(),
-    )
-    if on_mask.all():
-        return sampling_mask, None
-    return sampling_mask, TopLogprobs(
-        ids=np.ascontiguousarray(head_ids[~on_mask], dtype=np.int32).tobytes(),
-        logprobs=np.ascontiguousarray(head_logprobs[~on_mask], dtype=np.float32).tobytes(),
-        counts=np.ascontiguousarray(np.where(masked, 0, head_counts), dtype=np.int32).tobytes(),
+def _encode_sampler_support(support: vf.SamplerSupport | None, num_tokens: int) -> SamplerSupport | None:
+    """Encode a branch's sampler support for a fixed token count: rows past ``num_tokens`` are cut
+    with their entries, missing rows are empty."""
+    if support is None:
+        return None
+    ids, counts, replayed, logprobs = support.ids, support.counts, support.replayed, support.logprobs
+    if len(counts) > num_tokens:
+        counts, replayed = counts[:num_tokens], replayed[:num_tokens]
+        size = int(counts.sum())
+        ids, logprobs = ids[:size], logprobs[:size] if logprobs is not None else None
+    elif len(counts) < num_tokens:
+        missing = num_tokens - len(counts)
+        counts = np.concatenate([counts, np.zeros(missing, dtype=np.int32)])
+        replayed = np.concatenate([replayed, np.zeros(missing, dtype=np.bool_)])
+    if int(counts.sum()) != len(ids) or (logprobs is not None and len(logprobs) != len(ids)):
+        raise ValueError("Sampler support is not aligned to branch tokens")
+    return SamplerSupport(
+        ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
+        counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
+        replayed=np.ascontiguousarray(replayed, dtype=np.bool_).tobytes(),
+        logprobs=np.ascontiguousarray(logprobs, dtype=np.float32).tobytes() if logprobs is not None else None,
     )
 
 
 def encode_branch_arrays(branch: vf.Branch, num_tokens: int) -> BranchArrays:
-    """The branch's routing rows, sampling mask and top-k head as the trainer replays them."""
-    sampling_mask, top_logprobs = _encode_sampler_evidence(branch.sampling_mask, branch.top_logprobs, num_tokens)
+    """The branch's routing rows and sampler support as the trainer replays them."""
     return BranchArrays(
         routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
-        sampling_mask=sampling_mask,
-        top_logprobs=top_logprobs,
+        sampler_support=_encode_sampler_support(branch.sampler_support, num_tokens),
     )
 
 
@@ -169,54 +130,25 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
-_SAMPLING_MASK_ITEMSIZE = np.dtype(np.int32).itemsize
+def _empty_sampler_support(num_tokens: int) -> SamplerSupport:
+    return SamplerSupport(ids=b"", counts=bytes(num_tokens * 4), replayed=bytes(num_tokens))
 
 
-def _empty_sampling_mask(num_tokens: int) -> SamplingMask:
-    return SamplingMask(ids=b"", counts=b"\0" * (num_tokens * _SAMPLING_MASK_ITEMSIZE))
-
-
-def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingMask:
-    counts = np.frombuffer(sampling_mask.counts, dtype=np.int32)[:seq_len]
-    size = int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE
-    return SamplingMask(
-        ids=sampling_mask.ids[:size],
+def _slice_sampler_support(support: SamplerSupport, seq_len: int) -> SamplerSupport:
+    counts = np.frombuffer(support.counts, dtype=np.int32)[:seq_len]
+    size = int(counts.sum()) * 4
+    return SamplerSupport(
+        ids=support.ids[:size],
         counts=counts.tobytes(),
-        logprobs=sampling_mask.logprobs[:size] if sampling_mask.logprobs is not None else None,
+        replayed=support.replayed[:seq_len],
+        logprobs=support.logprobs[:size] if support.logprobs is not None else None,
     )
 
 
-def _slice_top_logprobs(head: TopLogprobs, seq_len: int) -> TopLogprobs:
-    counts = np.frombuffer(head.counts, dtype=np.int32)[:seq_len]
-    size = int(counts.sum()) * 4
-    return TopLogprobs(ids=head.ids[:size], logprobs=head.logprobs[:size], counts=counts.tobytes())
-
-
-def _validate_top_logprobs(head: TopLogprobs, num_tokens: int) -> None:
-    counts = np.frombuffer(head.counts, dtype=np.int32)
-    if (
-        len(counts) != num_tokens
-        or (counts < 0).any()
-        or len(head.ids) != len(head.logprobs)
-        or len(head.ids) != int(counts.sum()) * 4
-    ):
-        raise ValueError("Top logprobs ids, values and counts must align with packed tokens")
-
-
-def _pad_sampling_mask(micro_batch: MicroBatch, padding_size: int) -> None:
-    """Add zero-count mask rows for sequence-padding tokens.
-
-    Padding adds token positions but no eligible token ids, so only `counts` grows.
-    """
-    sampling_mask = micro_batch.sampling_mask
-    assert sampling_mask is not None
-    sampling_mask.counts += b"\0" * (padding_size * _SAMPLING_MASK_ITEMSIZE)
-
-
 def pack_token_arrays(parts: Sequence[tuple[int, BranchArrays]]) -> BranchArrays:
-    """Concatenate samples' routing rows, sampling masks and top-k heads in packing order.
+    """Concatenate samples' routing rows and sampler supports in packing order.
     Each part is a sample's token count and arrays. Routing must be on every part or none;
-    masks and heads are per-token optional, so parts without them get empty rows."""
+    the support is per-token optional, so parts without one get empty rows."""
     routed = [arrays.routed_experts for _, arrays in parts if arrays.routed_experts is not None]
     routed_experts = None
     if routed:
@@ -227,49 +159,38 @@ def pack_token_arrays(parts: Sequence[tuple[int, BranchArrays]]) -> BranchArrays
             shape=[sum(r.shape[0] for r in routed), *routed[0].shape[1:]],
             dtype=routed[0].dtype,
         )
-    sampling_mask = None
-    if any(arrays.sampling_mask is not None for _, arrays in parts):
-        masks = [
-            arrays.sampling_mask if arrays.sampling_mask is not None else _empty_sampling_mask(num_tokens)
+    sampler_support = None
+    if any(arrays.sampler_support is not None for _, arrays in parts):
+        supports = [
+            arrays.sampler_support if arrays.sampler_support is not None else _empty_sampler_support(num_tokens)
             for num_tokens, arrays in parts
         ]
         logprobs = None
-        if any(mask.logprobs is not None for mask in masks):
-            # NaN marks mask rows that carry no sampler logprobs.
+        if any(support.logprobs is not None for support in supports):
+            # NaN marks entries that carry no sampler logprobs.
             logprobs = b"".join(
-                mask.logprobs
-                if mask.logprobs is not None
-                else np.full(len(mask.ids) // _SAMPLING_MASK_ITEMSIZE, np.nan, np.float32).tobytes()
-                for mask in masks
+                support.logprobs
+                if support.logprobs is not None
+                else np.full(len(support.ids) // 4, np.nan, np.float32).tobytes()
+                for support in supports
             )
-        sampling_mask = SamplingMask(
-            ids=b"".join(mask.ids for mask in masks),
-            counts=b"".join(mask.counts for mask in masks),
+        sampler_support = SamplerSupport(
+            ids=b"".join(support.ids for support in supports),
+            counts=b"".join(support.counts for support in supports),
+            replayed=b"".join(support.replayed for support in supports),
             logprobs=logprobs,
         )
-    top_logprobs = None
-    if any(arrays.top_logprobs is not None for _, arrays in parts):
-        heads = [arrays.top_logprobs for _, arrays in parts]
-        top_logprobs = TopLogprobs(
-            ids=b"".join(head.ids for head in heads if head is not None),
-            logprobs=b"".join(head.logprobs for head in heads if head is not None),
-            counts=b"".join(
-                head.counts if head is not None else bytes(num_tokens * 4)
-                for head, (num_tokens, _) in zip(heads, parts, strict=True)
-            ),
-        )
-    return BranchArrays(routed_experts=routed_experts, sampling_mask=sampling_mask, top_logprobs=top_logprobs)
+    return BranchArrays(routed_experts=routed_experts, sampler_support=sampler_support)
 
 
 def pad_token_arrays(micro_batch: MicroBatch, padding_size: int) -> None:
-    """Extend the micro batch's routing rows, sampling masks and top-k heads over
-    ``padding_size`` trailing padding tokens."""
+    """Extend the micro batch's routing rows and sampler support over ``padding_size`` trailing
+    padding tokens, which have no support."""
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
-    if micro_batch.sampling_mask is not None:
-        _pad_sampling_mask(micro_batch, padding_size)
-    if micro_batch.top_logprobs is not None:
-        micro_batch.top_logprobs.counts += b"\0" * (padding_size * 4)
+    if micro_batch.sampler_support is not None:
+        micro_batch.sampler_support.counts += bytes(padding_size * 4)
+        micro_batch.sampler_support.replayed += bytes(padding_size)
 
 
 def payload_host(bind_address: str | None) -> tuple[str, str]:
@@ -303,7 +224,7 @@ class _HTTPServer(ThreadingHTTPServer):
 
 
 class PayloadServer:
-    """One env-server worker's arrays, served at `GET <url>/<id>` and freed by
+    """One env worker's arrays, served at `GET <url>/<id>` and freed by
     `DELETE <url>/<id>`."""
 
     def __init__(self, bind_host: str, url_host: str | None = None):
@@ -325,6 +246,11 @@ class PayloadServer:
                 self.send_response(204)
                 self.end_headers()
 
+            def do_POST(self) -> None:
+                trained = _trained_decoder.decode(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(204 if server.trained(trained) else 501)
+                self.end_headers()
+
             def log_message(self, *args: Any) -> None:
                 pass
 
@@ -344,25 +270,120 @@ class PayloadServer:
         with self.lock:
             return self.blobs.get(key)
 
+    def trained(self, trained: Trained) -> bool:
+        """Whether this server retains trained arrays: only a `RolloutStore` does."""
+        return False
+
+
+class Trained(msgspec.Struct):
+    """A trainer telling a rollout store that `ids` went into `step`, and that a checkpoint
+    covers every step up to `committed`."""
+
+    step: int
+    ids: list[str]
+    committed: int
+
+
+_trained_decoder = msgspec.msgpack.Decoder(Trained)
+
+
+class RolloutStore(PayloadServer):
+    """One env worker pool's arrays as files, kept until a trainer checkpoint covers them.
+
+    The pool's workers write each blob to `live/<id>` (`StoreWriter`). A blob the trainer
+    trained on moves to `step_<N>/<id>` and stays fetchable; the step directories up to the
+    trainer's committed step are deleted."""
+
+    def __init__(self, directory: Path, bind_host: str, url_host: str | None = None):
+        self.directory = directory
+        self.live = directory / "live"
+        self.live.mkdir(parents=True)
+        self.steps: dict[str, int] = {}
+        """The step each trained blob went into."""
+        super().__init__(bind_host, url_host)
+
+    def path(self, key: str) -> Path:
+        if Path(key).name != key:
+            raise ValueError(f"Invalid blob id: {key}")
+        with self.lock:
+            step = self.steps.get(key)
+        return self.live / key if step is None else self.directory / f"step_{step}" / key
+
+    def get(self, key: str) -> bytes | None:
+        try:
+            return self.path(key).read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def delete(self, key: str) -> None:
+        """Free a blob that will never ship. A trained blob stays until its step is committed."""
+        path = self.path(key)
+        if path.parent == self.live:
+            path.unlink(missing_ok=True)
+
+    def trained(self, trained: Trained) -> bool:
+        if trained.ids:
+            step_dir = self.directory / f"step_{trained.step}"
+            step_dir.mkdir(exist_ok=True)
+            for key in trained.ids:
+                path = self.path(key)
+                if path.parent != self.live:
+                    continue
+                # Another data rank may mark the same blob, and a step trained again after a
+                # trainer restart has its blobs there already.
+                try:
+                    path.rename(step_dir / key)
+                except FileNotFoundError:
+                    continue
+                with self.lock:
+                    self.steps[key] = trained.step
+        for step_dir in self.directory.glob("step_*"):
+            if int(step_dir.name.removeprefix("step_")) <= trained.committed:
+                shutil.rmtree(step_dir, ignore_errors=True)
+        with self.lock:
+            self.steps = {key: step for key, step in self.steps.items() if step > trained.committed}
+        return True
+
+
+class StoreWriter:
+    """An env worker's side of its pool's `RolloutStore`: blobs go straight to the store's
+    directory, and the store serves them at `url`."""
+
+    def __init__(self, directory: Path, url: str):
+        self.live = directory / "live"
+        self.url = url
+
+    def put(self, key: str, blob: bytes) -> None:
+        tmp = self.live / f".{key}.tmp"
+        tmp.write_bytes(blob)
+        tmp.rename(self.live / key)
+
+    def delete(self, key: str) -> None:
+        (self.live / key).unlink(missing_ok=True)
+
 
 def _fields(arrays: BranchArrays) -> set[str]:
     fields = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
-    if arrays.sampling_mask is not None and arrays.sampling_mask.logprobs is not None:
-        fields.add("sampling_mask_logprobs")
+    if arrays.sampler_support is not None:
+        if np.frombuffer(arrays.sampler_support.replayed, dtype=np.bool_).any():
+            fields.add("sampler_support_replayed")
+        if arrays.sampler_support.logprobs is not None:
+            fields.add("sampler_support_logprobs")
     return fields
 
 
 class PayloadHook:
     """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's arrays."""
 
-    def __init__(self, bind_address: str | None = None):
+    def __init__(self, bind_address: str | None = None, store: StoreWriter | None = None):
         self._hosts = payload_host(bind_address)
-        self._server: PayloadServer | None = None
+        self._server: PayloadServer | StoreWriter | None = store
         self._lock = threading.Lock()
 
     @property
-    def server(self) -> PayloadServer:
-        """Started on first use: a pool broker installs the hook too but never keeps arrays."""
+    def server(self) -> PayloadServer | StoreWriter:
+        """The pool's rollout store if it has one, else this worker's own server, started on
+        first use: a pool broker installs the hook too but never keeps arrays."""
         with self._lock:
             if self._server is None:
                 self._server = PayloadServer(*self._hosts)
@@ -403,7 +424,7 @@ class PayloadHook:
                 if references:
                     trace.info[PAYLOAD_INFO_KEY] = {"url": self.server.url, "branches": references}
                 for node in trace.nodes:
-                    node.routed_experts = node.sampling_mask = node.top_logprobs = None
+                    node.routed_experts = node.sampler_support = None
         except BaseException:
             # `discard` finds only references already in `trace.info`; free the rest here.
             for key in stored:
@@ -419,7 +440,7 @@ class PayloadHook:
 
 
 def trace_payload_urls(trace: vf.Trace) -> list[str]:
-    """URLs of every blob an env server kept for the trace."""
+    """URLs of every blob an env worker kept for the trace."""
     payload = trace.info.get(PAYLOAD_INFO_KEY)
     return [f"{payload['url']}/{reference['id']}" for reference in payload["branches"].values()] if payload else []
 
@@ -448,48 +469,75 @@ def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
     return None
 
 
-class _Deleter:
-    """Fire-and-forget DELETEs on daemon threads, so DELETEs still queued at exit (say,
-    to an env server that is gone) never hold the process up."""
+class _Releaser:
+    """Fire-and-forget release requests on daemon threads, so requests still queued at exit
+    (say, to an env worker that is gone) never hold the process up."""
 
     def __init__(self, num_threads: int = 8) -> None:
         self.num_threads = num_threads
-        self.queue: queue.Queue[str] = queue.Queue()
+        self.queue: queue.Queue[urllib.request.Request] = queue.Queue()
         self._started = False
         self._lock = threading.Lock()
 
-    def submit(self, urls: Iterable[str]) -> None:
+    def submit(self, requests: Iterable[urllib.request.Request]) -> None:
         with self._lock:
             if not self._started:
                 for _ in range(self.num_threads):
-                    threading.Thread(target=self._run, daemon=True, name="payload-delete").start()
+                    threading.Thread(target=self._run, daemon=True, name="payload-release").start()
                 self._started = True
-        for url in urls:
-            self.queue.put(url)
+        for request in requests:
+            self.queue.put(request)
 
     def _run(self) -> None:
         while True:
-            url = self.queue.get()
+            request = self.queue.get()
             try:
-                _opener.open(urllib.request.Request(url, method="DELETE"), timeout=10).close()
+                _opener.open(request, timeout=10).close()
             except Exception:
                 pass
             finally:
                 self.queue.task_done()
 
 
-_deleter = _Deleter()
+_releaser = _Releaser()
 
 
 def delete_payloads(urls: Iterable[str]) -> None:
-    """Free kept arrays on their env servers, without waiting. Call only once nothing will
+    """Free kept arrays on their env workers, without waiting. Call only once nothing will
     read them again."""
-    _deleter.submit(urls)
+    _releaser.submit(urllib.request.Request(url, method="DELETE") for url in urls)
+
+
+def mark_trained(stores: Iterable[str], urls: Iterable[str], step: int, committed: int) -> None:
+    """Tell each of the rollout `stores` which of the blobs at `urls` it holds went into
+    `step`, and that a trainer checkpoint covers every step up to `committed`, without
+    waiting."""
+    ids: dict[str, list[str]] = {store: [] for store in stores}
+    for url in urls:
+        store, _, key = url.rpartition("/")
+        ids.setdefault(store, []).append(key)
+    _releaser.submit(
+        urllib.request.Request(store, data=msgspec.msgpack.encode(Trained(step, keys, committed)), method="POST")
+        for store, keys in ids.items()
+    )
+
+
+def require_rollout_store(url: str) -> None:
+    """Raise unless the env worker pool at `url` retains trained arrays. A pool without a
+    rollout store would neither keep nor free the arrays marked on it."""
+    request = urllib.request.Request(url, data=msgspec.msgpack.encode(Trained(0, [], -1)), method="POST")
+    try:
+        _opener.open(request, timeout=60).close()
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(
+            f"The env worker pool at {url} has no rollout store, which rollout_transport.retain needs: "
+            "set store_dir in its config"
+        ) from error
 
 
 def wait_for_deletes() -> None:
-    """Block until every queued DELETE has run."""
-    _deleter.queue.join()
+    """Block until every queued release request has run."""
+    _releaser.queue.join()
 
 
 def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> tuple[list[int], list[str]]:
@@ -535,11 +583,7 @@ def _assemble(mb: MicroBatch, fetched: dict[str, BranchArrays | None]) -> bool:
     if routed is not None and not ok:
         _fill_routing(parts, routed)
     arrays = pack_token_arrays(parts)
-    mb.routed_experts, mb.sampling_mask, mb.top_logprobs = (
-        arrays.routed_experts,
-        arrays.sampling_mask,
-        arrays.top_logprobs,
-    )
+    mb.routed_experts, mb.sampler_support = arrays.routed_experts, arrays.sampler_support
     pad_token_arrays(mb, mb.padding)
     _assert_aligned(mb, sum(mb.sequence_lengths))
     return ok
@@ -553,21 +597,20 @@ def _assert_aligned(mb: MicroBatch, num_tokens: int) -> None:
         assert len(mb.routed_experts.data) == num_tokens * _routed_experts_row_size(mb.routed_experts), (
             f"routed_experts: {len(mb.routed_experts.data)} bytes for {mb.routed_experts.shape}"
         )
-    if mb.sampling_mask is not None:
-        counts = np.frombuffer(mb.sampling_mask.counts, dtype=np.int32)
-        assert len(counts) == num_tokens, f"sampling_mask counts: {len(counts)} for {num_tokens}"
-        assert len(mb.sampling_mask.ids) == int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE
-        assert mb.sampling_mask.logprobs is None or len(mb.sampling_mask.logprobs) == len(mb.sampling_mask.ids)
-    if mb.top_logprobs is not None:
-        _validate_top_logprobs(mb.top_logprobs, num_tokens)
+    support = mb.sampler_support
+    if support is not None:
+        counts = np.frombuffer(support.counts, dtype=np.int32)
+        assert len(counts) == num_tokens, f"sampler_support counts: {len(counts)} for {num_tokens}"
+        assert len(support.replayed) == num_tokens, f"sampler_support replayed: {len(support.replayed)}"
+        assert (counts >= 0).all() and len(support.ids) == int(counts.sum()) * 4
+        assert support.logprobs is None or len(support.logprobs) == len(support.ids)
 
 
 def _cut(part: BranchArrays, s: PayloadSlice, num_tokens: int) -> BranchArrays | None:
     """The arrays the slice lists, cut to its first `num_tokens`; None if one is missing."""
     cut = {
         "routed_experts": _slice_routed_experts,
-        "sampling_mask": _slice_sampling_mask,
-        "top_logprobs": _slice_top_logprobs,
+        "sampler_support": _slice_sampler_support,
     }
     arrays = {}
     for name in BranchArrays.__struct_fields__:
@@ -592,4 +635,4 @@ def _fill_routing(parts: list[tuple[int, BranchArrays]], routed: PayloadSlice) -
             routed_experts = RoutedExperts(
                 data=_tile(rows, num_tokens * row_size), shape=[num_tokens, *shape], dtype=dtype.name
             )
-            parts[index] = (num_tokens, BranchArrays(routed_experts, arrays.sampling_mask, arrays.top_logprobs))
+            parts[index] = (num_tokens, BranchArrays(routed_experts, arrays.sampler_support))

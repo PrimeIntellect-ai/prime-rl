@@ -7,7 +7,7 @@ admits episodes under the adaptive ``ConcurrencyController``, fed by the
 measurements and are never cancelled on load - a controller cut only blocks admission
 until the pool drains.
 
-Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
+Env worker pools belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
 ``rl``: a source without an explicit ``serve.address`` is found through the address file
 its server publishes; one with an address is reached directly."""
 
@@ -56,7 +56,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
@@ -77,7 +77,7 @@ class EvalRunner:
 
         # The heartbeat is beaten only by landed episodes — the first episode is its
         # first beat. No startup ping on purpose: the run-start to first-episode gap
-        # (pool boot, env servers, the first episode's full duration) would otherwise
+        # (pool boot, env worker pools, the first episode's full duration) would otherwise
         # sit inside the ping stream as an abnormally long silence and flip a healthy
         # run stale. Until then the heartbeat has simply never been pinged.
         if config.heartbeat is not None:
@@ -89,7 +89,7 @@ class EvalRunner:
 
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.client, model_name=config.model)
-        self.admin_plane = AdminPlane(config.client)
+        self.admin_plane = AdminPlane(config.client, roles=config.inference_metrics_roles)
 
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
@@ -126,6 +126,9 @@ class EvalRunner:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_call=self.concurrency.record_call,
+            on_pause=self.concurrency.pause,
+            on_resume=self.concurrency.resume,
         )
         # No ``on_overload``: eval episodes are measurements and are never
         # cancelled — a cut only blocks admission until the pool drains.
@@ -137,6 +140,7 @@ class EvalRunner:
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
+            roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints
@@ -332,7 +336,7 @@ class EvalRunner:
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))
         body = (
             f"{progress_part}; {self.dispatcher.inflight_eval_count} inflight episodes "
-            f"(cap {self.dispatcher.max_inflight}, signal {self.concurrency.signal})"
+            f"(cap {self.dispatcher.max_inflight}, queued share {self.concurrency.queued_share:.2f})"
             + (f" - {stages}" if stages else "")
         )
         payload = {**disp_gauges, **disp_drain, **self.concurrency.gauges()}

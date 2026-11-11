@@ -94,7 +94,7 @@ from prime_rl.utils.pathing import (
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
-# shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
+# shutdown wedges (env-worker-pool ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
 # Maximum shipped batches that inference has not applied the policy for yet. The
@@ -102,6 +102,9 @@ SHUTDOWN_TIMEOUT_S = 300
 # when the watcher advances ``policy.version``. Shipping itself is paced by the
 # trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
+
+# A send that waited at least this long for the trainer's request means the trainer is the bottleneck.
+TRAINER_BOUND_WAIT_S = 0.5
 
 
 class Orchestrator:
@@ -149,9 +152,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         write_resolved_config(config.output_dir, config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Route the in-process v1 library logging through our handler. The
-        # env server runs in a child process, so its logging is separate.
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        # Route the in-process v1 library logging through our handler. The env
+        # worker pool runs in a child process and sets up its own at the same level.
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
         get_logger().info("Starting orchestrator")
 
         self.progress = Progress()
@@ -182,6 +185,13 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        # Rollouts of the batch cut and waiting for the trainer to request it
+        self.unsent_rollouts = 0
+        # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
+        # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
+        self.ships = 0
+        self.shipped_at: float | None = None
+        self.trainer_rate: float | None = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -238,7 +248,7 @@ class Orchestrator:
         # The launcher-set $PRL_RUN_ID is the run identity; a hosted launch sets only the
         # platform's $RUN_ID, and standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or os.environ.get("RUN_ID") or uuid.uuid4().hex
-        # Base labels for sandboxes created in this process; env-server processes read
+        # Base labels for sandboxes created in this process; env-worker-pool processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
         if self.run_name:
@@ -254,11 +264,11 @@ class Orchestrator:
             config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
-            replicas=config.env_server_replicas,
+            replicas=config.env_worker_pool_replicas,
         )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(
-                config.eval.source, config.env_addresses, config_dir, replicas=config.env_server_replicas
+                config.eval.source, config.env_addresses, config_dir, replicas=config.env_worker_pool_replicas
             )
 
         # Resume below may bump ``policy.version`` and the LoRA model name
@@ -340,6 +350,16 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
+        self.train_sink = TrainSink(
+            config,
+            tokenizer=self.tokenizer,
+            train_envs=self.train_envs,
+            progress=self.progress,
+            batch_size=config.batch_size,
+            on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
+            group_size=self.train_source.group_size,
+        )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
@@ -355,6 +375,12 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_call=self.concurrency.record_call,
+            on_pause=self.concurrency.pause,
+            on_resume=self.concurrency.resume,
+            unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.unsent_rollouts,
+            batch_size=lambda: self.train_sink.batch_size,
+            trainer_rate=lambda: self.trainer_rate,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
@@ -373,14 +399,6 @@ class Orchestrator:
         # One awaited scrape so the concurrency controller derives (and logs) its
         # initial limit before the loop-start line; failures are tolerated.
         await self.inference_metrics.probe()
-        self.train_sink = TrainSink(
-            config,
-            tokenizer=self.tokenizer,
-            train_envs=self.train_envs,
-            progress=self.progress,
-            batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
-        )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -549,7 +567,7 @@ class Orchestrator:
                 break
 
             try:
-                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                item = await asyncio.wait_for(self.dispatcher.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
                 continue
@@ -716,8 +734,17 @@ class Orchestrator:
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
+        self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
-        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.unsent_rollouts = 0
+        shipped_at = time.perf_counter()
+        # The trainer's first step in a process includes its warmup, so its pace counts from the second one
+        self.ships += 1
+        trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
+        self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
+        self.shipped_at = shipped_at
+        wait_for_policy_time = shipped_at - send_start_time - send_batch_time
+        self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
@@ -891,7 +918,13 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
+        payload: dict[str, float] = {
+            **disp_gauges,
+            **disp_drain,
+            **watcher_gauges,
+            **self.concurrency.gauges(),
+            **self.clients.session_release_gauges(),
+        }
         if self.gc is not None:
             payload |= self.gc.gauges()
         if lag_stats.n > 0:

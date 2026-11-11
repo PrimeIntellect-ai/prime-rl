@@ -1,50 +1,126 @@
+import dataclasses
+import itertools
+
 import pytest
 import torch
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
+from prime_rl.configs.trainer import IcePopLossConfig
 from prime_rl.trainer.models import cast_float_and_contiguous
-from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import (
+    FusedOutputLinear,
+    TokenSupport,
+    VanillaOutputLinear,
+    inject_prime_lm_head,
+)
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
+from prime_rl.trainer.rl.loss import (
+    IcePopLoss,
+    LossInputs,
+    compute_entropy,
+    selective_log_softmax_with_support,
+    shift_tensor_left,
+    shift_tensor_right,
+)
 from prime_rl.utils.utils import default_dtype
+
+
+def _token_support(rows: list[list[int]], replayed: list[bool], device: str = "cpu") -> TokenSupport:
+    return TokenSupport(
+        ids=torch.tensor([i for row in rows for i in row], dtype=torch.int32, device=device),
+        offsets=torch.tensor([0, *itertools.accumulate(len(row) for row in rows)]),
+        replayed=torch.tensor(replayed, device=device),
+    )
+
+
+def test_token_support_shift_and_rows():
+    support = _token_support([[4, 5], [], [6], [7, 8, 9]], [True, False, True, False])
+    shifted = support.shift_left()
+    assert shifted.ids.tolist() == [6, 7, 8, 9]
+    assert shifted.offsets.tolist() == [0, 0, 1, 4, 4]
+    assert shifted.replayed.tolist() == [False, True, False, False]
+    assert shifted.row_index().tolist() == [1, 2, 2, 2]
+    shard = shifted.rows(2, 4)
+    assert shard.ids.tolist() == [7, 8, 9]
+    assert shard.offsets.tolist() == [0, 3, 3]
+    assert shard.replayed.tolist() == [False, False]
 
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("head_only", [False, True])
-def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
-    from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask, selective_topk_log_softmax
-
+def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
     torch.manual_seed(7)
     hidden = torch.randn(1, 7, 16, device="cuda", dtype=dtype, requires_grad=True)
     lm = FusedOutputLinear(16, 8203, chunk_size=3).to(device="cuda", dtype=dtype)
     labels = torch.tensor([[3, 8199, 12, 99, 0, 17, 8192]], device="cuda")
-    head_ids = torch.stack([labels, (labels + 1) % 8203, (labels + 2) % 8203, torch.full_like(labels, -1)], dim=-1)
-    head_ids[:, 2] = -1
-    sampling_mask = head_ids if replay else None
+    rows = [[label, (label + 1) % 8203] for label in labels[0].tolist()]
+    rows[2], rows[5] = [], [rows[5][1], 4000, 8202]
+    support = _token_support(rows, [replay] * 7, device="cuda")
     temperature = torch.linspace(0.6, 1.4, 7, device="cuda").unsqueeze(0)
-    coefficient = torch.randn_like(head_ids, dtype=torch.float32)
-    out = lm(hidden, labels, temperature, sampling_mask, head_ids)
-    loss = (out["topk_logprobs"] * coefficient).sum()
+    coefficient = torch.randn(support.ids.shape, device="cuda")
+    out = lm(hidden, labels, temperature, support)
+    loss = (out["support_logprobs"] * coefficient).sum()
     if not head_only:
         loss = loss + out["logprobs"].sum()
     actual = torch.autograd.grad(loss, (hidden, lm.weight))
-    logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
-    head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
+    logits = (hidden.float() @ lm.weight.float().t()) / temperature.unsqueeze(-1)
+    sampled, head = selective_log_softmax_with_support(logits, labels, support)
     reference = (head * coefficient).sum()
     if not head_only:
-        sampled = (
-            selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask)
-            if replay
-            else selective_log_softmax(logits, labels)
-        )
         reference = reference + sampled.sum()
     expected = torch.autograd.grad(reference, (hidden, lm.weight))
-    torch.testing.assert_close(out["topk_logprobs"], head, atol=3e-6, rtol=1e-6)
+    torch.testing.assert_close(out["support_logprobs"], head, atol=3e-6, rtol=1e-6)
+    torch.testing.assert_close(out["logprobs"], sampled, atol=3e-6, rtol=1e-6)
     for grad, ref in zip(actual, expected, strict=True):
         atol, rtol = (1e-2, 3e-2) if dtype == torch.bfloat16 else (5e-6, 1e-4)
         torch.testing.assert_close(grad, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("replay", [True, False])
+@pytest.mark.parametrize("softcap", [None, 30.0])
+def test_fused_head_sparse_backward_matches_dense(replay, softcap):
+    """Replayed tokens keep the logit gradient on their support; without replay the sparse backward needs a loss
+    whose weights on the label and the support entries cancel per token."""
+    torch.manual_seed(0)
+    n, h, v = 9, 16, 8203
+    hidden = torch.randn(1, n, h, device="cuda", requires_grad=True)
+    lm = FusedOutputLinear(h, v, chunk_size=4, softcap=softcap).to("cuda")
+    labels = torch.randint(0, v, (1, n), device="cuda")
+    rows = [[label, (label + 7) % v, (label + 4001) % v][: 1 + i % 3] for i, label in enumerate(labels[0].tolist())]
+    if not replay:
+        rows = [[(i + 11) % v for i in row] for row in rows]
+    support = _token_support(rows, [replay] * n, device="cuda")
+    counts = support.offsets.diff().to("cuda")
+    support_rows = support.row_index().long()
+    support = dataclasses.replace(support, logprobs=-counts.float().log()[support_rows])
+    temperature = torch.linspace(0.6, 1.4, n, device="cuda").unsqueeze(0)
+    advantages = torch.randn(n, device="cuda", generator=torch.Generator("cuda").manual_seed(1))
+    grads = []
+    for sparse in (False, True):
+        out = lm(hidden, labels, temperature, dataclasses.replace(support, sparse_backward=sparse))
+        logprobs = out["logprobs"][0]
+        if replay:
+            inputs = LossInputs(
+                trainer_logprobs=logprobs,
+                inference_logprobs=logprobs.detach() - 0.1,
+                ref_logprobs=None,
+                advantages=advantages,
+                loss_mask=torch.ones(n, dtype=torch.bool, device="cuda"),
+                trainer_support_logprobs=out["support_logprobs"],
+                sampler_support_logprobs=support.logprobs,
+                support_rows=support.row_index(),
+                support_replayed=support.replayed,
+            )
+            loss = IcePopLoss(IcePopLossConfig(score_centering=True)).loss(inputs).loss
+        else:
+            center = torch.zeros(n, device="cuda").index_add(0, support_rows, out["support_logprobs"]) / counts
+            loss = -(advantages * (logprobs - center)).sum()
+        grads.append(torch.autograd.grad(loss, (hidden, lm.weight)))
+    for dense, sparse in zip(*grads, strict=True):
+        torch.testing.assert_close(sparse, dense, atol=1e-6, rtol=1e-5)
 
 
 def _baseline_logprobs_and_entropy(
@@ -159,6 +235,44 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
     vanilla = VanillaOutputLinear(in_features=h, out_features=v, softcap=softcap)
     vanilla.weight = torch.nn.Parameter(weight0.detach().clone())
     torch.testing.assert_close(vanilla(hidden0.detach())["logits"], logits.detach(), rtol=0, atol=1e-6)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("head", ["fused", "vanilla"])
+def test_head_logits_are_fp32_from_bf16_operands(head):
+    """Logprobs, cross-entropy and gradients match FP32 logits of the same BF16 operands (BF16 logits are ~1e-2 off)."""
+    torch.manual_seed(0)
+    n, h, v = 64, 256, 8203
+    hidden = torch.randn(1, n, h, device="cuda").bfloat16().requires_grad_()
+    weight = (torch.randn(v, h, device="cuda") * 0.5).bfloat16()
+    labels = torch.randint(0, v, (1, n), device="cuda")
+    temperature = torch.ones(1, n, device="cuda")
+    coefficient = torch.randn(1, n, device="cuda")
+    ref_hidden, ref_weight = hidden.detach().float().requires_grad_(), weight.float().requires_grad_()
+    logits = ref_hidden @ ref_weight.t()
+    expected_logprobs = torch.log_softmax(logits, dim=-1).gather(-1, labels[..., None]).squeeze(-1)
+    expected_loss = torch.nn.functional.cross_entropy(logits[0], labels[0], reduction="sum")
+
+    lm = FusedOutputLinear(h, v, chunk_size=16) if head == "fused" else VanillaOutputLinear(h, v)
+    lm = lm.to("cuda", torch.bfloat16)
+    lm.weight.data.copy_(weight)
+    out = lm(hidden, labels, temperature)
+    if head == "fused":
+        logprobs = out["logprobs"]
+    else:
+        logprobs = torch.log_softmax(out["logits"], dim=-1).gather(-1, labels[..., None]).squeeze(-1)
+    loss = lm(hidden, labels)["loss"]
+    torch.testing.assert_close(logprobs, expected_logprobs.detach(), rtol=0, atol=1e-4)
+    torch.testing.assert_close(loss, expected_loss.detach(), rtol=0, atol=1e-3)
+    # One objective at a time: summed, their gradients partly cancel and BF16 rounding dominates the remainder
+    for objective, expected_objective in (
+        ((logprobs * coefficient).sum(), (expected_logprobs * coefficient).sum()),
+        (loss, expected_loss),
+    ):
+        grads = torch.autograd.grad(objective, (hidden, lm.weight))
+        expected = torch.autograd.grad(expected_objective, (ref_hidden, ref_weight), retain_graph=True)
+        for grad, expected_grad in zip(grads, expected, strict=True):
+            torch.testing.assert_close(grad.float(), expected_grad, atol=1e-2, rtol=3e-2)
 
 
 def test_fused_lm_head_requires_labels():

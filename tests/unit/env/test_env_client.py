@@ -15,7 +15,7 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.env.client import EnvClient
-from prime_rl.env.delta import pack
+from prime_rl.env.encoding import pack
 from prime_rl.env.types import HealthRequest, HealthResponse
 from prime_rl.utils.logger import get_logger
 
@@ -107,7 +107,7 @@ async def test_interleaved_runs_see_their_deltas_in_order_before_the_reply():
             await router.send_multipart([identity, request_id, b"reply", REPLY])
         assert await asyncio.gather(*runs) == [list(range(n_deltas))] * n_runs
     get_logger().remove(sink)
-    assert warnings.count("Dropping a malformed env-server frame") == 2
+    assert warnings.count("Dropped malformed env worker pool frame") == 2
 
 
 @pytest.mark.asyncio
