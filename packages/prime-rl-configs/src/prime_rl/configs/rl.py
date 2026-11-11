@@ -159,9 +159,10 @@ class RLConfig(BaseConfig):
         dynamo = self.orchestrator.model.client.dynamo
         if self.inference is None or (dynamo is not None and dynamo.enabled):
             return self
-        draft = (getattr(self.inference.vllm, "speculative_config", None) or {}).get("model")
-        if draft is None:
+        settings = getattr(self.inference.vllm, "speculative_config", None) or {}
+        if settings.get("model") is None:
             return self
+        draft, launch_count = settings["model"], settings.get("num_speculative_tokens")
         if self.orchestrator.speculative_decoding is None:
             self.orchestrator.speculative_decoding = SpeculativeDecodingConfig(draft=draft)
         elif self.orchestrator.speculative_decoding.draft != Path(draft):
@@ -169,6 +170,9 @@ class RLConfig(BaseConfig):
                 "orchestrator.speculative_decoding.draft must be the inference draft at launch; "
                 "change it live with update_config"
             )
+        speculative_decoding = self.orchestrator.speculative_decoding
+        speculative_decoding.max_num_speculative_tokens = launch_count
+        speculative_decoding.validate_num_speculative_tokens()
         return self
 
     env_vars: EnvVars = {}

@@ -49,19 +49,21 @@ def apply_shared_vllm_patches():
 
 
 def monkey_patch_speculative_decoding_switch():
-    """EngineCore utility turning drafting off (0 draft tokens per step) or back on.
+    """EngineCore utility scheduling ``num`` draft tokens per step (0 turns drafting off).
 
     It reuses the scheduler's dynamic speculative-decoding lookup, which vLLM disables for data
     parallelism because ranks pick different counts by batch size. One count applied to every engine
-    while paused cannot diverge. The draft keeps proposing (and caching its KV); the runner drops
-    proposals past the count, so the target decodes one token per step."""
+    while paused cannot diverge. The workers re-record their CUDA graphs for the count first."""
     from vllm.v1.engine.core import EngineCore
 
-    def set_speculative_decoding(self, enabled: bool) -> None:
+    def set_scheduled_speculative_tokens(self, num: int) -> None:
         scheduler = self.scheduler
-        scheduler.dynamic_sd_lookup = None if enabled else [0] * (scheduler.scheduler_config.max_num_seqs + 1)
+        if num == scheduler.num_spec_tokens:
+            scheduler.dynamic_sd_lookup = None
+        else:
+            scheduler.dynamic_sd_lookup = [num] * (scheduler.scheduler_config.max_num_seqs + 1)
 
-    EngineCore.set_speculative_decoding = set_speculative_decoding
+    EngineCore.set_scheduled_speculative_tokens = set_scheduled_speculative_tokens
 
 
 def monkey_patch_block_outermost_mla_stride():

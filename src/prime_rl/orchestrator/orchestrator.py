@@ -245,7 +245,8 @@ class Orchestrator:
                 self.admin_plane,
                 self.launch_draft,
                 config.speculative_decoding.draft,
-                enabled=config.speculative_decoding.enabled,
+                num_speculative_tokens=config.speculative_decoding.num_speculative_tokens,
+                launch_num_speculative_tokens=config.speculative_decoding.max_num_speculative_tokens,
             )
             self.admin_plane.after_transfer = self.draft_loader.sync
 

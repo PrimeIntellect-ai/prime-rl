@@ -482,9 +482,20 @@ class SpeculativeDecodingConfig(BaseConfig):
     loads the new draft on every engine at the next policy weight sync. It must keep the served draft's
     architecture and tensor shapes. A failed load restores the previous draft and reverts this value."""
 
-    enabled: Annotated[bool, Live()] = True
-    """Draft tokens on every engine. Turning it off live takes effect at the next policy weight sync: engines
-    then decode one token per step and verify nothing, while the draft keeps its weights and KV cache."""
+    num_speculative_tokens: Annotated[int | None, Live()] = Field(None, ge=0)
+    """Draft tokens per step on every engine; None keeps the launch count and 0 turns drafting off. A live
+    change takes effect at the next policy weight sync, when every engine re-records its CUDA graphs for the
+    new count. With 0 the draft stops running; its KV cache goes stale until drafting resumes."""
+
+    max_num_speculative_tokens: int | None = None
+    """The inference servers' launch draft count, which bounds ``num_speculative_tokens``. Filled by ``rl``."""
+
+    @model_validator(mode="after")
+    def validate_num_speculative_tokens(self):
+        bounded = self.num_speculative_tokens is not None and self.max_num_speculative_tokens is not None
+        if bounded and self.num_speculative_tokens > self.max_num_speculative_tokens:
+            raise ValueError(f"num_speculative_tokens must be at most {self.max_num_speculative_tokens}")
+        return self
 
 
 class OrchestratorConfig(BaseConfig):

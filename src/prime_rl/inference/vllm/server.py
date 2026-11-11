@@ -94,10 +94,20 @@ async def update_draft_weights(request: Request):
 
 @router.post("/speculative_decoding")
 async def speculative_decoding(request: Request):
-    """Turn drafting off or back on, on every engine. Pause the engines first so data-parallel ranks
+    """Set the draft tokens per step on every engine: 0 turns drafting off, null restores the launch count.
+    Workers re-record their CUDA graphs for the new count. Pause the engines first so data-parallel ranks
     switch together."""
-    enabled = (await request.json())["enabled"]
-    await engine_client(request).engine_core.call_utility_all_async("set_speculative_decoding", enabled)
+    num = (await request.json())["num_speculative_tokens"]
+    client = engine_client(request)
+    speculative_config = client.vllm_config.speculative_config
+    if speculative_config is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+    launch = speculative_config.num_speculative_tokens
+    num = launch if num is None else num
+    if not 0 <= num <= launch:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"num_speculative_tokens must be in [0, {launch}]")
+    await client.collective_rpc("set_num_speculative_tokens", args=(num,))
+    await client.engine_core.call_utility_all_async("set_scheduled_speculative_tokens", num)
     return {"status": "ok"}
 
 

@@ -18,7 +18,9 @@ def get_weight_model(model_runner, target: WeightTarget) -> Module:
     if target == "model":
         model = model_runner.get_model()
     elif target == "draft":
-        model = model_runner.get_draft_model()
+        from prime_rl.inference.vllm.worker.drafting import get_draft_model
+
+        model = get_draft_model(model_runner)
     else:
         raise ValueError(f"Unknown weight target: {target}")
     if model is None:
@@ -55,6 +57,12 @@ class WeightRPCMixin:
         draft = get_weight_model(self.model_runner, "draft")
         weights = checkpoint_weights(draft, weight_dir, get_draft_load_config(self.vllm_config))
         load_draft_weights(self.model_runner, weights, self.vllm_config)
+
+    def set_num_speculative_tokens(self, num: int) -> None:
+        """Re-record the target's CUDA graphs for ``num`` draft tokens per step; 0 detaches the draft."""
+        from prime_rl.inference.vllm.worker.drafting import set_num_speculative_tokens
+
+        set_num_speculative_tokens(self.model_runner, num)
 
     def get_weight_fingerprint(self, target: WeightTarget = "model") -> dict:
         """Exact per-worker tensor digests for validating distributed reloads.

@@ -38,28 +38,29 @@ def test_failed_draft_loads_restore_the_last_good_draft():
     assert (loader.loads, loader.failures) == (3, 2)
 
 
-def test_drafting_switch_applies_once_and_retries_after_a_failure():
+def test_draft_count_switch_applies_once_and_retries_after_a_failure():
     switched = []
     failures = [True]
 
     class SwitchingAdminPlane(FakeAdminPlane):
-        async def set_speculative_decoding(self, enabled: bool) -> None:
-            switched.append(enabled)
+        async def set_num_speculative_tokens(self, num: int | None) -> None:
+            switched.append(num)
             if failures and failures.pop():
                 raise RuntimeError("engine unreachable")
 
     draft = Path("/drafts/v1")
-    loader = DraftLoader(SwitchingAdminPlane(broken=set(), split=set()), served=draft, draft=draft)
+    admin = SwitchingAdminPlane(broken=set(), split=set())
+    loader = DraftLoader(admin, served=draft, draft=draft, launch_num_speculative_tokens=3)
     asyncio.run(loader.sync())
-    assert switched == []
+    assert switched == [] and loader.gauges()["speculator/num_speculative_tokens"] == 3.0
 
-    loader.enabled = False
+    loader.num_speculative_tokens = 0
     asyncio.run(loader.sync())
-    assert (switched, loader.served_enabled, loader.gauges()["speculator/enabled"]) == ([False], None, 0.0)
+    assert switched == [0] and "speculator/num_speculative_tokens" not in loader.gauges()
     asyncio.run(loader.sync())
     asyncio.run(loader.sync())
-    assert (switched, loader.served_enabled) == ([False, False], False)
+    assert switched == [0, 0] and loader.gauges()["speculator/num_speculative_tokens"] == 0.0
 
-    loader.enabled = True
+    loader.num_speculative_tokens = None
     asyncio.run(loader.sync())
-    assert (switched[-1], loader.gauges()["speculator/enabled"]) == (True, 1.0)
+    assert switched[-1] is None and loader.gauges()["speculator/num_speculative_tokens"] == 3.0
