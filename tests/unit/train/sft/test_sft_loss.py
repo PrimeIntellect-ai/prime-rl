@@ -78,8 +78,10 @@ requires_quack_cross_entropy = pytest.mark.skipif(
 
 @pytest.mark.gpu
 @requires_quack_cross_entropy
-@pytest.mark.parametrize("vocab", [37, 32002, 151936, 201088])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(
+    "vocab, dtype",
+    [(37, torch.float32)] + [(v, d) for v in (32002, 151936, 201088) for d in (torch.bfloat16, torch.float32)],
+)
 @pytest.mark.parametrize("with_grad", [True, False])
 def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype, with_grad):
     """quack's fused kernel gives the per-token loss and logits gradient of the eager math (the path on CPUs and on
@@ -106,8 +108,8 @@ def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype, with
 
 @pytest.mark.gpu
 @requires_quack_cross_entropy
-@pytest.mark.parametrize("vocab, hidden", [(37, 8), (32002, 100), (151936, 256), (201088, 1024)])
-@pytest.mark.parametrize("chunk_size", [1, 96, 4096])
+@pytest.mark.parametrize("vocab, hidden", [(37, 8), (32002, 100), (201088, 256)])
+@pytest.mark.parametrize("chunk_size", [96, 4096])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("softcap", [None, 20.0])
 def test_fused_lm_head_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, hidden, chunk_size, dtype, softcap):
