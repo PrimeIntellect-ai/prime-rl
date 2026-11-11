@@ -104,7 +104,7 @@ apply_to = [0, 1, 2, 3]
 
 Backend shape checks and token alignment apply only to the selected compute path.
 
-In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
+In RL runs, `rl` quantizes the engines' routed experts like the trainer's (`model.moe.compute`, whatever the dispatch): without `inference.vllm.quantization`, it sets vLLM's `online` mode with `quantization_config.moe` (`fp8_per_block` for `deepgemm_fp8`, `mxfp8` for `mxfp8`), so only the experts are quantized. An engine quantization set by hand must give the experts the same scheme, or `rl` rejects it, since rollouts would be sampled with other numerics than the trainer computes. Dense layers are not inferred: their module names and kernels differ by model, so configure `inference.vllm.quantization` and its `ignore` list to match `[trainer.model.quantization]`, and check the selected modules on both sides. BF16 trainer experts leave the engines as configured. Quantizing a subset of MoE layers (`apply_to`) needs engine `targets` on the same layers.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 

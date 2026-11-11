@@ -29,7 +29,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-QuantizationType = Literal["fp8_per_block", "mxfp8"]
+QuantizationType = Literal["fp8_per_block", "mxfp8", "online"]
 
 
 class VllmConfig(BaseConfig):
@@ -87,7 +87,9 @@ class VllmConfig(BaseConfig):
     """Enable prefix caching."""
 
     quantization: QuantizationType | None = None
-    """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+    """Online inference quantization method. If None, vLLM infers it from the checkpoint. ``online`` takes its
+    schemes from ``quantization_config`` (``linear``, ``moe``, ``ignore`` or ``targets``); ``rl`` sets it to quantize
+    the routed experts like the trainer's ``model.moe.compute``."""
 
     enable_lora: bool = False
     """Enable LoRA."""
