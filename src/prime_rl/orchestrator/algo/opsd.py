@@ -35,21 +35,18 @@ class OPSDAlgorithm(Algorithm):
         super().__init__(config, clients)
         self.demo_key = config.demo_key
         self.template = config.template
-        self.renderer_config = config.renderer
-        self.renderer: Renderer | None = None  # opsd builds its own in setup()
+        self.renderer: Renderer | None = None
         # Self-distillation: the teacher *is* the live policy. Scoring against
         # the shared policy pool tracks its current weights, model name, and
         # endpoint churn for free.
         self.teacher_clients = self.clients
 
     async def setup(self) -> None:
-        """Build opsd's own hint-block renderer from config — it is not handed
-        the policy's renderer. The tokenizer is always the live policy's
-        (self-distillation has no separate model), so the hint tokenizes
-        identically to the policy's own prompts."""
+        """Build the hint-block renderer with the policy's renderer config and
+        tokenizer, so the hint tokenizes identically to the policy's own prompts."""
         from renderers.base import create_renderer, load_tokenizer
 
-        self.renderer = create_renderer(load_tokenizer(self.clients.model_name), self.renderer_config)
+        self.renderer = create_renderer(load_tokenizer(self.clients.model_name), self.clients.train_client.renderer)
 
     def _demonstration(self, episode: vf.Episode, trace: vf.Trace) -> str:
         demonstration = trace.info.get(self.demo_key)

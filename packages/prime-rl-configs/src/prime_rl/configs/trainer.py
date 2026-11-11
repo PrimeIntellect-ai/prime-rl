@@ -743,6 +743,20 @@ class TrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_retain(self):
+        if not self.rollout_transport.retain:
+            return self
+        if not (self.ckpt and self.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
+            )
+        return self
+
+    @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
         """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
         ``rl_micro_batch_multiple`` and split over the CP ranks."""
