@@ -528,6 +528,13 @@ class RLConfig(BaseConfig):
                 model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
         if self.inference is None:
             return self
+        if compute.down_input_scale == "per_token":
+            warnings.warn(
+                "trainer.model.moe.compute.down_input_scale = 'per_token' quantizes the down projection's input with "
+                "per-token scales, but vLLM's NVFP4 engines (TRTLLM) use a static one: rollouts are sampled with "
+                "different numerics than the trainer computes, until the engines quantize it per token too.",
+                stacklevel=2,
+            )
         if compute.exact_division:
             warnings.warn(
                 "trainer.model.moe.compute.exact_division quantizes NVFP4 experts with IEEE-rounded reciprocals, but "
