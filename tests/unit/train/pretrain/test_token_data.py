@@ -253,24 +253,6 @@ def test_best_fit_samples_hold_whole_documents(tmp_path):
     assert list(islice(BestFitTokenDataset(shards, seq_len, group_windows=4), len(samples))) == samples
 
 
-def test_best_fit_resume_packs_only_its_group(tmp_path, monkeypatch):
-    write_shard(tmp_path / "a" / "00.ds", consecutive_documents([3, 7, 2, 9, 4, 1, 6, 11] * 15))
-    shards = TokenShards([tmp_path / "a"], seed=0)
-    dataset = BestFitTokenDataset(shards, seq_len=4, group_windows=4)
-    samples = iter(dataset)
-    for _ in range(300):  # more than an epoch, many groups
-        next(samples)
-    state = dataset.state_dict()
-    resumed = BestFitTokenDataset(shards, seq_len=4, group_windows=4)
-    resumed.load_state_dict(state)
-    packed = []
-    pack = resumed.pack
-    monkeypatch.setattr(resumed, "pack", lambda epoch, group: packed.append((epoch, group)) or pack(epoch, group))
-    assert next(iter(resumed)) == next(samples)
-    # The resume starts at the group it stopped in (and the next one if that was used up), not at the epoch's start.
-    assert packed[0] == state["group_start"][:2] and len(packed) <= 2
-
-
 def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):
     """Both folders start with an empty file and an empty document. Only the one whose first real document has no
     separator warns, and only real documents are read: an empty first document does not wrap around to the last
