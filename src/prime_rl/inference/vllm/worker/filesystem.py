@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from torch.nn import Module
@@ -32,8 +33,11 @@ class FileSystemWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        # Get vLLM model loader
-        model_loader = get_model_loader(self.load_config)
+        # Broadcasts are HF checkpoints, also for a server that started from dummy weights
+        load_config = self.load_config
+        if load_config.load_format == "dummy":
+            load_config = replace(load_config, load_format="auto")
+        model_loader = get_model_loader(load_config)
         assert isinstance(model_loader, DefaultModelLoader)
         local_source = DefaultModelLoader.Source(
             weight_path,
