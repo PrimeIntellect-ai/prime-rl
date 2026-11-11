@@ -509,6 +509,8 @@ class RLConfig(BaseConfig):
         cache = getattr(self.inference.vllm, "kv_cache_dtype", None) or "auto"
         model = self.trainer.model
         explicit = "kv_precision" in model.model_fields_set
+        # The trainer resolves "auto" once it knows the model type (some models' auto is FP8 or GPU-dependent)
+        model.engine_kv_cache_dtype = cache
         if cache in ("fp8", "fp8_e4m3"):
             if not explicit:
                 model.kv_precision = "fp8"
@@ -524,7 +526,7 @@ class RLConfig(BaseConfig):
                 "attend over other values than the trainer computes.",
                 stacklevel=2,
             )
-        elif cache in ("auto", "bfloat16", "float16") and model.kv_precision == "fp8":
+        elif cache in ("bfloat16", "float16") and model.kv_precision == "fp8":
             warnings.warn(
                 "model.kv_precision = 'fp8' rounds keys and values the engines keep in full precision "
                 f"(inference.vllm.kv_cache_dtype = {cache!r}).",

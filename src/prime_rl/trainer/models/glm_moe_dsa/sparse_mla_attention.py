@@ -7,7 +7,7 @@ from torch import nn
 from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
-from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
+from prime_rl.trainer.models.layers.attn import fp8_kv_fake_quant, quadratic_attention_flops
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -117,6 +117,12 @@ class Indexer(nn.Module):
 
 
 class GlmMoeDsaAttention(nn.Module):
+    kv_precision: str = "bf16"
+    """``fp8``: attend as vLLM's FP8 (``fp8_e4m3``) MLA cache does on SM100 (set by the trainer): the latent and RoPE
+    key parts stored in E4M3 at ``kv_scale`` (``concat_and_cache_mla``; values are the same latent), and the absorbed
+    query in E4M3 at ``kv_scale`` (FlashInfer's sparse MLA backend requires an FP8 query with an FP8 cache)."""
+    kv_scale: float = 1.0
+
     def __init__(self, args: SparseMlaAttentionArgs):
         super().__init__()
         self.args = args
@@ -214,6 +220,9 @@ class GlmMoeDsaAttention(nn.Module):
 
         sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)
         sparse_kv = torch.cat([k_compressed_normed_full, k_rope_full], dim=-1).unsqueeze(2)
+        if self.kv_precision == "fp8":
+            sparse_q = fp8_kv_fake_quant(sparse_q, self.kv_scale)
+            sparse_kv = fp8_kv_fake_quant(sparse_kv, self.kv_scale)
 
         sentinel = torch.zeros(batch_size, 1, 1, sparse_kv.shape[-1], dtype=sparse_kv.dtype, device=sparse_kv.device)
         sparse_kv = torch.cat([sparse_kv, sentinel], dim=1)

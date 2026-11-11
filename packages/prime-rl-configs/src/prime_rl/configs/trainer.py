@@ -346,6 +346,11 @@ class ModelConfig(BaseModelConfig):
     """The KV cache's quantization scale under ``kv_precision = "fp8"``: vLLM's default per-tensor ``k_scale`` and
     ``v_scale`` (1.0, unless the checkpoint or ``calculate_kv_scales`` sets them)."""
 
+    engine_kv_cache_dtype: str | None = None
+    """The inference engines' ``kv_cache_dtype`` as configured (``"auto"`` when unset), set by ``rl``; None without
+    engines (SFT). The trainer resolves it once the model type is known: for models whose vLLM ``auto`` depends on the
+    engines' GPU (GLM-5 DSA, DeepSeek V4.1) it must be explicit, and it decides ``kv_precision`` unless that is set."""
+
     kv_fp8_query: bool = False
     """Also round the query to FP8: some vLLM FP8-KV attention backends quantize the query too (FlashAttention-3 on
     Hopper, FlashAttention-4 on Blackwell), others keep it BF16 (FlashAttention-4's Hopper FP8-KV path)."""

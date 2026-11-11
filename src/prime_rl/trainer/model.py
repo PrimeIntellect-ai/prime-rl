@@ -935,27 +935,78 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     config.attn = resolved
 
 
+GPU_DEPENDENT_KV_CACHE = {
+    "glm_moe_dsa": ("fp8_e4m3", "bfloat16"),
+    "deepseek_v41": ("nvfp4_ds_mla", "fp8_ds_mla"),
+}
+"""Model types whose vLLM ``kv_cache_dtype="auto"`` depends on the engines' GPU (an FP8 cache for GLM-5 DSA on SM100,
+NVFP4 records for DeepSeek V4.1 on SM100), with the explicit values to choose from."""
+
+
+def resolve_engine_kv_cache(engines: str | None, model_type: str, has_kv_cache_scheme: bool) -> str | None:
+    """The KV cache dtype the engines run, from their configured ``kv_cache_dtype``: ``"auto"`` resolved as vLLM
+    does for this model where that does not depend on the engines' GPU. None without engines."""
+    if engines is None or engines != "auto":
+        return engines
+    if model_type in GPU_DEPENDENT_KV_CACHE:
+        choices = " or ".join(repr(choice) for choice in GPU_DEPENDENT_KV_CACHE[model_type])
+        raise ValueError(
+            f"vLLM's kv_cache_dtype='auto' for {model_type} depends on the engines' GPU (a quantized cache on SM100, "
+            f"another elsewhere), which the trainer cannot see, so it could not round its KV to match. Set "
+            f"inference.vllm.kv_cache_dtype explicitly ({choices})."
+        )
+    if model_type == "deepseek_v4":
+        return "fp8_ds_mla"
+    if has_kv_cache_scheme:
+        return "fp8"  # a checkpoint's kv_cache_scheme turns vLLM's auto into an FP8 cache
+    return "auto"
+
+
 def configure_kv_precision(model: nn.Module, config: ModelConfig) -> None:
-    """Round attention's keys and values like the engines' KV cache (``model.kv_precision``) in every layer on the
-    shared ``FlashAttention``."""
-    if config.kv_precision == "bf16":
-        return
+    """Round attention's keys and values like the engines' KV cache: on the shared ``FlashAttention`` (FP8 caches) and
+    GLM-5 DSA's sparse MLA (``fp8_e4m3``). ``kv_precision`` follows the engines' resolved cache unless set
+    explicitly; DeepSeek V4 has its own ``dsv4_kv_precision``."""
+    from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention
     from prime_rl.trainer.models.layers.attn import FlashAttention
 
-    layers = [module for module in model.modules() if isinstance(module, FlashAttention)]
+    hf_config = getattr(model, "config", None)
+    model_type = getattr(hf_config, "model_type", "")
+    quantization_config = getattr(hf_config, "quantization_config", None) or {}
+    if not isinstance(quantization_config, dict):
+        quantization_config = vars(quantization_config)
+    engines = resolve_engine_kv_cache(
+        config.engine_kv_cache_dtype, model_type, quantization_config.get("kv_cache_scheme") is not None
+    )
+    kv_precision = config.kv_precision
+    if "kv_precision" not in config.model_fields_set and engines in ("fp8", "fp8_e4m3"):
+        kv_precision = "fp8"
+    if model_type == "deepseek_v4" and engines is not None:
+        engines_fp8 = engines in ("fp8", "fp8_e4m3", "fp8_ds_mla")
+        if engines_fp8 != (config.dsv4_kv_precision == "fp8"):
+            get_logger().warning(
+                f"DeepSeek V4's engines run a {engines!r} KV cache but model.dsv4_kv_precision is "
+                f"{config.dsv4_kv_precision!r}: the trainer attends over other keys and values than rollouts did."
+            )
+    # DeepSeek V4.1 rounds its own records (dsv4_kv_precision, on its model branch); the explicit-cache check above
+    # covers it too.
+    if kv_precision == "bf16":
+        return
+
+    layers = [module for module in model.modules() if isinstance(module, (FlashAttention, GlmMoeDsaAttention))]
     if not layers:
         get_logger().warning(
-            f"model.kv_precision = {config.kv_precision!r} applies to attention on the shared FlashAttention, which this "
-            "model does not use: keys and values stay unrounded (DeepSeek V4 has dsv4_kv_precision)."
+            f"model.kv_precision = {kv_precision!r} applies to the shared FlashAttention and GLM-5 DSA attention, "
+            "which this model does not use: keys and values stay unrounded (DeepSeek V4 has dsv4_kv_precision)."
         )
         return
     for layer in layers:
-        layer.kv_precision = config.kv_precision
+        layer.kv_precision = kv_precision
         layer.kv_scale = config.kv_scale
-        layer.kv_fp8_query = config.kv_fp8_query
+        if isinstance(layer, FlashAttention):
+            layer.kv_fp8_query = config.kv_fp8_query
     get_logger().info(
-        f"Rounding keys and values to {config.kv_precision} (scale {config.kv_scale}"
-        f"{', query too' if config.kv_fp8_query else ''}) in {len(layers)} attention layers, as the engines' KV cache"
+        f"Rounding keys and values to {kv_precision} (scale {config.kv_scale}) in {len(layers)} attention layers, "
+        f"as the engines' {engines or 'KV'} cache"
     )
 
 
