@@ -26,7 +26,13 @@ class SonicMoEExpertCompute:
         if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
             raise ValueError("SonicMoE requires bias-free experts.")
 
-    def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+    def __call__(
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        host_num_tokens_per_expert: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         gate_up = to_local(experts.gate_up_proj)
         down = to_local(experts.down_proj)
 
