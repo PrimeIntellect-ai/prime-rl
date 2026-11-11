@@ -161,6 +161,7 @@ def test_config_fields_reach_extra_config():
 
     off = InferenceConfig(kv_cache_offload={"type": "mooncake", "cpu": {"num_bytes": 1000}})
     assert off.build_kv_transfer_config()["kv_connector_extra_config"] == {}
+    assert off.build_kv_transfer_config()["kv_load_failure_policy"] == "recompute"
     on = InferenceConfig(
         kv_cache_offload={
             "type": "mooncake",

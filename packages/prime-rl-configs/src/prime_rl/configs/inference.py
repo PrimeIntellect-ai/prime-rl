@@ -281,6 +281,12 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     """With ``lookup_async``, admit a request on its local prefix hit when its lookup has been pending this long,
     instead of deferring it until the lookup returns. None (default) waits."""
 
+    load_failure_policy: Literal["recompute", "fail"] = "recompute"
+    """What vLLM does when a load from the store fails (``kv_load_failure_policy``): ``recompute`` the failed blocks,
+    or ``fail`` the request (vLLM's default). A hit can fail to load when its keys are evicted or not fully written
+    between the lookup and the load; on a one-node replay of r12 trajectories ~1 in 5,000 requests hit this
+    (OBJECT_NOT_FOUND) and, under ``fail``, returned 400."""
+
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
@@ -301,6 +307,7 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
             "kv_connector": "MooncakeStoreConnector",
             "kv_role": "kv_both",
             "kv_connector_extra_config": extra,
+            "kv_load_failure_policy": self.load_failure_policy,
         }
 
 
@@ -675,11 +682,15 @@ class InferenceConfig(BaseConfig):
             return None
         if len(connectors) == 1:
             return connectors[0]
-        return {
+        multi: dict[str, Any] = {
             "kv_connector": "MultiConnector",
             "kv_role": "kv_both",
             "kv_connector_extra_config": {"connectors": connectors},
         }
+        # vLLM reads the load-failure policy from the top-level transfer config only.
+        if any(c.get("kv_load_failure_policy") == "recompute" for c in connectors):
+            multi["kv_load_failure_policy"] = "recompute"
+        return multi
 
     # Fields vLLM rejects as None — omitted from the namespace so vLLM applies its
     # own default (e.g. quantization is inferred from the checkpoint).

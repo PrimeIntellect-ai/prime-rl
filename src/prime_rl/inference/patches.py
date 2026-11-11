@@ -503,7 +503,7 @@ def monkey_patch_mooncake_lookup_economy():
       the block-aligned local hit, so at the scheduler block size (the floor applied here) the skip changes no hit.
     - ``prime_rl_lookup_memo_ttl_s``: reuse a finished lookup for the same request and length for this long. The
       load size is re-derived from the current local hit. A key evicted in between fails its load, which vLLM
-      recovers by recomputing those blocks.
+      recomputes under ``kv_load_failure_policy = "recompute"`` (prime-rl's Mooncake default).
     - ``prime_rl_lookup_timeout_s``: with ``lookup_async``, a lookup pending this long counts as a miss, so the
       request is admitted on its local hit instead of staying deferred behind the connector's one lookup thread.
 
