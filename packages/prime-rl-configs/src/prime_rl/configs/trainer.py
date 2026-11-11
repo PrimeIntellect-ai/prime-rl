@@ -218,6 +218,10 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
     quantizes like the sampler's."""
+    exact_division: bool = False
+    """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
+    IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
+    then quantizes slightly differently from the sampler: an ablation until the engines can match."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[

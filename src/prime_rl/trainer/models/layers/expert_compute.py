@@ -126,9 +126,11 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
-    def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool) -> None:
+    def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool, exact_division: bool = False) -> None:
         def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
-            return kernel.grouped_gemm(x, weight, offs=offsets, backward=backward, four_over_six=four_over_six)
+            return kernel.grouped_gemm(
+                x, weight, offs=offsets, backward=backward, four_over_six=four_over_six, exact_division=exact_division
+            )
 
         super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
         self.kernel = kernel

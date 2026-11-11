@@ -528,6 +528,13 @@ class RLConfig(BaseConfig):
                 model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
         if self.inference is None:
             return self
+        if compute.exact_division:
+            warnings.warn(
+                "trainer.model.moe.compute.exact_division quantizes NVFP4 experts with IEEE-rounded reciprocals, but "
+                "vLLM's NVFP4 engines keep FlashInfer's approximate ones: rollouts are sampled with slightly different "
+                "numerics than the trainer computes. Meant as an ablation.",
+                stacklevel=2,
+            )
         wanted = MoENVFP4Config(apply_to=compute.apply_to, four_over_six=compute.four_over_six, linear=linear)
         current = self.inference.moe_nvfp4
         if current is None:
