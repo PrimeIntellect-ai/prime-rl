@@ -11,6 +11,7 @@ from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
 MAX_OPEN_FILES = 256
+SEEDED_ROW_BLOCK = 2**20  # rows (of seq_len + 1 tokens) shuffled together when packed rows have a seed
 
 
 def mix(values: np.ndarray) -> np.ndarray:
@@ -174,7 +175,17 @@ class TokenDataset(StatefulIterableDataset):
             if window % self.data_world_size != self.data_rank:
                 continue
             if self.packed_rows:
-                start = (window % (self.shards.num_tokens // self.row_stride)) * self.row_stride
+                num_rows = self.shards.num_tokens // self.row_stride
+                row = window % num_rows
+                if self.shards.seed:
+                    # Shuffle within fixed blocks of rows, so the order only depends on the seed and not on how many
+                    # shards follow (volumes holding more shards read the same rows).
+                    block = min(SEEDED_ROW_BLOCK, num_rows)
+                    key = int(mix(np.array([self.shards.seed], dtype=np.uint64))[0])
+                    base, offset = divmod(row, block)
+                    if (base + 1) * block <= num_rows:
+                        row = base * block + int(permute(np.array([offset]), block, (key + base) % 2**64)[0])
+                start = row * self.row_stride
                 tokens, _ = self.shards.read(start, self.row_stride)
                 doc_starts = []
             else:
