@@ -237,7 +237,8 @@ def rl_local(config: RLConfig):
             )
 
     with ProcessGroup() as processes:
-        if config.weight_broadcast is not None and config.weight_broadcast.type == "modelexpress":
+        # NIXL pulls also coordinate through ModelExpress, as on SLURM
+        if config.weight_broadcast is not None and config.weight_broadcast.type in ("nixl", "modelexpress"):
             logger.info(f"Starting ModelExpress server on port {config.weight_broadcast.port}")
             start_modelexpress(processes, config.weight_broadcast.port, log_dir)
 
