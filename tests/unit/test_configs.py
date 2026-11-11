@@ -1524,6 +1524,8 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
     # A subset of layers goes through vLLM's online targets, on its expert module names
     subset = InferenceConfig.model_validate({"moe_nvfp4": {"apply_to": [0, 2, 5]}})
     args = subset.moe_nvfp4.quantization_args(num_layers=48)
+    # Explicit indices need no layer count (no HF config read at engine startup)
+    assert subset.moe_nvfp4.quantization_args(num_layers=None) == args
     assert args["quantization"] == "online"
     (pattern,) = args["quantization_config"]["targets"]
     assert args["quantization_config"]["targets"][pattern] == "nvfp4_per_token"
