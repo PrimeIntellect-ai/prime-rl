@@ -201,15 +201,27 @@ The policies you might want to configure are:
 
 ## Adaptive Concurrency
 
-The orchestrator continuously sizes how many episodes run against the inference engines at once. A static cap cannot be right: too low starves the engines, too high crosses into KV thrash — the engines evict prefix cache, re-prefill the evicted work, and throughput collapses. The optimal value depends on the model, the deployment, and the workload's episode lengths, and it moves as training changes the policy.
+The orchestrator continuously sizes how many episodes run against the inference engines at once. A static cap cannot be right: too low starves the engines, too high adds staleness and can cross into KV thrash — the engines evict prefix cache, re-prefill the evicted work, and throughput collapses. The optimal value depends on the model, the deployment, and the workload's episode lengths, and it moves as training changes the policy.
 
-The controller's idea is to treat the engines as ground truth and probe, instead of modeling episode cost: while the engines show headroom, admit a little more; when they show pressure, back off. Three behaviors, in increasing severity:
+The controller's idea is to treat the engines as ground truth and measure, instead of modeling episode cost: an episode is worth adding only while it buys throughput. Past the knee extra episodes add latency (staleness for RL) and no throughput, wherever the bottleneck sits: in the engines, or outside them (an API server, the environment).
 
-- **Grow**: while the engines look healthy and the current cap is fully used, raise it multiplicatively. Growth is clocked by the pipeline itself — the cap rises by a fixed factor each time the in-flight pool has turned over once — so a fast single-turn workload ramps in seconds while a slow agentic workload ramps at its own pace, with no tuning per workload.
-- **Trim**: episodes grow their context *while running*, so a pool that fit comfortably an hour ago can outgrow memory without a single new admission. When KV usage nears the ceiling, the controller first lowers the cap and lets completions drain the pool naturally (soft — no work lost); only if usage keeps climbing despite the closed gate does it also cancel the youngest episodes (hard — least work lost).
-- **Cut**: when the engines are demonstrably overloaded — requests being preempted, or piling up in the waiting queue — cut the pool hard, cancel the excess, and hold further cuts until the system settles.
+Its efficiency signal is **marginal gain**: the engines' generated tokens per second measured at two caps, as the relative change in throughput per relative change in episodes in flight (`concurrency/elasticity`). A move up is kept when throughput grew by at least 30% of the episodes added, a move down when it fell by less. Throughput is measured per second of the poll loop's own clock, so a poll loop that slows under load does not read as more throughput. Cache thrash needs no signal of its own: evicted prefixes that are prefilled again cost throughput, which the elasticity and the throughput-drop rule see.
 
-The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`.
+Its fast signal is the **queued share** (`concurrency/queued_share`): requests waiting in the engines' queues, for capacity or deferred on a KV load (CPU offload, Mooncake, a P/D transfer), divided by the episodes in flight and averaged over the last minute. By Little's law it is the share of the episodes' time spent parked in an engine queue, so it reads the same on every topology: in P/D the prefill queue and decode's pending KV pulls add up (per role under `concurrency/queued_share/<role>`), a slow KV load or a preempted request counts by how long it waits, and an episode waiting on a tool counts as the capacity it is.
+
+Time is counted in pool turnovers: each completed episode advances the turnover by 1/inflight. The controller has three rules:
+
+- **Climb**: at startup, while the cap is fully used, raise it by up to 3x per pool turnover, tapering to zero as the queued share approaches 10%. Every window of at least three minutes and half a turnover the climb compares throughput with the previous window, and ends at the first window whose growth did not pay (at the two windows' geometric midpoint) or that the queue held in place. A turnover lasts an episode, which for agentic episodes can be many minutes to hours, so model calls pace the climb as well. An episode's load grows with its context call by call, so a young pool carries less load than it will. From the context of each episode's n-th call and the share of episodes that make it (a Kaplan-Meier estimate; episodes still running are assumed to grow on to the engines' max context length), the controller projects the steady context per call (`concurrency/steady_context`) and the share of it the pool already carries (`concurrency/maturity`). Calls then grow the cap by up to 1.25x per call turnover (every episode in flight made one call), no faster than 3x per six minutes, admitting only as many new episodes as keep the pool's maturity at 80%; a pool at that maturity counts as carrying its steady load, and its climb windows last three minutes and four calls per episode in flight. Queue trims and the climb's end scale the cap by the maturity, so they target the load the pool will carry. Without cached-token counts in the call usage, the climb is paced by turnovers alone. From there the cap moves in steps from a measured level and keeps a step if it was worth its episodes. Each level is measured after a lowered cap has drained, over at least three minutes and half a pool turnover (a full turnover after a step up, whose new episodes show their load only as their contexts grow; its episodes are admitted gradually over half a turnover so they do not run in waves). Steps grow after a kept step by how clearly it paid, up to 1.5x, and shrink after a rejected one down to 1.15x.
+- **Queue** (nothing cancelled): when the queued share stays above 15%, the cap drops by the episodes queued beyond the 10% target; admission waits for completions to drain the pool, and the next trim waits until it has drained and turned over. A queue still above 50% once a trim has drained cancels the youngest excess episodes.
+- **Throughput drop**: two windows in a row whose generated tokens per second fell 25% below the best window measured with as many episodes in flight (cache thrash as the pool matured, a collapsed API server) trim the cap in proportion to the throughput lost, nothing cancelled; steps up past that cap then stay small. A third such window, with the engines' request latency doubled or the queued share above 50%, cancels the youngest excess episodes.
+
+The queue serves the elasticity: while the last measured step showed that the episodes in flight still buy throughput (`concurrency/paying`), the queue neither holds growth back nor trims the cap. Requests waiting on KV loads (Mooncake, CPU offload) queue even while extra episodes still pay. Only the cancelling tiers apply regardless.
+
+While the engines are paused for a weight update the controller freezes, and it ignores the queue the pause leaves behind for the next 30 s.
+
+In RL, rollouts made faster than the trainer consumes them only wait and go stale, so the dispatcher holds train admission to what the trainer takes. A finished train rollout the trainer could take (its group is complete) keeps its permit until the trainer takes it, except for one batch of finished rollouts waiting (so the trainer finds its next batch ready). While the trainer is the bottleneck (its batch was ready before it asked for it), train episodes in flight are also held to what keeps it fed, by Little's law: the rollouts per second it takes times the average generation lifetime, plus 10%. Both only stop new train groups; eval episodes are not held back. The controller sees the episodes in flight, and its queue rule trims only while the cap binds, so a pool the dispatcher holds below the cap does not read as overload.
+
+The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`. `max_inflight` is unbounded by default; set it when episodes hold other scarce resources (e.g. sandboxes).
 
 ## Advanced Configuration
 
@@ -275,7 +287,7 @@ HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV i
 host_pool_gib = 160   # pinned host RAM per GPU worker
 ```
 
-prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM 0.32 also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
+prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
 
 ### Optimized P/D disaggregation deployment
 
@@ -337,36 +349,17 @@ Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-top_k = 128   # optional, defaults to 128 under truncation (bounds each sampling mask)
+# top_k = 128  # optional, defaults to 10000 under truncation (bounds each replayed support)
 ```
 
-That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
+That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Each request's kept set is captured whole. Top-p alone gets `top_k = 10000`, so a flat distribution cannot keep most of the vocabulary; with both set, vLLM applies top-k first and top-p within it. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature and bounded top-k. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. They do not inherit the training top-k cap. Mixed batches skip mask capture for eval rows; only training rows determine the capture width. All-eval batches skip mask capture entirely.
+Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. Mixed batches skip mask capture for eval rows, and all-eval batches skip it entirely.
+
+Capture reads the logits vLLM's sampler has already masked (its top-k/top-p kernel finds the nucleus threshold without sorting the vocabulary, and the sampled token is drawn from exactly that set). Per sampling step, one GPU pass counts each replayed request's kept tokens and the log-normalizer over them, and a second pass compacts their ids and logprobs into one flat buffer at prefix-summed offsets. Only the step's real total is copied to the host. The buffer holds `inference.sampling_support_capacity` entries (default 16M, 128 MB); requests whose supports do not fit in a step fail with an explicit error rather than being truncated. The server logs the maximum per-step total every minute.
 
 Online eval uses the chat-completions client with logprobs disabled. The chat endpoint already strips returned router data. An omitted eval top-k is explicitly disabled (`-1`) rather than inherited from the model generation config. Token-renderer training clients retain their required sampled logprobs. Router instrumentation itself remains engine-wide; this does not remove its model-side overhead. Request-scoped mask capture currently rejects speculative decoding rather than silently capturing eval supports through the rejection sampler.
 
-When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request and use `0 < top_k <= 512`.
+When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request.
 
-### Top-p before the top-k cap
-
-Sampling-mask capture defaults to `inference.top_p_before_top_k = true`: select the nucleus using the full
-probability distribution, then keep at most `top_k` candidates and renormalize.
-For example, with `top_p = 0.99` and `top_k = 128`, a nucleus smaller than 128 is
-unchanged; a larger nucleus is capped at 128 and may retain less than 99% of the
-original mass. Ties at the cap are broken by token ID (higher IDs retained).
-
-This applies engine-wide, including evaluation requests, when sampling-mask
-capture is enabled on the V2 model runner. Without capture, the flag has no effect.
-The recorded mask and processed logprobs
-reflect the final support, so trainer replay and score centering use that same
-distribution. Set `inference.top_p_before_top_k = false` to use vLLM's
-top-k-then-top-p order instead. Bounded batches compute the normalizer over the
-full vocabulary but sort only the top-k candidates. Single-row batches,
-unbounded requests, and ties across the extraction boundary use a full sort.
-
-Non-streaming compact replay requests capture support IDs and their normalized
-logprobs together, avoiding a separate full-vocabulary top-logprob extraction.
-The server returns the same compact-logprob and sampling-mask formats. Evaluation
-requests do not enable this capture. Aligned support evidence is encoded directly;
-reordered or mixed evidence still uses support matching and validation.
+Score-centered replay requests (compact logprobs + `prl_replay`) take each support id's processed logprob from the sampler itself: it is packed into the mask id on the GPU, so vLLM computes no logprobs for these requests and the server returns the usual compact-logprob and sampling-mask formats. Score-centered requests without replay get the same GPU capture: the sampled token followed by the top ids (vLLM's logprob layout), returned as compact logprobs only. These need `enable_return_sampling_mask` too.
