@@ -51,9 +51,10 @@ class EPLBConfig(BaseConfig):
     """Move experts in the background over later steps instead of stalling one. A weight update drains moves in
     flight before it loads."""
 
-    communicator: Literal["torch_nccl", "torch_gloo", "pynccl", "nixl"] = "torch_nccl"
-    """Backend that moves expert weights between ranks. vLLM's default stalled for minutes on its first
-    rearrangement in our tests; ``torch_nccl`` did not."""
+    communicator: Literal["torch_gloo", "pynccl", "nixl"] | None = None
+    """Backend that moves expert weights between ranks. None lets vLLM choose: NIXL when installed (it is with
+    prime-rl), else gloo. ``torch_nccl`` is not offered: vLLM rejects it with async moves, and its batched sends hang
+    under load."""
 
     log_balancedness: bool = True
     """Log the mean over max per-rank expert load (1.0 is perfectly balanced) every
@@ -62,9 +63,8 @@ class EPLBConfig(BaseConfig):
     log_balancedness_interval: int = Field(100, gt=0)
 
     def to_vllm(self, expert_parallel_size: int) -> dict[str, Any]:
-        config = self.model_dump()
-        if config["num_redundant_experts"] is None:
-            config["num_redundant_experts"] = expert_parallel_size
+        config = self.model_dump(exclude_none=True)
+        config.setdefault("num_redundant_experts", expert_parallel_size)
         return config
 
 

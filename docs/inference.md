@@ -241,7 +241,7 @@ enable_eplb = true
 | `[inference.vllm.eplb]` | default | why |
 |---|---|---|
 | `num_redundant_experts` | one per expert parallel rank | without replica slots EPLB can only move experts, not split a hot expert's load |
-| `communicator` | `torch_nccl` | vLLM's default stalled for minutes on its first rearrangement in our tests |
+| `communicator` | vLLM's choice (NIXL when installed, else gloo) | `torch_nccl` is incompatible with async moves and hangs under load |
 | `use_async` | `true` | experts move in the background; weight updates drain moves in flight |
 | `window_size` / `step_interval` | 1000 / 3000 forward steps | vLLM's defaults |
 | `log_balancedness` | `true`, every 100 steps | mean over max per-rank expert load in the engine logs (1.0 is balanced) |

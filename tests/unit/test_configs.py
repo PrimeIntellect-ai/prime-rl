@@ -890,11 +890,15 @@ def test_eplb_defaults_for_rl():
     namespace = InferenceConfig.model_validate(
         {"vllm": {"enable_eplb": True, "enable_expert_parallel": True, "data_parallel_size": 4}}
     ).to_namespace()
-    # One replica slot per expert parallel rank, and a communicator that does not stall
+    # One replica slot per expert parallel rank; vLLM picks the communicator
     assert namespace.eplb_config["num_redundant_experts"] == 4
-    assert namespace.eplb_config["communicator"] == "torch_nccl"
+    assert "communicator" not in namespace.eplb_config
     assert namespace.eplb_config["use_async"] is True
     assert not hasattr(namespace, "eplb")
+    # vLLM accepts the defaults
+    from vllm.config.parallel import EPLBConfig
+
+    EPLBConfig(**namespace.eplb_config)
 
     namespace = InferenceConfig.model_validate(
         {"vllm": {"enable_eplb": True, "data_parallel_size": 4, "eplb": {"num_redundant_experts": 0}}}
