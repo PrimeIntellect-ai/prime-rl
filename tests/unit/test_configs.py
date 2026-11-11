@@ -464,6 +464,7 @@ def test_mega_moe_buffer_covers_mxfp8_padding():
     [
         ({}, "bf16"),
         ({"type": "mxfp8"}, "mxfp8"),
+        ({"type": "mxfp8", "apply_to": "100%"}, "mxfp8"),
         ({"type": "deepgemm_fp8"}, "fp8"),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, "fp8_bwd"),
         ({"type": "bf16", "backend": "sonicmoe"}, "cannot run"),
@@ -1535,6 +1536,17 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
     assert not regex.fullmatch("model.layers.5.mlp.shared_experts")
     assert MoENVFP4Config(apply_to="50%").resolve_layers(48) == list(range(24))
 
+    # "100%" is every layer; the down projection's input defaults to vLLM's static scale
+    full = RLConfig.model_validate(
+        {
+            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4", "apply_to": "100%"}}}},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    assert full.inference.moe_nvfp4.apply_to == "all"
+    assert full.trainer.model.moe.compute.down_input_scale == "static"
+
     # Without 4/6 on the trainer, the engines leave it off too
     plain = RLConfig.model_validate(
         {
@@ -1625,6 +1637,10 @@ def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
         ),
         # BF16 trainer experts: the engines may quantize rollouts on purpose
         ({}, {"quantization": "mxfp8"}, ("mxfp8", None)),
+        # "100%" selects every layer like "all"; an empty selection quantizes no expert
+        ({"type": "mxfp8", "apply_to": "100%"}, {}, ("online", {"moe": "mxfp8"})),
+        ({"type": "mxfp8", "apply_to": []}, {}, (None, None)),
+        ({"type": "deepgemm_fp8", "apply_to": "0%"}, {"quantization": "mxfp8"}, ("mxfp8", None)),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, {}, (None, None)),
     ],
 )

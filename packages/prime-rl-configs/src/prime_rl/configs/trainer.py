@@ -167,6 +167,18 @@ class MoEComputeConfigBase(BaseConfig):
                 raise ValueError('apply_to must be "all", a percentage from "0%" to "100%", or a list of layer indices')
         return value
 
+    @property
+    def selects_all(self) -> bool:
+        """Every MoE layer: ``"all"`` or ``"100%"``."""
+        return self.apply_to == "all" or (isinstance(self.apply_to, str) and float(self.apply_to[:-1]) >= 100)
+
+    @property
+    def selects_none(self) -> bool:
+        """No MoE layer: ``[]`` or ``"0%"``; every expert then stays BF16."""
+        if isinstance(self.apply_to, list):
+            return not self.apply_to
+        return self.apply_to != "all" and float(self.apply_to[:-1]) == 0
+
     def resolve_layers(self, num_layers: int) -> set[int]:
         if isinstance(self.apply_to, list):
             invalid = [index for index in self.apply_to if index >= num_layers]
@@ -218,6 +230,10 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
     quantizes like the sampler's."""
+    down_input_scale: Literal["static", "per_token"] = "static"
+    """Global scale of the down projection's input (the SwiGLU output). ``static``: 1.0 for every token, how vLLM's
+    online NVFP4 engines (FlashInfer TRTLLM) quantize it, so rollouts sample-match. ``per_token``: each token's
+    amax / 2688, as for the first GEMM's input (Composer 2's choice), for engines that quantize it per token too."""
     exact_division: bool = False
     """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
     IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
@@ -273,7 +289,7 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
 def mega_moe_precision(compute: "MoEComputeConfig") -> str:
     """The Mega MoE kernels that run ``compute``'s expert precision. Mega MoE runs every MoE layer with its own
     kernels, so only precisions and settings it implements are accepted."""
-    if compute.apply_to != "all":
+    if not compute.selects_all:
         raise ValueError("Mega MoE runs every MoE layer; model.moe.compute.apply_to must be 'all'.")
     if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
         return "bf16"
@@ -309,7 +325,9 @@ def mega_moe_precision(compute: "MoEComputeConfig") -> str:
 
 def expert_engine_scheme(compute: "MoEComputeConfig") -> str | None:
     """vLLM's online scheme that quantizes routed experts as ``compute`` runs them in the forward, so rollouts are
-    sampled with the numerics the trainer computes. None for BF16 forwards."""
+    sampled with the numerics the trainer computes. None for BF16 forwards (or no quantized layer)."""
+    if compute.selects_none:
+        return None
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         return "fp8_per_block" if compute.forward == "fp8" else None
     if isinstance(compute, MXFP8MoEComputeConfig):

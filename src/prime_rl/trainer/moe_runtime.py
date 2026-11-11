@@ -92,6 +92,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             backward=compute.backward,
             four_over_six=compute.four_over_six,
             exact_division=compute.exact_division,
+            static_down_input_scale=compute.down_input_scale == "static",
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
