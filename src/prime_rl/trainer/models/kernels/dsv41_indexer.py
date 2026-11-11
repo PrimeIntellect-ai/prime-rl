@@ -10,12 +10,15 @@ Candidates travel between layers as doc-local block indices, so a consumer only 
 its `candidate_topk_blocks * block_size` candidate entries rather than every entry of the row.
 
 The score matrix is `(queries, entries)` fp32, so the queries are processed in chunks that keep
-it near `CHUNK_BYTES`. The scoring kernel and the fp8 quantization are `fp8_indexer`'s.
+it near `CHUNK_BYTES`. The scoring kernel and the fp8 quantization are `fp8_indexer`'s. With
+`mxfp4`, the queries and keys are instead rounded to vLLM's MXFP4 indexer values (`dsv41_mxfp4_indexer`)
+and scored as BF16, which holds them exactly, with unit key scales.
 """
 
 import torch
 import triton
 
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv41_mxfp4_indexer import mxfp4_round
 from prime_rl.trainer.models.kernels.fp8_indexer import (
     KEY_ALIGNMENT,
     _triton_fp8_indexer_kernel,
@@ -107,6 +110,7 @@ def dsv41_index_topk(
     block_size: int,
     topk_blocks: int,
     amax_floor: float,
+    mxfp4: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Top-k entries per query, plus the candidate blocks when `emit_candidates`.
 
@@ -120,19 +124,29 @@ def dsv41_index_topk(
         emit_candidates: also return this layer's own candidate blocks.
         max_entries_per_doc: width of the doc-local view the candidate source ranks blocks over.
         amax_floor: lower bound on each query head's and key's absolute maximum before its UE8M0 scale is taken.
+        mxfp4: score `q` and `k` as vLLM's MXFP4 indexer stores them (`amax_floor` unused); `w` should then
+            already be the weights that indexer scores with (`mxfp4_indexer_weights`).
 
     Returns `(S_q, topk)` int64 entry indices, -1 where a query has fewer readable entries, and
     the candidate blocks (an empty tensor unless `emit_candidates`).
     """
     S_q, H, D = q.shape
     S_k = k.shape[0]
-    q_fp8, q_scales = per_token_group_quant_fp8(
-        q.reshape(S_q * H, D).contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor
-    )
     k = torch.nn.functional.pad(k, (0, 0, 0, -S_k % KEY_ALIGNMENT))
-    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
-    q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
-    w = (w.float() * q_scales.view(S_q, H)).contiguous()
+    if mxfp4:
+        # The rounded values are exact in BF16 and the kernel accumulates their products in fp32. The scales live
+        # in the values, so the keys get unit scales and the weights no query scale.
+        q_fp8 = mxfp4_round(q.to(torch.bfloat16)).permute(1, 0, 2).contiguous()
+        k_fp8 = mxfp4_round(k.to(torch.bfloat16)).contiguous()
+        k_scales = torch.ones(k_fp8.shape[0], dtype=torch.float32, device=k.device)
+        w = w.float().contiguous()
+    else:
+        q_fp8, q_scales = per_token_group_quant_fp8(
+            q.reshape(S_q * H, D).contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor
+        )
+        k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
+        q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
+        w = (w.float() * q_scales.view(S_q, H)).contiguous()
 
     out = torch.full((S_q, topk), -1, dtype=torch.int64, device=q.device)
     cand_out = torch.full((S_q, topk_blocks) if emit_candidates else (0, 0), -1, dtype=torch.int32, device=q.device)
@@ -165,7 +179,19 @@ def dsv41_index_topk(
 
 @dsv41_index_topk.register_fake
 def _dsv41_index_topk_fake(
-    q, k, w, ks, ke, topk, candidates, emit_candidates, max_entries_per_doc, block_size, topk_blocks, amax_floor
+    q,
+    k,
+    w,
+    ks,
+    ke,
+    topk,
+    candidates,
+    emit_candidates,
+    max_entries_per_doc,
+    block_size,
+    topk_blocks,
+    amax_floor,
+    mxfp4=False,
 ):
     cand_shape = (q.shape[0], topk_blocks) if emit_candidates else (0, 0)
     return q.new_empty((q.shape[0], topk), dtype=torch.int64), q.new_empty(cand_shape, dtype=torch.int32)

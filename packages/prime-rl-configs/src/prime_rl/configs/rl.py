@@ -1,3 +1,4 @@
+import json
 import math
 import uuid
 import warnings
@@ -468,6 +469,61 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dsv4_kv_precision(self):
+        """DeepSeek V4.1 rounds its KV like the engines' cache (``model.dsv4_kv_precision``). An explicit
+        ``nvfp4_ds_mla`` or ``fp8_ds_mla`` cache sets it; an NVFP4 trainer pins an unspecified engine cache to
+        ``nvfp4_ds_mla``, since ``auto`` / ``fp8`` resolve per attention backend."""
+        if self.inference is None:
+            return self
+        model = self.trainer.model
+        vllm = self.inference.vllm
+        cache = getattr(vllm, "kv_cache_dtype", None) or "auto"
+        explicit = "dsv4_kv_precision" in model.model_fields_set
+        wanted = {"nvfp4_ds_mla": "nvfp4", "fp8_ds_mla": "fp8"}.get(cache)
+        if wanted is not None and not explicit:
+            model.dsv4_kv_precision = wanted
+        elif model.dsv4_kv_precision == "nvfp4":
+            if cache in ("auto", "fp8"):
+                vllm.kv_cache_dtype = "nvfp4_ds_mla"
+            elif cache != "nvfp4_ds_mla":
+                raise ValueError(
+                    f'model.dsv4_kv_precision = "nvfp4" models vLLM\'s `nvfp4_ds_mla` cache, but the engines use '
+                    f"inference.vllm.kv_cache_dtype = {cache!r}."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dsv4_indexer_precision(self):
+        """DeepSeek V4.1's indexer scores like the engines' indexer K cache (``model.dsv4_indexer_precision``). An
+        explicit ``inference.vllm.attention_config.indexer_kv_dtype`` sets it; an MXFP4 trainer pins an unspecified
+        (``auto``, which is fp8 on CUDA) engine indexer cache to ``mxfp4``."""
+        if self.inference is None:
+            return self
+        model = self.trainer.model
+        vllm = self.inference.vllm
+        attention_config = getattr(vllm, "attention_config", None)
+        if isinstance(attention_config, str):
+            attention_config = json.loads(attention_config)
+        if attention_config is None:
+            attention_config = {}
+        if not isinstance(attention_config, dict):
+            raise ValueError(
+                f"inference.vllm.attention_config must be a table (or its JSON), got {type(attention_config).__name__}."
+            )
+        indexer_kv_dtype = attention_config.get("indexer_kv_dtype") or "auto"
+        explicit = "dsv4_indexer_precision" in model.model_fields_set
+        if indexer_kv_dtype in ("fp8", "mxfp4") and not explicit:
+            model.dsv4_indexer_precision = indexer_kv_dtype
+        elif model.dsv4_indexer_precision == "mxfp4":
+            if indexer_kv_dtype != "auto":
+                raise ValueError(
+                    'model.dsv4_indexer_precision = "mxfp4" models vLLM\'s MXFP4 indexer cache, but the engines use '
+                    f"inference.vllm.attention_config.indexer_kv_dtype = {indexer_kv_dtype!r}."
+                )
+            vllm.attention_config = {**attention_config, "indexer_kv_dtype": "mxfp4"}
         return self
 
     @model_validator(mode="after")
