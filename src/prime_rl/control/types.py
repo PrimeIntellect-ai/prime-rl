@@ -50,6 +50,17 @@ class ConfigSnapshot(BaseModel):
     config: dict[str, Any]
 
 
+class CheckpointStatus(BaseModel):
+    step: int
+    complete: bool
+    """Whether the trainer finished saving the step, which DCP marks by writing ``trainer/.metadata`` last."""
+
+
+class CheckpointList(BaseModel):
+    checkpoints: list[CheckpointStatus]
+    """Ascending by step."""
+
+
 @dataclass(frozen=True)
 class ConfigUpdate:
     """A validated live config update, as the orchestrator's components receive it."""

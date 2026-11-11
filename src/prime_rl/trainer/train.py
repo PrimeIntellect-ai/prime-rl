@@ -413,7 +413,7 @@ def train(config: SFTConfig | PretrainConfig):
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
-    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     while True:
         # Reset peak memory stats
