@@ -307,6 +307,12 @@ def special_token_ids(tokenizer: PreTrainedTokenizer) -> set[int]:
     return set(tokenizer.all_special_ids) | added
 
 
+def documents_start_with_bos(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> bool:
+    """Whether all checked documents start with the tokenizer's BOS."""
+    edges = document_edges(shards, SEPARATOR_CHECK_DOCUMENTS)
+    return all(set(firsts) == {tokenizer.bos_token_id} for firsts, _ in edges.values())
+
+
 def detect_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> int | None:
     """The special token all checked documents end with, the separator to mask. None when they start with BOS
     instead: the position that predicts a document's first token then has BOS as input, so there is nothing to mask.
@@ -315,7 +321,7 @@ def detect_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> int
     ends = {token for _, lasts in edges.values() for token in lasts}
     if len(ends) == 1 and ends <= special_token_ids(tokenizer):
         return ends.pop()
-    if all(set(firsts) == {tokenizer.bos_token_id} for firsts, _ in edges.values()):
+    if documents_start_with_bos(shards, tokenizer):
         get_logger().info("The documents start with BOS and end without a separator: eod_mask_loss masks nothing")
         return None
     found = "; ".join(

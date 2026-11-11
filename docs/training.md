@@ -407,6 +407,58 @@ All files in `data.paths` (in folder order, then file name order) form one token
 
 Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
 
+**Eval sets.** `val.sets` also scores log-likelihood eval sets at every validation: language modeling, multiple choice and minimal pairs, without generation. Each set is a directory in `val.data_dir` that holds `test.parquet` and `meta.json` with the set's `kind`:
+
+| kind | columns | scored | metrics |
+|---|---|---|---|
+| `ppl` | `text` | every token after the first of text + EOS, in non-overlapping windows of the context length | `loss`, `bpb`, loss per position bin |
+| `ctxcont` | `context`, `continuation`, optionally `choices` + `gold` or `choice_contexts` | the continuation given the context, cut from the left to the context length | `loss`, `bpb`, `greedy_em`, `greedy_token_acc`; with choices also `acc` and `acc_norm` (per byte) |
+| `pairs` | `good`, `bad` | each whole sentence | `acc` (the good sentence is likelier) |
+
+Requests start with BOS if the training documents do. The metrics are logged as `val/<set>/<metric>@<length>`, e.g. `val/hellaswag/acc_norm@2k`, at each of `val.seq_lens` (default: `data.seq_len`). A set can have its own lengths: `{ name = "...", seq_lens = [...] }`. The sets are tokenized once at startup and scored on all GPUs, packed into rows of `val.micro_batch_tokens` tokens. `val.save_arrays` also writes the per-document and per-item arrays of every validation to `<run_dir>/val/step_N/`. Context parallelism is not supported.
+
+For example, these public sets:
+
+```python
+import json
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from datasets import load_dataset
+
+
+def write_set(name, kind, rows):
+    path = Path("data/val-sets") / name
+    path.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows), path / "test.parquet")
+    (path / "meta.json").write_text(json.dumps({"kind": kind}))
+
+
+hellaswag = load_dataset("Rowan/hellaswag", split="validation")
+write_set("hellaswag", "ctxcont", [
+    {"context": row["ctx"], "continuation": " " + row["endings"][int(row["label"])],
+     "choices": [" " + ending for ending in row["endings"]], "gold": int(row["label"])}
+    for row in hellaswag
+])
+lambada = load_dataset("EleutherAI/lambada_openai", "en", split="test")
+write_set("lambada", "ctxcont", [
+    {"context": context, "continuation": " " + word}
+    for context, _, word in (row["text"].rpartition(" ") for row in lambada)
+])
+wikitext = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="test")
+write_set("wikitext", "ppl", [{"text": row["text"]} for row in wikitext if len(row["text"]) > 1000])
+blimp = load_dataset("nyu-mll/blimp", "anaphor_gender_agreement", split="train")
+write_set("blimp-anaphor-gender", "pairs", [{"good": row["sentence_good"], "bad": row["sentence_bad"]} for row in blimp])
+```
+
+Added to the `[val]` table of the example above:
+
+```toml
+sets = ["hellaswag", "lambada", "wikitext", "blimp-anaphor-gender"]
+data_dir = "data/val-sets"
+```
+
 **Launch.**
 
 ```bash
