@@ -1,4 +1,5 @@
 import os
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,6 +22,7 @@ def apply_shared_vllm_patches():
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_routed_experts_with_pd_connectors()
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
+    monkey_patch_mooncake_lookup_economy()
     monkey_patch_offload_keys_slice()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
@@ -484,6 +486,118 @@ def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: in
         return None
     prompt_start = request.sampling_params.routed_experts_prompt_start
     return max(0, prompt_start // block_size * block_size - num_computed_tokens)
+
+
+def monkey_patch_mooncake_lookup_economy():
+    """Look up fewer requests in the Mooncake store, and each only once while it waits (opt-in, off by default).
+
+    The vLLM 0.33 scheduler asks the connector for a waiting request's external hit before it checks whether the
+    step may admit prefill at all. Under ``prefill_schedule_interval`` N it then drops the request on N - 1 of every
+    N steps, and ``LookupKeyClient`` forgets each finished lookup once read, so the same full-prompt lookup is
+    repeated every step until the request is admitted: r13's attempt 7 made ~9.6 lookups per finished request of
+    ~4,800 keys each, saturating the single store master (~4M keys/s). Three ``kv_connector_extra_config`` keys,
+    set from ``MooncakeKVCacheOffloadConfig``, each turn on one remedy:
+
+    - ``prime_rl_min_lookup_gain_tokens``: no lookup when the store could add fewer tokens than this past the local
+      prefix hit. A hit is capped at the block-aligned length one token short of the request, and loads start at
+      the block-aligned local hit, so at the scheduler block size (the floor applied here) the skip changes no hit.
+    - ``prime_rl_lookup_memo_ttl_s``: reuse a finished lookup for the same request and length for this long. The
+      load size is re-derived from the current local hit. A key evicted in between fails its load, which vLLM
+      recovers by recomputing those blocks.
+    - ``prime_rl_lookup_timeout_s``: with ``lookup_async``, a lookup pending this long counts as a miss, so the
+      request is admitted on its local hit instead of staying deferred behind the connector's one lookup thread.
+
+    Patches ``MooncakeStoreScheduler`` under ``MooncakeStoreConnector``, so the routed-experts clamp still trims
+    the load specs this returns.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.data import LoadSpec, MooncakeLookupResult
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.scheduler import MooncakeStoreScheduler
+
+    if getattr(MooncakeStoreScheduler.get_num_new_matched_tokens, "_prime_rl_lookup_economy", False):
+        return
+    original_init = MooncakeStoreScheduler.__init__
+    original_get_num_new_matched_tokens = MooncakeStoreScheduler.get_num_new_matched_tokens
+    original_update_state_after_alloc = MooncakeStoreScheduler.update_state_after_alloc
+    original_build_connector_meta = MooncakeStoreScheduler.build_connector_meta
+    miss = MooncakeLookupResult(0)
+
+    def __init__(self, vllm_config, kv_cache_config):
+        original_init(self, vllm_config, kv_cache_config)
+        extra = vllm_config.kv_transfer_config.kv_connector_extra_config
+        min_gain = extra.get("prime_rl_min_lookup_gain_tokens")
+        ttl = extra.get("prime_rl_lookup_memo_ttl_s")
+        timeout = extra.get("prime_rl_lookup_timeout_s")
+        self._prime_rl_min_gain = None if min_gain is None else max(int(min_gain), self._block_size)
+        self._prime_rl_memo_ttl_s = None if ttl is None else float(ttl)
+        self._prime_rl_timeout_s = None if timeout is None else float(timeout)
+        self._prime_rl_economy = any(x is not None for x in (min_gain, ttl, timeout))
+        # req_id -> (num_tokens, expires at, result); a timed-out lookup is a miss until admission or finish.
+        self._prime_rl_memo: dict[str, tuple[int, float, MooncakeLookupResult]] = {}
+        self._prime_rl_submitted: dict[str, float] = {}  # req_id -> when its in-flight lookup was submitted
+
+    def _forget(self, req_id):
+        self._prime_rl_memo.pop(req_id, None)
+        if self._prime_rl_submitted.pop(req_id, None) is not None:
+            self.client.discard(req_id)
+
+    def _load(self, request, num_computed_tokens, result):
+        # Upstream's tail of get_num_new_matched_tokens.
+        if result.hit_length - num_computed_tokens <= 0:
+            return 0, False
+        self.load_specs[request.request_id] = LoadSpec(
+            vllm_cached_tokens=num_computed_tokens,
+            kvpool_cached_tokens=result.hit_length,
+            can_load=False,
+            tail_key_boundaries=result.tail_key_boundaries,
+        )
+        return result.hit_length - num_computed_tokens, self.load_async
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        if not self._prime_rl_economy or not self.enable_lookup or self._store_coord is None:
+            return original_get_num_new_matched_tokens(self, request, num_computed_tokens)
+        align = self._hash_block_size if self.enable_partial_hash_hits else self._block_size
+        if request.num_tokens < align:
+            return 0, False
+        req_id = request.request_id
+        if self._prime_rl_min_gain is not None:
+            max_hit = self._store_coord.align_lookup_length(request.num_tokens - 1)
+            if max_hit - num_computed_tokens < self._prime_rl_min_gain:
+                _forget(self, req_id)
+                return 0, False
+        now = time.monotonic()
+        memo = self._prime_rl_memo.get(req_id)
+        if memo is not None:
+            if memo[0] == request.num_tokens and now < memo[1]:
+                return _load(self, request, num_computed_tokens, memo[2])
+            del self._prime_rl_memo[req_id]
+        submitted = self._prime_rl_submitted.setdefault(req_id, now)
+        result = self.client.lookup(req_id, request.num_tokens, request.block_hashes, non_block=self.lookup_async)
+        if result is None:
+            if self._prime_rl_timeout_s is not None and now - submitted > self._prime_rl_timeout_s:
+                _forget(self, req_id)
+                self._prime_rl_memo[req_id] = (request.num_tokens, float("inf"), miss)
+                return 0, False
+            return None, False
+        del self._prime_rl_submitted[req_id]
+        if self._prime_rl_memo_ttl_s is not None:
+            self._prime_rl_memo[req_id] = (request.num_tokens, now + self._prime_rl_memo_ttl_s, result)
+        return _load(self, request, num_computed_tokens, result)
+
+    def update_state_after_alloc(self, request, blocks, num_external_tokens):
+        # Admitted: a re-admission after preemption looks up afresh.
+        self._prime_rl_memo.pop(request.request_id, None)
+        return original_update_state_after_alloc(self, request, blocks, num_external_tokens)
+
+    def build_connector_meta(self, scheduler_output):
+        for req_id in scheduler_output.finished_req_ids:
+            _forget(self, req_id)
+        return original_build_connector_meta(self, scheduler_output)
+
+    get_num_new_matched_tokens._prime_rl_lookup_economy = True
+    MooncakeStoreScheduler.__init__ = __init__
+    MooncakeStoreScheduler.get_num_new_matched_tokens = get_num_new_matched_tokens
+    MooncakeStoreScheduler.update_state_after_alloc = update_state_after_alloc
+    MooncakeStoreScheduler.build_connector_meta = build_connector_meta
 
 
 def monkey_patch_offload_keys_slice():
