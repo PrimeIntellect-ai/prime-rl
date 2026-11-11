@@ -65,7 +65,7 @@ def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
     if not head_only:
         loss = loss + out["logprobs"].sum()
     actual = torch.autograd.grad(loss, (hidden, lm.weight))
-    logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
+    logits = (hidden.float() @ lm.weight.float().t()) / temperature.unsqueeze(-1)
     sampled, head = selective_log_softmax_with_support(logits, labels, support)
     reference = (head * coefficient).sum()
     if not head_only:
@@ -239,9 +239,9 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("head", ["fused", "vanilla"])
-def test_fp32_output_head_matches_fp32_logits(head):
-    """BF16 operands: with ``fp32_output`` the logprobs, the cross-entropy and their gradients match FP32 logits of the
-    same operands, while BF16 logits are off by their rounding. The gradients stay BF16 either way."""
+def test_head_logits_are_fp32_from_bf16_operands(head):
+    """BF16 operands: the logprobs, the cross-entropy and their gradients match FP32 logits of the same operands (BF16
+    logits would be off by their rounding, ~1e-2 here). The gradients stay BF16."""
     torch.manual_seed(0)
     n, h, v = 64, 256, 8203
     hidden = torch.randn(1, n, h, device="cuda").bfloat16().requires_grad_()
@@ -258,30 +258,23 @@ def test_fp32_output_head_matches_fp32_logits(head):
         for objective in ((expected_logprobs * coefficient).sum(), expected_loss)
     ]
 
-    errors = {}
-    for fp32_output in (False, True):
-        if head == "fused":
-            lm = FusedOutputLinear(h, v, chunk_size=16, fp32_output=fp32_output)
-        else:
-            lm = VanillaOutputLinear(h, v, fp32_output=fp32_output)
-        lm = lm.to("cuda", torch.bfloat16)
-        lm.weight.data.copy_(weight)
-        out = lm(hidden, labels, temperature)
-        if head == "fused":
-            logprobs = out["logprobs"]
-        else:
-            logprobs = torch.log_softmax(out["logits"].float(), dim=-1).gather(-1, labels[..., None]).squeeze(-1)
-        loss = lm(hidden, labels)["loss"]
-        for objective, expected in zip(((logprobs * coefficient).sum(), loss), expected_grads, strict=True):
-            grads = torch.autograd.grad(objective, (hidden, lm.weight))
-            assert [grad.dtype for grad in grads] == [torch.bfloat16, torch.bfloat16]
-            if fp32_output:
-                for grad, expected_grad in zip(grads, expected, strict=True):
-                    torch.testing.assert_close(grad.float(), expected_grad, atol=1e-2, rtol=3e-2)
-        errors[fp32_output] = ((logprobs - expected_logprobs).abs().max(), (loss - expected_loss).abs())
-
-    torch.testing.assert_close(errors[True], (torch.tensor(0.0, device="cuda"),) * 2, rtol=0, atol=1e-3)
-    assert errors[False][0] > 10 * errors[True][0]
+    lm = FusedOutputLinear(h, v, chunk_size=16) if head == "fused" else VanillaOutputLinear(h, v)
+    lm = lm.to("cuda", torch.bfloat16)
+    lm.weight.data.copy_(weight)
+    out = lm(hidden, labels, temperature)
+    if head == "fused":
+        logprobs = out["logprobs"]
+    else:
+        assert out["logits"].dtype == torch.float32
+        logprobs = torch.log_softmax(out["logits"], dim=-1).gather(-1, labels[..., None]).squeeze(-1)
+    loss = lm(hidden, labels)["loss"]
+    torch.testing.assert_close(logprobs, expected_logprobs.detach(), rtol=0, atol=1e-4)
+    torch.testing.assert_close(loss, expected_loss.detach(), rtol=0, atol=1e-3)
+    for objective, expected in zip(((logprobs * coefficient).sum(), loss), expected_grads, strict=True):
+        grads = torch.autograd.grad(objective, (hidden, lm.weight))
+        for grad, expected_grad in zip(grads, expected, strict=True):
+            assert grad.dtype == torch.bfloat16
+            torch.testing.assert_close(grad.float(), expected_grad, atol=1e-2, rtol=3e-2)
 
 
 def test_fused_lm_head_requires_labels():
