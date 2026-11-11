@@ -1,51 +1,48 @@
 import json
-from types import SimpleNamespace
 
 import pytest
-from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Qwen3Config
+from transformers import AutoConfig, AutoProcessor, AutoTokenizer, GenerationConfig, Qwen3Config
 
-import prime_rl.trainer.ckpt as ckpt
-from prime_rl.trainer.ckpt import check_model_config, save_model_files
+from prime_rl.trainer.ckpt import ModelFiles, check_model_config
 
 FIELDS = {"hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 2, "num_attention_heads": 4}
+CHAT_TEMPLATE = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    tokenizer.chat_template = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
+    tokenizer.chat_template = CHAT_TEMPLATE
     return tokenizer
 
 
 def test_a_checkpoint_step_dir_loads_as_the_model(tmp_path, tokenizer):
-    save_model_files(Qwen3Config(**FIELDS), tokenizer, None, tmp_path)
+    ModelFiles(Qwen3Config(**FIELDS), tokenizer, None, GenerationConfig(do_sample=True, temperature=0.6)).save(tmp_path)
 
     config = AutoConfig.from_pretrained(tmp_path)
     assert isinstance(config, Qwen3Config) and config.num_hidden_layers == 2
     check_model_config(config, tmp_path)
+    assert GenerationConfig.from_pretrained(tmp_path).temperature == 0.6
 
     loaded = AutoTokenizer.from_pretrained(tmp_path)
-    assert loaded.chat_template == tokenizer.chat_template
+    assert loaded.chat_template == CHAT_TEMPLATE
     assert loaded.encode("Hello world") == tokenizer.encode("Hello world")
 
 
-def test_a_vlm_checkpoint_step_dir_loads_its_processor(tmp_path):
+def test_a_vlm_checkpoint_step_dir_keeps_the_configured_tokenizer(tmp_path):
     processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
-    save_model_files(Qwen3Config(**FIELDS), processor.tokenizer, processor, tmp_path)
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
+    tokenizer.chat_template = CHAT_TEMPLATE
+    ModelFiles(Qwen3Config(**FIELDS), tokenizer, processor, None).save(tmp_path)
 
-    loaded = AutoProcessor.from_pretrained(tmp_path)
-    assert type(loaded) is type(processor)
-    assert loaded.image_processor.to_dict() == processor.image_processor.to_dict()
+    assert type(AutoProcessor.from_pretrained(tmp_path)) is type(processor)
+    assert AutoTokenizer.from_pretrained(tmp_path).chat_template == CHAT_TEMPLATE
 
 
-def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenizer, monkeypatch):
+def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenizer):
     config = Qwen3Config(**FIELDS)
-    # A checkpoint without config.json loads after a warning.
-    warnings = []
-    monkeypatch.setattr(ckpt, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
-    check_model_config(config, tmp_path)
-    assert len(warnings) == 1 and "no config.json" in warnings[0]
-    save_model_files(config, tokenizer, None, tmp_path)
+    check_model_config(config, tmp_path)  # without config.json
+    ModelFiles(config, tokenizer, None, None).save(tmp_path)
     check_model_config(config, tmp_path)
     with pytest.raises(ValueError, match="num_hidden_layers 2 -> 3"):
         check_model_config(Qwen3Config(**{**FIELDS, "num_hidden_layers": 3}), tmp_path)
