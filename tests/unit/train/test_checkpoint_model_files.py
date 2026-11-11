@@ -2,7 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from transformers import AutoConfig, AutoTokenizer, Qwen3Config
+from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Qwen3Config
 
 import prime_rl.trainer.ckpt as ckpt
 from prime_rl.trainer.ckpt import check_model_config, save_model_files
@@ -18,7 +18,7 @@ def tokenizer():
 
 
 def test_a_checkpoint_step_dir_loads_as_the_model(tmp_path, tokenizer):
-    save_model_files(Qwen3Config(**FIELDS), tokenizer, tmp_path)
+    save_model_files(Qwen3Config(**FIELDS), tokenizer, None, tmp_path)
 
     config = AutoConfig.from_pretrained(tmp_path)
     assert isinstance(config, Qwen3Config) and config.num_hidden_layers == 2
@@ -29,6 +29,15 @@ def test_a_checkpoint_step_dir_loads_as_the_model(tmp_path, tokenizer):
     assert loaded.encode("Hello world") == tokenizer.encode("Hello world")
 
 
+def test_a_vlm_checkpoint_step_dir_loads_its_processor(tmp_path):
+    processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
+    save_model_files(Qwen3Config(**FIELDS), processor.tokenizer, processor, tmp_path)
+
+    loaded = AutoProcessor.from_pretrained(tmp_path)
+    assert type(loaded) is type(processor)
+    assert loaded.image_processor.to_dict() == processor.image_processor.to_dict()
+
+
 def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenizer, monkeypatch):
     config = Qwen3Config(**FIELDS)
     # A checkpoint without config.json loads after a warning.
@@ -36,7 +45,7 @@ def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenize
     monkeypatch.setattr(ckpt, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     check_model_config(config, tmp_path)
     assert len(warnings) == 1 and "no config.json" in warnings[0]
-    save_model_files(config, tokenizer, tmp_path)
+    save_model_files(config, tokenizer, None, tmp_path)
     check_model_config(config, tmp_path)
     with pytest.raises(ValueError, match="num_hidden_layers 2 -> 3"):
         check_model_config(Qwen3Config(**{**FIELDS, "num_hidden_layers": 3}), tmp_path)
