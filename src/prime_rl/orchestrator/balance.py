@@ -2,30 +2,27 @@
 
 An RL run is a pipeline of GPU pools: inference engines make rollouts (in P/D, a prefill pool feeds a decode pool)
 and the trainer consumes them. The slowest pool sets the run's speed; the others idle part of the time. The advisor
-measures what each pool sustains at its current size, in train rollouts per second, and searches every split of the
-same units into valid pool sizes for the fastest, assuming each pool's capacity scales with its units:
+measures what each pool sustains at its current size and searches every split of the same units into valid pool sizes
+for the fastest, assuming each pool's capacity scales with its units:
 
     speed(split) = min over pools p of  capacity_p * units'_p / units_p
 
-Per-token rates, context lengths, KV offload, Mooncake hit rates and P/D transfers all cancel: each pool's
-capacity is measured end to end.
+Every pool's capacity is its throughput over its busy share: what it would make busy all the time. Context lengths,
+KV offload, Mooncake and P/D transfers cancel, since each pool is measured end to end.
 
-- **Trainer:** its busy time per step is the time from receiving one batch to requesting the next, so its capacity
-  is the rollouts it trained over its busy time. Always measured.
-- **Inference:** measured while inference is the bottleneck: the concurrency controller sits at its knee (growth no
-  longer pays), the cap binds, and nothing on the trainer side holds admission back. Its tokens per second there,
-  over the tokens one train rollout costs now, is its capacity. While the trainer is the bottleneck inference runs
-  below its knee, so the last knee measurement stands in for it (up to ``knee_max_age_minutes``), else the current
-  rate is only a lower bound. A probe (``probe``) lifts the trainer-side bounds until the knee is measured again.
-- **Prefill / decode:** at the knee, the role whose engines queue more is the one that binds. The other one's slack
-  is estimated: prefill engines are compute bound, so the share of polls they run a request is their busy share;
-  decode engines' GPU KV usage bounds how many more sequences they could hold (no slack once full, which offload
-  makes normal).
+- **Trainer:** busy from receiving a batch to requesting the next (training, broadcasting, saving).
+- **Inference:** the seconds the engines spent executing model steps (``/prime_rl/engine_busy``), outside weight-update
+  pauses. Under P/D, prefill and decode engines are measured apart. Engines that step whenever they hold a sequence
+  (decode) read as fully busy below their knee too: their spare capacity is in batch size, not time. For a role at
+  least ``SATURATED_BUSY`` busy, the advisor fits how an engine's step time grows with what the step holds (sequences
+  decoding, the context they read, prefill tokens) and extrapolates to the batch the engine could hold (its KV cache
+  or ``max_num_seqs``); without a reliable fit the busy-time estimate stands, which only underestimates.
 - **Environment:** a cap held at ``concurrency.max_inflight`` while growth still pays means the episodes' external
   resources (e.g. sandboxes) bound the run, not GPUs; the advisor says so instead of advising a split.
 
-The advice is conservative: lower bounds count as the capacity, so a split that moves units off a pool whose
-capacity is only bounded from below never looks better than it is.
+Capacities are matched per train rollout, the unit both sides share, and shown as trained tokens per second. A pool
+whose busy time is not reported counts only what it makes now, a lower bound: a split that takes units from it never
+looks better than it is.
 """
 
 from __future__ import annotations
@@ -35,7 +32,8 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
+
+import numpy as np
 
 from prime_rl.configs.orchestrator import BalanceConfig, BalancePoolConfig
 from prime_rl.orchestrator.concurrency import EngineLoadSample
@@ -47,26 +45,8 @@ MIN_STEPS = 3
 MIN_COVERAGE = 0.5
 """Share of the window the polls must cover before a pool is measured."""
 
-KNEE_SHARE = 1 / 3
-"""Share of the window's polls at the inference knee for inference to count as the bottleneck now."""
-
-KNEE_MIN_SECONDS = 300.0
-"""Seconds at the knee that make a knee measurement."""
-
 ENV_SHARE = 0.5
 """Share of the window's polls held at the configured cap while growth paid that makes the run environment-bound."""
-
-QUEUE_EPS = 0.02
-"""Queued share below which a role is taken to have no queue."""
-
-PREFILL_BUSY_FLOOR = 0.25
-"""Least prefill busy share the slack estimate divides by (the slack is at most 1 / this)."""
-
-DECODE_KV_FULL = 0.9
-"""Decode GPU KV usage at which decode engines hold no more sequences."""
-
-DECODE_SLACK_MAX = 2.0
-"""Most decode slack the KV usage estimate claims."""
 
 BOTTLENECK_TOLERANCE = 0.1
 """Pools within this share of the slowest capacity are candidates for the bottleneck."""
@@ -74,79 +54,102 @@ BOTTLENECK_TOLERANCE = 0.1
 REMIND_SECONDS = 7200.0
 """Seconds before an unchanged notice is repeated."""
 
+SATURATED_BUSY = 0.9
+"""Busy share from which an engine's spare capacity is read from its batch, not its busy time."""
 
-class Kind(Enum):
-    MEASURED = "measured"
-    ESTIMATED = "estimated"
-    LOWER_BOUND = "lower bound"
+MIN_FIT_POINTS = 30
+"""Engine polls the step-time fit needs."""
+
+MIN_FIT_R2 = 0.5
+"""Variance in per-step time the fit must explain to be trusted."""
+
+MIN_BATCH_SPREAD = 0.1
+"""Coefficient of variation the per-step batch must show across polls for the fit to see how step time grows."""
+
+KV_HEADROOM = 0.95
+"""Share of GPU KV cache a full batch may fill."""
+
+MAX_BATCH_GAIN = 4.0
+"""Most throughput gain the batch extrapolation claims."""
+
+
+@dataclass(frozen=True)
+class EngineSteps:
+    """One engine's steps over one poll: their count and seconds, and summed over them, the sequences decoding, the
+    context they read and the prefill tokens."""
+
+    steps: float
+    busy: float
+    decode_seqs: float
+    kv_read: float
+    prefill: float
+    max_num_seqs: int | None
+    kv_capacity: int | None
+
+
+@dataclass(frozen=True)
+class BatchFit:
+    """How a role's engines would grow their throughput with a full batch: the fitted step time per sequence decoding,
+    per context token read and per prefill token, over a fixed cost per step."""
+
+    gain: float
+    batch: float
+    full_batch: float
 
 
 @dataclass(frozen=True)
 class InferencePoll:
-    """One metrics poll of the inference engines, with the concurrency state at that time."""
+    """One metrics poll of the inference engines."""
 
     seconds: float
     generated: int
     """Tokens the decode (or colocated) engines generated since the previous poll."""
     finished: int
     """Train rollouts finished since the previous poll."""
-    knee: bool
-    """Inference at its knee: the controller's steps run, growth did not pay, the cap binds, and nothing on the
-    trainer side holds admission back."""
     env_bound: bool
     """The cap sits at the configured ``max_inflight`` and binds while growth still pays."""
-    queued_share: dict[str, float] = field(default_factory=dict)
-    prefill_busy: float | None = None
-    """Share of prefill engines running a request."""
-    decode_kv: float | None = None
-    """Mean GPU KV usage of the decode engines (0-1)."""
-    busy: float | None = None
-    """Seconds the decode (or colocated) engines executed model steps since the previous poll, summed over the
-    ``busy_engines`` that reported it."""
-    busy_engines: int = 0
+    busy: dict[str, float | None]
+    """Per inference role (``inference``, or ``prefill`` and ``decode``), the share of the poll its engines spent
+    executing model steps; None when not every engine of the role reported it."""
+    engines: dict[str, list[EngineSteps]] = field(default_factory=dict)
+    """Per inference role, each engine's steps over the poll."""
     paused: bool = False
     """The engines were paused for a weight update."""
 
 
-def prefill_busy(prefill: list[EngineLoadSample], seconds: float) -> float | None:
-    """Share of the poll the prefill engines spent executing model steps, from their busy time when all report it,
-    else the share of them running a request."""
-    if not prefill:
-        return None
-    busy = [sample.busy_delta for sample in prefill if sample.busy_delta is not None]
-    if len(busy) == len(prefill) and seconds > 0:
-        return min(sum(busy) / (len(prefill) * seconds), 1.0)
-    return sum(sample.running > 0 for sample in prefill) / len(prefill)
-
-
 def inference_poll(
-    samples: list[EngineLoadSample],
-    seconds: float,
-    *,
-    finished: int,
-    knee: bool,
-    env_bound: bool,
-    queued_share: dict[str, float],
-    paused: bool = False,
+    samples: list[EngineLoadSample], seconds: float, *, finished: int, env_bound: bool, paused: bool = False
 ) -> InferencePoll:
     """Pool one metrics poll's engines into an :class:`InferencePoll`."""
-    prefill = [sample for sample in samples if sample.role == "prefill"]
-    generating = [sample for sample in samples if sample.role != "prefill"]
-    busy = [sample.busy_delta for sample in generating if sample.busy_delta is not None]
-    # Busy time counts only when every generating engine reported it
-    complete = bool(generating) and len(busy) == len(generating)
-    decode_kv = [sample.kv_usage for sample in samples if sample.role == "decode" and sample.kv_usage is not None]
+    by_role: dict[str, list[EngineLoadSample]] = {}
+    for sample in samples:
+        by_role.setdefault(sample.role or "inference", []).append(sample)
+    busy: dict[str, float | None] = {}
+    engines: dict[str, list[EngineSteps]] = {}
+    for role, group in by_role.items():
+        reported = [sample.busy_delta for sample in group if sample.busy_delta is not None]
+        complete = len(reported) == len(group) and seconds > 0
+        busy[role] = min(sum(reported) / (len(group) * seconds), 1.0) if complete else None
+        engines[role] = [
+            EngineSteps(
+                steps=sample.steps_delta,
+                busy=sample.busy_delta,
+                decode_seqs=sample.decode_seqs_delta or 0.0,
+                kv_read=sample.kv_read_delta or 0.0,
+                prefill=sample.prefill_delta or 0.0,
+                max_num_seqs=sample.max_num_seqs,
+                kv_capacity=sample.kv_capacity_tokens,
+            )
+            for sample in group
+            if sample.steps_delta and sample.busy_delta
+        ]
     return InferencePoll(
         seconds=seconds,
         generated=sum(sample.generation_tokens_delta for sample in samples if sample.role != "prefill"),
         finished=finished,
-        knee=knee,
         env_bound=env_bound,
-        queued_share=dict(queued_share),
-        prefill_busy=prefill_busy(prefill, seconds),
-        decode_kv=sum(decode_kv) / len(decode_kv) if decode_kv else None,
-        busy=sum(busy) if complete else None,
-        busy_engines=len(busy) if complete else 0,
+        busy=busy,
+        engines=engines,
         paused=paused,
     )
 
@@ -161,16 +164,22 @@ class TrainerStep:
     period: float
     """Seconds since the previous batch shipped."""
     busy: float | None
-    """Seconds of ``period`` the trainer spent before requesting this batch (training, broadcasting, saving). None
-    when the transport did not report when the trainer asked."""
+    """Seconds of ``period`` the trainer spent before requesting this batch. None when the transport did not report
+    when the trainer asked."""
 
 
 @dataclass(frozen=True)
 class Capacity:
     rate: float
     """Train rollouts per second the pool sustains at its current size."""
-    kind: Kind
-    source: str
+    busy: float | None
+    """The pool's busy share; None when not reported, and ``rate`` is then only a lower bound."""
+    batch: BatchFit | None = None
+    """The batch extrapolation the rate includes, for a saturated inference role."""
+
+    @property
+    def lower_bound(self) -> bool:
+        return self.busy is None
 
 
 @dataclass(frozen=True)
@@ -188,10 +197,8 @@ class Advice:
     """The pool with the least capacity, or ``environment``."""
     rate: float
     """Train rollouts per second shipped over the window."""
-    trainer_busy: float | None
     trained_per_rollout: float
-    """Tokens the trainer processes per rollout over the window: shown rates are trained tokens per second, which
-    do not drift as rollouts grow longer. Rollouts are only the unit the pools are matched in."""
+    """Tokens the trainer processes per rollout over the window, which turns rates into trained tokens per second."""
 
     def tokens(self, rate: float) -> float:
         """A rate in rollouts per second as trained tokens per second."""
@@ -219,10 +226,6 @@ def best_split(pools: list[BalancePoolConfig], capacities: dict[str, Capacity]) 
     best = current
     best_distance = 0
 
-    def sizes(pool: BalancePoolConfig, room: int) -> range:
-        first = math.ceil(pool.minimum / pool.step) * pool.step
-        return range(first, room + 1, pool.step)
-
     def search(index: int, room: int, units: dict[str, int]) -> None:
         nonlocal best, best_distance
         pool = pools[index]
@@ -238,7 +241,8 @@ def best_split(pools: list[BalancePoolConfig], capacities: dict[str, Capacity]) 
                 best, best_distance = Split(candidate, value), distance
             return
         rest = sum(math.ceil(p.minimum / p.step) * p.step for p in pools[index + 1 :])
-        for size in sizes(pool, room - rest):
+        first = math.ceil(pool.minimum / pool.step) * pool.step
+        for size in range(first, room - rest + 1, pool.step):
             search(index + 1, room - size, {**units, pool.name: size})
 
     search(0, total, {})
@@ -252,109 +256,86 @@ class BalanceAdvisor:
         self.window_s = config.window_minutes * 60
         self.polls: deque[tuple[float, InferencePoll]] = deque()
         self.steps: deque[tuple[float, TrainerStep]] = deque()
-        # The last knee measurement: generated tokens per second at the knee, and when
-        self.knee_throughput: float | None = None
-        self.knee_at: float | None = None
-        self.knee_roles: dict[str, Capacity] = {}
         # The split promising ``min_gain`` and since when, and the last notice
         self.candidate: dict[str, int] | None = None
         self.candidate_since: float | None = None
         self.noticed: dict[str, int] | None = None
         self.noticed_at: float | None = None
         self.advice: Advice | None = None
-        # The busy-time estimate of inference: utilization and capacity in rollouts per second
-        self.busy_estimate: tuple[float, float] | None = None
-        # Probe: when the current one started, and when the last one did
-        self.probe_started: float | None = None
-        self.last_probe: float | None = None
 
     @property
     def pools(self) -> list[BalancePoolConfig]:
         return self.config.pools or []
 
-    @property
-    def roles(self) -> list[str]:
-        """The inference pools: ``inference``, or ``prefill`` and ``decode``."""
-        return [pool.name for pool in self.pools if pool.name != "trainer"]
-
-    # ── inbound ──────────────────────────────────────────────────────────────
-
     def observe(self, poll: InferencePoll) -> None:
-        now = self.clock()
-        self.polls.append((now, poll))
-        self.trim(now)
-        if not poll.knee:
-            return
-        # A probe measures the knee from its own polls only
-        since = self.probe_started if self.probe_started is not None else -math.inf
-        knee = [p for at, p in self.polls if p.knee and at >= since]
-        seconds = sum(p.seconds for p in knee)
-        if seconds >= KNEE_MIN_SECONDS:
-            self.knee_throughput = sum(p.generated for p in knee) / seconds
-            self.knee_at = now
-            self.knee_roles = self.role_slack(knee)
+        self.polls.append((self.clock(), poll))
+        self.trim()
 
     def observe_step(self, step: TrainerStep) -> None:
-        now = self.clock()
-        self.steps.append((now, step))
-        self.trim(now)
+        self.steps.append((self.clock(), step))
+        self.trim()
 
-    def trim(self, now: float) -> None:
+    def trim(self) -> None:
+        now = self.clock()
         for entries in (self.polls, self.steps):
             while entries and now - entries[0][0] > self.window_s:
                 entries.popleft()
 
-    # ── measurement ──────────────────────────────────────────────────────────
-
-    def role_slack(self, polls: list[InferencePoll]) -> dict[str, Capacity]:
-        """Per P/D role, its capacity relative to the inference pipeline's at the knee (``rate`` is the factor)."""
-        if "prefill" not in self.roles:
-            return {}
-        n = len(polls)
-        queued = {role: sum(p.queued_share.get(role, 0.0) for p in polls) / n for role in ("prefill", "decode")}
-        busy = [p.prefill_busy for p in polls if p.prefill_busy is not None]
-        kv = [p.decode_kv for p in polls if p.decode_kv is not None]
-        prefill_busy = sum(busy) / len(busy) if busy else None
-        decode_kv = sum(kv) / len(kv) if kv else None
-        if max(queued.values()) >= QUEUE_EPS:
-            binding = max(queued, key=queued.get)
-        else:
-            # No queue anywhere: the knee is a throughput plateau, and busy prefill engines are its likeliest cause
-            binding = "prefill" if prefill_busy is not None and prefill_busy >= 0.9 else "decode"
-        slack = {binding: Capacity(1.0, Kind.MEASURED, f"{binding} queues at the knee")}
-        if binding == "decode":
-            if prefill_busy is None:
-                slack["prefill"] = Capacity(1.0, Kind.LOWER_BOUND, "prefill busy share unknown")
-            else:
-                factor = 1 / max(prefill_busy, PREFILL_BUSY_FLOOR)
-                slack["prefill"] = Capacity(max(factor, 1.0), Kind.ESTIMATED, f"prefill busy {prefill_busy:.0%}")
-        elif decode_kv is None or decode_kv >= DECODE_KV_FULL:
-            slack["decode"] = Capacity(1.0, Kind.LOWER_BOUND, "decode KV full or unknown")
-        else:
-            factor = min(DECODE_KV_FULL / max(decode_kv, 1e-3), DECODE_SLACK_MAX)
-            slack["decode"] = Capacity(max(factor, 1.0), Kind.ESTIMATED, f"decode KV {decode_kv:.0%}")
-        return slack
-
-    def busy_capacity(self, polls: list[InferencePoll]) -> tuple[float, float] | None:
-        """The engines' utilization over the window and the generated tokens per second they would sustain busy all
-        the time: throughput over busy time, available outside weight-update pauses. None without busy time."""
-        timed = [p for p in polls if p.busy is not None and p.seconds > 0]
-        seconds = sum(p.seconds for p in timed)
-        if seconds < MIN_COVERAGE * self.window_s:
+    def utilization(self, role: str) -> float | None:
+        """The role's busy share over the window, outside weight-update pauses. None without busy time."""
+        polls = [p for _, p in self.polls if p.seconds > 0 and not p.paused]
+        timed = [p for p in polls if p.busy.get(role) is not None]
+        if not timed or len(timed) < len(polls) or sum(p.seconds for p in timed) < MIN_COVERAGE * self.window_s:
             return None
-        engines = sum(p.busy_engines * p.seconds for p in timed) / seconds
-        available = sum(p.seconds for p in timed if not p.paused)
-        busy = sum(p.busy for p in timed)
-        if busy <= 0 or available <= 0 or engines <= 0:
+        busy = sum(p.busy[role] * p.seconds for p in timed) / sum(p.seconds for p in timed)
+        return busy if busy > 0 else None
+
+    def batch_fit(self, role: str) -> BatchFit | None:
+        """Fit per-step time over the window's engine polls as a fixed cost plus a cost per sequence decoding, per
+        context token read and per prefill token, and extrapolate to the batch the engines could hold: their KV cache
+        over the context per sequence, or ``max_num_seqs``. None without a reliable fit."""
+        points = [e for _, p in self.polls if not p.paused for e in p.engines.get(role, []) if e.decode_seqs > 0]
+        if len(points) < MIN_FIT_POINTS:
             return None
-        utilization = busy / (engines * available)
-        generated = sum(p.generated for p in timed) / seconds
-        return utilization, generated / utilization
+        features = np.array([[1.0, e.decode_seqs / e.steps, e.kv_read / e.steps, e.prefill / e.steps] for e in points])
+        step_time = np.array([e.busy / e.steps for e in points])
+        batch = features[:, 1]
+        if batch.std() < MIN_BATCH_SPREAD * batch.mean():
+            return None
+        # Costs are not negative: drop a term that fits negative and refit without it
+        columns = list(range(4))
+        while True:
+            coef, *_ = np.linalg.lstsq(features[:, columns], step_time, rcond=None)
+            negative = [column for column, value in zip(columns, coef) if value < 0 and column != 0]
+            if not negative:
+                break
+            columns.remove(negative[0])
+        residual = step_time - features[:, columns] @ coef
+        if 1 - residual.var() / step_time.var() < MIN_FIT_R2 or coef[0] <= 0:
+            return None
+        cost = np.zeros(4)
+        cost[columns] = coef
+        seqs = sum(e.decode_seqs for e in points)
+        steps = sum(e.steps for e in points)
+        kv_per_seq = sum(e.kv_read for e in points) / seqs
+        prefill_per_seq = sum(e.prefill for e in points) / seqs
+        limits = [e.max_num_seqs for e in points if e.max_num_seqs]
+        limits += [KV_HEADROOM * e.kv_capacity / kv_per_seq for e in points if e.kv_capacity and kv_per_seq > 0]
+        if not limits:
+            return None
+        batch_now = seqs / steps
+        full = max(min(limits), batch_now)
+
+        def throughput(seqs_per_step: float) -> float:
+            step = cost @ np.array([1.0, seqs_per_step, kv_per_seq * seqs_per_step, prefill_per_seq * seqs_per_step])
+            return seqs_per_step / step
+
+        gain = min(max(throughput(full) / throughput(batch_now), 1.0), MAX_BATCH_GAIN)
+        return BatchFit(gain=float(gain), batch=float(batch_now), full_batch=float(full))
 
     def evaluate(self) -> Advice | None:
         """Measure every pool over the window and search the splits. None until the window holds enough."""
-        now = self.clock()
-        self.trim(now)
+        self.trim()
         if not self.pools or len(self.steps) < MIN_STEPS or not self.polls:
             return None
         poll_seconds = sum(p.seconds for _, p in self.polls)
@@ -367,58 +348,27 @@ class BalanceAdvisor:
         if rollouts <= 0 or trained <= 0 or period <= 0:
             return None
         rate = rollouts / period
-        # What a train rollout costs the engines: by the rollouts they finished, not the ones the trainer took, which
-        # a stockpile (a probe, the startup) decouples. Eval traffic counts against it, which only underestimates
-        # inference capacity.
-        generated = sum(p.generated for _, p in self.polls)
-        finished = sum(p.finished for _, p in self.polls)
-        if generated <= 0 or finished <= 0:
+        # Rollouts the engines finished per second: the trainer's pace decouples from it while a backlog builds or
+        # drains. Weight-update pauses are part of every step, so they stay in.
+        finished = sum(p.finished for _, p in self.polls) / poll_seconds
+        if finished <= 0:
             return None
-        generated_per_rollout = generated / finished
 
-        capacities: dict[str, Capacity] = {}
-        busy = [s.busy for s in steps if s.busy is not None]
-        if len(busy) == len(steps) and sum(busy) > 0:
-            capacities["trainer"] = Capacity(rollouts / sum(busy), Kind.MEASURED, "busy time per step")
-            trainer_busy = sum(busy) / period
-        else:
-            capacities["trainer"] = Capacity(rate, Kind.LOWER_BOUND, "trainer busy time not reported")
-            trainer_busy = None
-
-        polls = [p for _, p in self.polls]
-        knee_seconds = sum(p.seconds for p in polls if p.knee)
-        env_seconds = sum(p.seconds for p in polls if p.env_bound)
-        fresh = self.knee_at is not None and now - self.knee_at <= self.config.knee_max_age_minutes * 60
-        if knee_seconds >= KNEE_SHARE * poll_seconds and self.knee_throughput is not None:
-            inference = Capacity(self.knee_throughput / generated_per_rollout, Kind.MEASURED, "at the knee now")
-        elif fresh and self.knee_throughput is not None:
-            age = (now - self.knee_at) / 60
-            inference = Capacity(
-                max(self.knee_throughput / generated_per_rollout, rate), Kind.ESTIMATED, f"knee {age:.0f} min ago"
-            )
-        elif self.config.busy_estimate and (busy := self.busy_capacity(polls)) is not None:
-            utilization, generated_capacity = busy
-            inference = Capacity(
-                max(generated_capacity / generated_per_rollout, rate), Kind.ESTIMATED, f"engines busy {utilization:.0%}"
-            )
-        else:
-            inference = Capacity(rate, Kind.LOWER_BOUND, "below the knee, no recent knee measurement")
-        busy = self.busy_capacity(polls)
-        self.busy_estimate = (busy[0], busy[1] / generated_per_rollout) if busy is not None else None
-
-        if "inference" in self.roles:
-            capacities["inference"] = inference
-        else:
-            for role in ("prefill", "decode"):
-                slack = self.knee_roles.get(role) if fresh or inference.kind is Kind.MEASURED else None
-                if slack is None or inference.kind is Kind.LOWER_BOUND:
-                    capacities[role] = Capacity(inference.rate, Kind.LOWER_BOUND, inference.source)
+        busy = [s.busy for s in steps]
+        trainer_busy = sum(busy) / period if None not in busy and sum(busy) > 0 else None
+        capacities = {"trainer": Capacity(rate / trainer_busy if trainer_busy else rate, trainer_busy)}
+        for pool in self.pools:
+            if pool.name != "trainer":
+                utilization = self.utilization(pool.name)
+                if utilization is None:
+                    capacities[pool.name] = Capacity(rate, None)
                     continue
-                kind = inference.kind if slack.kind is Kind.MEASURED else slack.kind
-                capacities[role] = Capacity(inference.rate * slack.rate, kind, f"{inference.source}; {slack.source}")
+                fit = self.batch_fit(pool.name) if utilization >= SATURATED_BUSY else None
+                capacity = finished / utilization * (fit.gain if fit else 1.0)
+                capacities[pool.name] = Capacity(max(capacity, rate), utilization, fit)
 
         current, best = best_split(self.pools, capacities)
-        if env_seconds >= ENV_SHARE * poll_seconds:
+        if sum(p.seconds for _, p in self.polls if p.env_bound) >= ENV_SHARE * poll_seconds:
             bottleneck = "environment"
             best = current
         else:
@@ -426,12 +376,10 @@ class BalanceAdvisor:
             # slowest, a measured one is it: a lower bound only says the pool makes at least what it makes now.
             slowest = min(c.rate for c in capacities.values())
             close = [name for name, c in capacities.items() if c.rate <= (1 + BOTTLENECK_TOLERANCE) * slowest]
-            known = [name for name in close if capacities[name].kind is not Kind.LOWER_BOUND] or close
+            known = [name for name in close if not capacities[name].lower_bound] or close
             bottleneck = min(known, key=lambda name: capacities[name].rate)
-        self.advice = Advice(capacities, current, best, bottleneck, rate, trainer_busy, trained / rollouts)
+        self.advice = Advice(capacities, current, best, bottleneck, rate, trained / rollouts)
         return self.advice
-
-    # ── notice ───────────────────────────────────────────────────────────────
 
     def notice(self, advice: Advice, *, remaining_s: float | None = None, restart_s: float | None = None) -> str | None:
         """The notice to log, once a split has promised ``min_gain`` for ``sustain_minutes`` (again after
@@ -450,33 +398,30 @@ class BalanceAdvisor:
         if saved is not None and restart_s is not None and saved <= restart_s:
             return None
         self.noticed, self.noticed_at = advice.best.units, now
-        return self.format(advice, saved=saved, restart_s=restart_s)
+        return self.format(advice, saved=saved, restart_s=restart_s, sustained=(now - self.candidate_since) / 60)
 
-    def format(self, advice: Advice, *, saved: float | None, restart_s: float | None) -> str:
+    def format(self, advice: Advice, *, saved: float | None, restart_s: float | None, sustained: float) -> str:
         unit = self.config.unit
-        sustained = (self.clock() - self.candidate_since) / 60 if self.candidate_since is not None else 0.0
-        bound = any(
-            advice.capacities[name].kind is Kind.LOWER_BOUND
-            for name in advice.best.units
-            if advice.best.units[name] < advice.current.units[name]
-        )
-        lines = [
-            f"[balance] {advice.bottleneck.capitalize()}-bound for the last {sustained:.0f} min"
-            + (f" (trainer busy {advice.trainer_busy:.0%} of each step)." if advice.trainer_busy is not None else ".")
-        ]
 
         def rate(rollouts_per_s: float) -> str:
             return f"{format_num(advice.tokens(rollouts_per_s), precision=1)} tok/s"
 
-        for name, capacity in advice.capacities.items():
-            lines.append(
-                f"  {name:<9} capacity {rate(capacity.rate):>11} at {advice.current.units[name]} "
-                f"{unit}s ({capacity.kind.value}: {capacity.source})"
-            )
-
         def shape(split: Split) -> str:
             return " / ".join(f"{name} {split.units[name]}" for name in split.units) + f" {unit}s"
 
+        bound = any(
+            advice.capacities[name].lower_bound
+            for name in advice.best.units
+            if advice.best.units[name] < advice.current.units[name]
+        )
+        lines = [f"[balance] {advice.bottleneck.capitalize()}-bound for the last {sustained:.0f} min."]
+        for name, capacity in advice.capacities.items():
+            busy = "busy time not reported" if capacity.lower_bound else f"busy {capacity.busy:.0%}"
+            if capacity.batch is not None:
+                busy += f", batch {capacity.batch.batch:.0f} -> {capacity.batch.full_batch:.0f} seqs"
+            lines.append(
+                f"  {name:<9} capacity {rate(capacity.rate):>11} at {advice.current.units[name]} {unit}s ({busy})"
+            )
         lines.append(f"  current      {shape(advice.current)}  {rate(advice.current.speed)}")
         lines.append(
             f"  recommended  {shape(advice.best)}  {rate(advice.best.speed)} "
@@ -500,62 +445,30 @@ class BalanceAdvisor:
             for key, per_step in zip(pool.keys, pool.per_step):
                 flags.append(f"--{key} {units // pool.step * per_step}")
         # A P/D deployment's inference nodes per replica follow from its prefill and decode replicas
-        resized = any(split.units[pool.name] != pool.units for pool in self.pools if pool.name in ("prefill", "decode"))
-        if resized:
+        if any(split.units[pool.name] != pool.units for pool in self.pools if pool.name in ("prefill", "decode")):
             per_replica = (split.units["prefill"] + split.units["decode"]) // self.config.infer_replicas
             flags.append(f"--deployment.num_infer_nodes {per_replica}")
         return flags
 
-    # ── probe ────────────────────────────────────────────────────────────────
-
-    def should_probe(self, advice: Advice | None) -> bool:
-        """Probe while the trainer is the bottleneck and inference capacity is only bounded from below."""
-        if not self.config.probe or self.probe_started is not None or advice is None:
-            return False
-        if advice.bottleneck != "trainer":
-            return False
-        if not any(advice.capacities[role].kind is Kind.LOWER_BOUND for role in self.roles):
-            return False
-        now = self.clock()
-        return self.last_probe is None or now - self.last_probe >= self.config.probe_interval_minutes * 60
-
-    def start_probe(self) -> None:
-        self.probe_started = self.last_probe = self.clock()
-
-    def probe_done(self) -> bool:
-        """The probe measured the knee, or ran out of time."""
-        if self.probe_started is None:
-            return False
-        measured = self.knee_at is not None and self.knee_at >= self.probe_started
-        timed_out = self.clock() - self.probe_started >= self.config.probe_max_minutes * 60
-        return measured or timed_out
-
-    def end_probe(self) -> None:
-        self.probe_started = None
-
-    # ── observability ────────────────────────────────────────────────────────
-
     def gauges(self) -> dict[str, float]:
-        gauges = {"balance/probing": float(self.probe_started is not None)}
         advice = self.advice
         if advice is None:
-            return gauges
+            return {}
         # Trained tokens per second throughout
-        if self.busy_estimate is not None:
-            utilization, capacity = self.busy_estimate
-            gauges["balance/inference/utilization"] = utilization
-            gauges["balance/inference/busy_capacity"] = advice.tokens(capacity)
-        gauges["balance/rate"] = advice.tokens(advice.rate)
-        gauges["balance/speed"] = advice.tokens(advice.current.speed)
-        gauges["balance/best_speed"] = advice.tokens(advice.best.speed)
-        gauges["balance/gain"] = advice.gain
-        if advice.trainer_busy is not None:
-            gauges["balance/trainer_busy"] = advice.trainer_busy
+        gauges = {
+            "balance/rate": advice.tokens(advice.rate),
+            "balance/speed": advice.tokens(advice.current.speed),
+            "balance/best_speed": advice.tokens(advice.best.speed),
+            "balance/gain": advice.gain,
+            "balance/environment/bottleneck": float(advice.bottleneck == "environment"),
+        }
         for name, capacity in advice.capacities.items():
             gauges[f"balance/{name}/capacity"] = advice.tokens(capacity.rate)
-            gauges[f"balance/{name}/lower_bound"] = float(capacity.kind is Kind.LOWER_BOUND)
+            if capacity.busy is not None:
+                gauges[f"balance/{name}/busy"] = capacity.busy
+            if capacity.batch is not None:
+                gauges[f"balance/{name}/batch_gain"] = capacity.batch.gain
             gauges[f"balance/{name}/units"] = float(advice.current.units[name])
             gauges[f"balance/{name}/best_units"] = float(advice.best.units[name])
             gauges[f"balance/{name}/bottleneck"] = float(advice.bottleneck == name)
-        gauges["balance/environment/bottleneck"] = float(advice.bottleneck == "environment")
         return gauges

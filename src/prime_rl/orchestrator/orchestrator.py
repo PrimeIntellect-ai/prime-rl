@@ -46,7 +46,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.balance import Advice, BalanceAdvisor, TrainerStep, inference_poll
+from prime_rl.orchestrator.balance import BalanceAdvisor, TrainerStep, inference_poll
 from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
@@ -852,8 +852,7 @@ class Orchestrator:
         )
 
     def observe_inference(self, samples: list[EngineLoadSample]) -> None:
-        """One inference metrics poll: the concurrency controller acts on it, then the balance advisor records it.
-        The engines are at their knee only while nothing on the trainer side holds admission back."""
+        """One inference metrics poll: the concurrency controller acts on it, then the balance advisor records it."""
         self.concurrency.observe(samples)
         if self.balance is None:
             return
@@ -868,21 +867,15 @@ class Orchestrator:
                 samples,
                 seconds,
                 finished=finished,
-                knee=self.concurrency.at_knee and not held,
                 env_bound=self.concurrency.env_bound and not held,
-                queued_share=self.concurrency.queued_share_by_role,
                 paused=self.concurrency.paused,
             )
         )
-        if self.balance.probe_done():
-            self.balance.end_probe()
-            self.dispatcher.trainer_bounds_lifted = False
-            get_logger().info("Balance probe ended: the trainer-side admission bounds apply again")
 
     def observe_trainer_step(self, rollouts: int, tokens: int, step: int) -> None:
-        """Record a shipped batch with the time the trainer spent before asking for it, then update the balance
-        advice: log a notice when another split of the GPUs is clearly faster, and probe the engines' knee while
-        the trainer is the bottleneck. The first two ships carry the trainer's warmup and are not recorded."""
+        """Record a shipped batch with the time the trainer spent before asking for it, then log a notice when
+        another split of the GPUs is clearly faster. The first two ships carry the trainer's warmup and are not
+        recorded."""
         shipped_wall = time.time()
         previous, self.shipped_wall = self.shipped_wall, shipped_wall
         if self.first_shipped_at is None:
@@ -908,37 +901,6 @@ class Orchestrator:
         notice = self.balance.notice(advice, remaining_s=remaining_s, restart_s=restart_s)
         if notice is not None:
             get_logger().warning(notice)
-            self.write_balance(advice, notice)
-        if self.balance.should_probe(advice):
-            self.balance.start_probe()
-            self.dispatcher.trainer_bounds_lifted = True
-            self.concurrency.explore()
-            get_logger().info(
-                "Balance probe: the trainer is the bottleneck and inference capacity is unmeasured, so the "
-                "trainer-side admission bounds are lifted until the engines' knee is found"
-            )
-
-    def write_balance(self, advice: Advice, notice: str) -> None:
-        """Keep the last advice in the run directory, for the next launch of a similar run."""
-        path = self.config.output_dir / "balance.json"
-        record = {
-            "step": self.progress.step,
-            "unit": self.config.balance.unit,
-            "current": advice.current.units,
-            "recommended": advice.best.units,
-            "gain": advice.gain,
-            "bottleneck": advice.bottleneck,
-            "capacities": {
-                name: {"tokens_per_s": advice.tokens(c.rate), "kind": c.kind.value, "source": c.source}
-                for name, c in advice.capacities.items()
-            },
-            "overrides": self.balance.overrides(advice.best),
-            "notice": notice,
-        }
-        try:
-            path.write_text(json.dumps(record, indent=2))
-        except OSError as e:
-            get_logger().debug(f"Could not write {path}: {e!r}")
 
     async def trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything

@@ -2,16 +2,7 @@ import pytest
 
 from prime_rl.configs.orchestrator import BalanceConfig, BalancePoolConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.orchestrator.balance import (
-    BalanceAdvisor,
-    Capacity,
-    InferencePoll,
-    Kind,
-    TrainerStep,
-    best_split,
-    inference_poll,
-)
-from prime_rl.orchestrator.concurrency import EngineLoadSample
+from prime_rl.orchestrator.balance import BalanceAdvisor, Capacity, InferencePoll, TrainerStep, best_split
 
 POLL_S = 5.0
 TRAINED_PER_ROLLOUT = 30_000
@@ -32,284 +23,116 @@ def pools(trainer: int = 2, inference: int = 6) -> list[BalancePoolConfig]:
     ]
 
 
-def pd_pools() -> list[BalancePoolConfig]:
-    return [
-        BalancePoolConfig(name="trainer", units=4, keys=["deployment.num_train_nodes"], per_step=[1]),
-        BalancePoolConfig(name="prefill", units=4, keys=["inference.deployment.num_prefill_replicas"], per_step=[1]),
-        BalancePoolConfig(name="decode", units=4, keys=["inference.deployment.num_decode_replicas"], per_step=[1]),
-    ]
-
-
-def advisor(clock: Clock, pool_list: list[BalancePoolConfig] | None = None, **kwargs) -> BalanceAdvisor:
-    config = BalanceConfig(pools=pool_list or pools(), window_minutes=30, sustain_minutes=10, **kwargs)
-    return BalanceAdvisor(config, clock=clock)
-
-
-def run(
-    balance: BalanceAdvisor,
-    clock: Clock,
-    minutes: float,
-    *,
-    tokens_per_s: float,
-    rollouts_per_step: int,
-    step_s: float,
-    busy_s: float | None,
-    knee: bool,
-    env_bound: bool = False,
-    finished_per_s: float | None = None,
-    **poll,
-) -> list[str]:
-    """Feed ``minutes`` of polls and steps; return the notices. The engines finish rollouts at the trainer's pace
-    unless ``finished_per_s`` says otherwise."""
+def run(pool_list, *, minutes=45, trainer_busy, inference_busy, env_bound=False, **config):
+    """A run shipping 64 rollouts per 120 s step, the engines finishing them at the same pace. Returns the advisor
+    and its notices."""
+    clock = Clock()
+    balance = BalanceAdvisor(
+        BalanceConfig(pools=pool_list, window_minutes=30, sustain_minutes=10, **config), clock=clock
+    )
     notices = []
-    finished_per_s = rollouts_per_step / step_s if finished_per_s is None else finished_per_s
-    finished_credit = 0.0
-    next_step = clock.now + step_s
-    end = clock.now + minutes * 60
-    while clock.now < end:
+    credit, next_step = 0.0, 120.0
+    while clock.now < minutes * 60:
         clock.now += POLL_S
-        finished_credit += finished_per_s * POLL_S
-        finished = int(finished_credit)
-        finished_credit -= finished
+        credit += 64 / 120 * POLL_S
+        finished, credit = int(credit), credit - int(credit)
         balance.observe(
             InferencePoll(
-                seconds=POLL_S,
-                generated=int(tokens_per_s * POLL_S),
-                finished=finished,
-                knee=knee,
-                env_bound=env_bound,
-                **poll,
+                seconds=POLL_S, generated=1000, finished=finished, env_bound=env_bound, busy=dict(inference_busy)
             )
         )
         if clock.now >= next_step:
-            next_step += step_s
-            balance.observe_step(
-                TrainerStep(
-                    rollouts=rollouts_per_step,
-                    tokens=TRAINED_PER_ROLLOUT * rollouts_per_step,
-                    period=step_s,
-                    busy=busy_s,
-                )
-            )
+            next_step += 120
+            busy = None if trainer_busy is None else 120 * trainer_busy
+            balance.observe_step(TrainerStep(rollouts=64, tokens=64 * TRAINED_PER_ROLLOUT, period=120, busy=busy))
             advice = balance.evaluate()
             if advice is not None and (notice := balance.notice(advice)) is not None:
                 notices.append(notice)
-    return notices
+    return balance, notices
 
 
-def test_best_split_balances_the_pools():
-    capacities = {
-        "trainer": Capacity(0.5, Kind.MEASURED, ""),
-        "inference": Capacity(1.0, Kind.MEASURED, ""),
-    }
+def test_best_split_balances_the_pools_in_whole_steps():
+    capacities = {"trainer": Capacity(0.5, 1.0), "inference": Capacity(1.0, 0.5)}
     current, best = best_split(pools(), capacities)
+    # 3 trainer GPUs take 0.75/s and 5 inference GPUs make 0.83/s; 4 / 4 would make 0.67/s
     assert current.speed == pytest.approx(0.5)
-    # 3 trainer GPUs take 0.75/s, 5 inference GPUs make 0.83/s; 4 / 4 would make 0.67/s
     assert best.units == {"trainer": 3, "inference": 5}
-    assert best.speed == pytest.approx(0.75)
-
-
-def test_best_split_keeps_replica_steps_and_minimums():
-    pool_list = [
+    stepped = [
         BalancePoolConfig(name="trainer", units=4, step=2, minimum=2),
         BalancePoolConfig(name="inference", units=4, step=4, minimum=4),
     ]
-    capacities = {"trainer": Capacity(10.0, Kind.MEASURED, ""), "inference": Capacity(1.0, Kind.MEASURED, "")}
-    current, best = best_split(pool_list, capacities)
-    # Inference can only move in replicas of 4: nothing smaller than 4 trainer GPUs leaves room for a second one
-    assert best.units == current.units
+    # Inference moves only in replicas of 4: no smaller trainer leaves room for a second one
+    assert best_split(stepped, {"trainer": Capacity(10.0, 1.0), "inference": Capacity(1.0, 1.0)})[1].units == {
+        "trainer": 4,
+        "inference": 4,
+    }
 
 
 def test_inference_bound_run_moves_gpus_to_inference():
-    clock = Clock()
-    balance = advisor(clock)
-    # 64 rollouts per 120 s step, the trainer busy 40 s of it; the engines at their knee
-    notices = run(balance, clock, 45, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=40, knee=True)
+    # The trainer is busy a third of each step; the engines all the time
+    balance, notices = run(pools(), trainer_busy=1 / 3, inference_busy={"inference": 1.0})
     advice = balance.advice
     assert advice.bottleneck == "inference"
-    assert advice.capacities["trainer"].kind is Kind.MEASURED
-    assert advice.capacities["trainer"].rate == pytest.approx(64 / 40)
-    assert advice.capacities["inference"].kind is Kind.MEASURED
-    assert advice.capacities["inference"].rate == pytest.approx(64 / 120, rel=0.02)
-    assert advice.trainer_busy == pytest.approx(1 / 3)
+    assert advice.capacities["trainer"].rate == pytest.approx(3 * 64 / 120)
     assert advice.best.units == {"trainer": 1, "inference": 7}
-    assert advice.gain == pytest.approx(7 / 6, rel=0.02)
-    # One notice once the split promised its gain for the sustain time, with the overrides to apply it
     assert len(notices) == 1
-    assert "Inference-bound" in notices[0]
-    # Rates show as trained tokens per second: the trainer's 64 rollouts per 40 s busy, 30k tokens each
-    assert advice.tokens(advice.capacities["trainer"].rate) == pytest.approx(64 * TRAINED_PER_ROLLOUT / 40)
-    assert "48.0K tok/s at 2 GPUs" in notices[0]
-    assert "rollouts/min" not in notices[0]
     assert "--deployment.num_train_gpus 1 --deployment.num_infer_gpus 7" in notices[0]
+    # Rates show as trained tokens per second
+    assert f"{3 * 64 / 120 * TRAINED_PER_ROLLOUT / 1000:.1f}K tok/s at 2 GPUs" in notices[0]
 
 
-def test_trainer_bound_run_needs_a_knee_measurement():
-    clock = Clock()
-    balance = advisor(clock, probe=True)
-    # The trainer is busy the whole step and inference runs below its knee: its capacity is only a lower bound, so
-    # no split that takes GPUs from inference is advised
-    notices = run(balance, clock, 45, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=120, knee=False)
+def test_trainer_bound_run_reads_inference_headroom_from_busy_time():
+    # The engines are busy 40 %: they would make 2.5x the rollouts busy all the time
+    balance, notices = run(pools(), trainer_busy=1.0, inference_busy={"inference": 0.4})
     advice = balance.advice
     assert advice.bottleneck == "trainer"
-    assert advice.capacities["inference"].kind is Kind.LOWER_BOUND
-    assert not advice.changed
-    assert notices == []
-    assert balance.should_probe(advice)
-
-    # The probe lifts the trainer-side bounds; the engines reach a knee at 2.5x the tokens
-    balance.start_probe()
-    assert not balance.should_probe(advice)
-    run(
-        balance,
-        clock,
-        6,
-        tokens_per_s=2500,
-        rollouts_per_step=64,
-        step_s=120,
-        busy_s=120,
-        knee=True,
-        finished_per_s=2.5 * 64 / 120,
-    )
-    assert balance.probe_done()
-    balance.end_probe()
-
-    # Back below the knee: the fresh knee measurement stands in for inference capacity
-    notices = run(balance, clock, 40, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=120, knee=False)
-    advice = balance.advice
-    assert advice.capacities["inference"].kind is Kind.ESTIMATED
-    # The knee made 2.5x the rollouts. Per GPU the trainer takes 0.27/s and inference makes 0.22/s, so 4 / 4 is the
-    # fastest whole split: min(1.07, 0.89) = 0.89/s, 1.67x the trainer's 0.53/s
-    assert advice.capacities["inference"].rate == pytest.approx(2.5 * advice.rate, rel=0.05)
+    assert advice.capacities["inference"].rate == pytest.approx(2.5 * 64 / 120, rel=0.02)
+    # Per GPU the trainer takes 0.27/s and inference makes 0.22/s: 4 / 4 is the fastest whole split
     assert advice.best.units == {"trainer": 4, "inference": 4}
     assert len(notices) == 1
 
 
-def test_unmeasured_inference_is_not_named_the_bottleneck():
-    clock = Clock()
-    balance = advisor(clock, probe=True)
-    # The trainer idles 5 % of each step (e.g. payload fetches): its capacity edges past the rate, which is all
-    # that is known of inference
-    run(balance, clock, 45, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=114, knee=False)
+def test_unreported_busy_time_is_a_lower_bound():
+    # Engines that report no busy time count only what they make now: no split takes GPUs from them
+    balance, notices = run(pools(), trainer_busy=1.0, inference_busy={"inference": None})
     advice = balance.advice
-    assert advice.capacities["trainer"].rate > advice.capacities["inference"].rate
+    assert advice.capacities["inference"].lower_bound
     assert advice.bottleneck == "trainer"
-    assert balance.should_probe(advice)
-
-
-def test_idle_trainer_makes_unmeasured_inference_the_bottleneck():
-    clock = Clock()
-    balance = advisor(clock, probe=True)
-    # The trainer idles two thirds of each step and the engines never reached a measured knee: inference is only
-    # bounded from below, but it is the pool the run waits on
-    run(balance, clock, 45, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=40, knee=False)
-    advice = balance.advice
-    assert advice.capacities["inference"].kind is Kind.LOWER_BOUND
-    assert advice.bottleneck == "inference"
-    assert not balance.should_probe(advice)
-    # Moving a GPU to inference is safe: the conservative speed still gains
-    assert advice.best.units == {"trainer": 1, "inference": 7}
-
-
-def test_probe_gives_up_after_its_time():
-    clock = Clock()
-    balance = advisor(clock, probe=True, probe_max_minutes=5)
-    balance.start_probe()
-    run(balance, clock, 4, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=120, knee=False)
-    assert not balance.probe_done()
-    run(balance, clock, 2, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=120, knee=False)
-    assert balance.probe_done()
-
-
-def test_environment_bound_run_advises_no_split():
-    clock = Clock()
-    balance = advisor(clock)
-    notices = run(
-        balance,
-        clock,
-        45,
-        tokens_per_s=1000,
-        rollouts_per_step=64,
-        step_s=120,
-        busy_s=60,
-        knee=False,
-        env_bound=True,
-    )
-    assert balance.advice.bottleneck == "environment"
-    assert not balance.advice.changed
+    assert not advice.changed
     assert notices == []
 
 
-def test_pd_split_follows_the_queueing_role():
-    clock = Clock()
-    balance = advisor(clock, pd_pools(), unit="node", infer_replicas=1)
-    # Decode queues at the knee; prefill engines run a request in 40 % of polls: prefill has 2.5x slack
-    notices = run(
-        balance,
-        clock,
-        45,
-        tokens_per_s=1000,
-        rollouts_per_step=64,
-        step_s=120,
-        busy_s=60,
-        knee=True,
-        queued_share={"prefill": 0.0, "decode": 0.2},
-        prefill_busy=0.4,
+def test_pd_split_follows_each_role_busy_time():
+    pd = [
+        BalancePoolConfig(name="trainer", units=4, keys=["deployment.num_train_nodes"], per_step=[1]),
+        BalancePoolConfig(name="prefill", units=4, keys=["inference.deployment.num_prefill_replicas"], per_step=[1]),
+        BalancePoolConfig(name="decode", units=4, keys=["inference.deployment.num_decode_replicas"], per_step=[1]),
+    ]
+    balance, notices = run(
+        pd, trainer_busy=0.5, inference_busy={"prefill": 0.4, "decode": 1.0}, unit="node", infer_replicas=1
     )
     advice = balance.advice
     assert advice.bottleneck == "decode"
-    assert advice.capacities["prefill"].kind is Kind.ESTIMATED
-    assert advice.capacities["prefill"].rate == pytest.approx(2.5 * advice.capacities["decode"].rate)
-    assert advice.best.units["decode"] > 4
-    assert advice.best.units["prefill"] < 4
-    assert len(notices) == 1
+    assert advice.capacities["prefill"].rate == pytest.approx(2.5 * advice.capacities["decode"].rate, rel=0.02)
+    assert advice.best.units["decode"] > 4 and advice.best.units["prefill"] < 4
     assert "--inference.deployment.num_decode_replicas" in notices[0]
     per_replica = advice.best.units["prefill"] + advice.best.units["decode"]
     assert f"--deployment.num_infer_nodes {per_replica}" in notices[0]
 
 
-def test_full_decode_kv_gives_decode_no_estimated_slack():
-    clock = Clock()
-    balance = advisor(clock, pd_pools(), unit="node")
-    run(
-        balance,
-        clock,
-        45,
-        tokens_per_s=1000,
-        rollouts_per_step=64,
-        step_s=120,
-        busy_s=120,
-        knee=True,
-        queued_share={"prefill": 0.3, "decode": 0.0},
-        decode_kv=0.97,
-    )
-    assert balance.advice.capacities["decode"].kind is Kind.LOWER_BOUND
-    assert balance.advice.best.units["decode"] >= 4
+def test_environment_bound_run_advises_no_split():
+    balance, notices = run(pools(), trainer_busy=0.5, inference_busy={"inference": 0.4}, env_bound=True)
+    assert balance.advice.bottleneck == "environment"
+    assert not balance.advice.changed
+    assert notices == []
 
 
 def test_notice_waits_for_payback():
-    clock = Clock()
-    balance = advisor(clock)
-    run(balance, clock, 45, tokens_per_s=1000, rollouts_per_step=64, step_s=120, busy_s=40, knee=True)
-    advice = balance.advice
+    balance, _ = run(pools(), trainer_busy=1 / 3, inference_busy={"inference": 1.0})
     balance.noticed = None
     # 1 h left saves ~9 min at +17%: a 20 min restart does not pay back
-    assert balance.notice(advice, remaining_s=3600, restart_s=1200) is None
-    notice = balance.notice(advice, remaining_s=36000, restart_s=1200)
-    assert notice is not None and "restart ~20 min" in notice
-
-
-def test_inference_poll_pools_engines():
-    samples = [
-        EngineLoadSample("p0", "prefill", None, None, waiting=0, running=2, generation_tokens_delta=1),
-        EngineLoadSample("p1", "prefill", None, None, waiting=0, running=0),
-        EngineLoadSample("d0", "decode", None, None, waiting=0, generation_tokens_delta=100, kv_usage=0.5),
-        EngineLoadSample("d1", "decode", None, None, waiting=0, generation_tokens_delta=50, kv_usage=0.7),
-    ]
-    poll = inference_poll(samples, 5.0, finished=3, knee=True, env_bound=False, queued_share={"decode": 0.1})
-    assert poll.generated == 150
-    assert poll.prefill_busy == 0.5
-    assert poll.decode_kv == pytest.approx(0.6)
+    assert balance.notice(balance.advice, remaining_s=3600, restart_s=1200) is None
+    assert "restart ~20 min" in balance.notice(balance.advice, remaining_s=36000, restart_s=1200)
 
 
 def test_rl_config_describes_the_pools():
@@ -320,10 +143,9 @@ def test_rl_config_describes_the_pools():
             "inference": {"vllm": {"tensor_parallel_size": 2}},
             "deployment": {"type": "single_node", "num_train_gpus": 2, "num_infer_gpus": 6},
         }
-    )
-    balance = single.orchestrator.balance
-    assert balance.unit == "GPU"
-    assert [(p.name, p.units, p.step) for p in balance.pools] == [("trainer", 2, 1), ("inference", 6, 2)]
+    ).orchestrator.balance
+    assert single.unit == "GPU"
+    assert [(p.name, p.units, p.step) for p in single.pools] == [("trainer", 2, 1), ("inference", 6, 2)]
 
     pd = RLConfig.model_validate(
         {
@@ -341,83 +163,49 @@ def test_rl_config_describes_the_pools():
             "deployment": {"type": "multi_node", "num_train_nodes": 4},
             "slurm": {},
         }
-    )
-    balance = pd.orchestrator.balance
-    assert balance.unit == "node"
-    assert [(p.name, p.units, p.step) for p in balance.pools] == [
-        ("trainer", 4, 1),
-        ("prefill", 2, 1),
-        ("decode", 6, 2),
-    ]
+    ).orchestrator.balance
+    assert pd.unit == "node"
+    assert [(p.name, p.units, p.step) for p in pd.pools] == [("trainer", 4, 1), ("prefill", 2, 1), ("decode", 6, 2)]
 
 
-def test_busy_time_estimates_inference_below_its_knee():
+def test_saturated_decode_engines_extrapolate_to_a_full_batch():
+    from prime_rl.orchestrator.balance import EngineSteps
+
     clock = Clock()
-    balance = advisor(clock)
-    # Trainer-bound: inference runs below its knee. Six engines, busy 40 % of the time outside weight-update pauses,
-    # which take 1 poll in 10: they would make 1 / 0.4 = 2.5x what they make now, less the pause time
-    notices = []
-    for minutes in range(45):
-        for i in range(12):
-            clock.now += POLL_S
-            paused = i == 0
-            balance.observe(
-                InferencePoll(
-                    seconds=POLL_S,
-                    generated=0 if paused else int(1000 * POLL_S),
-                    finished=1,
-                    knee=False,
-                    env_bound=False,
-                    busy=0.0 if paused else 6 * POLL_S * 0.4,
-                    busy_engines=6,
-                    paused=paused,
-                )
-            )
-        if minutes % 2 == 1:
-            balance.observe_step(TrainerStep(rollouts=24, tokens=24 * TRAINED_PER_ROLLOUT, period=120, busy=120))
-            advice = balance.evaluate()
-            if advice is not None and (notice := balance.notice(advice)) is not None:
-                notices.append(notice)
-    advice = balance.advice
-    utilization, _ = balance.busy_estimate
-    assert utilization == pytest.approx(0.4, rel=0.01)
-    # 1000 tok/s over 11 of every 12 polls is 917 tok/s on average; busy 40 % of the available time, the engines
-    # would sustain 917 / 0.4 = 2292 tok/s, which keeps the pauses as they are
-    assert balance.busy_capacity([p for _, p in balance.polls])[1] == pytest.approx(1000 * 11 / 12 / 0.4, rel=0.01)
-    assert advice.capacities["inference"].kind is Kind.ESTIMATED
-    assert "busy 40%" in advice.capacities["inference"].source
-    assert advice.capacities["inference"].rate > 2 * advice.rate
-    assert advice.best.units["trainer"] > 2
-    assert notices and "engines busy 40%" in notices[0]
-
-
-def test_busy_estimate_off_leaves_a_lower_bound():
-    clock = Clock()
-    balance = advisor(clock, busy_estimate=False)
-    for _ in range(45 * 12):
+    balance = BalanceAdvisor(BalanceConfig(pools=pools(), window_minutes=30, sustain_minutes=10), clock=clock)
+    # Decode engines busy all the time with 32-64 sequences of 2k context: step time 20 ms + 0.1 ms per sequence +
+    # 1e-7 s per context token read. KV for 512 sequences: a full batch makes ~3.4x the tokens per second.
+    batch = [32, 48, 64]
+    for i in range(45 * 12):
         clock.now += POLL_S
+        seqs = batch[i % 3]
+        step = 0.02 + 1e-4 * seqs + 1e-7 * 2048 * seqs
+        steps = POLL_S / step
+        engine = EngineSteps(
+            steps=steps,
+            busy=POLL_S,
+            decode_seqs=seqs * steps,
+            kv_read=2048 * seqs * steps,
+            prefill=0.0,
+            max_num_seqs=1024,
+            kv_capacity=int(512 * 2048 / 0.95),
+        )
         balance.observe(
             InferencePoll(
-                seconds=POLL_S, generated=5000, finished=1, knee=False, env_bound=False, busy=12.0, busy_engines=6
+                seconds=POLL_S,
+                generated=int(seqs * steps),
+                finished=1,
+                env_bound=False,
+                busy={"inference": 1.0},
+                engines={"inference": [engine]},
             )
         )
-        if int(clock.now) % 120 == 0:
+        if i % 24 == 23:
             balance.observe_step(TrainerStep(rollouts=24, tokens=24 * TRAINED_PER_ROLLOUT, period=120, busy=120))
     advice = balance.evaluate()
-    assert advice.capacities["inference"].kind is Kind.LOWER_BOUND
-    # The estimate is still measured and logged
-    assert balance.busy_estimate[0] == pytest.approx(0.4)
-    assert "balance/inference/busy_capacity" in balance.gauges()
-
-
-def test_prefill_busy_uses_engine_busy_time():
-    prefill = [
-        EngineLoadSample("p0", "prefill", None, None, waiting=0, running=1, busy_delta=2.0),
-        EngineLoadSample("p1", "prefill", None, None, waiting=0, running=0, busy_delta=1.0),
-    ]
-    poll = inference_poll(prefill, 5.0, finished=0, knee=False, env_bound=False, queued_share={})
-    assert poll.prefill_busy == pytest.approx(0.3)
-    # Without busy time from every engine: the share running a request
-    prefill[1] = EngineLoadSample("p1", "prefill", None, None, waiting=0, running=0)
-    poll = inference_poll(prefill, 5.0, finished=0, knee=False, env_bound=False, queued_share={})
-    assert poll.prefill_busy == 0.5
+    fit = advice.capacities["inference"].batch
+    assert fit.full_batch == pytest.approx(512, rel=0.01)
+    full = 512 / (0.02 + 1e-4 * 512 + 1e-7 * 2048 * 512)
+    now = 48 / (0.02 + 1e-4 * 48 + 1e-7 * 2048 * 48)
+    assert fit.gain == pytest.approx(full / now, rel=0.05)
+    assert advice.capacities["inference"].rate > 2 * advice.rate

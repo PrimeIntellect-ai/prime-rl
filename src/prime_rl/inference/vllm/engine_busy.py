@@ -1,17 +1,26 @@
-"""Engine busy time: seconds each engine core spent executing model steps.
+"""Engine step counters: how long each engine core spent executing model steps, and what those steps held.
 
-Throughput over busy time is what an engine sustains once it is busy all the time, so it estimates an engine's capacity
-while admission holds it below its knee (the balance advisor's trainer-bound case). vLLM exports no such metric, and its
-scheduler stats cannot carry extra fields across the engine-core process boundary, so every engine core writes its
-running total to a small file and the API server serves those files at ``/prime_rl/engine_busy``.
+Throughput over busy time is what an engine sustains busy all the time, which estimates its capacity while admission
+holds it below its knee (the balance advisor's trainer-bound case). Decode engines step whenever they hold a sequence,
+so their spare capacity is in batch size, not time: the step contents (sequences decoding, the context they read,
+prefill tokens) let the advisor fit how step time grows with the batch and extrapolate to a full one.
+
+vLLM exports no such metric, and its scheduler stats cannot carry extra fields across the engine-core process boundary,
+so every engine core writes its running totals to a small file and the API server serves those files at
+``/prime_rl/engine_busy``.
 """
 
+import json
 import os
 import time
 from pathlib import Path
 
 BUSY_DIR_ENV = "PRIME_RL_ENGINE_BUSY_DIR"
 WRITE_INTERVAL_S = 1.0
+
+COUNTERS = ("busy_s", "steps", "decode_seqs", "kv_read_tokens", "prefill_tokens")
+"""Running totals per engine: seconds executing steps, steps executed, and summed over the scheduled steps, the
+sequences decoding, the context those sequences read and the prefill tokens."""
 
 
 def busy_dir() -> Path:
@@ -21,49 +30,86 @@ def busy_dir() -> Path:
     return Path(path)
 
 
-def write_busy(directory: Path, engine_index: int, seconds: float) -> None:
+def write_busy(directory: Path, engine_index: int, counters: dict[str, float]) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     tmp = directory / f".engine_{engine_index}.{os.getpid()}"
-    tmp.write_text(f"{seconds:.6f}")
+    tmp.write_text(json.dumps(counters))
     os.replace(tmp, directory / f"engine_{engine_index}")
 
 
-def read_busy(directory: Path) -> dict[str, float]:
-    """Busy seconds per engine index (as a string, like vLLM's ``engine`` metrics label)."""
-    busy: dict[str, float] = {}
+def read_busy(directory: Path) -> dict[str, dict[str, float]]:
+    """Counters per engine index (as a string, like vLLM's ``engine`` metrics label)."""
+    busy: dict[str, dict[str, float]] = {}
     if not directory.is_dir():
         return busy
     for path in directory.glob("engine_*"):
         try:
-            busy[path.name.removeprefix("engine_")] = float(path.read_text())
+            busy[path.name.removeprefix("engine_")] = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
     return busy
 
 
+def step_contents(scheduler_output) -> tuple[int, int, int]:
+    """Sequences decoding, the context they read from KV, and prefill tokens in one scheduled step. A scheduled
+    request decodes when it runs one token (plus its speculative ones); everything else is prefill."""
+    decode_seqs = kv_read = prefill = 0
+    scheduled = scheduler_output.num_scheduled_tokens
+    for request in scheduler_output.scheduled_new_reqs:
+        prefill += scheduled.get(request.req_id, 0)
+    cached = scheduler_output.scheduled_cached_reqs
+    for req_id, computed in zip(cached.req_ids, cached.num_computed_tokens):
+        tokens = scheduled.get(req_id, 0)
+        if tokens <= 1 + len(scheduler_output.scheduled_spec_decode_tokens.get(req_id, ())):
+            decode_seqs += 1
+            kv_read += computed
+        else:
+            prefill += tokens
+    return decode_seqs, kv_read, prefill
+
+
 def monkey_patch_engine_busy_time():
-    """Count the wall time of every engine step that executed the model: the engine core runs steps only while it has
-    requests, and a step that executed nothing (waiting on a KV transfer) yields instead of computing."""
+    """Count the wall time of every engine step that executed the model (the engine core runs steps only while it has
+    requests, and a step that executed nothing, waiting on a KV transfer, yields instead of computing), and what each
+    scheduled step held."""
+    from vllm.v1.core.sched.scheduler import Scheduler
     from vllm.v1.engine.core import EngineCoreProc
 
     if getattr(EngineCoreProc._process_engine_step, "_prime_rl_busy", False):
         return
     directory = busy_dir()
-    original = EngineCoreProc._process_engine_step
+    original_step = EngineCoreProc._process_engine_step
+    original_schedule = Scheduler.schedule
+
+    def schedule(self, *args, **kwargs):
+        output = original_schedule(self, *args, **kwargs)
+        decode_seqs, kv_read, prefill = step_contents(output)
+        counters = self.__dict__.setdefault("_prime_rl_counters", dict.fromkeys(COUNTERS, 0.0))
+        counters["decode_seqs"] += decode_seqs
+        counters["kv_read_tokens"] += kv_read
+        counters["prefill_tokens"] += prefill
+        return output
 
     def _process_engine_step(self) -> bool:
         start = time.perf_counter()
-        executed = original(self)
+        executed = original_step(self)
         now = time.perf_counter()
+        counters = self.scheduler.__dict__.setdefault("_prime_rl_counters", dict.fromkeys(COUNTERS, 0.0))
         if executed:
-            self._prime_rl_busy_s = getattr(self, "_prime_rl_busy_s", 0.0) + (now - start)
+            counters["busy_s"] += now - start
+            counters["steps"] += 1
         if now - getattr(self, "_prime_rl_busy_written", 0.0) >= WRITE_INTERVAL_S:
             self._prime_rl_busy_written = now
             try:
-                write_busy(directory, self.engine_index, getattr(self, "_prime_rl_busy_s", 0.0))
+                write_busy(
+                    directory,
+                    self.engine_index,
+                    {**counters, "max_num_seqs": self.scheduler.max_num_running_reqs},
+                )
             except OSError:
                 pass
         return executed
 
     _process_engine_step._prime_rl_busy = True
     EngineCoreProc._process_engine_step = _process_engine_step
+    Scheduler.schedule = schedule

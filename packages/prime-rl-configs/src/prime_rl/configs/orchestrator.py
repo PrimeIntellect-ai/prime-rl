@@ -490,9 +490,10 @@ class BalancePoolConfig(BaseConfig):
 
 
 class BalanceConfig(BaseConfig):
-    """Advice on the trainer / inference (and prefill / decode) GPU split. The orchestrator measures how busy each
-    pool is and logs, under ``balance/*``, the speed the run would have with each pool resized; when another split
-    of the same GPUs would be clearly faster for long enough, it logs a notice with the config to restart with."""
+    """Advice on the trainer / inference (and prefill / decode) GPU split. The orchestrator measures each pool's
+    throughput over its busy time and logs, under ``balance/*``, the speed the run would have with the pools resized;
+    when another split of the same GPUs would be clearly faster for long enough, it logs a notice with the config to
+    restart with."""
 
     enabled: bool = True
     """Measure the pools and log ``balance/*``. The advice itself needs ``pools``, which ``rl`` fills."""
@@ -514,25 +515,6 @@ class BalanceConfig(BaseConfig):
 
     sustain_minutes: float = Field(30.0, ge=0)
     """How long one split must keep promising ``min_gain`` before the notice."""
-
-    knee_max_age_minutes: float = Field(120.0, gt=0)
-    """Oldest inference knee measurement that stands for inference capacity while the trainer is the bottleneck."""
-
-    busy_estimate: bool = True
-    """While inference runs below its knee, estimate its capacity from the engines' busy time (throughput over the
-    seconds they spent executing model steps, ``/prime_rl/engine_busy``). Off, the capacity is a lower bound until the
-    knee is measured. ``balance/inference/busy_capacity`` is logged either way."""
-
-    probe: bool = False
-    """While the trainer is the bottleneck, inference runs below its knee, so its capacity is unmeasured. A probe
-    lifts the trainer-side admission bounds until the concurrency controller finds the knee again. It costs staleness:
-    rollouts made faster than the trainer takes them wait, and the oldest are masked past ``max_staleness``."""
-
-    probe_interval_minutes: float = Field(120.0, gt=0)
-    """Least time between two probes."""
-
-    probe_max_minutes: float = Field(20.0, gt=0)
-    """Longest a probe runs before it gives up on finding the knee."""
 
 
 # Top-k set on truncated policy sampling that has none: the kept ids of every sampled token travel to the
