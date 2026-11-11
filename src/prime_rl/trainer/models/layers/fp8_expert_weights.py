@@ -25,7 +25,6 @@ def _prequantized_gemm(
     weight_data: torch.Tensor,
     weight_scale: torch.Tensor,
     offs: torch.Tensor,
-    host_num_tokens_per_expert: torch.Tensor | None,
 ) -> torch.Tensor:
     grouped_layout, block_to_group, _, starts_tensor, actual_ms_tensor, block_starts_tensor = _grouped_layout(x, offs)
     return _gemm(
@@ -46,7 +45,6 @@ def _prequantized_gemm_fake(
     weight_data: torch.Tensor,
     weight_scale: torch.Tensor,
     offs: torch.Tensor,
-    host_num_tokens_per_expert: torch.Tensor | None,
 ) -> torch.Tensor:
     return x.new_empty((x.shape[0], weight_data.shape[1]))
 
@@ -150,9 +148,7 @@ class _PrequantizedGroupedGemm(torch.autograd.Function):
         ctx.save_for_backward(x, offs)
         ctx.weight = weight
         ctx.host_num_tokens_per_expert = host_num_tokens_per_expert
-        return torch.ops.prime_rl.grouped_fp8_gemm_prequantized(
-            x, weight._data, weight._scale, offs, host_num_tokens_per_expert
-        )
+        return torch.ops.prime_rl.grouped_fp8_gemm_prequantized(x, weight._data, weight._scale, offs)
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):

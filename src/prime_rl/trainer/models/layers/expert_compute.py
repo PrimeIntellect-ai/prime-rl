@@ -140,17 +140,17 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
         from prime_rl.trainer.models.layers.fp8_expert_weights import Fp8ExpertWeight, prequantized_grouped_fp8_gemm
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
-        super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
-        self.fp8_weight_type = Fp8ExpertWeight
-        self.prequantized_gemm = prequantized_grouped_fp8_gemm
+        def gemm(
+            x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, host_num_tokens_per_expert: torch.Tensor | None
+        ) -> torch.Tensor:
+            if isinstance(weight, Fp8ExpertWeight):
+                return prequantized_grouped_fp8_gemm(x, weight, offs, host_num_tokens_per_expert)
+            return grouped_fp8_gemm(x, weight, offs, host_num_tokens_per_expert)
+
+        super().__init__(gemm, token_group_alignment=GROUP_ALIGNMENT)
 
     def bind_gemm(self, host_num_tokens_per_expert: torch.Tensor | None) -> Callable:
-        def gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-            if isinstance(weight, self.fp8_weight_type):
-                return self.prequantized_gemm(x, weight, offs, host_num_tokens_per_expert)
-            return self.gemm(x, weight, offs, host_num_tokens_per_expert)
-
-        return gemm
+        return partial(self.gemm, host_num_tokens_per_expert=host_num_tokens_per_expert)
 
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):
