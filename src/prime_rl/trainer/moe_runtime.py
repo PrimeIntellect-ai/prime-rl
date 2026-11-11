@@ -13,6 +13,7 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
+    NVFP4MoEComputeConfig,
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
@@ -27,6 +28,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     DeepGemmFP8ExpertCompute,
     ExpertCompute,
     MXFP8ExpertCompute,
+    NVFP4ExpertCompute,
 )
 from prime_rl.trainer.models.layers.mega_moe import (
     MegaMoEExpertCompute,
@@ -71,6 +73,22 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
         return MXFP8ExpertCompute(
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
+        )
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        import prime_kernels
+
+        if "nvfp4_moe" not in prime_kernels.KERNELS:
+            raise RuntimeError("NVFP4 expert compute needs a prime-kernels build containing nvfp4_moe.")
+        capability = torch.cuda.get_device_capability()
+        if capability not in ((10, 0), (10, 3)):
+            raise RuntimeError(
+                f"NVFP4 expert compute needs SM100 or SM103 (B200, GB200, B300), but this device is "
+                f"SM{capability[0]}{capability[1]}. Use moe.compute.type = 'mxfp8' (SM100+) or 'deepgemm_fp8' (SM90)."
+            )
+        return NVFP4ExpertCompute(
+            kernel=prime_kernels.load("nvfp4_moe"),
+            backward=compute.backward,
+            four_over_six=compute.four_over_six,
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 

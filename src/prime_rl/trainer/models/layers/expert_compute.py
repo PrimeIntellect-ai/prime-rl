@@ -125,6 +125,24 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
         super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
 
 
+class NVFP4ExpertCompute(GroupedGemmExpertCompute):
+    def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool) -> None:
+        def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+            return kernel.grouped_gemm(x, weight, offs=offsets, backward=backward, four_over_six=four_over_six)
+
+        super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
+        self.kernel = kernel
+
+    def validate(self, experts: "GroupedExperts") -> None:
+        """Gate and up projections share one set of weight scales, so they must be fused; the kernel tiles in
+        multiples of 32."""
+        if experts.gate_proj is not None:
+            raise ValueError("NVFP4 gated experts require the gate_up runtime fusion for shared weight scales.")
+        reason = self.kernel.unsupported_shape_reason(experts.down_proj.shape[-2], experts.hidden_dim)
+        if reason is not None:
+            raise ValueError(reason)
+
+
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self, kernel: ModuleType, high_precision_wgrad: bool) -> None:
         super().__init__(

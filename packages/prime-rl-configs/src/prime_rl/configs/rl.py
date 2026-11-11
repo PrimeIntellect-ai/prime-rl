@@ -501,6 +501,34 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_moe_nvfp4(self):
+        """Trainer experts in NVFP4 need rollouts sampled with the same quantization: the same layers, and the same
+        4/6 block-scaling recipe. Configure the engines to match unless they already are."""
+        from prime_rl.configs.inference import NVFP4_4OVER6_ENV, MoENVFP4Config
+        from prime_rl.configs.trainer import NVFP4MoEComputeConfig
+
+        compute = self.trainer.model.moe.compute
+        if self.inference is None or not isinstance(compute, NVFP4MoEComputeConfig):
+            return self
+        wanted = MoENVFP4Config(apply_to=compute.apply_to, four_over_six=compute.four_over_six)
+        current = self.inference.moe_nvfp4
+        if current is None:
+            if self.inference.vllm.quantization is not None:
+                raise ValueError(
+                    "trainer.model.moe.compute.type = 'nvfp4' configures inference's expert quantization itself; "
+                    f"unset inference.vllm.quantization ({self.inference.vllm.quantization})."
+                )
+            self.inference.moe_nvfp4 = wanted
+            if wanted.four_over_six:
+                self.inference.env_vars = {NVFP4_4OVER6_ENV: "1", **self.inference.env_vars}
+        elif current != wanted:
+            raise ValueError(
+                f"inference.moe_nvfp4 ({current}) differs from the trainer's NVFP4 experts ({wanted}): rollouts would "
+                "be sampled with other numerics than the trainer computes. Leave inference.moe_nvfp4 unset to match."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb(self):
         if self.inference is not None and self.inference.vllm.enable_eplb:
             raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")

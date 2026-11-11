@@ -53,6 +53,7 @@ Both skip `lm_head`, the router and a few gate/projection modules by default (`i
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
 - `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
+- `type = "nvfp4"` (requires a `prime-kernels` build with `nvfp4_moe`, and SM100/SM103: B200, GB200, B300). See [NVFP4 experts](#nvfp4-experts).
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
 
@@ -104,7 +105,26 @@ apply_to = [0, 1, 2, 3]
 
 Backend shape checks and token alignment apply only to the selected compute path.
 
-In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
+In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs. NVFP4 is the exception: `rl` configures the engines itself (below).
+
+#### NVFP4 experts
+
+One switch runs routed experts in NVFP4 on both the trainer and the engines:
+
+```toml
+[trainer.model.moe.compute]
+type = "nvfp4"
+apply_to = "85%"  # optional, as for other backends
+
+[trainer.model.fusions]
+enabled = ["gate_up"]  # gate and up projections share one set of NVFP4 weight scales
+```
+
+- **Trainer:** the routed experts' forward runs in NVFP4 (E2M1 values, E4M3 scales per 16-element block, per-token activation and per-expert weight scales). Gradients use BF16 GEMMs, on the dequantized forward operands (`backward = "dequant_bf16"`, default) or the original BF16 ones (`"bf16"`). Master weights, optimizer state, checkpoints and weight updates stay BF16, so this is quantization-aware training with a straight-through backward. Dense layers, attention, shared experts, the router and the LM head stay BF16. LoRA and `compile.fullgraph` are not supported.
+- **Engines:** `rl` sets `inference.moe_nvfp4` to the same layers. vLLM quantizes those experts online (`nvfp4_per_token`) from the BF16 weights of every update: the `nvfp4_per_token` shorthand when every layer is selected, otherwise `online` targets matched on vLLM's expert module names (`layers.<i>.mlp.experts`).
+- **Matching numerics:** `four_over_six = true` (default) uses FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection) in the trainer, and `rl` sets `FLASHINFER_NVFP4_4OVER6=1` on the engines so the sampler quantizes the same way. The trainer's quantizer matches FlashInfer's bytes; set `four_over_six = false` on the trainer to turn it off on both sides.
+- `rl` rejects an `inference.vllm.quantization` or an `inference.moe_nvfp4` that differs from the trainer's experts, since rollouts would be sampled with other numerics than the trainer computes.
+- On Hopper (H100/H200) the trainer fails at setup with a pointer to `mxfp8` or `deepgemm_fp8`.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 

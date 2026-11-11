@@ -7,7 +7,11 @@ from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
-from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
+from prime_rl.trainer.models.layers.expert_compute import (
+    BF16ExpertCompute,
+    GroupedGemmExpertCompute,
+    NVFP4ExpertCompute,
+)
 from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
@@ -80,7 +84,7 @@ def test_moe_detection_for_text_and_vlm(config_cls, expected):
 
 
 @pytest.mark.parametrize("selection", [[], [0], "0%", "50%"])
-@pytest.mark.parametrize("compute", [{"type": "mxfp8"}, {"type": "bf16", "backend": "sonicmoe"}])
+@pytest.mark.parametrize("compute", [{"type": "mxfp8"}, {"type": "nvfp4"}, {"type": "bf16", "backend": "sonicmoe"}])
 def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, compute):
     moe = MoE.from_args(MoEArgs(num_experts=2), dim=4, hidden_dim=8, shared_expert=None)
     parameters = dict(moe.named_parameters())
@@ -306,3 +310,34 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+class _FakeNVFP4Kernel:
+    """Stands in for prime-kernels' nvfp4_moe, which needs a Blackwell GPU."""
+
+    TOKEN_GROUP_ALIGNMENT = 32
+
+    @staticmethod
+    def unsupported_shape_reason(dim: int, hidden_dim: int) -> str | None:
+        if dim % 32 or hidden_dim % 32:
+            return "NVFP4 expert dimensions must be positive multiples of 32"
+        return None
+
+
+def test_nvfp4_expert_compute_needs_fused_gate_up_and_aligned_shapes():
+    compute = NVFP4ExpertCompute(kernel=_FakeNVFP4Kernel, backward="dequant_bf16", four_over_six=True)
+    assert compute.token_group_alignment == 32
+
+    unfused = MoE.from_args(MoEArgs(num_experts=2), dim=64, hidden_dim=64, shared_expert=None)
+    with pytest.raises(ValueError, match="gate_up runtime fusion"):
+        unfused.experts.set_compute(compute)
+
+    fused = MoE.from_args(MoEArgs(num_experts=2), dim=64, hidden_dim=64, shared_expert=None)
+    fuse_gate_up_projections(fused.experts)
+    fused.experts.set_compute(compute)
+    assert fused.experts.compute is compute
+
+    misaligned = MoE.from_args(MoEArgs(num_experts=2), dim=48, hidden_dim=64, shared_expert=None)
+    fuse_gate_up_projections(misaligned.experts)
+    with pytest.raises(ValueError, match="multiples of 32"):
+        misaligned.experts.set_compute(compute)

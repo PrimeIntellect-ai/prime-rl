@@ -197,8 +197,23 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """MXFP8 expert-compute recipe."""
 
 
+class NVFP4MoEComputeConfig(MoEComputeConfigBase):
+    """Run routed-expert forwards in NVFP4 (per-token activation scales, per-expert weight scales, E4M3 scales per
+    16-element block) with BF16 gradient GEMMs: quantization-aware training with a straight-through backward. Master
+    weights, optimizer state, checkpoints and weight updates stay BF16. Needs SM100/SM103 (B200, GB200, B300) and a
+    prime-kernels build with ``nvfp4_moe``."""
+
+    type: Literal["nvfp4"] = "nvfp4"
+    backward: Literal["dequant_bf16", "bf16"] = "dequant_bf16"
+    """Operands of the BF16 gradient GEMMs: the dequantized NVFP4 forward operands, or the original BF16 ones."""
+    four_over_six: bool = True
+    """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
+    engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
+    quantizes like the sampler's."""
+
+
 MoEComputeConfig: TypeAlias = Annotated[
-    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig,
+    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig | NVFP4MoEComputeConfig,
     Field(discriminator="type"),
 ]
 
@@ -369,6 +384,11 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_moe_runtime(self):
+        if isinstance(self.moe.compute, NVFP4MoEComputeConfig):
+            if self.lora is not None:
+                raise ValueError("NVFP4 expert compute does not support LoRA.")
+            if self.compile is not None and self.compile.fullgraph:
+                raise ValueError("NVFP4 expert compute requires compile.fullgraph=false.")
         if self.ep == 1:
             return self
 

@@ -436,6 +436,43 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+NVFP4_4OVER6_ENV = "FLASHINFER_NVFP4_4OVER6"
+"""FlashInfer's switch for adaptive 4/6 block scaling in its NVFP4 quantizer, the recipe the trainer's
+``four_over_six`` matches."""
+
+
+class MoENVFP4Config(BaseConfig):
+    """Routed experts in NVFP4 on the engines: vLLM quantizes them online from the BF16 weights it loads, with
+    per-token activation scales (``nvfp4_per_token``), on every weight update. Dense layers stay BF16. Needs SM100/SM103
+    (B200, GB200, B300). ``rl`` sets it from the trainer's ``model.moe.compute`` when that is ``nvfp4``."""
+
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
+    """Model layers whose experts run in NVFP4, as the trainer's ``moe.compute.apply_to``: ``"all"``, a percentage
+    of the first layers, or layer indices."""
+
+    four_over_six: bool = True
+    """FlashInfer's adaptive 4/6 block scaling (sets ``FLASHINFER_NVFP4_4OVER6``), matching the trainer's recipe."""
+
+    def resolve_layers(self, num_layers: int) -> list[int]:
+        if isinstance(self.apply_to, list):
+            return sorted(self.apply_to)
+        fraction = 100.0 if self.apply_to == "all" else float(self.apply_to.removesuffix("%"))
+        return list(range(int(num_layers * fraction / 100)))
+
+    def quantization_args(self, num_layers: int | None) -> dict[str, Any]:
+        """vLLM's ``quantization`` (and ``quantization_config``) for these experts: the ``nvfp4_per_token`` shorthand
+        covers every MoE layer; a subset goes through ``online`` targets matched on vLLM's expert module names."""
+        if self.apply_to == "all":
+            return {"quantization": "nvfp4_per_token"}
+        if num_layers is None:
+            raise ValueError("NVFP4 on a subset of layers needs the model's layer count")
+        layers = self.resolve_layers(num_layers)
+        if not layers:
+            return {}
+        pattern = r"re:(.*\.)?layers\.(" + "|".join(str(index) for index in layers) + r")\.mlp\.experts$"
+        return {"quantization": "online", "quantization_config": {"targets": {pattern: "nvfp4_per_token"}}}
+
+
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
@@ -453,6 +490,10 @@ class InferenceConfig(BaseConfig):
 
     env_vars: EnvVars = {}
     """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
+
+    moe_nvfp4: MoENVFP4Config | None = None
+    """Run routed experts in NVFP4 (Blackwell). ``rl`` sets it to match the trainer's ``moe.compute.type = "nvfp4"``;
+    leave ``vllm.quantization`` unset alongside it."""
 
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
@@ -649,6 +690,32 @@ class InferenceConfig(BaseConfig):
         {"chat_template", "tool_call_parser", "reasoning_parser", "lora_target_modules", "quantization", "rope_scaling"}
     )
 
+    @model_validator(mode="after")
+    def validate_moe_nvfp4(self):
+        """NVFP4 experts set vLLM's quantization themselves, and turn on FlashInfer's 4/6 recipe to match."""
+        if self.moe_nvfp4 is None:
+            return self
+        if self.vllm.quantization is not None:
+            raise ValueError(
+                f"moe_nvfp4 sets vLLM's quantization itself; unset vllm.quantization ({self.vllm.quantization})."
+            )
+        if self.moe_nvfp4.four_over_six:
+            self.env_vars = {NVFP4_4OVER6_ENV: "1", **self.env_vars}
+        return self
+
+    def num_hidden_layers(self) -> int | None:
+        """The served model's decoder layer count, from its HF config (local cache or Hub). None if unreadable."""
+        try:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(
+                self.vllm.model, trust_remote_code=bool(getattr(self.vllm, "trust_remote_code", False))
+            )
+        except Exception:
+            return None
+        config = getattr(config, "text_config", None) or config
+        return getattr(config, "num_hidden_layers", None)
+
     def to_namespace(self) -> Namespace:
         """Dump the server + vllm sections into a vLLM-compatible Namespace."""
         namespace = Namespace(
@@ -705,6 +772,11 @@ class InferenceConfig(BaseConfig):
         # an adapter named like a served base model, so serve the base under another name.
         if self.vllm.enable_lora and "served_model_name" not in extra_fields:
             namespace.served_model_name = [f"{self.vllm.model}-base"]
+
+        if self.moe_nvfp4 is not None:
+            num_layers = None if self.moe_nvfp4.apply_to == "all" else self.num_hidden_layers()
+            for key, value in self.moe_nvfp4.quantization_args(num_layers).items():
+                setattr(namespace, key, value)
 
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:

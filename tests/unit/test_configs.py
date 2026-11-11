@@ -1476,3 +1476,74 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+def test_nvfp4_trainer_experts_configure_matching_engines():
+    from prime_rl.configs.inference import InferenceConfig, MoENVFP4Config
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    # One switch on the trainer: the engines quantize the same experts with the same 4/6 recipe
+    assert config.inference.moe_nvfp4 == MoENVFP4Config(apply_to="all", four_over_six=True)
+    assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
+    namespace = config.inference.to_namespace()
+    assert namespace.quantization == "nvfp4_per_token"
+    assert not hasattr(namespace, "quantization_config")
+
+    # A subset of layers goes through vLLM's online targets, on its expert module names
+    subset = InferenceConfig.model_validate({"moe_nvfp4": {"apply_to": [0, 2, 5]}})
+    args = subset.moe_nvfp4.quantization_args(num_layers=48)
+    assert args["quantization"] == "online"
+    (pattern,) = args["quantization_config"]["targets"]
+    assert args["quantization_config"]["targets"][pattern] == "nvfp4_per_token"
+    import re
+
+    regex = re.compile(pattern.removeprefix("re:"))
+    assert regex.fullmatch("model.layers.5.mlp.experts")
+    assert regex.fullmatch("language_model.model.layers.0.mlp.experts")
+    assert not regex.fullmatch("model.layers.1.mlp.experts")
+    assert not regex.fullmatch("model.layers.50.mlp.experts")
+    assert not regex.fullmatch("model.layers.5.mlp.shared_experts")
+    assert MoENVFP4Config(apply_to="50%").resolve_layers(48) == list(range(24))
+
+    # Without 4/6 on the trainer, the engines leave it off too
+    plain = RLConfig.model_validate(
+        {
+            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4", "four_over_six": False}}}},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    assert "FLASHINFER_NVFP4_4OVER6" not in plain.inference.env_vars
+
+
+@pytest.mark.parametrize(
+    "inference, message",
+    [
+        ({"vllm": {"quantization": "fp8_per_block"}}, "unset inference.vllm.quantization"),
+        ({"moe_nvfp4": {"apply_to": [0]}}, "differs from the trainer's NVFP4 experts"),
+    ],
+)
+def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
+    with pytest.raises(ValidationError, match=message):
+        RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}}, "orchestrator": {}, "inference": inference}
+        )
+
+
+@pytest.mark.parametrize(
+    "model, message",
+    [
+        ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
+        ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
+        ({"moe": {"compute": {"type": "nvfp4", "backward": "fp4"}}}, "Input should be"),
+    ],
+)
+def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
