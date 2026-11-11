@@ -135,8 +135,8 @@ def rl_from_checkpoint_process(
     output_dir: Path,
     run_dir: Path,
 ) -> ProcessResult:
-    """RL from the SFT checkpoint's weights, with a zero learning rate so its
-    checkpoint holds exactly the weights it started from."""
+    """RL from the SFT checkpoint, with a zero learning rate so its checkpoint holds exactly the weights it started
+    from. Inference starts from dummy weights and gets the checkpoint's weights from the trainer's startup broadcast."""
     cmd = [
         "uv",
         "run",
@@ -145,10 +145,12 @@ def rl_from_checkpoint_process(
         "configs/ci/integration/reverse-text/start.toml",
         "--max-steps",
         "1",
-        "--trainer.model.name",
+        "--model.name",
         (run_dir / "checkpoints" / "step_5").as_posix(),
         "--trainer.model.init.type",
         "checkpoint",
+        "--inference.vllm.load-format",
+        "dummy",
         "--trainer.optim.lr",
         "0",
         "--monitors.wandb.project",
