@@ -188,6 +188,12 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
+    fp8_all_gather: bool = False
+    """FSDP all-gathers the routed experts' weights as the GEMM's 128 x 128-block FP8 casts: half the all-gather bytes,
+    and the forward, the activation-checkpoint recompute and every micro-step reuse one cast per all-gather. Same
+    numerics as casting the bf16 weight in the GEMM. Needs FSDP to shard the expert weights on the expert dimension
+    into equal shards (no ``fusions.shard_fused_on_dim1``). Checkpoints hold plain tensors either way."""
+
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
@@ -377,6 +383,23 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_fp8_all_gather(self):
+        compute = self.moe.compute
+        if not (isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.fp8_all_gather):
+            return self
+        if self.fusions.shard_fused_on_dim1:
+            raise ValueError(
+                "model.moe.compute.fp8_all_gather casts each FSDP shard of whole experts, but "
+                "model.fusions.shard_fused_on_dim1 shards the packed expert weights on dim 1."
+            )
+        if self.lora is not None:
+            raise ValueError(
+                "model.moe.compute.fp8_all_gather does not support LoRA: LoRA experts hold their adapters, "
+                "not the expert weights, as their parameters."
+            )
         return self
 
 
