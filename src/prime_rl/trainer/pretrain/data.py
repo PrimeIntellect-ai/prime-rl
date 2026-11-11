@@ -200,6 +200,12 @@ class TokenDataset(StatefulIterableDataset):
         rounds = -(-self.step // self.data_world_size)
         return {"step": rounds * self.data_world_size, "epoch": self.epoch}
 
+    def load_state_dict(self, state_dict: dict):
+        # Only best-fit packing saves a group_start.
+        if ("group_start" in state_dict) != hasattr(self, "group_start"):
+            raise ValueError("data.packing changed on resume: the checkpoint's position belongs to the other packing")
+        super().load_state_dict(state_dict)
+
     def __iter__(self):
         self._setup_world_info()
         while True:
