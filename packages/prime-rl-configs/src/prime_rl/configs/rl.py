@@ -511,6 +511,11 @@ class RLConfig(BaseConfig):
                 "inference.vllm.enable_eplb needs NCCL, filesystem or NIXL weight updates: they load each expert into "
                 "the slots EPLB currently gives it. ModelExpress replays a load plan traced before any rearrangement."
             )
+        if self.inference is not None and self.inference.vllm.enable_eplb:
+            eplb = self.inference.vllm.eplb
+            if eplb.placement == "trainer":
+                # The trainer publishes the expert counts each placement is computed from
+                self.trainer.weight_broadcast.expert_load_interval = eplb.rebalance_interval
         return self
 
     @model_validator(mode="after")

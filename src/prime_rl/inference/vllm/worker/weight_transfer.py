@@ -7,7 +7,13 @@ from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
 from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
 
-from prime_rl.inference.vllm.eplb import current_expert_placement, moved_slots, remap_expert_weight_loader
+from prime_rl.inference.vllm.eplb import (
+    current_expert_placement,
+    ep_node_count,
+    install_trainer_placement,
+    moved_slots,
+    remap_expert_weight_loader,
+)
 
 if TYPE_CHECKING:
     from vllm.distributed.eplb.eplb_state import EplbState
@@ -21,12 +27,14 @@ def load_weights_checkpoint_layerwise(
     model_config,
     vllm_config,
     eplb_state: "EplbState | None" = None,
+    weight_dir: str | None = None,
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     if eplb_state is not None:
         eplb_state.drain_async()
         torch.cuda.synchronize(device)
+        place_experts_from_trainer(eplb_state, model_config, weight_dir)
     weight_loaders = []
     moe_kernels = []
     with torch.device(device), set_current_vllm_config(vllm_config):
@@ -61,6 +69,27 @@ def load_weights_checkpoint_layerwise(
         for quant_method, quant_config, kernel in moe_kernels:
             quant_method.moe_quant_config = quant_config
             quant_method.moe_kernel = kernel
+
+
+_ep_node_count: int | None = None
+
+
+def place_experts_from_trainer(eplb_state: "EplbState | None", model_config, weight_dir: str | None) -> None:
+    """Under ``eplb.placement = "trainer"``, place the experts by the counts the trainer published with this update,
+    before its weights are written (see ``install_trainer_placement``)."""
+    global _ep_node_count
+    if eplb_state is None:
+        return
+
+    def node_count() -> int:
+        global _ep_node_count
+        if _ep_node_count is None:
+            _ep_node_count = ep_node_count()
+        return _ep_node_count
+
+    moved = install_trainer_placement(eplb_state, model_config, weight_dir, node_count)
+    if moved is not None:
+        logger.info("Placed EPLB experts from the trainer's expert counts: %d physical slots changed", moved)
 
 
 @torch.no_grad()

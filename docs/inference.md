@@ -246,6 +246,21 @@ enable_eplb = true
 | `window_size` / `step_interval` | 1000 / 3000 forward steps | vLLM's defaults |
 | `log_balancedness` | `true`, every 100 steps | mean over max per-rank expert load in the engine logs (1.0 is balanced) |
 
+#### Placement from the trainer
+
+By default each engine measures its own expert load and rearranges while it serves, copying expert weights between ranks. In RL the trainer can place them instead:
+
+```toml
+[inference.vllm.eplb]
+placement = "trainer"
+rebalance_interval = 1  # trainer steps between placements
+```
+
+- Every `rebalance_interval` steps the trainer writes its per-layer expert token counts (summed over the steps since the last placement and over all its ranks) into the weight update's step dir. With router replay these counts are the engines' own routing of the same tokens.
+- Inside that weight update, before writing weights, every engine computes the placement from the counts with vLLM's EPLB policy and installs it. The update then writes each expert straight into its new slots, so no expert weights move between ranks and nothing moves while the engines serve.
+- The placement depends on the counts alone. Every server of an EP group (one vLLM server per data parallel rank across nodes) and a restarted engine derive the same one, and all servers update in the same pause.
+- vLLM's own trigger is off (`window_size`, `step_interval` and `use_async` do not apply). Works with NCCL, filesystem and NIXL weight updates; a NIXL engine traces its load plan again after each new placement, which a larger `rebalance_interval` amortizes. The step dir must be on a filesystem the engines can read.
+
 `num_experts + num_redundant_experts` must divide by the expert parallel size (tensor parallel × data parallel). For the NIXL communicator, set `UCX_NET_DEVICES` to the InfiniBand ports of each node (for example, `mlx5_0:1,mlx5_1:1`).
 
 See the [two-node math debug config](../configs/debug/eplb/README.md) for an RL

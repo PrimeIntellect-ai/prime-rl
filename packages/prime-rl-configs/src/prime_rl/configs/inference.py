@@ -36,6 +36,21 @@ class EPLBConfig(BaseConfig):
     """vLLM's EPLB settings, with defaults for RL. Weight updates load each expert into every slot it currently
     occupies, so rebalancing and weight updates can both run."""
 
+    placement: Literal["engine", "trainer"] = "engine"
+    """Where the expert placement comes from.
+
+    - ``engine``: vLLM measures expert load over ``window_size`` forward steps and rearranges every
+      ``step_interval`` steps, moving expert weights between ranks while it serves.
+    - ``trainer``: the trainer publishes its expert token counts with the weights every ``rebalance_interval``
+      steps (with router replay they are the engines' routing of the same tokens), and every engine places its
+      experts by them inside that weight update. The update writes each expert straight into its new slots, so no
+      weights move between ranks, and every server of an EP group derives the same placement from the same counts.
+      ``window_size``, ``step_interval`` and ``use_async`` do not apply."""
+
+    rebalance_interval: int = Field(1, ge=1)
+    """With ``placement = "trainer"``: trainer steps between placements; each one counts the tokens of every step
+    since the last. A NIXL engine traces its load plan again after a placement, so a larger interval amortizes that."""
+
     num_redundant_experts: int | None = Field(None, ge=0)
     """Extra expert slots, which hold replicas of the most loaded experts. None (the default) gives every expert
     parallel rank one: without replicas EPLB can only move experts between ranks, not split a hot expert's load.
@@ -63,8 +78,11 @@ class EPLBConfig(BaseConfig):
     log_balancedness_interval: int = Field(100, gt=0)
 
     def to_vllm(self, expert_parallel_size: int) -> dict[str, Any]:
-        config = self.model_dump(exclude_none=True)
+        config = self.model_dump(exclude_none=True, exclude={"placement", "rebalance_interval"})
         config.setdefault("num_redundant_experts", expert_parallel_size)
+        if self.placement == "trainer":
+            # vLLM never rearranges on its own: weight updates place the experts
+            config.update(step_interval=2**31 - 1, use_async=False)
         return config
 
 

@@ -248,6 +248,9 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
+    # Expert token counts since the last weight update that carried them (EPLB placed by the trainer)
+    expert_load_interval = config.weight_broadcast.expert_load_interval if is_moe_model else None
+    expert_load: torch.Tensor | None = None
     staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
@@ -720,7 +723,14 @@ def train(config: TrainerConfig):
             # once its block is freed under it.
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
-            weight_sender.broadcast(model, step=progress.step)
+            published_load = None
+            if expert_load_interval is not None and routing_stats:
+                step_load = torch.stack(routing_stats)[..., :-1].sum(dim=0).to(torch.int64)
+                dist.all_reduce(step_load, op=dist.ReduceOp.SUM, group=dp_cp_group)
+                expert_load = step_load if expert_load is None else expert_load + step_load
+                if progress.step % expert_load_interval == 0:
+                    published_load, expert_load = expert_load, None
+            weight_sender.broadcast(model, step=progress.step, expert_load=published_load)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
         # Count the step before checkpointing it, so a resume continues the counters from here.

@@ -81,7 +81,9 @@ def test_nixl_plan_is_traced_again_when_eplb_moves_experts():
     worker.weight_transfer_timeout = 1
     worker.device = "cpu"
     worker.current_expert_placement = lambda: (next(placements), [])
-    worker.model_express = SimpleNamespace(rank=0, wait_for=lambda *a, **k: ["trainer"], fetch=lambda ref: SimpleNamespace(nixl_metadata=b""))
+    worker.model_express = SimpleNamespace(
+        rank=0, wait_for=lambda *a, **k: ["trainer"], fetch=lambda ref: SimpleNamespace(nixl_metadata=b"")
+    )
     worker.trace_weight_loads = lambda table, destinations: traced.append(table) or []
     worker.build_transfer_plan = lambda table, copies: WeightTransferPlan({}, 1, [], [SimpleNamespace(pulls=[])] * 2)
     worker.release_transfer_plan = lambda plan: released.append(plan)
@@ -102,3 +104,75 @@ def test_nixl_plan_is_traced_again_when_eplb_moves_experts():
     assert second is not first and released == [first] and len(traced) == 2
     assert second.placement == ((3, 1, 2, 0),)
     assert worker.group_generations == [5, 5]
+
+
+def _policy():
+    from vllm.distributed.eplb.policy.default import DefaultEplbPolicy
+
+    return DefaultEplbPolicy
+
+
+def test_trainer_placement_follows_the_counts_alone():
+    import torch
+
+    from prime_rl.inference.vllm.eplb import trainer_placement
+
+    # 8 experts over 4 ranks with 4 replica slots; expert 5 takes most tokens in layer 0, expert 2 in layer 1
+    load = torch.tensor([[10, 10, 10, 10, 10, 400, 10, 10], [10, 10, 300, 10, 10, 10, 10, 10]])
+    placement = trainer_placement(_policy(), load, 12, 1, 1, 4)
+    assert placement.shape == (2, 12)
+    for layer, hot in ((0, 5), (1, 2)):
+        replicas = torch.bincount(placement[layer], minlength=8)
+        assert (replicas >= 1).all() and replicas[hot] == replicas.max() > 1
+    # Same counts, same placement: every rank of an EP group, and a restarted engine, agree
+    assert torch.equal(placement, trainer_placement(_policy(), load.clone(), 12, 1, 1, 4))
+    # A node count that does not divide the ranks falls back to the global policy instead of failing
+    assert trainer_placement(_policy(), load, 12, 1, 3, 4).shape == (2, 12)
+
+
+def test_trainer_placement_installs_maps_without_moving_weights(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import torch
+    import vllm.distributed.parallel_state as parallel_state
+
+    from prime_rl.inference.vllm.eplb import EXPERT_LOAD_FILE, install_trainer_placement
+
+    initial = torch.arange(12) % 8
+    weights = torch.randn(12, 4)
+    before = weights.clone()
+    state = SimpleNamespace(
+        physical_to_logical_map=initial.unsqueeze(0).clone(),
+        logical_to_physical_map=torch.full((1, 8, 12), -1),
+        logical_replica_count=torch.zeros(1, 8, dtype=torch.long),
+        model=SimpleNamespace(
+            num_moe_layers=1, num_logical_experts=8, num_physical_experts=12, num_expert_groups=1, weights=weights
+        ),
+    )
+    eplb_state = SimpleNamespace(drain_async=lambda: None, model_states={"m": state}, policy=_policy())
+    monkeypatch.setattr(parallel_state, "get_ep_group", lambda: SimpleNamespace(world_size=4))
+    # vLLM pins host copies when CUDA is present; this host may have none
+    import vllm.distributed.eplb.eplb_state as eplb_module
+
+    monkeypatch.setattr(eplb_module, "PIN_MEMORY", False)
+    config = SimpleNamespace(compute_hash=lambda: "m")
+
+    # No counts published with this update: nothing changes
+    assert install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1) is None
+    torch.save(torch.tensor([[10, 10, 10, 10, 10, 400, 10, 10]]), tmp_path / EXPERT_LOAD_FILE)
+    moved = install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1)
+    new = state.physical_to_logical_map[0]
+    assert moved == int((new != initial).sum()) > 0
+    # The routing maps follow the new placement; the expert weights are left to the update to write
+    replicas = torch.bincount(new, minlength=8)
+    assert torch.equal(state.logical_replica_count[0], replicas)
+    for logical in range(8):
+        slots = state.logical_to_physical_map[0, logical]
+        assert sorted(slots[slots >= 0].tolist()) == (new == logical).nonzero().flatten().tolist()
+    assert torch.equal(weights, before)
+
+    torch.save(torch.zeros(2, 8, dtype=torch.long), tmp_path / EXPERT_LOAD_FILE)
+    import pytest
+
+    with pytest.raises(ValueError, match="shape"):
+        install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1)

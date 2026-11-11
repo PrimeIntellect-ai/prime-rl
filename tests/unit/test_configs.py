@@ -884,6 +884,32 @@ def test_eplb_needs_placement_aware_weight_updates(transport):
             RLConfig.model_validate(data)
 
 
+def test_eplb_placement_from_the_trainer():
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "weight_broadcast": {"type": "nccl"},
+        "inference": {
+            "vllm": {
+                "enable_eplb": True,
+                "enable_expert_parallel": True,
+                "data_parallel_size": 4,
+                "eplb": {"placement": "trainer", "rebalance_interval": 5},
+            }
+        },
+    }
+    config = RLConfig.model_validate(data)
+    # The trainer publishes its expert counts every rebalance_interval steps
+    assert config.trainer.weight_broadcast.expert_load_interval == 5
+    eplb_config = config.inference.to_namespace().eplb_config
+    # vLLM never rearranges on its own; the placement settings stay prime-rl's
+    assert eplb_config["step_interval"] == 2**31 - 1 and eplb_config["use_async"] is False
+    assert "placement" not in eplb_config and "rebalance_interval" not in eplb_config
+
+    data["inference"]["vllm"]["eplb"] = {}
+    assert RLConfig.model_validate(data).trainer.weight_broadcast.expert_load_interval is None
+
+
 def test_eplb_defaults_for_rl():
     from prime_rl.configs.inference import InferenceConfig
 

@@ -18,7 +18,7 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.eplb import current_expert_placement, remap_expert_weight_loader
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import place_experts_from_trainer, update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -514,7 +514,10 @@ class NIXLWeightUpdateWorker(Worker):
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
-        del weight_dir
+        # Trainer-placed experts move before the plan is checked: a new placement traces it again
+        place_experts_from_trainer(
+            getattr(self.model_runner, "eplb_state", None), self.model_runner.model_config, weight_dir
+        )
         plan = self.initialize_transfer()
 
         started = time.perf_counter()
