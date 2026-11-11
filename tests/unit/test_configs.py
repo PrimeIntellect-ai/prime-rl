@@ -1572,6 +1572,7 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
             {"moe": {"compute": {"type": "nvfp4", "backward": "bf16", "quantized_all_gather": True}}},
             "gathers no BF16 expert weights",
         ),
+        ({"moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "mega_moe"}}}, "does not run under"),
     ],
 )
 def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
