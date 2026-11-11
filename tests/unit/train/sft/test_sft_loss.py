@@ -78,16 +78,13 @@ requires_quack_cross_entropy = pytest.mark.skipif(
 
 @pytest.mark.gpu
 @requires_quack_cross_entropy
-@pytest.mark.parametrize(
-    "vocab, dtype",
-    [(37, torch.float32)] + [(v, d) for v in (32002, 151936, 201088) for d in (torch.bfloat16, torch.float32)],
-)
+@pytest.mark.parametrize("vocab", [37, 32002, 151936, 201088])
 @pytest.mark.parametrize("with_grad", [True, False])
-def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype, with_grad):
+def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, with_grad):
     """quack's fused kernel gives the per-token loss and logits gradient of the eager math (the path on CPUs and on
     GPUs quack does not support), zero on masked tokens."""
     torch.manual_seed(0)
-    logits = torch.randn(300, vocab, device="cuda", dtype=dtype) * 3
+    logits = torch.randn(300, vocab, device="cuda") * 3
     labels = torch.randint(0, vocab, (300,), device="cuda")
     labels[::3] = IGNORE_INDEX
 
@@ -101,7 +98,7 @@ def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype, with
     eager_loss, eager_grad = run()
     torch.testing.assert_close(fused_loss, eager_loss)
     if with_grad:
-        torch.testing.assert_close(fused_grad.to(dtype), eager_grad.to(dtype))
+        torch.testing.assert_close(fused_grad, eager_grad)
     else:
         assert fused_grad is None and eager_grad is None
 
