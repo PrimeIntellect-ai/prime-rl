@@ -1092,7 +1092,9 @@ class Orchestrator:
             and config.speculative_decoding.draft != self.config.speculative_decoding.draft
         ):
             try:
-                check_draft_swap(local_draft_dir(str(self.launch_draft)), config.speculative_decoding.draft)
+                check_draft_swap(
+                    local_draft_dir(str(self.launch_draft)), local_draft_dir(str(config.speculative_decoding.draft))
+                )
             except (OSError, ValueError) as error:
                 raise InvalidConfigError(f"The draft cannot replace the served draft: {error}") from error
         return config, changes
