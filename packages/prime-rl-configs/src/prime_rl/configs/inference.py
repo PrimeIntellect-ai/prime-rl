@@ -441,10 +441,21 @@ NVFP4_4OVER6_ENV = "FLASHINFER_NVFP4_4OVER6"
 ``four_over_six`` matches."""
 
 
+NVFP4_DENSE_IGNORE = [
+    r"re:.*shared_experts?\.",
+    r"re:.*shared_expert_gate$",
+    r"re:.*mlp\.gate$",
+    r"re:.*lm_head$",
+    r"re:.*(eh_proj|weights_proj|in_proj_a|in_proj_b)$",
+]
+"""vLLM modules left BF16 when dense layers run in MXFP8 beside NVFP4 experts: shared experts, the router and the
+modules the trainer's dense quantization skips by default."""
+
+
 class MoENVFP4Config(BaseConfig):
     """Routed experts in NVFP4 on the engines: vLLM quantizes them online from the BF16 weights it loads, with
-    per-token activation scales (``nvfp4_per_token``), on every weight update. Dense layers stay BF16. Needs SM100/SM103
-    (B200, GB200, B300). ``rl`` sets it from the trainer's ``model.moe.compute`` when that is ``nvfp4``."""
+    per-token activation scales (``nvfp4_per_token``), on every weight update. Needs SM100/SM103 (B200, GB200, B300).
+    ``rl`` sets it from the trainer's ``model.moe.compute`` when that is ``nvfp4``."""
 
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
     """Model layers whose experts run in NVFP4, as the trainer's ``moe.compute.apply_to``: ``"all"``, a percentage
@@ -452,6 +463,10 @@ class MoENVFP4Config(BaseConfig):
 
     four_over_six: bool = True
     """FlashInfer's adaptive 4/6 block scaling (sets ``FLASHINFER_NVFP4_4OVER6``), matching the trainer's recipe."""
+
+    linear: Literal["mxfp8"] | None = None
+    """Dense linear layers in MXFP8 (``rl`` sets it when the trainer's ``model.quantization`` is ``mxfp8``); shared
+    experts, the router and the LM head stay BF16. Needs ``apply_to = "all"``. None keeps dense layers BF16."""
 
     def resolve_layers(self, num_layers: int) -> list[int]:
         if isinstance(self.apply_to, list):
@@ -462,6 +477,9 @@ class MoENVFP4Config(BaseConfig):
     def quantization_args(self, num_layers: int | None) -> dict[str, Any]:
         """vLLM's ``quantization`` (and ``quantization_config``) for these experts: the ``nvfp4_per_token`` shorthand
         covers every MoE layer; a subset goes through ``online`` targets matched on vLLM's expert module names."""
+        if self.linear is not None:
+            config = {"linear": self.linear, "moe": "nvfp4_per_token", "ignore": NVFP4_DENSE_IGNORE}
+            return {"quantization": "online", "quantization_config": config}
         if self.apply_to == "all":
             return {"quantization": "nvfp4_per_token"}
         if num_layers is None:
@@ -699,6 +717,8 @@ class InferenceConfig(BaseConfig):
             raise ValueError(
                 f"moe_nvfp4 sets vLLM's quantization itself; unset vllm.quantization ({self.vllm.quantization})."
             )
+        if self.moe_nvfp4.linear is not None and self.moe_nvfp4.apply_to != "all":
+            raise ValueError("moe_nvfp4.linear needs apply_to = 'all': vLLM cannot combine it with per-layer targets.")
         if self.moe_nvfp4.four_over_six:
             self.env_vars = {NVFP4_4OVER6_ENV: "1", **self.env_vars}
         return self

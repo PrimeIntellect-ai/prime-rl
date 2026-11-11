@@ -123,6 +123,10 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "in_proj_b",
 ]
 
+SHARED_EXPERTS_PATTERN = r"shared_experts?\."
+"""Shared-expert linears, kept BF16 beside NVFP4 routed experts: every token passes through them, so their precision
+matters more than a routed expert's."""
+
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
@@ -199,13 +203,14 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
 
 class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert forwards in NVFP4 (per-token activation scales, per-expert weight scales, E4M3 scales per
-    16-element block) with BF16 gradient GEMMs: quantization-aware training with a straight-through backward. Master
-    weights, optimizer state, checkpoints and weight updates stay BF16. Needs SM100/SM103 (B200, GB200, B300) and a
-    prime-kernels build with ``nvfp4_moe``."""
+    16-element block): quantization-aware training with a straight-through backward. Master weights, optimizer state,
+    checkpoints and weight updates stay BF16. Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with
+    ``nvfp4_moe``."""
 
     type: Literal["nvfp4"] = "nvfp4"
-    backward: Literal["dequant_bf16", "bf16"] = "dequant_bf16"
-    """Operands of the BF16 gradient GEMMs: the dequantized NVFP4 forward operands, or the original BF16 ones."""
+    backward: Literal["mxfp8", "dequant_bf16", "bf16"] = "mxfp8"
+    """Gradient GEMMs: MXFP8 on the original BF16 operands (default; the backward never meets the sampler, so it trades
+    exactness for speed), or BF16 on the dequantized NVFP4 forward operands or on the original BF16 ones."""
     four_over_six: bool = True
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then

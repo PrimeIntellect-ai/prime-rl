@@ -1479,6 +1479,8 @@ def test_score_centering_replays_top_p_alone():
 
 
 def test_nvfp4_trainer_experts_configure_matching_engines():
+    import re
+
     from prime_rl.configs.inference import InferenceConfig, MoENVFP4Config
 
     config = RLConfig.model_validate(
@@ -1501,7 +1503,6 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
     assert args["quantization"] == "online"
     (pattern,) = args["quantization_config"]["targets"]
     assert args["quantization_config"]["targets"][pattern] == "nvfp4_per_token"
-    import re
 
     regex = re.compile(pattern.removeprefix("re:"))
     assert regex.fullmatch("model.layers.5.mlp.experts")
@@ -1521,19 +1522,44 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
     )
     assert "FLASHINFER_NVFP4_4OVER6" not in plain.inference.env_vars
 
+    # Routing is replayed from the engines, and the backward runs in MXFP8
+    assert config.trainer.enable_router_replay and config.inference.vllm.enable_return_routed_experts
+    assert config.trainer.model.moe.compute.backward == "mxfp8"
+
+    # MXFP8 dense layers on the trainer: the engines match them, shared experts stay BF16 on both sides
+    dense = RLConfig.model_validate(
+        {
+            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}, "quantization": {"type": "mxfp8"}}},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    assert r"shared_experts?\." in dense.trainer.model.quantization.extra_ignore_patterns
+    namespace = dense.inference.to_namespace()
+    assert namespace.quantization == "online"
+    assert namespace.quantization_config["linear"] == "mxfp8"
+    assert namespace.quantization_config["moe"] == "nvfp4_per_token"
+    ignore = [re.compile(p.removeprefix("re:")) for p in namespace.quantization_config["ignore"]]
+    for name in ("model.layers.3.mlp.shared_experts.down_proj", "model.layers.3.mlp.gate", "lm_head"):
+        assert any(r.match(name) for r in ignore), name
+    for name in ("model.layers.3.mlp.experts", "model.layers.3.self_attn.o_proj", "model.layers.3.mlp.gate_up_proj"):
+        assert not any(r.match(name) for r in ignore), name
+
 
 @pytest.mark.parametrize(
     "inference, message",
     [
         ({"vllm": {"quantization": "fp8_per_block"}}, "unset inference.vllm.quantization"),
         ({"moe_nvfp4": {"apply_to": [0]}}, "differs from the trainer's NVFP4 experts"),
+        ({}, "pair only with mxfp8 dense layers"),
     ],
 )
 def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
+    model = {"moe": {"compute": {"type": "nvfp4"}}}
+    if not inference:
+        model["quantization"] = {"type": "fp8"}
     with pytest.raises(ValidationError, match=message):
-        RLConfig.model_validate(
-            {"trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}}, "orchestrator": {}, "inference": inference}
-        )
+        RLConfig.model_validate({"trainer": {"model": model}, "orchestrator": {}, "inference": inference})
 
 
 @pytest.mark.parametrize(

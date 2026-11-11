@@ -502,15 +502,32 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_moe_nvfp4(self):
-        """Trainer experts in NVFP4 need rollouts sampled with the same quantization: the same layers, and the same
-        4/6 block-scaling recipe. Configure the engines to match unless they already are."""
+        """Trainer experts in NVFP4 need rollouts sampled with the same quantization: the same layers, the same 4/6
+        block-scaling recipe and, with MXFP8 dense layers, the same dense precision with shared experts in BF16 on both
+        sides. Routing is replayed from the engines unless turned off explicitly, since NVFP4 noise flips near-tied
+        experts. Configure the engines to match unless they already are."""
         from prime_rl.configs.inference import NVFP4_4OVER6_ENV, MoENVFP4Config
-        from prime_rl.configs.trainer import NVFP4MoEComputeConfig
+        from prime_rl.configs.trainer import SHARED_EXPERTS_PATTERN, MXFP8Config, NVFP4MoEComputeConfig
 
-        compute = self.trainer.model.moe.compute
-        if self.inference is None or not isinstance(compute, NVFP4MoEComputeConfig):
+        model = self.trainer.model
+        compute = model.moe.compute
+        if not isinstance(compute, NVFP4MoEComputeConfig):
             return self
-        wanted = MoENVFP4Config(apply_to=compute.apply_to, four_over_six=compute.four_over_six)
+        if "enable_router_replay" not in self.trainer.model_fields_set:
+            self.trainer.enable_router_replay = True
+        linear = None
+        if model.quantization is not None:
+            if not isinstance(model.quantization, MXFP8Config) or compute.apply_to != "all":
+                raise ValueError(
+                    "NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization), on every layer "
+                    "(moe.compute.apply_to = 'all'): the engines cannot match other combinations."
+                )
+            linear = "mxfp8"
+            if SHARED_EXPERTS_PATTERN not in model.quantization.extra_ignore_patterns:
+                model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
+        if self.inference is None:
+            return self
+        wanted = MoENVFP4Config(apply_to=compute.apply_to, four_over_six=compute.four_over_six, linear=linear)
         current = self.inference.moe_nvfp4
         if current is None:
             if self.inference.vllm.quantization is not None:
