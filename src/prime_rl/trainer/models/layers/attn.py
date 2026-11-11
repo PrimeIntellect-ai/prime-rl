@@ -446,14 +446,25 @@ class AttentionConfig:
 # Otherwise, do ABC or something to make the signatures match
 
 
+class _FP8KVFakeQuant(torch.autograd.Function):
+    """Exact rounding forward, identity backward. ``x + (rounded - x).detach()`` is not exact in BF16 once a value
+    saturates: the difference itself rounds."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, scale: float) -> torch.Tensor:
+        finfo = torch.finfo(torch.float8_e4m3fn)
+        stored = (x.float() / scale).clamp(finfo.min, finfo.max).to(torch.float8_e4m3fn)
+        return (stored.float() * scale).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        return grad, None
+
+
 def fp8_kv_fake_quant(x: torch.Tensor, scale: float) -> torch.Tensor:
     """``x`` rounded as vLLM's FP8 KV cache stores it (``x / scale`` saturated to E4M3, then rescaled), with a
     straight-through gradient."""
-    with torch.no_grad():
-        finfo = torch.finfo(torch.float8_e4m3fn)
-        stored = (x.float() / scale).clamp(finfo.min, finfo.max).to(torch.float8_e4m3fn)
-        rounded = (stored.float() * scale).to(x.dtype)
-    return x + (rounded - x).detach()
+    return _FP8KVFakeQuant.apply(x, scale)
 
 
 class FlashAttention(nn.Module):

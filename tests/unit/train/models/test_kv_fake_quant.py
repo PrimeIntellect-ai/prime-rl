@@ -10,6 +10,9 @@ def test_fp8_kv_fake_quant_rounds_like_the_cache_with_a_straight_through_gradien
     expected = x.detach().float().clamp(-448, 448).to(torch.float8_e4m3fn).float().to(torch.bfloat16)
     assert torch.equal(y.detach(), expected)
     assert y[2].item() == 448 and y[3].item() == -448
+    # Exact also where x + (rounded - x) would round in BF16
+    big = torch.tensor([3.3e4, -1.7e5], dtype=torch.bfloat16)
+    assert fp8_kv_fake_quant(big, scale=1.0).tolist() == [448.0, -448.0]
     y.sum().backward()
     assert torch.equal(x.grad, torch.ones_like(x))
     # A scale divides before rounding and multiplies back
