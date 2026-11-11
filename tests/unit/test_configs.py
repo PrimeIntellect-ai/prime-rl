@@ -1607,10 +1607,6 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
             {"moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}}},
             "four_over_six = false",
         ),
-        (
-            {"moe": {"compute": {"type": "nvfp4", "down_input_scale": "static"}}},
-            "needs model.moe.dispatch.type = 'mega_moe'",
-        ),
     ],
 )
 def test_nvfp4_trainer_rejects_unsupported_setups(model, message):

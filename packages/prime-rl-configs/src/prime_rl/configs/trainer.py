@@ -238,11 +238,6 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
     IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
     then quantizes slightly differently from the sampler: an ablation until the engines can match."""
-    down_input_scale: Literal["per_token", "static"] = "per_token"
-    """Global scale of the second GEMM's input (the SwiGLU output feeding the down projection): one per token, from its
-    amax over the whole intermediate row (Composer 2's per-token NVFP4), or one static unit scale. prime-kernels'
-    grouped GEMM implements ``per_token``; the Mega MoE NVFP4 kernel implements ``static`` until its per-token mode
-    lands."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -480,11 +475,6 @@ class ModelConfig(BaseModelConfig):
             mega_moe_precision(compute)  # raises for what Mega MoE cannot run
         elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
             raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
-        elif isinstance(compute, NVFP4MoEComputeConfig) and compute.down_input_scale != "per_token":
-            raise ValueError(
-                "model.moe.compute.down_input_scale = 'static' needs model.moe.dispatch.type = 'mega_moe': "
-                "prime-kernels' NVFP4 grouped GEMM scales the down-projection input per token."
-            )
         if self.ep == 1:
             return self
 
