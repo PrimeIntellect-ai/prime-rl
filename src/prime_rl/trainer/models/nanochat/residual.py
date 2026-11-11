@@ -65,11 +65,25 @@ class GatedConnection(Connection):
     scaled by a stream-wise gate in (0, 2). Without injection this is the mixer that collapses the streams."""
 
     def __init__(
-        self, hidden_size: int, streams: int, low_rank: int, injection: bool = True, read_scale: float = 1.0
+        self,
+        hidden_size: int,
+        streams: int,
+        low_rank: int,
+        injection: bool = True,
+        read_scale: float = 1.0,
+        gate_act: str = "sigmoid",
+        init_std: float = 0.02,
+        fixed_injection: bool = False,
     ) -> None:
         super().__init__(hidden_size)
         self.streams = streams
         self.read_scale = read_scale
+        # "sigmoid": gates in (0, 1), ~0.5 at init; "2sigmoid": gates in (0, 2), ~1 at init (starts near plain).
+        self.gate_scale = {"sigmoid": 1.0, "2sigmoid": 2.0}[gate_act]
+        self.init_std = init_std
+        # fixed_injection: every stream gets the output with weight 1 (no injection matmul)
+        self.fixed_injection = fixed_injection
+        injection = injection and not fixed_injection
         expanded = streams * hidden_size
         self.norm_weight = nn.Parameter(torch.zeros(expanded))
         self.down = nn.Linear(expanded, low_rank, bias=False)
@@ -81,7 +95,7 @@ class GatedConnection(Connection):
         local(self.norm_weight).zero_()
         for module in (self.down, self.up, self.inject):
             if module is not None:
-                local(module.weight).normal_(0.0, 0.02, generator=generator)
+                local(module.weight).normal_(0.0, self.init_std, generator=generator)
 
     def _normalized(self, state: torch.Tensor) -> torch.Tensor:
         streams = split_streams(state.float(), self.streams, self.hidden_size)
@@ -91,6 +105,8 @@ class GatedConnection(Connection):
     def read(self, state: torch.Tensor, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         normalized = self._normalized(state)
         gates = torch.sigmoid(self.up(F.silu(self.down(normalized) / self.streams)))
+        if self.gate_scale != 1.0:
+            gates = gates * self.gate_scale
         gates = split_streams(gates, self.streams, self.hidden_size)
         block_input = (gates * split_streams(normalized, self.streams, self.hidden_size)).mean(dim=-2)
         injection = 2.0 * torch.sigmoid(self.inject(normalized) / self.streams) if self.inject is not None else None
@@ -98,6 +114,8 @@ class GatedConnection(Connection):
 
     def write(self, state, output, context, hidden=None) -> torch.Tensor:
         streams = split_streams(state, self.streams, self.hidden_size)
+        if context is None:  # fixed injection
+            return (streams + output.unsqueeze(-2)).flatten(-2)
         return (streams + output.unsqueeze(-2) * context.unsqueeze(-1)).flatten(-2)
 
     def extra_flops_per_token(self) -> int:
@@ -544,8 +562,9 @@ class RMSNormFinal(nn.Module):
 class GatedFinal(GatedConnection):
     """The gated residual mixer collapsing the streams before the LM head, without injection."""
 
-    def __init__(self, hidden_size: int, streams: int, low_rank: int, read_scale: float = 1.0) -> None:
-        super().__init__(hidden_size, streams, low_rank, injection=False, read_scale=read_scale)
+    def __init__(self, hidden_size: int, streams: int, low_rank: int, read_scale: float = 1.0, **kwargs) -> None:
+        kwargs.pop("fixed_injection", None)
+        super().__init__(hidden_size, streams, low_rank, injection=False, read_scale=read_scale, **kwargs)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         return self.read(state, positions=None)[0]
@@ -560,7 +579,13 @@ def make_connection(config, layer_idx: int, sublayer: int) -> Connection:
             return PlainConnection(hidden_size)
         case "gated":
             return GatedConnection(
-                hidden_size, residual["streams"], residual["low_rank"], read_scale=residual.get("read_scale", 1.0)
+                hidden_size,
+                residual["streams"],
+                residual["low_rank"],
+                read_scale=residual.get("read_scale", 1.0),
+                gate_act=residual.get("gate_act", "sigmoid"),
+                init_std=residual.get("init_std", 0.02),
+                fixed_injection=not residual.get("injection", True),
             )
         case "static_streams":
             return StaticStreamsConnection(hidden_size, sublayer, residual["streams"], residual.get("rho"))
@@ -604,6 +629,8 @@ def make_final_norm(config) -> nn.Module:
                 residual["streams"],
                 residual["low_rank"],
                 read_scale=residual.get("read_scale", 1.0),
+                gate_act=residual.get("gate_act", "sigmoid"),
+                init_std=residual.get("init_std", 0.02),
             )
         case "static_streams":
             return StaticStreamsFinal(config.hidden_size, residual["streams"], residual.get("rho"))
