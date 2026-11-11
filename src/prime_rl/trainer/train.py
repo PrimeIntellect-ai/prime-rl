@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from transformers import AutoConfig
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, write_model_config
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
@@ -131,16 +131,13 @@ def train(config: SFTConfig | PretrainConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
 
-    # A model trained from scratch: checkpoints carry its architecture, and a resume checks it.
-    model_config = (
-        AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-        if isinstance(config, PretrainConfig)
-        else None
-    )
+    logger.info(f"Initializing tokenizer ({config.tokenizer})")
+    tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume, model_config=model_config)
+    model_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+    ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_config, tokenizer, resume=config.resume)
 
     checkpoint_step = None
     if config.resume is not None:
@@ -151,7 +148,7 @@ def train(config: SFTConfig | PretrainConfig):
             if checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
-    # Initialize the model and tokenizer
+    # Initialize the model and processor
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, config.init_from_scratch)
@@ -162,8 +159,6 @@ def train(config: SFTConfig | PretrainConfig):
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()
 
-    logger.info(f"Initializing tokenizer ({config.tokenizer})")
-    tokenizer = setup_tokenizer(config.tokenizer)
     processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
@@ -246,8 +241,6 @@ def train(config: SFTConfig | PretrainConfig):
         ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
-    if model_config is not None and world.is_master:
-        write_model_config(model_config, config.run_dir)
 
     # Create the iterator only after a potential resume: iter() forks workers with a
     # copy of the dataset's *current* state, so a later load_state_dict never reaches

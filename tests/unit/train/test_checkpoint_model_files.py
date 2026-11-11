@@ -2,22 +2,41 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from transformers import Qwen3Config
+from transformers import AutoConfig, AutoTokenizer, Qwen3Config
 
 import prime_rl.trainer.ckpt as ckpt
-from prime_rl.trainer.ckpt import check_model_config, write_model_config
+from prime_rl.trainer.ckpt import check_model_config, save_model_files
 
 FIELDS = {"hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 2, "num_attention_heads": 4}
 
 
-def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, monkeypatch):
+@pytest.fixture(scope="module")
+def tokenizer():
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    tokenizer.chat_template = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
+    return tokenizer
+
+
+def test_a_checkpoint_step_dir_loads_as_the_model(tmp_path, tokenizer):
+    save_model_files(Qwen3Config(**FIELDS), tokenizer, tmp_path)
+
+    config = AutoConfig.from_pretrained(tmp_path)
+    assert isinstance(config, Qwen3Config) and config.num_hidden_layers == 2
+    check_model_config(config, tmp_path)
+
+    loaded = AutoTokenizer.from_pretrained(tmp_path)
+    assert loaded.chat_template == tokenizer.chat_template
+    assert loaded.encode("Hello world") == tokenizer.encode("Hello world")
+
+
+def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenizer, monkeypatch):
     config = Qwen3Config(**FIELDS)
     # A checkpoint without config.json loads after a warning.
     warnings = []
     monkeypatch.setattr(ckpt, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     check_model_config(config, tmp_path)
     assert len(warnings) == 1 and "no config.json" in warnings[0]
-    write_model_config(config, tmp_path)
+    save_model_files(config, tokenizer, tmp_path)
     check_model_config(config, tmp_path)
     with pytest.raises(ValueError, match="num_hidden_layers 2 -> 3"):
         check_model_config(Qwen3Config(**{**FIELDS, "num_hidden_layers": 3}), tmp_path)

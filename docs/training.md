@@ -357,7 +357,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The run writes the architecture's `config.json` into its run directory and every checkpoint, and a resume checks that the checkpoint has the same architecture; a checkpoint without a `config.json` resumes after a warning. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
 **Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
 
@@ -420,6 +420,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Trainer | The model's `config.json` and the tokenizer files | `<run_dir>/checkpoints/step_{n}/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
@@ -452,6 +453,8 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+A resume checks that the checkpoint's `config.json` describes the same architecture as `model.name` and stops on a difference before loading. A checkpoint without a `config.json` resumes after a warning, without the check.
 
 A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `trainer.model.init_from` instead. It loads only the weights, and the run starts at step 0 with a fresh optimizer, scheduler and orchestrator. `model.name` still sets the architecture and tokenizer.
 

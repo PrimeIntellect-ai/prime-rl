@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
+from transformers import AutoConfig
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -58,6 +59,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
+    setup_tokenizer,
     take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
@@ -170,7 +172,9 @@ def train(config: TrainerConfig):
     # Check for checkpoint to resume from
     checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
+    model_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+    tokenizer = setup_tokenizer(config.tokenizer)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_config, tokenizer, resume=config.resume)
 
     if config.resume is not None:
         if config.resume.dir is not None:
