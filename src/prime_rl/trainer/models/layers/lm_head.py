@@ -108,7 +108,6 @@ class FusedOutputLinear(torch.nn.Linear):
     gradient lies on its label and support entries (replayed tokens, or a loss whose weights on ``logprobs`` and
     ``support_logprobs`` cancel per token).
     With ``softcap`` the logits are capped to ``softcap * tanh(logits / softcap)`` before anything else.
-    The logits are FP32, also from BF16 operands (see ``_logits``).
     """
 
     def __init__(self, in_features: int, out_features: int, chunk_size: int, softcap: float | None = None):
