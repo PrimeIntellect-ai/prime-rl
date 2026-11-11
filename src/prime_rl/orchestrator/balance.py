@@ -54,7 +54,7 @@ BOTTLENECK_TOLERANCE = 0.1
 REMIND_SECONDS = 7200.0
 """Seconds before an unchanged notice is repeated."""
 
-SATURATED_BUSY = 0.9
+SATURATED_BUSY = 0.75
 """Busy share from which an engine's spare capacity is read from its batch, not its busy time."""
 
 MIN_FIT_POINTS = 30
