@@ -173,6 +173,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 hidden_size=moe.experts.down_proj.shape[1],
+                mnnvl=dispatch.mnnvl,
             )
         elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
             token_dispatcher = FusedTokenDispatcher()

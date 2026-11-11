@@ -149,7 +149,7 @@ _dispatch.register_autograd(_dispatch_backward, setup_context=_dispatch_setup_co
 _combine.register_autograd(_combine_backward, setup_context=_combine_setup_context)
 
 
-def _create_buffer(group: ProcessGroup, hidden_bytes: int) -> None:
+def _create_buffer(group: ProcessGroup, hidden_bytes: int, mnnvl: bool = False) -> None:
     global _buffer
 
     num_nvl_bytes, num_rdma_bytes = 0, 0
@@ -163,8 +163,17 @@ def _create_buffer(group: ProcessGroup, hidden_bytes: int) -> None:
         or _buffer.num_nvl_bytes < num_nvl_bytes
         or _buffer.num_rdma_bytes < num_rdma_bytes
     ):
-        # Internode kernels need at least one RDMA queue pair per SM.
-        _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes, num_qps_per_rank=Buffer.num_sms)
+        # Internode kernels need at least one RDMA queue pair per SM. With `mnnvl` (an NVLink domain spanning nodes,
+        # e.g. NVL72), NVSHMEM carries the "RDMA" ranks over multi-node NVLink and the buffers use fabric handles,
+        # which peers on other nodes of the domain can map.
+        _buffer = Buffer(
+            group,
+            num_nvl_bytes,
+            num_rdma_bytes,
+            num_qps_per_rank=Buffer.num_sms,
+            allow_mnnvl=mnnvl,
+            use_fabric=mnnvl,
+        )
 
 
 class _SumRoutes(torch.autograd.Function):
@@ -208,13 +217,14 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         group: ProcessGroup,
         num_sms: int,
         hidden_size: int,
+        mnnvl: bool = False,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.num_local_experts = num_experts // group.size()
         Buffer.set_num_sms(num_sms)
         # Create the buffer before any forward: its constructor runs collectives that dynamo cannot
         # trace and that would shift the op order activation checkpointing replays in the recompute.
-        _create_buffer(group, hidden_size * 2)
+        _create_buffer(group, hidden_size * 2, mnnvl)
 
     def dispatch(
         self,

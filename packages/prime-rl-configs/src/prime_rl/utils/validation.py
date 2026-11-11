@@ -131,6 +131,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # [deployment] gpus_per_node → inference: the nested inference deployment sizes its
     # engines per node from its own copy.
     propagate("deployment.gpus_per_node", "inference.deployment.gpus_per_node")
+    propagate("deployment.gpus_per_nvlink_domain", "inference.deployment.gpus_per_nvlink_domain")
 
     # [slurm] → inference: a multi-node RL run drives its inference deployment under
     # the same SLURM allocation, so the nested inference inherits [slurm]. This is

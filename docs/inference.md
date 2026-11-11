@@ -291,7 +291,7 @@ prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disagg
 
 ### Optimized P/D disaggregation deployment
 
-For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
+For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. To use another backend for a role, set it in that role's overrides, which take precedence over the default, e.g. `[inference.deployment.prefill_vllm_overrides] all2all_backend = "flashinfer_nvlink_two_sided"` on GB300 NVL72.
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
 

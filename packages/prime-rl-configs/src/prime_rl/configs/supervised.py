@@ -20,7 +20,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
+from prime_rl.configs.trainer import BaseTrainerConfig, auto_setup_deepep_mnnvl, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -180,6 +180,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        auto_setup_deepep_mnnvl(self.model, self.deployment)
         return self
 
     @model_validator(mode="after")

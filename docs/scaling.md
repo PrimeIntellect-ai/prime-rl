@@ -268,6 +268,25 @@ num_infer_nodes = 1  # required only for online evals
 gpus_per_node = 8
 ```
 
+### GB300 NVL72
+
+An NVL72 rack is 18 compute trays of 4 GPUs (each a SLURM node) sharing one 72-GPU NVLink domain; InfiniBand links racks. Describe it with the tray size and the domain size:
+
+```toml
+[deployment]
+type = "multi_node"
+gpus_per_node = 4               # GPUs per tray
+gpus_per_nvlink_domain = 72     # GPUs that share NVLink (a multiple of gpus_per_node)
+```
+
+`gpus_per_nvlink_domain` defaults to one node, so 8-GPU servers are unchanged. When the domain spans nodes:
+
+- DeepEP (`[trainer.model.moe.dispatch] type = "deepep"`) carries expert-parallel traffic between trays over multi-node NVLink instead of InfiniBand (`mnnvl`, on unless set explicitly): DeepEP's NVSHMEM path uses MNNVL and its buffers use fabric handles. Groups of up to 8 ranks never take that path.
+- Inference sets `VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1`, so vLLM's DeepEP low-latency kernels (P/D decode's default all-to-all) use multi-node NVLink. vLLM's high-throughput DeepEP kernels (P/D prefill's default) have no such switch; on NVL72 set the prefill backend to `flashinfer_nvlink_two_sided` through `prefill_vllm_overrides` (see [P/D disaggregation](inference.md)).
+- NCCL (the torch dispatch, FSDP, weight broadcasts) detects multi-node NVLink by itself.
+
+Not covered yet: tensor parallelism and inference replicas are sized in nodes, so `inference.vllm.tensor_parallel_size` is at most `gpus_per_node` (4); expert-parallel engines span trays through data parallelism instead. Unverified without NVL72 hardware: DeepEP's MNNVL path in the pinned build, and whether Mega MoE's symmetric memory (PyTorch's) maps buffers across trays.
+
 ### Examples
 
 Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced):

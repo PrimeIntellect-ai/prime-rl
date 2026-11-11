@@ -218,6 +218,11 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
 
+    mnnvl: bool = False
+    """Carry DeepEP's cross-node traffic over multi-node NVLink (NVSHMEM MNNVL, fabric-handle buffers) instead of
+    InfiniBand, for expert-parallel groups inside one NVLink domain that spans nodes (GB300 NVL72). ``rl`` and ``sft``
+    turn it on from ``deployment.gpus_per_nvlink_domain`` when the group fits in the domain."""
+
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
@@ -235,6 +240,14 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
     this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+
+
+def auto_setup_deepep_mnnvl(model, deployment) -> None:
+    """DeepEP sends cross-node expert-parallel traffic over InfiniBand unless told the NVLink domain spans nodes; on
+    such racks (NVL72) turn on its multi-node NVLink path, unless ``mnnvl`` was set explicitly."""
+    dispatch = model.moe.dispatch
+    if isinstance(dispatch, DeepEPMoEDispatchConfig) and "mnnvl" not in dispatch.model_fields_set:
+        dispatch.mnnvl = deployment.nvlink_spans_nodes
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:

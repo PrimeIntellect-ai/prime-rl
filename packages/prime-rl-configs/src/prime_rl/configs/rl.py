@@ -25,6 +25,7 @@ from prime_rl.configs.shared import (
 from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
+    auto_setup_deepep_mnnvl,
     rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -355,6 +356,13 @@ class RLConfig(BaseConfig):
                 },
             )
             require_equal(
+                "deployment.gpus_per_nvlink_domain",
+                {
+                    "deployment.gpus_per_nvlink_domain": self.deployment.gpus_per_nvlink_domain,
+                    "inference.deployment.gpus_per_nvlink_domain": inference.deployment.gpus_per_nvlink_domain,
+                },
+            )
+            require_equal(
                 "model.name",
                 {"inference.vllm.model": inference.vllm.model, "orchestrator.model.name": orchestrator.model.name},
             )
@@ -498,6 +506,11 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_nvlink_domain(self):
+        auto_setup_deepep_mnnvl(self.trainer.model, self.deployment)
         return self
 
     @model_validator(mode="after")
