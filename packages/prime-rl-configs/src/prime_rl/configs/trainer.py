@@ -394,6 +394,12 @@ class ModelConfig(BaseModelConfig):
                 raise ValueError("NVFP4 expert compute does not support LoRA.")
             if self.compile is not None and self.compile.fullgraph:
                 raise ValueError("NVFP4 expert compute requires compile.fullgraph=false.")
+            if isinstance(self.moe.dispatch, MegaMoeMoEDispatchConfig):
+                raise ValueError(
+                    "NVFP4 expert compute does not run under moe.dispatch.type = 'mega_moe', which fuses its own expert "
+                    "GEMMs (bf16/mxfp8/fp8) and would train with other numerics than the NVFP4 engines sample with. "
+                    "Use the torch or deepep dispatch."
+                )
         if self.ep == 1:
             return self
 
