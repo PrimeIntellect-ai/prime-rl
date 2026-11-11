@@ -1,12 +1,13 @@
-# Serve a trained DSpark draft against a DeepSeek-V4-Flash target. The draft runs in BF16 with a
-# BF16 KV cache instead of inheriting the target's MXFP8 and FP8 KV settings.
+# Serve a trained DSpark draft against a DeepSeek-V4-Flash target. The draft weights stay BF16 and
+# its KV cache is per-tensor FP8, which costs no acceptance; the target keeps its MXFP8 and FP8 KV
+# settings.
 #   uv run inference @ <target serving config> @ examples/specdecode/deepseek-v4/dspark.toml \
 #       --vllm.speculative-config.model <draft checkpoint>
 [vllm]
 # Each decoding sequence is 1 + num_speculative_tokens rows of the sparse-attention indexer, and
 # DeepGEMM's paged-MQA-logits metadata kernel exceeds 48 KiB of shared memory at 4096 rows. Keep
-# a step under that: at most 256 sequences and 2048-token CUDA graphs per engine.
-max_num_seqs = 256
+# a step under that: at most 512 sequences and 2048-token CUDA graphs per engine.
+max_num_seqs = 512
 
 [vllm.compilation_config]
 max_cudagraph_capture_size = 2048
@@ -14,4 +15,4 @@ max_cudagraph_capture_size = 2048
 [vllm.speculative_config]
 method = "dspark"
 num_speculative_tokens = 3
-kv_cache_dtype = "auto"
+kv_cache_dtype = "fp8"
