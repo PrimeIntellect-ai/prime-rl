@@ -397,6 +397,8 @@ class RLConfig(BaseConfig):
             )
             if orchestrator.ckpt.trainer_output_dir is None:
                 orchestrator.ckpt.trainer_output_dir = trainer.ckpt.output_dir
+            orchestrator.ckpt.keep_last = trainer.ckpt.keep_last
+            orchestrator.ckpt.keep_interval = trainer.ckpt.keep_interval
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(

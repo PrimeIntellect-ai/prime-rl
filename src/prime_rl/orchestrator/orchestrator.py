@@ -101,9 +101,11 @@ from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    get_all_ckpt_steps,
     get_broadcast_dir,
     get_ckpt_dir,
     get_config_dir,
+    kept_ckpt_steps,
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
@@ -1344,18 +1346,28 @@ class Orchestrator:
             self.controller.mark_saved(step)
         await self.sweep_snapshots()
 
-    async def sweep_snapshots(self) -> None:
+    async def sweep_snapshots(self, final: bool = False) -> None:
         """Delete the box snapshots this run owns that nothing restores from anymore
         (``SnapshotLedger.sweep``). Best effort: what an env worker did not delete stays
-        in the ledger for the next sweep."""
+        in the ledger for the next sweep. ``final`` is the sweep of a run that ends: no
+        later sweep sees the step directories the trainer removes after its last
+        checkpoint, so the snapshots of those steps go now."""
         ledger = self.ckpt_manager.snapshots
+        kept = None
+        if final and self.config.ckpt is not None:
+            ckpt = self.config.ckpt
+            steps = get_all_ckpt_steps(self.ckpt_manager.ckpt_dir)
+
+            def kept(recorded: list[int]) -> set[int]:
+                return kept_ckpt_steps(sorted({*steps, *recorded}), ckpt.keep_last, ckpt.keep_interval)
+
         for env in self.train_envs:
             late, env.late_restores = env.late_restores, []
             ledger.orphan([restore.snapshot for restore in late])
             for restore in late:
                 Path(restore.path).unlink(missing_ok=True)
         try:
-            deleted = await ledger.sweep(self.ckpt_manager.ckpt_dir, next(iter(self.train_envs)).discard)
+            deleted = await ledger.sweep(self.ckpt_manager.ckpt_dir, next(iter(self.train_envs)).discard, kept)
         except Exception as error:  # noqa: BLE001 - the snapshots stay in the ledger
             get_logger().warning(f"Deleting unused rollout snapshots failed: {error!r}")
             return
@@ -1476,7 +1488,7 @@ class Orchestrator:
                 except Exception as error:  # noqa: BLE001 - the teardown goes on without that checkpoint
                     get_logger().error(f"The rollout checkpoint of step {self.ckpt_step} failed: {error!r}")
             if clean_exit and self.saves_rollouts:
-                await self.sweep_snapshots()
+                await self.sweep_snapshots(final=True)
             if self.release_future is not None:
                 await self.release_future
             if self.dispatcher is not None:

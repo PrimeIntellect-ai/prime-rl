@@ -332,6 +332,17 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+def kept_ckpt_steps(steps: list[int], keep_last: int | None, keep_interval: int | None) -> set[int]:
+    """The checkpoint steps of ``steps`` that the retention policy keeps: the newest
+    ``keep_last`` and every multiple of ``keep_interval``. Without a policy, all."""
+    if keep_last is None and keep_interval is None:
+        return set(steps)
+    kept = set(sorted(steps)[-keep_last:]) if keep_last is not None else set()
+    if keep_interval is not None:
+        kept.update(step for step in steps if step % keep_interval == 0)
+    return kept
+
+
 def is_file_name(name: str) -> bool:
     """Whether ``name`` names a file inside whatever directory it is joined to."""
     return bool(name) and name not in (".", "..") and name == os.path.basename(name) and "\0" not in name

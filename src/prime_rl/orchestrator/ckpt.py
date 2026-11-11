@@ -439,13 +439,21 @@ class SnapshotLedger:
             self.orphans += snapshots
             self.write()
 
-    async def sweep(self, ckpt_dir: Path, discard: Callable[[list[dict]], Awaitable[list[str]]]) -> int:
+    async def sweep(
+        self,
+        ckpt_dir: Path,
+        discard: Callable[[list[dict]], Awaitable[list[str]]],
+        kept: Callable[[list[int]], set[int]] | None = None,
+    ) -> int:
         """Delete, through ``discard``, the snapshots nothing can restore from anymore:
         the orphans, and those of steps whose checkpoint directory is gone (the
         trainer's ``keep_last`` cleanup removes whole step directories), except the ones
-        a remaining step also holds. ``discard`` returns the ids it deleted; the rest
-        stay for the next sweep. Returns how many were deleted."""
-        gone = [step for step in self.steps if not get_step_path(ckpt_dir, step).exists()]
+        a remaining step also holds. ``kept`` names the steps of the ledger that a
+        cleanup still to come keeps; the others count as gone. ``discard`` returns the
+        ids it deleted; the rest stay for the next sweep. Returns how many were
+        deleted."""
+        keeps = set(self.steps) if kept is None else kept(sorted(self.steps))
+        gone = [step for step in self.steps if step not in keeps or not get_step_path(ckpt_dir, step).exists()]
         held = {snapshot["id"] for step, snapshots in self.steps.items() if step not in gone for snapshot in snapshots}
         unheld = [
             snapshot

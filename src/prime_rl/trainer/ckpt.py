@@ -37,7 +37,7 @@ from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, kept_ckpt_steps
 
 
 @dataclass
@@ -321,18 +321,7 @@ class CheckpointManager:
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
 
-        # Determine which steps to keep
-        steps_to_keep = set()
-
-        # Keep the most recent keep_last steps
-        if self.config.keep_last is not None:
-            steps_to_keep.update(self.ckpt_steps[-self.config.keep_last :])
-
-        # Keep steps at keep_interval intervals
-        if self.config.keep_interval is not None:
-            for step in self.ckpt_steps:
-                if step % self.config.keep_interval == 0:
-                    steps_to_keep.add(step)
+        steps_to_keep = kept_ckpt_steps(self.ckpt_steps, self.config.keep_last, self.config.keep_interval)
 
         # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]

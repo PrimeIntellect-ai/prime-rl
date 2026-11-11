@@ -47,6 +47,7 @@ from prime_rl.orchestrator.types import (
 from prime_rl.transports import payload
 from prime_rl.transports.payload import PayloadHook, delete_payloads, wait_for_deletes
 from prime_rl.utils import pathing
+from prime_rl.utils.pathing import kept_ckpt_steps
 from tests.unit.orchestrator.test_train_sink import episode, trace
 
 
@@ -625,3 +626,38 @@ def test_the_ledger_deletes_the_snapshots_of_pruned_steps(tmp_path):
         assert SnapshotLedger(ckpt_dir / "rollout_snapshots.json").steps == {4: [snapshot("c"), snapshot("shared")]}
 
     asyncio.run(run())
+
+
+def test_the_last_sweep_deletes_the_snapshots_of_steps_the_trainer_still_removes(tmp_path):
+    async def run():
+        ckpt_dir = tmp_path / "checkpoints"
+        deleted: list[str] = []
+
+        async def discard(snapshots: list[dict]) -> list[str]:
+            deleted.extend(snapshot["id"] for snapshot in snapshots)
+            return [snapshot["id"] for snapshot in snapshots]
+
+        ledger = SnapshotLedger(ckpt_dir / "rollout_snapshots.json")
+        # Step 10 is the run's last: it holds no rollouts, and the trainer removes
+        # step 3 only after it saved step 10, when the orchestrator is gone.
+        for step in (3, 6, 9, 10):
+            (ckpt_dir / f"step_{step}").mkdir(parents=True)
+        for step in (3, 6, 9):
+            ledger.record(step, [{"id": f"s{step}"}])
+
+        def kept(recorded: list[int]) -> set[int]:
+            return kept_ckpt_steps([*recorded, 10], keep_last=3, keep_interval=None)
+
+        assert await ledger.sweep(ckpt_dir, discard) == 0
+        assert await ledger.sweep(ckpt_dir, discard, kept) == 1 and deleted == ["s3"]
+        assert set(ledger.steps) == {6, 9}
+
+    asyncio.run(run())
+
+
+def test_checkpoint_retention_keeps_the_newest_and_the_interval_steps():
+    steps = [3, 6, 9, 10, 20]
+    assert kept_ckpt_steps(steps, None, None) == set(steps)
+    assert kept_ckpt_steps(steps, 2, None) == {10, 20}
+    assert kept_ckpt_steps(steps, None, 10) == {10, 20}
+    assert kept_ckpt_steps(steps, 1, 3) == {3, 6, 9, 20}

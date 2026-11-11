@@ -496,7 +496,7 @@ These start over:
 
 The orchestrator logs one line per checkpoint with the episode counts, the time of each phase and the size on disk. The same values are in the `ckpt/rollouts/*` metrics.
 
-The memory checkpoints are sandbox snapshots, and the run that takes them owns them. The file `checkpoints/rollout_snapshots.json` records the snapshots of each checkpoint step. After each checkpoint and at a clean shutdown, the orchestrator deletes the snapshots of the steps whose directory is gone (`keep_last` and `keep_interval` remove whole step directories). The snapshots of a checkpoint that stays on disk stay too. If you delete a run directory by hand, delete its snapshots on the sandbox provider as well. A run that forks another run's checkpoint with `--resume.dir` never deletes the snapshots of that run.
+The memory checkpoints are sandbox snapshots, and the run that takes them owns them. The file `checkpoints/rollout_snapshots.json` records the snapshots of each checkpoint step. After each checkpoint and at a clean shutdown, the orchestrator deletes the snapshots of the steps whose directory is gone (`keep_last` and `keep_interval` remove whole step directories). At a clean shutdown it also deletes the snapshots of the steps that `keep_last` and `keep_interval` remove once the trainer has written its last checkpoint. The snapshots of a checkpoint that stays on disk stay too. If you delete a run directory by hand, delete its snapshots on the sandbox provider as well. A run that forks another run's checkpoint with `--resume.dir` never deletes the snapshots of that run.
 
 A checkpoint that has rollouts resumes without them when `ckpt.rollouts` is off: the open groups re-run whole.
 

@@ -454,6 +454,14 @@ class CheckpointConfig(BaseConfig):
     directory. The orchestrator writes nothing there: it only reads which steps the
     trainer finished, to resume from the latest step both wrote."""
 
+    keep_last: int | None = Field(None, ge=1)
+    """The trainer's ``ckpt.keep_last``. The trainer removes the step directories; the
+    orchestrator reads this to delete the sandbox snapshots of the steps that the
+    trainer removes after the run's last step."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """The trainer's ``ckpt.keep_interval``, read like ``keep_last``."""
+
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
