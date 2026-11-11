@@ -206,6 +206,18 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
+def compute_max_vio_and_routing_confidence(
+    tokens_per_expert: Tensor, routing_confidence_sum: Tensor, top_k: int
+) -> tuple[Tensor, Tensor]:
+    """Max violation and routing confidence of one MoE layer's expert counts (last dimension) and confidence sum.
+    Leading dimensions are batch dimensions."""
+    num_routed_tokens = tokens_per_expert.sum(dim=-1) / top_k
+    loads = tokens_per_expert.sort(dim=-1, descending=True).values[..., top_k:]
+    balanced_load = loads.mean(dim=-1)
+    max_vio = (loads.amax(dim=-1) - balanced_load) / balanced_load
+    return max_vio, routing_confidence_sum / num_routed_tokens
+
+
 def take_moe_routing_stats(model: nn.Module) -> Tensor:
     """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 1]` (tokens per expert,
     then the routing confidence sum), and reset them."""
@@ -245,13 +257,11 @@ def get_global_moe_stats(
     per_layer_max_vio = []
     per_layer_routing_confidence = []
     for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
-        top_k = block_mlp.router.top_k
-        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-1], layer_stats[:, -1]
-        num_routed_tokens = layer_tokens_per_expert.sum(dim=1) / top_k
-        layer_tokens_per_expert = layer_tokens_per_expert.sort(dim=1, descending=True).values[:, top_k:]
-        balanced_load = layer_tokens_per_expert.mean(dim=1)
-        per_layer_max_vio.append((layer_tokens_per_expert.amax(dim=1) - balanced_load) / balanced_load)
-        per_layer_routing_confidence.append(routing_confidence_sum / num_routed_tokens)
+        max_vio, routing_confidence = compute_max_vio_and_routing_confidence(
+            layer_stats[:, :-1], layer_stats[:, -1], block_mlp.router.top_k
+        )
+        per_layer_max_vio.append(max_vio)
+        per_layer_routing_confidence.append(routing_confidence)
 
     max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
     mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
