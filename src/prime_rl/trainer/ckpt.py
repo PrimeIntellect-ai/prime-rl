@@ -22,10 +22,10 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers import PretrainedConfig, PreTrainedTokenizerBase, ProcessorMixin
+from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrainedTokenizerBase, ProcessorMixin
 
 from prime_rl.configs.shared import ResumeConfig
-from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -48,20 +48,36 @@ class Progress:
     total_samples: int = 0
 
 
-def save_model_files(
-    model_config: PretrainedConfig,
-    tokenizer: PreTrainedTokenizerBase,
-    processor: ProcessorMixin | None,
-    directory: Path,
-) -> None:
-    """Write the model's ``config.json``, the tokenizer files and a VLM's processor files into ``directory``, so that
-    it loads as a model name for the architecture, the tokenizer and the processor."""
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "config.json").write_text(model_config.to_json_string(use_diff=False))
-    # The processor saves its own tokenizer, which the configured one (pad token, chat template) overrides.
-    if processor is not None:
-        processor.save_pretrained(directory)
-    tokenizer.save_pretrained(directory)
+@dataclass
+class ModelFiles:
+    """What a checkpoint step directory holds besides the weights, so that it loads as a model name: the model's
+    config.json, the tokenizer, a VLM's processor and the generation config."""
+
+    config: PretrainedConfig
+    tokenizer: PreTrainedTokenizerBase
+    processor: ProcessorMixin | None
+    generation_config: GenerationConfig | None
+
+    def save(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "config.json").write_text(self.config.to_json_string(use_diff=False))
+        if self.generation_config is not None:
+            self.generation_config.to_json_file(directory / "generation_config.json")
+        # The processor saves its own tokenizer, which the configured one (pad token, chat template) overrides.
+        if self.processor is not None:
+            self.processor.save_pretrained(directory)
+        self.tokenizer.save_pretrained(directory)
+
+
+def setup_model_files(
+    config: ModelConfig, tokenizer: PreTrainedTokenizerBase, processor: ProcessorMixin | None
+) -> ModelFiles:
+    try:
+        generation_config = GenerationConfig.from_pretrained(config.name)
+    except OSError:  # Not every model has a generation_config.json
+        generation_config = None
+    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    return ModelFiles(model_config, tokenizer, processor, generation_config)
 
 
 # Fields of a saved config.json that are metadata, not architecture.
@@ -85,13 +101,13 @@ def describe_change(key: str, old: Any, new: Any) -> str:
 
 def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
     """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``. A
-    checkpoint without a config.json (saved before this check, or copied without it) loads after a warning."""
+    checkpoint without a config.json loads after a warning."""
     path = directory / "config.json"
     if not path.exists():
         if get_world().is_master:
             get_logger().warning(
                 f"Checkpoint {directory} has no config.json; skipping the architecture check, so a resume with another "
-                "architecture would load silently (checkpoints saved before this check have none)"
+                "architecture would load silently"
             )
         return
     saved = json.loads(path.read_text())
@@ -230,23 +246,17 @@ class AppState(Stateful):
 
 
 class CheckpointManager:
-    """Utility class to save and load trainer checkpoints to resume training. Every checkpoint step directory also holds
-    the model's ``config.json``, the tokenizer files and a VLM's processor files, and a checkpoint with another
-    architecture does not load."""
+    """Saves and loads trainer checkpoints. Every step directory also holds the ``ModelFiles``."""
 
     def __init__(
         self,
         output_dir: Path,
         config: CheckpointConfig,
-        model_config: PretrainedConfig,
-        tokenizer: PreTrainedTokenizerBase,
-        processor: ProcessorMixin | None,
+        model_files: ModelFiles,
         resume: ResumeConfig | None = None,
     ):
         self.config = config
-        self.model_config = model_config
-        self.tokenizer = tokenizer
-        self.processor = processor
+        self.model_files = model_files
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -365,7 +375,7 @@ class CheckpointManager:
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        check_model_config(self.model_config, ckpt_path.parent)
+        check_model_config(self.model_files.config, ckpt_path.parent)
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
 
     def save(
@@ -382,7 +392,7 @@ class CheckpointManager:
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
         if self.world.is_master:
-            save_model_files(self.model_config, self.tokenizer, self.processor, ckpt_path.parent)
+            self.model_files.save(ckpt_path.parent)
         torch.distributed.barrier(group=get_dcp_group())
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
@@ -426,17 +436,13 @@ class CheckpointManager:
 def setup_ckpt_manager(
     output_dir: Path,
     ckpt_config: CheckpointConfig | None,
-    model_config: PretrainedConfig,
-    tokenizer: PreTrainedTokenizerBase,
-    processor: ProcessorMixin | None,
+    model_files: ModelFiles,
     resume: ResumeConfig | None = None,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(
-        ckpt_output_dir, ckpt_config or CheckpointConfig(), model_config, tokenizer, processor, resume
-    )
+    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), model_files, resume)
 
 
 def _load_app_state(
