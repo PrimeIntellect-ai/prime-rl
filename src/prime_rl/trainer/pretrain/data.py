@@ -15,6 +15,10 @@ from prime_rl.utils.sequence import repeat_to_length
 
 MAX_OPEN_FILES = 256
 
+# Best-fit packing packs the documents of this many windows together: larger groups pad less, but every data rank and
+# dataloader worker packs every group.
+BEST_FIT_GROUP_WINDOWS = 4096
+
 
 def mix(values: np.ndarray) -> np.ndarray:
     """SplitMix64's output function, increment included (Steele, Lea and Flood, "Fast splittable pseudorandom number
@@ -62,8 +66,7 @@ class TokenShards:
 
     Each epoch reads all ``num_tokens // seq_len`` windows of the stream once, in a random order and from a random
     offset drawn from ``seed`` and the epoch, so epochs differ in order and window boundaries. The last
-    ``num_tokens % seq_len`` tokens of an epoch are skipped. ``documents`` finds the documents that start in given
-    windows."""
+    ``num_tokens % seq_len`` tokens of an epoch are skipped."""
 
     def __init__(self, paths: list[Path], seed: int = 0):
         self.files = []
@@ -153,10 +156,9 @@ class TokenShards:
         """File index, offset in the file and length of the documents that start in the ranges ``[start, start +
         length)`` of the cyclic stream, range by range and in stream order within a range."""
         ends = starts + length
-        first = self.documents_before(starts)
-        last = self.documents_before(np.minimum(ends, self.num_tokens))
         # A range past the end of the stream continues at its start.
-        wrapped = self.documents_before(np.maximum(ends - self.num_tokens, 0))
+        positions = [starts, np.minimum(ends, self.num_tokens), np.maximum(ends - self.num_tokens, 0)]
+        first, last, wrapped = self.documents_before(np.concatenate(positions)).reshape(3, -1)
         low = np.stack([first, np.zeros_like(first)], axis=1).ravel()
         counts = np.stack([last, wrapped], axis=1).ravel() - low
         index = np.repeat(low - (np.cumsum(counts) - counts), counts) + np.arange(counts.sum())
@@ -176,6 +178,8 @@ class TokenDataset(StatefulIterableDataset):
     ``document_masking``, a window has one segment per document (``seq_lens``) and positions restart at every
     document; without, it is one segment. Every data rank walks the whole window sequence but reads only its own
     windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read."""
+
+    packing = "windows"
 
     def __init__(
         self,
@@ -198,12 +202,12 @@ class TokenDataset(StatefulIterableDataset):
         # windows. Rounding ``step`` up to whole rounds over the data ranks gives every rank the same position, so a
         # run resumed on another number of GPUs continues the window sequence exactly.
         rounds = -(-self.step // self.data_world_size)
-        return {"step": rounds * self.data_world_size, "epoch": self.epoch}
+        return {"step": rounds * self.data_world_size, "epoch": self.epoch, "packing": self.packing}
 
     def load_state_dict(self, state_dict: dict):
-        # Only best-fit packing saves a group_start.
-        if ("group_start" in state_dict) != hasattr(self, "group_start"):
-            raise ValueError("data.packing changed on resume: the checkpoint's position belongs to the other packing")
+        packing = state_dict.get("packing", "windows")
+        if packing != self.packing:
+            raise ValueError(f"data.packing is {self.packing!r}, but the checkpoint was written with {packing!r}")
         super().load_state_dict(state_dict)
 
     def __iter__(self):
@@ -236,6 +240,28 @@ def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | 
     if eod_token is None:
         return loss_mask
     return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
+
+
+def padded_sample(
+    input_ids: list[int], target_ids: list[int], loss_mask: list[bool], seq_lens: list[int], row_len: int
+) -> dict:
+    """A sample of ``row_len`` tokens: the rest of the row is padding without loss, in a segment of its own. The padding
+    repeats the row's own tokens, as in CatDataset: identical pad tokens would all route to the same MoE experts."""
+    padding = row_len - len(input_ids)
+    if padding > 0:
+        input_ids = input_ids + repeat_to_length(input_ids, padding)
+        target_ids = target_ids + [0] * padding
+        loss_mask = loss_mask + [False] * padding
+        seq_lens = seq_lens + [padding]
+    return {
+        "input_ids": input_ids,
+        "target_ids": target_ids,
+        "position_ids": [position for length in seq_lens for position in range(length)],
+        "loss_mask": loss_mask,
+        "seq_lens": seq_lens,
+        "mm_kwargs": None,
+        "mm_token_type_ids": None,
+    }
 
 
 def best_fit_decreasing(lengths: list[int], capacity: int) -> list[list[int]]:
@@ -279,6 +305,8 @@ class BestFitTokenDataset(TokenDataset):
     (from the document lengths only) but reads only its own rows, so ``step`` counts the rows of all ranks;
     ``group_start`` (epoch, group, index of the group's first row) is where a resumed run starts walking."""
 
+    packing = "best_fit"
+
     def __init__(
         self,
         shards: TokenShards,
@@ -286,7 +314,7 @@ class BestFitTokenDataset(TokenDataset):
         document_masking: bool = True,
         non_dp_size: int = 1,
         eod_mask_token: int | None = None,
-        group_windows: int = 4096,
+        group_windows: int = BEST_FIT_GROUP_WINDOWS,
     ):
         super().__init__(shards, seq_len, document_masking, non_dp_size, eod_mask_token)
         self.group_windows = group_windows
@@ -328,31 +356,21 @@ class BestFitTokenDataset(TokenDataset):
     def sample(self, row: list[tuple[int, int, int, bool]]) -> dict:
         ids = np.concatenate([self.shards.open(file)[0][begin : begin + length] for file, begin, length, _ in row])
         ids = ids.astype(np.int64).tolist()
-        num_inputs, num_targets = min(len(ids), self.seq_len), min(len(ids) - 1, self.seq_len)
-        loss_mask = [True] * num_targets + [False] * (self.seq_len - num_targets)
+        input_ids, target_ids = ids[: self.seq_len], ids[1 : self.seq_len + 1]
+        loss_mask = [True] * len(target_ids)
         seq_lens, end = [], 0
         for _, _, length, continued in row:
             if continued and end > 0:
                 loss_mask[end - 1] = False
-            seq_lens.append(min(length, num_inputs - end))
+            seq_lens.append(min(length, len(input_ids) - end))
             end += length
-        seq_lens = [length for length in seq_lens if length > 0] if self.document_masking else [num_inputs]
-        input_ids = ids[:num_inputs]
-        loss_mask = eod_loss_mask(input_ids + [None] * (self.seq_len - num_inputs), loss_mask, self.eod_mask_token)
-        padding = self.seq_len - num_inputs
-        if padding:
-            # As CatDataset: identical pad tokens would route to the same MoE experts.
-            input_ids += repeat_to_length(input_ids, padding)
-            seq_lens.append(padding)
-        return {
-            "input_ids": input_ids,
-            "target_ids": ids[1 : num_targets + 1] + [0] * (self.seq_len - num_targets),
-            "position_ids": [position for length in seq_lens for position in range(length)],
-            "loss_mask": loss_mask,
-            "seq_lens": seq_lens,
-            "mm_kwargs": None,
-            "mm_token_type_ids": None,
-        }
+        if len(target_ids) < len(input_ids):
+            # A row that is not full has no target for its last token.
+            target_ids.append(0)
+            loss_mask.append(False)
+        seq_lens = [length for length in seq_lens if length > 0] if self.document_masking else [len(input_ids)]
+        loss_mask = eod_loss_mask(input_ids, loss_mask, self.eod_mask_token)
+        return padded_sample(input_ids, target_ids, loss_mask, seq_lens, self.seq_len)
 
     def __iter__(self):
         self._setup_world_info()
@@ -395,25 +413,10 @@ def document_windows(shards: TokenShards, seq_len: int, num_documents: int | Non
     return windows
 
 
-def pack_windows(lengths: list[int], token_budget: int) -> list[list[int]]:
-    """Window indices grouped into rows of at most ``token_budget`` tokens, longest first."""
-    order = sorted(range(len(lengths)), key=lambda i: -lengths[i])
-    rows, row, total = [], [], 0
-    for index in order:
-        if row and total + lengths[index] > token_budget:
-            rows.append(row)
-            row, total = [], 0
-        row.append(index)
-        total += lengths[index]
-    if row:
-        rows.append(row)
-    return rows
-
-
 class DocumentDataset(StatefulIterableDataset):
     """Rows of ``row_len`` tokens that score every document of held-out shards on its own (`document_windows`). The
-    windows are packed longest first, one segment per window with positions from 0; the rest of a row is unscored
-    padding. Rows are dealt round-robin over the data ranks, and every rank yields the same number of rows, because
+    windows are packed by best-fit decreasing, one segment per window with positions from 0; the rest of a row is
+    unscored padding. Rows are dealt round-robin over the data ranks, and every rank yields the same number of rows, because
     under FSDP every forward is a collective: a rank short of a row repeats the first one, unscored. Full rows pass
     through the micro-batch packing unchanged."""
 
@@ -426,7 +429,7 @@ class DocumentDataset(StatefulIterableDataset):
         self.windows = document_windows(shards, seq_len, num_documents)
         if not self.windows:
             raise ValueError("The held-out shards have no document of two or more tokens")
-        self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
+        self.rows = best_fit_decreasing([end - start - 1 for _, start, end in self.windows], row_len)
 
     def sample(self, row: list[int], scored: bool) -> dict:
         input_ids, target_ids, seq_lens = [], [], []
@@ -436,23 +439,7 @@ class DocumentDataset(StatefulIterableDataset):
             input_ids += ids[:-1]
             target_ids += ids[1:]
             seq_lens.append(len(ids) - 1)
-        loss_mask = [scored] * len(input_ids)
-        padding = self.row_len - len(input_ids)
-        if padding > 0:
-            # The row's own tokens, as in CatDataset: identical pad tokens would all route to the same MoE experts.
-            input_ids += repeat_to_length(input_ids, padding)
-            target_ids += [0] * padding
-            loss_mask += [False] * padding
-            seq_lens.append(padding)
-        return {
-            "input_ids": input_ids,
-            "target_ids": target_ids,
-            "position_ids": [position for length in seq_lens for position in range(length)],
-            "loss_mask": loss_mask,
-            "seq_lens": seq_lens,
-            "mm_kwargs": None,
-            "mm_token_type_ids": None,
-        }
+        return padded_sample(input_ids, target_ids, [scored] * len(input_ids), seq_lens, self.row_len)
 
     def __iter__(self):
         self._setup_world_info()

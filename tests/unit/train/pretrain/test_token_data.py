@@ -85,20 +85,31 @@ def test_every_epoch_reads_every_window_once_in_a_new_order(folders: list[Path])
     assert take(TokenDataset(TokenShards(folders, seed=1), seq_len), num_windows) != epochs[0]
 
 
-@pytest.mark.parametrize("document_masking", [True, False])
-def test_document_masking(folders: list[Path], document_masking: bool):
+@pytest.mark.parametrize(
+    "token_dataset", [TokenDataset, partial(BestFitTokenDataset, group_windows=4)], ids=["windows", "best_fit"]
+)
+def test_document_masking(folders: list[Path], token_dataset):
     seq_len = 16
-    for sample in take(TokenDataset(TokenShards(folders), seq_len, document_masking), 20):
-        start = sample["input_ids"][0]
-        if document_masking:
-            # Documents start at the pool's document boundaries and where it wraps around.
-            boundaries = [i for i in range(1, seq_len) if (start + i) % NUM_TOKENS in DOCUMENT_STARTS]
-            seq_lens = np.diff([0, *boundaries, seq_len]).tolist()
-        else:
-            seq_lens = [seq_len]
-        assert sample["seq_lens"] == seq_lens
-        assert sample["position_ids"] == [position for length in seq_lens for position in range(length)]
-        assert sample["loss_mask"] == [True] * seq_len
+    masked = take(token_dataset(TokenShards(folders), seq_len), 20)
+    unmasked = take(token_dataset(TokenShards(folders), seq_len, document_masking=False), 20)
+    for on, off in zip(masked, unmasked):
+        assert {k: v for k, v in on.items() if k not in ("seq_lens", "position_ids")} == {
+            k: v for k, v in off.items() if k not in ("seq_lens", "position_ids")
+        }
+        # Without document masking, a sample's tokens are one segment; padding stays a segment of its own.
+        padding = off["seq_lens"][1] if len(off["seq_lens"]) == 2 else 0
+        assert off["seq_lens"] == [seq_len - padding] + ([padding] if padding else [])
+        # With it, a segment starts at every document start (the pool wraps around to one) and at every piece of
+        # a document that does not continue the token before.
+        ids = on["input_ids"]
+        boundaries = [
+            i
+            for i in range(1, seq_len - padding)
+            if ids[i] in DOCUMENT_STARTS or ids[i] != (ids[i - 1] + 1) % NUM_TOKENS
+        ]
+        assert on["seq_lens"] == np.diff([0, *boundaries, seq_len - padding]).tolist() + ([padding] if padding else [])
+        for sample in (on, off):
+            assert sample["position_ids"] == [position for length in sample["seq_lens"] for position in range(length)]
 
 
 def set_world(monkeypatch, rank: int, world_size: int) -> None:
@@ -201,8 +212,8 @@ def test_resume_on_another_number_of_ranks_continues_the_sample_sequence(
 
 
 def test_best_fit_decreasing():
-    # 6 and 5 open a bin each; 4 fits both and goes to the fuller one; 3 and 2 fill the other.
-    assert best_fit_decreasing([6, 5, 4, 3, 2], capacity=10) == [[0, 2], [1, 3, 4]]
+    # First fit would put 1 into the first bin; best fit puts it into the fullest bin with room, the second.
+    assert best_fit_decreasing([8, 6, 3, 1], capacity=10) == [[0], [1, 2, 3]]
 
 
 def test_best_fit_samples_hold_whole_documents(tmp_path):
@@ -211,11 +222,15 @@ def test_best_fit_samples_hold_whole_documents(tmp_path):
     # seq_len + 1 tokens and are cut; 9 fills a sample.
     lengths = [3, 7, 2, 20, 4, 1, 6, 9, 5, 12] * 8
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents(lengths))
-    shards = TokenShards([tmp_path / "a"], seed=0)
+    # Seed 1 starts the epoch's windows at an offset that is not a multiple of seq_len, so one window wraps around.
+    shards = TokenShards([tmp_path / "a"], seed=1)
     document = np.repeat(np.arange(len(lengths)), lengths)
     document_start = np.cumsum([0, *lengths])[:-1]
 
     dataset = BestFitTokenDataset(shards, seq_len, group_windows=4)
+    # The rows are shuffled: best-fit decreasing opens them longest piece first.
+    first_lengths = [row[0][2] for row in dataset.pack(0, 0)]
+    assert first_lengths != sorted(first_lengths, reverse=True)
     samples = []
     for sample in dataset:
         if dataset.epoch > 1:
