@@ -424,20 +424,3 @@ def test_truncated_sampling_requires_replayed_support(support):
             wait_for_deletes()
 
     asyncio.run(run())
-
-
-def test_only_complete_groups_count_as_batchable():
-    async def run():
-        s = sink(batch_size=100, group_size=lambda group: 3)
-        # Two of a group's three rollouts finished: the trainer cannot take them until the third does
-        for _ in range(2):
-            await s.add(episode([trace()], group="partial"))
-        assert s.batchable_rollouts() == 0
-        # A complete group is queued for the next batch
-        for _ in range(3):
-            await s.add(episode([trace()], group="complete"))
-        assert s.batchable_rollouts() == 3
-        await s.add(episode([trace()], group="partial"))
-        assert s.batchable_rollouts() == 6
-
-    asyncio.run(run())

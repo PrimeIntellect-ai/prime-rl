@@ -194,8 +194,7 @@ class TrainSink(Reconfigurable):
         return episodes + failures
 
     def batchable_rollouts(self) -> int:
-        """Finished rollouts the trainer could take now: those queued for the next batch. Rollouts of groups still
-        waiting for members do not count, since no batch can take them until their siblings finish."""
+        """Finished rollouts queued for a batch; those of groups still waiting for members can't be taken yet."""
         return len(self.pending_batch)
 
     def pending_batch_by_env(self) -> dict[str, int]:
