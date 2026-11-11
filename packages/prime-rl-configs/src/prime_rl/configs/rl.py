@@ -569,7 +569,7 @@ class RLConfig(BaseConfig):
         vllm = self.inference.vllm
         config = dict(getattr(vllm, "quantization_config", None) or {})
         if vllm.quantization is None:
-            if compute.apply_to != "all":
+            if not compute.selects_all:
                 raise ValueError(
                     f"model.moe.compute.apply_to = {compute.apply_to!r} quantizes some MoE layers only: set "
                     "inference.vllm.quantization = 'online' with quantization_config.targets on the same layers."
@@ -585,7 +585,7 @@ class RLConfig(BaseConfig):
             )
             return self
         engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
-        if engines != wanted or compute.apply_to != "all":
+        if engines != wanted or not compute.selects_all:
             raise ValueError(
                 f"The trainer's experts run {compute.type} ({compute.apply_to}), but the engines quantize experts "
                 f"with {engines!r}: rollouts would be sampled with other numerics than the trainer computes. "
