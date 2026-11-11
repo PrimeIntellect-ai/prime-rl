@@ -387,7 +387,7 @@ class Orchestrator:
             on_call=self.concurrency.record_call,
             on_pause=self.concurrency.pause,
             on_resume=self.concurrency.resume,
-            unconsumed_train_rollouts=lambda: self.train_sink.unbatched_rollouts() + self.unsent_rollouts,
+            unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.unsent_rollouts,
             batch_size=lambda: self.train_sink.batch_size,
             trainer_rate=lambda: self.trainer_rate,
         )

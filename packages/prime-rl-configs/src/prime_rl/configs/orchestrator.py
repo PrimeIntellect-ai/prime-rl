@@ -256,7 +256,7 @@ class TrainSourceConfig(EnvConfig):
 
     @model_validator(mode="after")
     def validate_policy_sampling(self):
-        if self.algo.sampling.source != "policy":
+        if self.algo.rollout_model != "policy":
             return self
         # The source owns the distribution replayed by the trainer; agents may
         # change generation limits and rendering without changing that distribution.
@@ -730,7 +730,7 @@ class OrchestratorConfig(BaseConfig):
         there are no sources."""
         if not self.train.source:
             return [self.train.sampling]
-        return [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"]
+        return [env.sampling for env in self.train.source if env.algo.rollout_model == "policy"]
 
     def update_policy_samplings(self, update: Callable[[TrainSamplingConfig], TrainSamplingConfig]) -> None:
         """Replace each of ``policy_samplings`` with ``update(sampling)``. The group's sampling is
@@ -738,13 +738,13 @@ class OrchestratorConfig(BaseConfig):
         if not self.train.source:
             self.train = self.train.model_copy(update={"sampling": update(self.train.sampling)})
         for env in self.train.source:
-            if env.algo.sampling.source == "policy":
+            if env.algo.rollout_model == "policy":
                 env.sampling = update(env.sampling)
 
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo.sampling.source == "policy" for env in self.train.source)
+        return any(env.algo.rollout_model == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
@@ -803,7 +803,7 @@ class OrchestratorConfig(BaseConfig):
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
-            if env.algo.sampling.source == "policy":
+            if env.algo.rollout_model == "policy":
                 extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
                 extra_args["prl_replay"] = env.sampling.truncates_distribution()
                 env.sampling.extra_body["extra_args"] = extra_args
