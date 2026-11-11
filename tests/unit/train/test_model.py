@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.distributed as dist
 
-from prime_rl.configs.trainer import AttnImplementation, DebugModelConfig, ModelConfig
+from prime_rl.configs.trainer import AttnImplementation, DebugModelConfig, InitConfig, ModelConfig
 from prime_rl.trainer.model import clear_padding_idx, get_model, initialize_from_scratch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
@@ -30,7 +30,7 @@ def attn(request) -> AttnImplementation:
 
 @pytest.fixture
 def model(attn):
-    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn)
+    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn, init=InitConfig(type="hf"))
     model = get_model(config)
     # Mirror setup_model: the custom Qwen3 forward calls lm_head with
     # (hidden_states, labels, temperature=...), which only VanillaOutputLinear
@@ -71,7 +71,7 @@ def test_model_with_position_ids(model):
 
 
 def test_moe_custom_impl():
-    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2")
+    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2", init=InitConfig(type="hf"))
     model = get_model(config)
     model = model.to("cuda")
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
@@ -85,7 +85,9 @@ def test_moe_custom_impl():
 
 
 def test_initialize_from_scratch_initializes_the_padding_embedding(attn):
-    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn, debug=DebugModelConfig(num_layers=1))
+    config = ModelConfig(
+        name="Qwen/Qwen3-0.6B", attn=attn, debug=DebugModelConfig(num_layers=1), init=InitConfig(type="hf")
+    )
     model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
     padding_idx = model.model.embed_tokens.padding_idx
     assert padding_idx is not None

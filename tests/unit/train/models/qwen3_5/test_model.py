@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from prime_rl.configs.trainer import ModelConfig
+from prime_rl.configs.trainer import InitConfig, ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, get_custom_vlm_cls
 from prime_rl.trainer.models.fusions import apply_model_fusions
@@ -72,7 +72,7 @@ def get_vlm_config(text_config) -> Qwen3_5Config:
 
 
 def get_model(config, device="cuda", attn="auto"):
-    runtime_config = ModelConfig(attn=attn)
+    runtime_config = ModelConfig(attn=attn, init=InitConfig(type="hf"))
     resolve_auto_attn(runtime_config)
     with torch.device(device):
         model = (get_custom_vlm_cls(config) or AutoModelForCausalLMPrimeRL).from_config(

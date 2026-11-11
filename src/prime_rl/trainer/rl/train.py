@@ -5,6 +5,7 @@ from functools import partial
 import time
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -190,7 +191,7 @@ def train(config: TrainerConfig):
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
+    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "checkpoint"
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
@@ -278,8 +279,8 @@ def train(config: TrainerConfig):
             f"Resuming from step {checkpoint_step} "
             f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
         )
-    elif config.model.init_from is not None:
-        ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
+    elif config.model.init.type == "checkpoint":
+        ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
 

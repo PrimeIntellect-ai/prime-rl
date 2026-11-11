@@ -21,6 +21,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
+  - [Model Initialization](#model-initialization)
   - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
@@ -357,7 +358,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init (`model.init.type = "scratch"`, see [Model Initialization](#model-initialization)): `model.name` only supplies the architecture and the tokenizer. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
 **Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
 
@@ -456,12 +457,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
 
 A resume checks that the checkpoint's `config.json` describes the same architecture as `model.name` and stops on a difference before loading. A checkpoint without a `config.json` resumes after a warning, without the check.
 
-A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `trainer.model.init_from` instead. It loads only the weights, and the run starts at step 0 with a fresh optimizer, scheduler and orchestrator. `model.name` still sets the architecture and tokenizer.
-
-```bash
-uv run rl @ rl.toml --max-steps 50 --ckpt --run.name my-rl \
-  --trainer.model.init-from outputs/my-sft/checkpoints/step_500
-```
+A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, initialize the model from the checkpoint instead (see [Model Initialization](#model-initialization)).
 
 #### What a resume restores
 
@@ -480,6 +476,24 @@ A resume can add, remove or change train and eval sources.
 - A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task.
 - A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
 - Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
+
+### Model Initialization
+
+`[model.init]` sets where the trainer's weights start. A resumed run loads its own checkpoint, whatever the type.
+
+| `model.init.type` | Weights | Architecture and tokenizer | Default for |
+|---|---|---|---|
+| `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
+| `hf` | The weights of `model.name` | `model.name` | `uv run sft`, `uv run rl` |
+| `checkpoint` | The trainer checkpoint in `model.name`, a step directory (`.../step_<N>`) of another run | The `config.json` and tokenizer files in that step directory | |
+
+Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `checkpoint` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `checkpoint` run sets it explicitly.
+
+```bash
+# SFT from a pretraining checkpoint
+uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --model.init.type checkpoint \
+  --renderer.name qwen3
+```
 
 ### Pausing or Checkpointing a Live Run
 

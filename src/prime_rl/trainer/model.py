@@ -82,14 +82,14 @@ from prime_rl.utils.weights import (
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
 
-    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
+    With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
     """
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
         return
     t0 = time.perf_counter()
     if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
+        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (skipping weights)")
         path = snapshot_download(
             repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
         )
@@ -631,18 +631,19 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def clear_padding_idx(model: nn.Module) -> None:
-    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
-    embedding at zero and keep it frozen, also after a resume."""
+    """For a from-scratch init: a padding index (which falls back to the EOS id) would start that token's embedding at
+    zero and keep it frozen, also after a resume."""
     for module in model.modules():
         if isinstance(module, nn.Embedding):
             module.padding_idx = None
 
 
 @torch.no_grad()
-def initialize_from_scratch(model: nn.Module) -> None:
+def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
-    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
-    get_logger().info("Initializing the weights from scratch")
+    ``_init_weights``), seeded with ``seed``. The parameters are NaN before, so one the init does not reach fails
+    here."""
+    get_logger().info(f"Initializing the weights from scratch (seed {seed})")
     model.to_empty(device="cuda")
     torch.distributed.barrier()
     model.init_buffers_post_meta()
@@ -651,6 +652,7 @@ def initialize_from_scratch(model: nn.Module) -> None:
     }
     for param in local_params.values():
         param.fill_(float("nan"))
+    torch.manual_seed(seed)
     model.initialize_weights()
     uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
     if uninitialized:
@@ -666,10 +668,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        return
-
     if not Path(config.name).exists():
         snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
@@ -939,7 +937,6 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1008,7 +1005,7 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if init_from_scratch:
+    if config.init.type == "scratch":
         clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
@@ -1018,8 +1015,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-    elif init_from_scratch:
-        initialize_from_scratch(model)
+    elif config.init.type == "scratch":
+        initialize_from_scratch(model, config.init.seed)
     else:
         load_dcp_from_hf(model, config)
 

@@ -30,7 +30,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
+from prime_rl.configs.trainer import RLModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
 
@@ -166,6 +166,7 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
     assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
+    assert config.model.init.type == "scratch"
 
     write_config(config, tmp_path / "pretrain.json")
     assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
@@ -1450,16 +1451,28 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
-def test_init_from_accepts_a_checkpoint_step_dir():
-    config = TrainerModelConfig(init_from="runs/sft/checkpoints/step_500")
+@pytest.mark.parametrize(
+    ("config_cls", "default_type"), [(PretrainConfig, "scratch"), (SFTConfig, "hf"), (TrainerConfig, "hf")]
+)
+def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
+    data = {"data": {"paths": [str(tmp_path)]}} if config_cls is PretrainConfig else {}
+    assert config_cls.model_validate(data).model.init.type == default_type
+    # A [model.init] table without a type keeps the entrypoint's default.
+    assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
 
-    assert config.init_from == Path("runs/sft/checkpoints/step_500")
+
+def test_model_init_seed_requires_type_scratch():
+    assert SFTConfig.model_validate({"model": {"init": {"type": "scratch", "seed": 1}}}).model.init.seed == 1
+    with pytest.raises(ValidationError, match='model.init.seed applies to type "scratch", not "hf"'):
+        SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
 
 
-@pytest.mark.parametrize("init_from", ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer"])
-def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
-    with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
-        TrainerModelConfig(init_from=init_from)
+def test_model_init_checkpoint_requires_a_step_dir():
+    config = TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "checkpoint"})
+    assert config.init.type == "checkpoint"
+    for name in ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer", "Qwen/Qwen3-0.6B"]:
+        with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
+            TrainerModelConfig(name=name, init={"type": "checkpoint"})
 
 
 def test_score_centering_replays_top_p_alone():

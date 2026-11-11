@@ -333,7 +333,7 @@ class CheckpointManager:
     def load_weights(self, path: Path, model: nn.Module, optimizers: list[OptimizerLike]) -> None:
         """Load only the model weights of the trainer checkpoint at ``path`` (in-place)."""
         if not path.exists():
-            raise FileNotFoundError(f"model.init_from has no trainer checkpoint at {path}")
+            raise FileNotFoundError(f"No trainer checkpoint at {path}")
         self.logger.info(f"Initializing weights from {path}")
         start_time = time.perf_counter()
         _load_app_state(path, model, optimizers, scheduler=None, progress=None, model_only=True)

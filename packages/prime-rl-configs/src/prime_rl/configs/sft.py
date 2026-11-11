@@ -5,6 +5,7 @@ from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.trainer import InitConfig, ModelConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -119,10 +120,20 @@ class SFTValConfig(BaseValConfig):
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
+class SFTInitConfig(InitConfig):
+    type: Literal["scratch", "hf", "checkpoint"] = "hf"
+
+
+class SFTModelConfig(ModelConfig):
+    init: SFTInitConfig = SFTInitConfig()
+
+
 class SFTConfig(SupervisedTrainerConfig):
     mode: Literal["sft"] | None = None
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run sft`` accepts only
     "sft" (or no mode)."""
+
+    model: SFTModelConfig = SFTModelConfig()
 
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer config. Defaults to auto-selecting from the tokenizer model name."""

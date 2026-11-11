@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, ClassVar, TypeAlias
+from typing import Annotated, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -86,9 +86,6 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
-    # Initialize the weights from scratch instead of loading them from ``model.name``, unless resuming.
-    init_from_scratch: ClassVar[bool] = False
-
     data: BaseDataConfig
 
     val: BaseValConfig | None = None
