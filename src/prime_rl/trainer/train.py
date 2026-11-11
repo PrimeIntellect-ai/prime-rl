@@ -421,7 +421,7 @@ def train(config: SFTConfig | PretrainConfig):
         )
 
         step_start_time = time.perf_counter()
-        # GPU time: the micro-batch loop only queues work, the step reads its statistics once at its end.
+        # GPU time: the micro-batch loop only queues work.
         forward_backward_start, forward_backward_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
         forward_backward_start.record()
 
@@ -483,7 +483,6 @@ def train(config: SFTConfig | PretrainConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        # The step's statistics stay on the device until here: one copy to the host.
         step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
         result = step_result(step_stats, parallel_dims)
         grad_norm_value = norms["grad_norm"].item() if norms else None

@@ -32,10 +32,7 @@ class StepResult:
     """Micro-batches with a NaN loss over all ranks. They are left out of the loss and the backward pass."""
 
     num_tokens: int
-    """Input tokens of the global batch."""
-
     num_flops: float
-    """Training FLOPs of the global batch."""
 
     metrics: dict[str, float]
     """The routing and expert-load statistics of MoE models, to log. Empty for dense models."""
@@ -102,7 +99,6 @@ def run_micro_batches(
         add_routing_stats(sums, maxes, routing_stats, moes[0].router.top_k, ep_group)
     stats = reduce_stats(sums, maxes, dp_cp_group)
     if gradient_manager is None:
-        # On the device: the host reads the token count only with the step's other statistics.
         tokens = stats["loss_tokens"]
         factor = parallel_dims.fsdp_gradient_divide_factor / tokens.clamp(min=1)
         scale_gradients_(None, model, torch.where(tokens > 0, factor, 1.0).float())
