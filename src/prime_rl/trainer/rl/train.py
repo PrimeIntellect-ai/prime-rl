@@ -15,7 +15,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.models.layers.expert_compute import clear_quantized_weight_caches
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -698,7 +697,6 @@ def train(config: TrainerConfig):
 
         # Update the model parameters
         optimizer.step()
-        clear_quantized_weight_caches()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
