@@ -449,7 +449,7 @@ def train(config: SFTConfig | PretrainConfig):
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item() // cp_size
             grad_scale = (
-                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
                 if global_token_count_val > 0
                 else 1.0
             )
@@ -480,10 +480,10 @@ def train(config: SFTConfig | PretrainConfig):
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
                 logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
+                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0)
             else:
                 step_loss_sum += local_loss_sum.detach()
-                scaled_loss = local_loss_sum / grad_accum_steps
+                scaled_loss = local_loss_sum
 
             if parallel_dims.dp_replicate_enabled and gradient_manager is None:
                 # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
@@ -514,7 +514,7 @@ def train(config: SFTConfig | PretrainConfig):
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
                 scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
