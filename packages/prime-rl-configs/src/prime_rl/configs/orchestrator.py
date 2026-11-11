@@ -518,6 +518,11 @@ class BalanceConfig(BaseConfig):
     knee_max_age_minutes: float = Field(120.0, gt=0)
     """Oldest inference knee measurement that stands for inference capacity while the trainer is the bottleneck."""
 
+    busy_estimate: bool = True
+    """While inference runs below its knee, estimate its capacity from the engines' busy time (throughput over the
+    seconds they spent executing model steps, ``/prime_rl/engine_busy``). Off, the capacity is a lower bound until the
+    knee is measured. ``balance/inference/busy_capacity`` is logged either way."""
+
     probe: bool = False
     """While the trainer is the bottleneck, inference runs below its knee, so its capacity is unmeasured. A probe
     lifts the trainer-side admission bounds until the concurrency controller finds the knee again. It costs staleness:

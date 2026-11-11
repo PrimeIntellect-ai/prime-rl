@@ -154,6 +154,8 @@ class EngineLoadSample:
     # Requests the engine runs, and its GPU KV cache usage (0-1, None when not reported)
     running: int = 0
     kv_usage: float | None = None
+    # Seconds the engine spent executing model steps since the previous poll (None: not reported)
+    busy_delta: float | None = None
 
 
 @dataclass(frozen=True)

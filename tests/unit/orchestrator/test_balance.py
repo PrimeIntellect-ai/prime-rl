@@ -349,3 +349,75 @@ def test_rl_config_describes_the_pools():
         ("prefill", 2, 1),
         ("decode", 6, 2),
     ]
+
+
+def test_busy_time_estimates_inference_below_its_knee():
+    clock = Clock()
+    balance = advisor(clock)
+    # Trainer-bound: inference runs below its knee. Six engines, busy 40 % of the time outside weight-update pauses,
+    # which take 1 poll in 10: they would make 1 / 0.4 = 2.5x what they make now, less the pause time
+    notices = []
+    for minutes in range(45):
+        for i in range(12):
+            clock.now += POLL_S
+            paused = i == 0
+            balance.observe(
+                InferencePoll(
+                    seconds=POLL_S,
+                    generated=0 if paused else int(1000 * POLL_S),
+                    finished=1,
+                    knee=False,
+                    env_bound=False,
+                    busy=0.0 if paused else 6 * POLL_S * 0.4,
+                    busy_engines=6,
+                    paused=paused,
+                )
+            )
+        if minutes % 2 == 1:
+            balance.observe_step(TrainerStep(rollouts=24, tokens=24 * TRAINED_PER_ROLLOUT, period=120, busy=120))
+            advice = balance.evaluate()
+            if advice is not None and (notice := balance.notice(advice)) is not None:
+                notices.append(notice)
+    advice = balance.advice
+    utilization, _ = balance.busy_estimate
+    assert utilization == pytest.approx(0.4, rel=0.01)
+    # 1000 tok/s over 11 of every 12 polls is 917 tok/s on average; busy 40 % of the available time, the engines
+    # would sustain 917 / 0.4 = 2292 tok/s, which keeps the pauses as they are
+    assert balance.busy_capacity([p for _, p in balance.polls])[1] == pytest.approx(1000 * 11 / 12 / 0.4, rel=0.01)
+    assert advice.capacities["inference"].kind is Kind.ESTIMATED
+    assert "busy 40%" in advice.capacities["inference"].source
+    assert advice.capacities["inference"].rate > 2 * advice.rate
+    assert advice.best.units["trainer"] > 2
+    assert notices and "engines busy 40%" in notices[0]
+
+
+def test_busy_estimate_off_leaves_a_lower_bound():
+    clock = Clock()
+    balance = advisor(clock, busy_estimate=False)
+    for _ in range(45 * 12):
+        clock.now += POLL_S
+        balance.observe(
+            InferencePoll(
+                seconds=POLL_S, generated=5000, finished=1, knee=False, env_bound=False, busy=12.0, busy_engines=6
+            )
+        )
+        if int(clock.now) % 120 == 0:
+            balance.observe_step(TrainerStep(rollouts=24, tokens=24 * TRAINED_PER_ROLLOUT, period=120, busy=120))
+    advice = balance.evaluate()
+    assert advice.capacities["inference"].kind is Kind.LOWER_BOUND
+    # The estimate is still measured and logged
+    assert balance.busy_estimate[0] == pytest.approx(0.4)
+    assert "balance/inference/busy_capacity" in balance.gauges()
+
+
+def test_prefill_busy_uses_engine_busy_time():
+    prefill = [
+        EngineLoadSample("p0", "prefill", None, None, waiting=0, running=1, busy_delta=2.0),
+        EngineLoadSample("p1", "prefill", None, None, waiting=0, running=0, busy_delta=1.0),
+    ]
+    poll = inference_poll(prefill, 5.0, finished=0, knee=False, env_bound=False, queued_share={})
+    assert poll.prefill_busy == pytest.approx(0.3)
+    # Without busy time from every engine: the share running a request
+    prefill[1] = EngineLoadSample("p1", "prefill", None, None, waiting=0, running=0)
+    poll = inference_poll(prefill, 5.0, finished=0, knee=False, env_bound=False, queued_share={})
+    assert poll.prefill_busy == 0.5

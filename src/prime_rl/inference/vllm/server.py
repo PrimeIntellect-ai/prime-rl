@@ -41,6 +41,14 @@ WORKER_EXTENSION_CLS = {
 }
 
 
+@router.get("/prime_rl/engine_busy")
+async def engine_busy():
+    """Seconds each of this server's engine cores spent executing model steps, by engine index."""
+    from prime_rl.inference.vllm.engine_busy import busy_dir, read_busy
+
+    return {"engines": read_busy(busy_dir())}
+
+
 @router.post("/pause")
 async def pause(request: Request):
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")

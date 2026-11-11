@@ -871,6 +871,7 @@ class Orchestrator:
                 knee=self.concurrency.at_knee and not held,
                 env_bound=self.concurrency.env_bound and not held,
                 queued_share=self.concurrency.queued_share_by_role,
+                paused=self.concurrency.paused,
             )
         )
         if self.balance.probe_done():

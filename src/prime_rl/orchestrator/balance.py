@@ -100,6 +100,23 @@ class InferencePoll:
     """Share of prefill engines running a request."""
     decode_kv: float | None = None
     """Mean GPU KV usage of the decode engines (0-1)."""
+    busy: float | None = None
+    """Seconds the decode (or colocated) engines executed model steps since the previous poll, summed over the
+    ``busy_engines`` that reported it."""
+    busy_engines: int = 0
+    paused: bool = False
+    """The engines were paused for a weight update."""
+
+
+def prefill_busy(prefill: list[EngineLoadSample], seconds: float) -> float | None:
+    """Share of the poll the prefill engines spent executing model steps, from their busy time when all report it,
+    else the share of them running a request."""
+    if not prefill:
+        return None
+    busy = [sample.busy_delta for sample in prefill if sample.busy_delta is not None]
+    if len(busy) == len(prefill) and seconds > 0:
+        return min(sum(busy) / (len(prefill) * seconds), 1.0)
+    return sum(sample.running > 0 for sample in prefill) / len(prefill)
 
 
 def inference_poll(
@@ -110,9 +127,14 @@ def inference_poll(
     knee: bool,
     env_bound: bool,
     queued_share: dict[str, float],
+    paused: bool = False,
 ) -> InferencePoll:
     """Pool one metrics poll's engines into an :class:`InferencePoll`."""
     prefill = [sample for sample in samples if sample.role == "prefill"]
+    generating = [sample for sample in samples if sample.role != "prefill"]
+    busy = [sample.busy_delta for sample in generating if sample.busy_delta is not None]
+    # Busy time counts only when every generating engine reported it
+    complete = bool(generating) and len(busy) == len(generating)
     decode_kv = [sample.kv_usage for sample in samples if sample.role == "decode" and sample.kv_usage is not None]
     return InferencePoll(
         seconds=seconds,
@@ -121,8 +143,11 @@ def inference_poll(
         knee=knee,
         env_bound=env_bound,
         queued_share=dict(queued_share),
-        prefill_busy=sum(sample.running > 0 for sample in prefill) / len(prefill) if prefill else None,
+        prefill_busy=prefill_busy(prefill, seconds),
         decode_kv=sum(decode_kv) / len(decode_kv) if decode_kv else None,
+        busy=sum(busy) if complete else None,
+        busy_engines=len(busy) if complete else 0,
+        paused=paused,
     )
 
 
@@ -237,6 +262,8 @@ class BalanceAdvisor:
         self.noticed: dict[str, int] | None = None
         self.noticed_at: float | None = None
         self.advice: Advice | None = None
+        # The busy-time estimate of inference: utilization and capacity in rollouts per second
+        self.busy_estimate: tuple[float, float] | None = None
         # Probe: when the current one started, and when the last one did
         self.probe_started: float | None = None
         self.last_probe: float | None = None
@@ -308,6 +335,22 @@ class BalanceAdvisor:
             slack["decode"] = Capacity(max(factor, 1.0), Kind.ESTIMATED, f"decode KV {decode_kv:.0%}")
         return slack
 
+    def busy_capacity(self, polls: list[InferencePoll]) -> tuple[float, float] | None:
+        """The engines' utilization over the window and the generated tokens per second they would sustain busy all
+        the time: throughput over busy time, available outside weight-update pauses. None without busy time."""
+        timed = [p for p in polls if p.busy is not None and p.seconds > 0]
+        seconds = sum(p.seconds for p in timed)
+        if seconds < MIN_COVERAGE * self.window_s:
+            return None
+        engines = sum(p.busy_engines * p.seconds for p in timed) / seconds
+        available = sum(p.seconds for p in timed if not p.paused)
+        busy = sum(p.busy for p in timed)
+        if busy <= 0 or available <= 0 or engines <= 0:
+            return None
+        utilization = busy / (engines * available)
+        generated = sum(p.generated for p in timed) / seconds
+        return utilization, generated / utilization
+
     def evaluate(self) -> Advice | None:
         """Measure every pool over the window and search the splits. None until the window holds enough."""
         now = self.clock()
@@ -353,8 +396,15 @@ class BalanceAdvisor:
             inference = Capacity(
                 max(self.knee_throughput / generated_per_rollout, rate), Kind.ESTIMATED, f"knee {age:.0f} min ago"
             )
+        elif self.config.busy_estimate and (busy := self.busy_capacity(polls)) is not None:
+            utilization, generated_capacity = busy
+            inference = Capacity(
+                max(generated_capacity / generated_per_rollout, rate), Kind.ESTIMATED, f"engines busy {utilization:.0%}"
+            )
         else:
             inference = Capacity(rate, Kind.LOWER_BOUND, "below the knee, no recent knee measurement")
+        busy = self.busy_capacity(polls)
+        self.busy_estimate = (busy[0], busy[1] / generated_per_rollout) if busy is not None else None
 
         if "inference" in self.roles:
             capacities["inference"] = inference
@@ -491,6 +541,10 @@ class BalanceAdvisor:
         if advice is None:
             return gauges
         # Trained tokens per second throughout
+        if self.busy_estimate is not None:
+            utilization, capacity = self.busy_estimate
+            gauges["balance/inference/utilization"] = utilization
+            gauges["balance/inference/busy_capacity"] = advice.tokens(capacity)
         gauges["balance/rate"] = advice.tokens(advice.rate)
         gauges["balance/speed"] = advice.tokens(advice.current.speed)
         gauges["balance/best_speed"] = advice.tokens(advice.best.speed)
