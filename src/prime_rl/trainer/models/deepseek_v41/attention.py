@@ -47,6 +47,7 @@ from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import Deep
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import VLLM_SWA_KV_AMAX_FLOOR, dsv4_kv_fake_quant
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv41_mxfp4_indexer import mxfp4_indexer_weights
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv41_nvfp4_kv_fake_quant import dsv41_nvfp4_kv_fake_quant
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
 from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
@@ -241,6 +242,8 @@ class DeepseekV41Indexer(nn.Module):
         self.num_heads = config.index_n_heads
         self.head_dim = config.index_head_dim
         self.index_topk = config.index_topk
+        # "mxfp4": score as vLLM's MXFP4 indexer cache (`attention_config.indexer_kv_dtype = "mxfp4"`) does.
+        self.mxfp4 = getattr(config, "indexer_precision", "fp8") == "mxfp4"
         self.owns_k = layer_idx in config.kv_source_layer_ids
         self.is_candidate_source = layer_idx == config.candidate_source_layer_id
         self.uses_candidates = 0 <= config.candidate_source_layer_id < layer_idx
@@ -277,6 +280,8 @@ class DeepseekV41Indexer(nn.Module):
         q = self.q_b_proj(q_residual).view(batch, seq_len, self.num_heads, self.head_dim)
         q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
+        if self.mxfp4:
+            w = mxfp4_indexer_weights(w, self.head_dim, self.num_heads)
 
         emit = self.is_candidate_source and packed.use_candidates
         candidates_in = state.candidates if self.uses_candidates and packed.use_candidates else None
@@ -295,6 +300,7 @@ class DeepseekV41Indexer(nn.Module):
                 segments.max_seqlen_q,
                 segments.max_seqlen_k,
                 VLLM_INDEXER_FP8_AMAX_FLOOR,
+                self.mxfp4,
             )
             return top_k.unsqueeze(0), index_k, state.candidates
 
@@ -315,6 +321,7 @@ class DeepseekV41Indexer(nn.Module):
             self.candidate_block_size,
             self.candidate_topk_blocks,
             VLLM_INDEXER_FP8_AMAX_FLOOR,
+            self.mxfp4,
         )
         return top_k.unsqueeze(0), index_k, candidates if emit else state.candidates
 

@@ -350,7 +350,12 @@ def get_model(
             raise ValueError(
                 'model.dsv4_kv_precision = "nvfp4" models vLLM\'s `nvfp4_ds_mla` cache, which only DeepSeek V4.1 uses.'
             )
+        if config.dsv4_indexer_precision == "mxfp4" and model_config.model_type == "deepseek_v4":
+            raise ValueError(
+                'model.dsv4_indexer_precision = "mxfp4" models vLLM\'s MXFP4 indexer cache for DeepSeek V4.1 only.'
+            )
         text_config.kv_precision = config.dsv4_kv_precision
+        text_config.indexer_precision = config.dsv4_indexer_precision
         text_config.dsa_backend = config.dsa_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.

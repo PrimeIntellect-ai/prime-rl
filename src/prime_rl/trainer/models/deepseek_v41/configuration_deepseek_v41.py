@@ -123,6 +123,7 @@ class DeepseekV41TextConfig(PretrainedConfig):
         attention_bias: bool = False,
         attention_dropout: float = 0.0,
         kv_precision: str = "bf16",
+        indexer_precision: str = "fp8",
         dsa_backend: str = "tilelang",
         pad_token_id: int | None = None,
         bos_token_id: int | None = 0,
@@ -150,6 +151,7 @@ class DeepseekV41TextConfig(PretrainedConfig):
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         self.kv_precision = kv_precision
+        self.indexer_precision = indexer_precision
         self.dsa_backend = dsa_backend
         self.partial_rotary_factor = (
             partial_rotary_factor

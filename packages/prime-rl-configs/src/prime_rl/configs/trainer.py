@@ -317,6 +317,13 @@ class ModelConfig(BaseModelConfig):
     cache on SM100, the MXFP8 sliding-window record with NVFP4 compressed entries (E2M1 with an E4M3 scale per 16
     channels). ``rl`` sets it from ``inference.vllm.kv_cache_dtype`` (``nvfp4_ds_mla`` or ``fp8_ds_mla``)."""
 
+    dsv4_indexer_precision: Literal["fp8", "mxfp4"] = "fp8"
+    """Precision the DeepSeek V4.1 Lightning Indexer scores queries and keys at, as vLLM's indexer K cache stores
+    them. ``fp8``: vLLM's default cache, one UE8M0-scaled E4M3 row per key and query head. ``mxfp4``: vLLM's
+    ``attention_config.indexer_kv_dtype = "mxfp4"`` cache (SM100; required by ``indexer_sparse_logits``), E2M1 with a
+    UE8M0 scale per 32 channels for keys and queries, and the BF16 head weights those kernels take. ``rl`` sets it
+    from ``inference.vllm.attention_config.indexer_kv_dtype``."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 

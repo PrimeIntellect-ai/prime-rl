@@ -1,3 +1,4 @@
+import json
 import math
 import uuid
 import warnings
@@ -492,6 +493,37 @@ class RLConfig(BaseConfig):
                     f'model.dsv4_kv_precision = "nvfp4" models vLLM\'s `nvfp4_ds_mla` cache, but the engines use '
                     f"inference.vllm.kv_cache_dtype = {cache!r}."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dsv4_indexer_precision(self):
+        """DeepSeek V4.1's indexer scores like the engines' indexer K cache (``model.dsv4_indexer_precision``). An
+        explicit ``inference.vllm.attention_config.indexer_kv_dtype`` sets it; an MXFP4 trainer pins an unspecified
+        (``auto``, which is fp8 on CUDA) engine indexer cache to ``mxfp4``."""
+        if self.inference is None:
+            return self
+        model = self.trainer.model
+        vllm = self.inference.vllm
+        attention_config = getattr(vllm, "attention_config", None)
+        if isinstance(attention_config, str):
+            attention_config = json.loads(attention_config)
+        if attention_config is None:
+            attention_config = {}
+        if not isinstance(attention_config, dict):
+            raise ValueError(
+                f"inference.vllm.attention_config must be a table (or its JSON), got {type(attention_config).__name__}."
+            )
+        indexer_kv_dtype = attention_config.get("indexer_kv_dtype") or "auto"
+        explicit = "dsv4_indexer_precision" in model.model_fields_set
+        if indexer_kv_dtype in ("fp8", "mxfp4") and not explicit:
+            model.dsv4_indexer_precision = indexer_kv_dtype
+        elif model.dsv4_indexer_precision == "mxfp4":
+            if indexer_kv_dtype != "auto":
+                raise ValueError(
+                    'model.dsv4_indexer_precision = "mxfp4" models vLLM\'s MXFP4 indexer cache, but the engines use '
+                    f"inference.vllm.attention_config.indexer_kv_dtype = {indexer_kv_dtype!r}."
+                )
+            vllm.attention_config = {**attention_config, "indexer_kv_dtype": "mxfp4"}
         return self
 
     @model_validator(mode="after")
