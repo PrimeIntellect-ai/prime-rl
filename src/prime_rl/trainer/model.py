@@ -656,7 +656,11 @@ def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     model.initialize_weights()
     uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
     if uninitialized:
-        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+        more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
+        raise RuntimeError(
+            f'{type(model).__name__} does not support model.init.type = "scratch": its init does not reach '
+            f"{', '.join(uninitialized[:3])}{more}"
+        )
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):

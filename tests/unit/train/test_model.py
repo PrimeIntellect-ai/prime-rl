@@ -86,7 +86,7 @@ def test_moe_custom_impl():
 
 def test_initialize_from_scratch_initializes_the_padding_embedding(attn):
     config = ModelConfig(
-        name="Qwen/Qwen3-0.6B", attn=attn, debug=DebugModelConfig(num_layers=1), init=InitConfig(type="hf")
+        name="Qwen/Qwen3-0.6B", attn=attn, debug=DebugModelConfig(num_layers=1), init=InitConfig(type="scratch")
     )
     model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
     padding_idx = model.model.embed_tokens.padding_idx
@@ -94,7 +94,7 @@ def test_initialize_from_scratch_initializes_the_padding_embedding(attn):
     dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29513", world_size=1, rank=0)
     try:
         clear_padding_idx(model)
-        initialize_from_scratch(model)
+        initialize_from_scratch(model, config.init.seed)
     finally:
         dist.destroy_process_group()
     embedding = model.model.embed_tokens
