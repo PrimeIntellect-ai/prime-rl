@@ -215,6 +215,10 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
     engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
     quantizes like the sampler's."""
+    cache_weights: bool = True
+    """Quantize each expert weight once per optimizer step, not on every micro-batch and recompute. Holds the
+    quantized weights (~0.8x their BF16 bytes with the ``mxfp8`` backward, ~0.3x otherwise) for the whole step, even
+    while FSDP has resharded the BF16 ones: turn off when memory is tighter than time."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[

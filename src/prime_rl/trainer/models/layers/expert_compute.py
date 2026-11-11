@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import weakref
 from collections.abc import Callable
 from functools import partial
 from types import ModuleType
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import torch
 from torch.distributed.tensor import DTensor
+from torch.optim.optimizer import register_optimizer_step_post_hook
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -126,12 +128,34 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
-    def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool) -> None:
+    """With ``cache_weights``, each expert weight is quantized once per optimizer step instead of on every
+    micro-batch and recompute: the caches, one per GEMM of each experts module, are dropped after every optimizer
+    step, the only place trainer weights change."""
+
+    def __init__(self, kernel: ModuleType, backward: str, four_over_six: bool, cache_weights: bool) -> None:
         def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
-            return kernel.grouped_gemm(x, weight, offs=offsets, backward=backward, four_over_six=four_over_six)
+            cache = next(self.slots) if self.slots is not None else None
+            return kernel.grouped_gemm(
+                x, weight, offs=offsets, backward=backward, four_over_six=four_over_six, weight_cache=cache
+            )
 
         super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
         self.kernel = kernel
+        self.slots = None
+        self.caches: weakref.WeakKeyDictionary | None = None
+        if cache_weights:
+            self.caches = weakref.WeakKeyDictionary()
+            register_optimizer_step_post_hook(lambda *_: self.caches.clear())
+
+    def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        if self.caches is None:
+            return super().__call__(experts, x, num_tokens_per_expert)
+        # The shared forward runs the module's GEMMs in a fixed order: the n-th GEMM uses the n-th cache
+        self.slots = iter(self.caches.setdefault(experts, [{}, {}, {}]))
+        try:
+            return super().__call__(experts, x, num_tokens_per_expert)
+        finally:
+            self.slots = None
 
     def validate(self, experts: "GroupedExperts") -> None:
         """Gate and up projections share one set of weight scales, so they must be fused; the kernel tiles in
