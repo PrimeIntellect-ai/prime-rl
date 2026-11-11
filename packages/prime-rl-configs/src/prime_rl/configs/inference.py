@@ -32,6 +32,42 @@ VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 QuantizationType = Literal["fp8_per_block", "mxfp8"]
 
 
+class EPLBConfig(BaseConfig):
+    """vLLM's EPLB settings, with defaults for RL. Weight updates load each expert into every slot it currently
+    occupies, so rebalancing and weight updates can both run."""
+
+    num_redundant_experts: int | None = Field(None, ge=0)
+    """Extra expert slots, which hold replicas of the most loaded experts. None (the default) gives every expert
+    parallel rank one: without replicas EPLB can only move experts between ranks, not split a hot expert's load.
+    ``num_experts + num_redundant_experts`` must divide by the expert parallel size."""
+
+    window_size: int = Field(1000, gt=0)
+    """Forward steps of expert load the placement is computed from."""
+
+    step_interval: int = Field(3000, gt=0)
+    """Forward steps between rearrangements."""
+
+    use_async: bool = True
+    """Move experts in the background over later steps instead of stalling one. A weight update drains moves in
+    flight before it loads."""
+
+    communicator: Literal["torch_nccl", "torch_gloo", "pynccl", "nixl"] = "torch_nccl"
+    """Backend that moves expert weights between ranks. vLLM's default stalled for minutes on its first
+    rearrangement in our tests; ``torch_nccl`` did not."""
+
+    log_balancedness: bool = True
+    """Log the mean over max per-rank expert load (1.0 is perfectly balanced) every
+    ``log_balancedness_interval`` steps."""
+
+    log_balancedness_interval: int = Field(100, gt=0)
+
+    def to_vllm(self, expert_parallel_size: int) -> dict[str, Any]:
+        config = self.model_dump()
+        if config["num_redundant_experts"] is None:
+            config["num_redundant_experts"] = expert_parallel_size
+        return config
+
+
 class VllmConfig(BaseConfig):
     """Arguments forwarded to the vLLM server, under vLLM's own argument names
     (https://docs.vllm.ai/en/latest/configuration/engine_args.html).
@@ -102,7 +138,11 @@ class VllmConfig(BaseConfig):
     """Enable expert parallelism for MoE models."""
 
     enable_eplb: bool = False
-    """Enable expert parallel load balancer (EPLB)."""
+    """Enable vLLM's expert parallel load balancer (EPLB): it rearranges and replicates MoE experts across expert
+    parallel ranks by their measured load. ``eplb`` holds its settings; the defaults are set for RL."""
+
+    eplb: "EPLBConfig" = Field(default_factory=lambda: EPLBConfig())
+    """EPLB settings, passed to vLLM as ``eplb_config`` when ``enable_eplb`` is on."""
 
     enable_ep_weight_filter: bool = True
     """Skip non-local expert weights at load time under expert parallelism, so each
@@ -659,6 +699,8 @@ class InferenceConfig(BaseConfig):
 
         extra_fields = self.vllm.model_extra or {}
         for key in (*type(self.vllm).model_fields, *extra_fields):
+            if key == "eplb":
+                continue
             value = getattr(self.vllm, key)
             # None extras are dropped too: `--vllm.foo None` means "use vLLM's default".
             if value is None and (key in self._OMIT_IF_NONE or key in extra_fields):
@@ -705,6 +747,11 @@ class InferenceConfig(BaseConfig):
         # an adapter named like a served base model, so serve the base under another name.
         if self.vllm.enable_lora and "served_model_name" not in extra_fields:
             namespace.served_model_name = [f"{self.vllm.model}-base"]
+
+        if self.vllm.enable_eplb and "eplb_config" not in extra_fields:
+            namespace.eplb_config = self.vllm.eplb.to_vllm(
+                self.vllm.tensor_parallel_size * self.vllm.data_parallel_size
+            )
 
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:

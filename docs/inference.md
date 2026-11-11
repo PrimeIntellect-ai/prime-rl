@@ -228,32 +228,25 @@ The cap starts from a safe bound derived from the engines (KV capacity divided b
 
 ### Expert Load Balancing
 
-RL supports vLLM expert parallel load balancing (EPLB) with NCCL weight updates.
-Reloads preserve the current expert placement and refresh every local replica.
-MoE kernels retain references to the weight and scale storage used by EPLB.
-Asynchronous EPLB transfers are drained before a reload so pending transfers cannot
-overwrite the incoming policy weights.
+vLLM's expert parallel load balancer (EPLB) moves and replicates MoE experts across expert parallel ranks by their measured load, so no rank waits on a hot expert. RL supports it with NCCL and filesystem weight updates: a reload writes each expert into every slot EPLB currently gives it, and drains asynchronous expert moves first so none can overwrite the incoming policy. Routed-experts replay is unaffected, since vLLM records logical expert ids before EPLB's mapping. NIXL and ModelExpress replay a load plan traced before any rearrangement and are rejected.
+
+One switch turns it on, with defaults chosen for RL:
 
 ```toml
-[weight_broadcast]
-type = "nccl"
-
 [inference.vllm]
 enable_expert_parallel = true
 enable_eplb = true
-
-[inference.vllm.eplb_config]
-communicator = "nixl"
-use_async = true
-num_redundant_experts = 8
 ```
 
-Choose a redundant expert count that makes the total physical expert count
-divisible by the expert parallel size. EPLB's `use_async`, `window_size`, and
-`step_interval` options are passed through to vLLM. The EPLB communicator moves
-experts between inference ranks independently of the NCCL policy-weight transfer.
-For NIXL, set `UCX_NET_DEVICES` to the appropriate InfiniBand device ports on each
-node (for example, `mlx5_0:1,mlx5_1:1`).
+| `[inference.vllm.eplb]` | default | why |
+|---|---|---|
+| `num_redundant_experts` | one per expert parallel rank | without replica slots EPLB can only move experts, not split a hot expert's load |
+| `communicator` | `torch_nccl` | vLLM's default stalled for minutes on its first rearrangement in our tests |
+| `use_async` | `true` | experts move in the background; weight updates drain moves in flight |
+| `window_size` / `step_interval` | 1000 / 3000 forward steps | vLLM's defaults |
+| `log_balancedness` | `true`, every 100 steps | mean over max per-rank expert load in the engine logs (1.0 is balanced) |
+
+`num_experts + num_redundant_experts` must divide by the expert parallel size (tensor parallel × data parallel). For the NIXL communicator, set `UCX_NET_DEVICES` to the InfiniBand ports of each node (for example, `mlx5_0:1,mlx5_1:1`).
 
 See the [two-node math debug config](../configs/debug/eplb/README.md) for an RL
 reload check with online FP8 quantization and asynchronous EPLB.

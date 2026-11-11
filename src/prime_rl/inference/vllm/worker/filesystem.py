@@ -48,4 +48,5 @@ class FileSystemWeightUpdateWorker(Worker):
             weights_iterator,
             self.model_runner.model_config,
             self.vllm_config,
+            eplb_state=self.model_runner.eplb_state,
         )

@@ -505,9 +505,12 @@ class RLConfig(BaseConfig):
         if (
             self.inference is not None
             and self.inference.vllm.enable_eplb
-            and self.trainer.weight_broadcast.type != "nccl"
+            and self.trainer.weight_broadcast.type not in ("nccl", "filesystem")
         ):
-            raise ValueError("inference.vllm.enable_eplb requires NCCL weight updates.")
+            raise ValueError(
+                "inference.vllm.enable_eplb needs NCCL or filesystem weight updates: they load each expert into the "
+                "slots EPLB currently gives it. NIXL and ModelExpress replay a load plan traced before any rearrangement."
+            )
         return self
 
     @model_validator(mode="after")

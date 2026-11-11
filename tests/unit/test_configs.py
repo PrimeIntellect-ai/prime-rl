@@ -868,20 +868,41 @@ def test_rl_nccl_broadcast_needs_two_gpus():
 
 
 @pytest.mark.parametrize("transport", ["nccl", "nixl", "filesystem"])
-def test_eplb_requires_nccl_weight_updates(transport):
+def test_eplb_needs_placement_aware_weight_updates(transport):
     data = {
         "trainer": {},
         "orchestrator": {},
         "weight_broadcast": {"type": transport},
         "inference": {"vllm": {"enable_eplb": True}},
     }
-    if transport == "nccl":
+    if transport in ("nccl", "filesystem"):
         config = RLConfig.model_validate(data)
         assert config.inference.vllm.enable_eplb
-        assert config.trainer.weight_broadcast.type == "nccl"
+        assert config.trainer.weight_broadcast.type == transport
     else:
-        with pytest.raises(ValueError, match="enable_eplb requires NCCL weight updates"):
+        with pytest.raises(ValueError, match="enable_eplb needs NCCL or filesystem weight updates"):
             RLConfig.model_validate(data)
+
+
+def test_eplb_defaults_for_rl():
+    from prime_rl.configs.inference import InferenceConfig
+
+    namespace = InferenceConfig.model_validate(
+        {"vllm": {"enable_eplb": True, "enable_expert_parallel": True, "data_parallel_size": 4}}
+    ).to_namespace()
+    # One replica slot per expert parallel rank, and a communicator that does not stall
+    assert namespace.eplb_config["num_redundant_experts"] == 4
+    assert namespace.eplb_config["communicator"] == "torch_nccl"
+    assert namespace.eplb_config["use_async"] is True
+    assert not hasattr(namespace, "eplb")
+
+    namespace = InferenceConfig.model_validate(
+        {"vllm": {"enable_eplb": True, "data_parallel_size": 4, "eplb": {"num_redundant_experts": 0}}}
+    ).to_namespace()
+    assert namespace.eplb_config["num_redundant_experts"] == 0
+
+    # Off: vLLM gets no EPLB config at all
+    assert not hasattr(InferenceConfig.model_validate({}).to_namespace(), "eplb_config")
 
 
 def test_multi_node_auto_inference_parallelism():
