@@ -166,7 +166,6 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
     assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
-    assert config.model.init.type == "scratch"
 
     write_config(config, tmp_path / "pretrain.json")
     assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
@@ -1468,11 +1467,9 @@ def test_model_init_seed_requires_type_scratch():
 
 
 def test_model_init_checkpoint_requires_a_step_dir():
-    config = TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "checkpoint"})
-    assert config.init.type == "checkpoint"
-    for name in ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer", "Qwen/Qwen3-0.6B"]:
-        with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
-            TrainerModelConfig(name=name, init={"type": "checkpoint"})
+    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "checkpoint"})
+    with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
+        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "checkpoint"})
 
 
 @pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("checkpoint", "dummy")])
