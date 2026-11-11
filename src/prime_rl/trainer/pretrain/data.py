@@ -14,6 +14,9 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
 
 MAX_OPEN_FILES = 256
+# Best-fit packing reads the document index of nearly every file for every group, so more indexes than token files stay
+# mapped: indexes are small, the limit is the file descriptor each map holds.
+MAX_OPEN_INDEXES = 512
 
 # Best-fit packing packs the documents of this many windows together: larger groups pad less, but every data rank and
 # dataloader worker packs every group.
@@ -82,21 +85,28 @@ class TokenShards:
         # The index of every file's first document in the stream.
         self.doc_offsets = np.cumsum([0, *(Path(f"{file}.index").stat().st_size // 8 for file in self.files)])
         self.seed = seed
-        self.memmaps: OrderedDict[int, tuple[np.memmap, np.memmap]] = OrderedDict()
+        self.token_maps: OrderedDict[int, np.memmap] = OrderedDict()
+        self.index_maps: OrderedDict[int, np.memmap] = OrderedDict()
 
     def open(self, file_index: int) -> tuple[np.memmap, np.memmap]:
-        # Opened lazily, so every dataloader worker maps the files itself. At most MAX_OPEN_FILES stay open (each
-        # holds two file descriptors), the least recently used are closed.
-        if file_index in self.memmaps:
-            self.memmaps.move_to_end(file_index)
+        """The tokens and the document index of a file. Mapped lazily, so every dataloader worker maps the files
+        itself; every map holds a file descriptor, and the least recently used maps are closed."""
+        if file_index in self.token_maps:
+            self.token_maps.move_to_end(file_index)
         else:
-            file = self.files[file_index]
-            tokens = np.memmap(file, dtype=self.dtypes[file_index], mode="r")
-            doc_ends = np.memmap(f"{file}.index", dtype="<u8", mode="r")
-            self.memmaps[file_index] = tokens, doc_ends
-            if len(self.memmaps) > MAX_OPEN_FILES:
-                self.memmaps.popitem(last=False)
-        return self.memmaps[file_index]
+            self.token_maps[file_index] = np.memmap(self.files[file_index], dtype=self.dtypes[file_index], mode="r")
+            if len(self.token_maps) > MAX_OPEN_FILES:
+                self.token_maps.popitem(last=False)
+        return self.token_maps[file_index], self.index(file_index)
+
+    def index(self, file_index: int) -> np.memmap:
+        if file_index in self.index_maps:
+            self.index_maps.move_to_end(file_index)
+        else:
+            self.index_maps[file_index] = np.memmap(f"{self.files[file_index]}.index", dtype="<u8", mode="r")
+            if len(self.index_maps) > MAX_OPEN_INDEXES:
+                self.index_maps.popitem(last=False)
+        return self.index_maps[file_index]
 
     def locate(self, position: int, length: int) -> tuple[int, int, int]:
         """File index, offset in the file and length of the contiguous file run at stream ``position``,
@@ -145,7 +155,7 @@ class TokenShards:
             selected = files == file_index
             # uint64 like the index, so that searchsorted does not convert the whole index.
             local = (positions[selected] - self.starts[file_index]).astype(np.uint64)
-            _, doc_ends = self.open(int(file_index))
+            doc_ends = self.index(int(file_index))
             # Document i starts where document i - 1 ends, document 0 at 0.
             counts[selected] = self.doc_offsets[file_index] + np.where(
                 local > 0, np.searchsorted(doc_ends, local) + 1, 0
@@ -167,7 +177,7 @@ class TokenShards:
         for file_index in np.unique(files):
             selected = files == file_index
             local = index[selected] - self.doc_offsets[file_index]
-            _, doc_ends = self.open(int(file_index))
+            doc_ends = self.index(int(file_index))
             begin = np.where(local > 0, doc_ends[np.maximum(local - 1, 0)].astype(np.int64), 0)
             begins[selected], lengths[selected] = begin, doc_ends[local].astype(np.int64) - begin
         return files, begins, lengths
