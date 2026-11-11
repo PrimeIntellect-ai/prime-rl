@@ -282,7 +282,6 @@ class InitConfig(BaseConfig):
     seed: int = 0
     """Seed for the ``scratch`` init: the same seed gives the same weights."""
 
-    # Fields that only apply to ``type = "scratch"``.
     scratch_fields: ClassVar[tuple[str, ...]] = ("seed",)
 
     @model_validator(mode="after")
