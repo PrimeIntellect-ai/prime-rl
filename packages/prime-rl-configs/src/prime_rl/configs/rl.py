@@ -23,6 +23,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    RLInitConfig,
     TokenizerConfig,
     TrainerConfig,
     rl_micro_batch_multiple,
@@ -103,6 +104,9 @@ class SharedModelConfig(BaseConfig):
 
     vlm: "VLMConfig | None" = None
     """VLM configuration. Set this to enable vision-language model support."""
+
+    init: RLInitConfig | None = None
+    """Where the trainer's weights start. Propagates to ``trainer.model.init``."""
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -406,6 +410,15 @@ class RLConfig(BaseConfig):
                     "orchestrator.monitors.wandb.project": orchestrator_wandb.project,
                 },
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dummy_load(self):
+        """Weights other than the HF model's reach inference with the trainer's startup broadcast, so vLLM loads
+        none."""
+        if self.inference is not None and self.trainer.model.init.type != "hf":
+            check_derived(self.inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
+            self.inference.vllm.load_format = "dummy"
         return self
 
     @model_validator(mode="after")

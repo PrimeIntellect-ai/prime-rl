@@ -22,6 +22,7 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+from prime_rl.utils.validation import check_derived
 
 
 class BaseDataConfig(BaseConfig):
@@ -198,6 +199,11 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     "make sure to set --enable_lora and --max-lora-rank.",
                     stacklevel=2,
                 )
+
+        # Weights other than the HF model's reach the server with the trainer's startup broadcast.
+        if self.inference is not None and self.model.init.type != "hf":
+            check_derived(self.inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
+            self.inference.vllm.load_format = "dummy"
 
         if self.weight_broadcast is None:
             if self.model.lora is not None or self.inference is None:

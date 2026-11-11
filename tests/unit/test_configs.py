@@ -1475,6 +1475,21 @@ def test_model_init_checkpoint_requires_a_step_dir():
             TrainerModelConfig(name=name, init={"type": "checkpoint"})
 
 
+@pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("checkpoint", "dummy")])
+def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_type: str, load_format: str | None):
+    name = "runs/sft/checkpoints/step_500" if init_type == "checkpoint" else "Qwen/Qwen3-0.6B"
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": name, "init": {"type": init_type}},
+            "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "inference": {},
+        }
+    )
+    assert config.trainer.model.init.type == init_type
+    assert getattr(config.inference.to_namespace(), "load_format", None) == load_format
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
 def test_score_centering_replays_top_p_alone():
     config = RLConfig.model_validate(
         {
