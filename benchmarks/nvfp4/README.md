@@ -19,6 +19,15 @@ pytest tests/test_nvfp4_moe.py tests/test_nvfp4_dispatch.py tests/test_mxfp8_moe
   row-wise half differs (torchao's CUDA and Triton quantizers round alike but are separate code), keep the one-pass
   column-wise output and the Triton row-wise one.
 
+**First, the open question for the whole recipe: how the engines quantize the second GEMM's input** (the SwiGLU output
+feeding the down projection). The trainer here quantizes both GEMM inputs with per-token scales. vLLM's online
+`nvfp4_per_token` runs FlashInfer's TRTLLM MoE with neutral input scales and "per-token scales derived at runtime",
+which is clearly per-token for the first input but not visibly so for the second. DeepGEMM's NVFP4 Mega MoE (in
+vllm-project/DeepGEMM) uses a static global scale there instead. Dump the quantized down-projection inputs from a vLLM
+engine (`VLLM_MOE_BACKEND` pinned, TRTLLM first) and from the trainer on the same tokens and weights. If they differ,
+switch the trainer's second quantization to the engine's scheme before running any RL. A per-token vs static mismatch
+there would show up as elevated mismatch KL in step 3 without any other symptom.
+
 Then the matching-numerics check that motivates the whole recipe: the trainer's quantizer must produce FlashInfer's
 bytes (what vLLM's engines run). #12 checked it on its original stack; rerun it on this one, with and without 4/6.
 
