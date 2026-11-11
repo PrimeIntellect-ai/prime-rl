@@ -89,7 +89,6 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             kernel=prime_kernels.load("nvfp4_moe"),
             backward=compute.backward,
             four_over_six=compute.four_over_six,
-            cache_weights=compute.cache_weights,
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 

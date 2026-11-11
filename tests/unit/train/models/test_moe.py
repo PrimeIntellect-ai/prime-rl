@@ -11,7 +11,6 @@ from prime_rl.trainer.models.layers.expert_compute import (
     BF16ExpertCompute,
     GroupedGemmExpertCompute,
     NVFP4ExpertCompute,
-    clear_quantized_weight_caches,
 )
 from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -324,22 +323,9 @@ class _FakeNVFP4Kernel:
             return "NVFP4 expert dimensions must be positive multiples of 32"
         return None
 
-    quantized = 0
-
-    @classmethod
-    def grouped_gemm(cls, x, weight, *, offs, backward, four_over_six, weight_cache):
-        # Quantizes a weight unless its cache already holds it, like the real kernel
-        if weight_cache is None or "forward" not in weight_cache:
-            cls.quantized += 1
-            if weight_cache is not None:
-                weight_cache["forward"] = weight
-        return torch._grouped_mm(x, weight, offs=offs)
-
 
 def test_nvfp4_expert_compute_needs_fused_gate_up_and_aligned_shapes():
-    compute = NVFP4ExpertCompute(
-        kernel=_FakeNVFP4Kernel, backward="dequant_bf16", four_over_six=True, cache_weights=False
-    )
+    compute = NVFP4ExpertCompute(kernel=_FakeNVFP4Kernel, backward="dequant_bf16", four_over_six=True)
     assert compute.token_group_alignment == 32
 
     unfused = MoE.from_args(MoEArgs(num_experts=2), dim=64, hidden_dim=64, shared_expert=None)
@@ -355,18 +341,3 @@ def test_nvfp4_expert_compute_needs_fused_gate_up_and_aligned_shapes():
     fuse_gate_up_projections(misaligned.experts)
     with pytest.raises(ValueError, match="multiples of 32"):
         misaligned.experts.set_compute(compute)
-
-
-def test_nvfp4_expert_compute_quantizes_weights_once_per_optimizer_step():
-    compute = NVFP4ExpertCompute(kernel=_FakeNVFP4Kernel, backward="mxfp8", four_over_six=True, cache_weights=True)
-    moe = MoE.from_args(MoEArgs(num_experts=2), dim=64, hidden_dim=64, shared_expert=None)
-    fuse_gate_up_projections(moe.experts)
-    moe.experts.set_compute(compute)
-    tokens = torch.tensor([32, 32])
-    _FakeNVFP4Kernel.quantized = 0
-    for _ in range(3):  # micro-batches: gate_up and down quantized on the first only
-        compute(moe.experts, torch.randn(64, 64, dtype=torch.bfloat16), tokens)
-    assert _FakeNVFP4Kernel.quantized == 2
-    clear_quantized_weight_caches()  # after the optimizer step: new weights, quantized again
-    compute(moe.experts, torch.randn(64, 64, dtype=torch.bfloat16), tokens)
-    assert _FakeNVFP4Kernel.quantized == 4
