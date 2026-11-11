@@ -222,6 +222,11 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
     IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
     then quantizes slightly differently from the sampler: an ablation until the engines can match."""
+    down_input_scale: Literal["per_token", "static"] = "per_token"
+    """Global scale of the second GEMM's input (the SwiGLU output feeding the down projection): one per token, from its
+    amax over the whole intermediate row (Composer 2's per-token NVFP4), or one static unit scale. prime-kernels'
+    grouped GEMM implements ``per_token``; the Mega MoE NVFP4 kernel implements ``static`` until its per-token mode
+    lands."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -276,9 +281,29 @@ def mega_moe_precision(compute: "MoEComputeConfig") -> str:
         return "mxfp8"
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         return "fp8" if compute.forward == "fp8" else "fp8_bwd"
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        unsupported = [
+            reason
+            for reason, applies in (
+                ("backward = 'mxfp8' (its backward kernel is MXFP8)", compute.backward != "mxfp8"),
+                ("four_over_six = false (no 4/6 block scaling)", compute.four_over_six),
+                (
+                    "down_input_scale = 'static' (per-token is not in the kernel yet)",
+                    compute.down_input_scale != "static",
+                ),
+            )
+            if applies
+        ]
+        if unsupported:
+            raise ValueError(
+                "Mega MoE's NVFP4 kernel (prime-mega-moe, from vllm-project/DeepGEMM) needs model.moe.compute "
+                + ", ".join(unsupported)
+                + "."
+            )
+        return "nvfp4_exact_division" if compute.exact_division else "nvfp4"
     raise ValueError(
         f"Mega MoE cannot run model.moe.compute {compute.model_dump(exclude={'apply_to'})}: it supports type 'bf16' "
-        "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil') and 'deepgemm_fp8'."
+        "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil'), 'deepgemm_fp8' and 'nvfp4'."
     )
 
 
@@ -437,6 +462,11 @@ class ModelConfig(BaseModelConfig):
             mega_moe_precision(compute)  # raises for what Mega MoE cannot run
         elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
             raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
+        elif isinstance(compute, NVFP4MoEComputeConfig) and compute.down_input_scale != "per_token":
+            raise ValueError(
+                "model.moe.compute.down_input_scale = 'static' needs model.moe.dispatch.type = 'mega_moe': "
+                "prime-kernels' NVFP4 grouped GEMM scales the down-projection input per token."
+            )
         if self.ep == 1:
             return self
 

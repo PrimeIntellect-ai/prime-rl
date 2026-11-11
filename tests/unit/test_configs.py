@@ -1593,7 +1593,11 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
         ({"moe": {"compute": {"type": "nvfp4", "backward": "fp4"}}}, "Input should be"),
         (
             {"moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}}},
-            "Mega MoE cannot run",
+            "four_over_six = false",
+        ),
+        (
+            {"moe": {"compute": {"type": "nvfp4", "down_input_scale": "static"}}},
+            "needs model.moe.dispatch.type = 'mega_moe'",
         ),
     ],
 )
@@ -1646,3 +1650,19 @@ def test_engines_that_quantize_experts_otherwise_are_rejected(compute, engines, 
         RLConfig.model_validate(
             {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {"vllm": engines}}
         )
+
+
+@pytest.mark.parametrize("exact_division, expected", [(False, "nvfp4"), (True, "nvfp4_exact_division")])
+def test_mega_moe_runs_nvfp4_with_its_kernel_settings(exact_division, expected):
+    from prime_rl.configs.trainer import mega_moe_precision
+
+    compute = {"type": "nvfp4", "four_over_six": False, "down_input_scale": "static", "exact_division": exact_division}
+    dispatch = {"type": "mega_moe", "max_tokens_per_rank": 8192}
+    model = {"moe": {"dispatch": dispatch, "compute": compute}}
+    assert mega_moe_precision(TrainerModelConfig.model_validate(model).moe.compute) == expected
+    with pytest.raises(ValidationError, match="backward = 'mxfp8'"):
+        TrainerModelConfig.model_validate({"moe": {"dispatch": dispatch, "compute": {**compute, "backward": "bf16"}}})
+    # Engines stay on vLLM's TRTLLM NVFP4 backend by default: allowed, with a warning
+    with pytest.warns(UserWarning, match="FlashInfer TRTLLM"):
+        config = RLConfig.model_validate({"trainer": {"model": model}, "orchestrator": {}, "inference": {}})
+    assert config.inference.moe_nvfp4.four_over_six is False

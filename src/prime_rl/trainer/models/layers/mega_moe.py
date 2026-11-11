@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
-MegaMoePrecision = Literal["bf16", "mxfp8", "fp8", "fp8_bwd"]
+MegaMoePrecision = Literal["bf16", "mxfp8", "fp8", "fp8_bwd", "nvfp4", "nvfp4_exact_division"]
 # `deep_gemm` symbols each precision needs, named `<precision>_mega_moe[_backward]`; only the prime-mega-moe
 # build has the training kernels
 _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
@@ -34,12 +34,17 @@ _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
         "quantize_l1_weight_for_fp8_mega_moe",
     ),
     "fp8_bwd": ("bf16_mega_moe", "fp8_mega_moe_backward", "quantize_weight_blockwise_fp8"),
+    # NVFP4 forward (ported from vllm-project/DeepGEMM), MXFP8 backward
+    "nvfp4": ("nvfp4_mega_moe", "NVFP4SymmBuffer", "mxfp8_mega_moe_backward"),
+    "nvfp4_exact_division": ("nvfp4_mega_moe", "NVFP4SymmBuffer", "mxfp8_mega_moe_backward"),
 }
 _MIN_CAPABILITY: dict[str, tuple[int, int]] = {
     "bf16": (9, 0),
     "mxfp8": (10, 0),
     "fp8": (9, 0),
     "fp8_bwd": (9, 0),
+    "nvfp4": (10, 0),
+    "nvfp4_exact_division": (10, 0),
 }
 
 
@@ -138,6 +143,12 @@ def build_mega_moe_buffers(
 
     check_mega_moe_dims(hidden, intermediate_hidden)
     args = (group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden)
+    if precision.startswith("nvfp4"):
+        # The NVFP4 forward has its own buffer layout (packed E2M1 tokens with per-16 scales and per-token scales);
+        # the MXFP8 backward stages into the usual one
+        return MegaMoeBuffers(
+            forward=deep_gemm.NVFP4SymmBuffer(*args), backward=deep_gemm.SymmBuffer(*args, mma_type="fp8xfp8")
+        )
     forward_mma_type, backward_mma_type = _STAGING_MMA_TYPES[precision]
     backward = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
     if forward_mma_type == backward_mma_type:
@@ -357,11 +368,79 @@ def mega_moe_backward_fp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj
     return dx, dw1, dw2, dtopk
 
 
+# NVFP4 (SM100/SM103): routed experts in packed E2M1 with E4M3 scales per 16 values. Tokens carry one FP32 scale each
+# (row amax / 2688); weights one per expert (amax / 2688), applied as the kernel's `l1_alpha` / `l2_alpha`. The SwiGLU
+# output is requantized inside the kernel with a static unit global scale. The backward is the MXFP8 one, on the BF16
+# operands (straight-through, as Composer 2's NVFP4 forward / MXFP8 backward).
+
+
+def _nvfp4_expert_weights(weight: torch.Tensor) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """``[E, N, K]`` BF16 expert weights as the kernel's operand (packed E2M1, E4M3 scales packed four per int32 in
+    MN-major layout) and their per-expert dequantization scales. vLLM's online NVFP4 quantizer, which its engines run
+    on the same BF16 weights, so trainer and engines hold the same weight bytes."""
+    from vllm.model_executor.layers.quantization.online.nvfp4 import _quantize_moe_weight_to_nvfp4
+
+    packed, block_scale, global_scale = _quantize_moe_weight_to_nvfp4(weight.contiguous())
+    scales = block_scale.contiguous().view(torch.int32)
+    return (packed.view(torch.int8), scales.transpose(-1, -2).contiguous().transpose(-1, -2)), global_scale.float()
+
+
+def _mega_moe_forward_nvfp4(
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, *, exact_division: bool
+):
+    import deep_gemm
+    from vllm.model_executor.layers.fused_moe.prepare_megamoe import prepare_megamoe_nvfp4_inputs
+
+    l1, l1_scale = _nvfp4_expert_weights(gate_up_proj)
+    l2, l2_scale = _nvfp4_expert_weights(down_proj)
+    l1, l2 = deep_gemm.transform_weights_for_mega_moe(l1, l2)
+    num_tokens = x.shape[0]
+    # The engines' own token staging: per-token scales, E2M1 values and per-16 E4M3 scales, routing
+    prepare_megamoe_nvfp4_inputs(
+        x,
+        topk_weights.view(num_tokens, buffer.num_topk),
+        topk_idx.view(num_tokens, buffer.num_topk),
+        buffer.x[:num_tokens],
+        buffer.x_sf[:num_tokens],
+        buffer.x_scales[:num_tokens],
+        buffer.topk_idx[:num_tokens],
+        buffer.topk_weights[:num_tokens],
+    )
+    y = torch.empty_like(x)
+    deep_gemm.nvfp4_mega_moe(
+        y,
+        l1,
+        l2,
+        buffer,
+        activation_clamp=activation_clamp,
+        l1_alpha=l1_scale,
+        l2_alpha=l2_scale,
+        l2_activation_scale=1.0,
+        use_x_scales=True,
+        exact_division=exact_division,
+    )
+    return y
+
+
+def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp):
+    return _mega_moe_forward_nvfp4(
+        x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, exact_division=False
+    )
+
+
+def mega_moe_forward_nvfp4_exact_division(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp):
+    return _mega_moe_forward_nvfp4(
+        x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, exact_division=True
+    )
+
+
 MEGA_MOE_IMPLS: dict[str, tuple[Callable, Callable]] = {
     "bf16": (mega_moe_forward_bf16, mega_moe_backward_bf16),
     "mxfp8": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8),
     "fp8": (mega_moe_forward_fp8, mega_moe_backward_fp8),
     "fp8_bwd": (mega_moe_forward_bf16, mega_moe_backward_fp8),
+    "nvfp4": (mega_moe_forward_nvfp4, mega_moe_backward_mxfp8),
+    "nvfp4_exact_division": (mega_moe_forward_nvfp4_exact_division, mega_moe_backward_mxfp8),
 }
 
 

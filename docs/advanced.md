@@ -127,6 +127,7 @@ enabled = ["gate_up"]  # gate and up projections share one set of NVFP4 weight s
 - **Matching numerics:** `four_over_six = true` (default) uses FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection) in the trainer, and `rl` sets `FLASHINFER_NVFP4_4OVER6=1` on the engines so the sampler quantizes the same way. The trainer's quantizer matches FlashInfer's bytes; set `four_over_six = false` on the trainer to turn it off on both sides.
 - `rl` rejects an `inference.vllm.quantization` or an `inference.moe_nvfp4` that differs from the trainer's experts, since rollouts would be sampled with other numerics than the trainer computes.
 - On Hopper (H100/H200) the trainer fails at setup with a pointer to `mxfp8` or `deepgemm_fp8`.
+- **Mega MoE:** with `[trainer.model.moe.dispatch] type = "mega_moe"`, the experts run prime-mega-moe's NVFP4 Mega MoE kernel (forward) and MXFP8 Mega MoE backward. That kernel quantizes the down-projection input with a static unit scale and has no 4/6, so set `four_over_six = false` and `down_input_scale = "static"`. The engines keep vLLM's FlashInfer TRTLLM NVFP4 backend; `rl` warns that the two match only where their quantizations agree.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 

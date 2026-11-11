@@ -514,6 +514,14 @@ class RLConfig(BaseConfig):
         compute = model.moe.compute
         if not isinstance(compute, NVFP4MoEComputeConfig):
             return self
+        if self.inference is not None and model.moe.dispatch.type == "mega_moe":
+            warnings.warn(
+                "The trainer's experts run Mega MoE's NVFP4 kernel (static down-projection input scale, no 4/6) while "
+                "the engines run vLLM's FlashInfer TRTLLM NVFP4 backend: trainer and sampler match only where their "
+                "quantizations agree, which the Blackwell byte check has to confirm. Compare mismatch KL against the "
+                "standalone NVFP4 compute.",
+                stacklevel=2,
+            )
         if "enable_router_replay" not in self.trainer.model_fields_set:
             self.trainer.enable_router_replay = True
         linear = None
