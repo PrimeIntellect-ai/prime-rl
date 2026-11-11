@@ -74,10 +74,15 @@ class GatedConnection(Connection):
         gate_act: str = "sigmoid",
         init_std: float = 0.02,
         fixed_injection: bool = False,
+        rho: list[float] | None = None,
+        sublayer: int = 1,
     ) -> None:
         super().__init__(hidden_size)
         self.streams = streams
         self.read_scale = read_scale
+        # per-stream forget factors applied once per block (on the MLP write), as in static_streams
+        self.rho = rho
+        self.sublayer = sublayer
         # "sigmoid": gates in (0, 1), ~0.5 at init; "2sigmoid": gates in (0, 2), ~1 at init (starts near plain).
         self.gate_scale = {"sigmoid": 1.0, "2sigmoid": 2.0}[gate_act]
         self.init_std = init_std
@@ -114,6 +119,8 @@ class GatedConnection(Connection):
 
     def write(self, state, output, context, hidden=None) -> torch.Tensor:
         streams = split_streams(state, self.streams, self.hidden_size)
+        if self.rho is not None and self.sublayer == 1:
+            streams = streams * torch.tensor(self.rho, dtype=state.dtype, device=state.device).unsqueeze(-1)
         if context is None:  # fixed injection
             return (streams + output.unsqueeze(-2)).flatten(-2)
         return (streams + output.unsqueeze(-2) * context.unsqueeze(-1)).flatten(-2)
@@ -564,6 +571,7 @@ class GatedFinal(GatedConnection):
 
     def __init__(self, hidden_size: int, streams: int, low_rank: int, read_scale: float = 1.0, **kwargs) -> None:
         kwargs.pop("fixed_injection", None)
+        kwargs.pop("rho", None)
         super().__init__(hidden_size, streams, low_rank, injection=False, read_scale=read_scale, **kwargs)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -586,6 +594,8 @@ def make_connection(config, layer_idx: int, sublayer: int) -> Connection:
                 gate_act=residual.get("gate_act", "sigmoid"),
                 init_std=residual.get("init_std", 0.02),
                 fixed_injection=not residual.get("injection", True),
+                rho=residual.get("rho"),
+                sublayer=sublayer,
             )
         case "static_streams":
             return StaticStreamsConnection(hidden_size, sublayer, residual["streams"], residual.get("rho"))
