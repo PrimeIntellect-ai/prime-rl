@@ -156,6 +156,10 @@ def inference_poll(
         complete = len(reported) == len(group) and seconds > 0
         busy[role] = min(sum(reported) / (len(group) * seconds), 1.0) if complete else None
         engines[role] = _engine_steps([s for s in group if s.steps_delta and s.busy_delta])
+    # The orchestrator's pause spans a whole weight update, transfer included, while the engines stop only for the
+    # swap itself (with a large model and filesystem updates the update can last as long as a step). A poll in which
+    # an engine executed steps saw the engines running.
+    stepped = any(sample.steps_delta for sample in samples)
     return InferencePoll(
         seconds=seconds,
         generated=sum(sample.generation_tokens_delta for sample in samples if sample.role != "prefill"),
@@ -163,7 +167,7 @@ def inference_poll(
         env_bound=env_bound,
         busy=busy,
         engines=engines,
-        paused=paused,
+        paused=paused and not stepped,
     )
 
 

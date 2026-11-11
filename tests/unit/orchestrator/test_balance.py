@@ -263,3 +263,30 @@ def test_lockstep_moe_ranks_are_fit_as_one_engine():
     # The group holds 512 sequences: its throughput there over its throughput at 48
     assert fit.full_batch == pytest.approx(512, rel=0.01)
     assert fit.gain == pytest.approx((512 / (0.02 + 0.0512)) / (48 / (0.02 + 0.0048)), rel=0.05)
+
+
+def test_a_weight_update_that_keeps_engines_stepping_does_not_blank_the_window():
+    from prime_rl.orchestrator.balance import inference_poll
+    from prime_rl.orchestrator.concurrency import EngineLoadSample
+
+    def sample(steps):
+        return EngineLoadSample(
+            engine_id="server/0",
+            role=None,
+            kv_capacity_tokens=None,
+            max_model_len=None,
+            waiting=0,
+            busy_delta=0.4 * POLL_S if steps else 0.0,
+            steps_delta=steps,
+        )
+
+    # The orchestrator flags a long update (a transfer the engines keep generating through) as paused; only polls
+    # where no engine stepped count as the engines' pause
+    assert not inference_poll([sample(100)], POLL_S, finished=1, env_bound=False, paused=True).paused
+    assert inference_poll([sample(0)], POLL_S, finished=0, env_bound=False, paused=True).paused
+    clock = Clock()
+    balance = BalanceAdvisor(BalanceConfig(pools=pools(), window_minutes=30), clock=clock)
+    for i in range(45 * 12):
+        clock.now += POLL_S
+        balance.observe(inference_poll([sample(100)], POLL_S, finished=1, env_bound=False, paused=i % 7 != 0))
+    assert balance.utilization("inference") == pytest.approx(0.4)
