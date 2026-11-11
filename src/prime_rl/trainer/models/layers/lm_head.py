@@ -130,7 +130,9 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if temperature is None:
             assert support is None, "Sampling evidence requires per-token temperatures"
-            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size, self.softcap)
+            # needs_input_grad follows requires_grad, also under no_grad: a detached weight skips the gradients there.
+            weight = self.weight if torch.is_grad_enabled() else self.weight.detach()
+            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
@@ -490,17 +492,16 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None, None, None, None, None, None, None
 
 
-# The GPUs quack's README supports: H100, B200/B300 and RTX 50
-_QUACK_CROSS_ENTROPY_CAPABILITIES = ((9, 0), (10, 0), (10, 3), (12, 0))
+# The GPUs the kernel was tested on: H100
+_QUACK_CROSS_ENTROPY_CAPABILITIES = ((9, 0),)
 
 
 def _quack_cross_entropy_supported(capability: tuple[int, int], dtype: torch.dtype, vocab: int) -> bool:
     """Whether quack's fused cross-entropy kernel takes rows of ``vocab`` logits of ``dtype`` on a GPU of this compute
-    capability. It loads at least 4 bytes at a time, so 16-bit logits need an even vocabulary, and the 99 KB of shared
-    memory of an RTX 50 hold fp32 rows of at most 128K."""
-    if capability not in _QUACK_CROSS_ENTROPY_CAPABILITIES or vocab * dtype.itemsize % 4:
-        return False
-    return not (capability[0] == 12 and dtype == torch.float32 and vocab > 128 * 1024)
+    capability. It loads at least 4 bytes at a time, so 16-bit logits need an even vocabulary."""
+    on_supported_gpu = capability in _QUACK_CROSS_ENTROPY_CAPABILITIES
+    rows_are_4_byte_multiples = vocab * dtype.itemsize % 4 == 0
+    return on_supported_gpu and rows_are_4_byte_multiples
 
 
 def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool) -> Tensor | None:
@@ -512,9 +513,13 @@ def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool
     ):
         from quack.cross_entropy import cross_entropy_fwd_out
 
-        grad_logits = logits if with_grad else None
-        cross_entropy_fwd_out(logits, labels, None, loss, None, grad_logits, None, IGNORE_INDEX)
-        return grad_logits
+        # The kernel reads the label's logit unchecked: check the labels on the device, without a host sync.
+        in_vocab = (labels >= 0) & (labels < logits.shape[1])
+        torch._assert_async((in_vocab | (labels == IGNORE_INDEX)).all())
+        # dx=None selects quack's online-softmax variant, which returns NaN when a warp's columns all lie past the
+        # vocab (Dao-AILab/quack#64). Always writing the gradient keeps the two-pass variant.
+        cross_entropy_fwd_out(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
+        return logits if with_grad else None
 
     valid = labels != IGNORE_INDEX
     target = labels.clamp(min=0).unsqueeze(-1)

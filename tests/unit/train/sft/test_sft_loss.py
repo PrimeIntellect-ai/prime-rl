@@ -73,15 +73,10 @@ def test_fused_lm_head_with_temperature_keeps_logprob_path(chunk_size):
     "capability, dtype, vocab, supported",
     [
         ((9, 0), torch.bfloat16, 151936, True),
-        ((10, 0), torch.bfloat16, 151936, True),
-        ((10, 3), torch.bfloat16, 151936, True),
-        ((12, 0), torch.bfloat16, 202048, True),
-        ((8, 0), torch.bfloat16, 151936, False),
-        ((9, 0), torch.bfloat16, 50257, False),
         ((9, 0), torch.float32, 50257, True),
-        ((12, 0), torch.float32, 202048, False),
-        ((12, 1), torch.bfloat16, 151936, False),
-        ((11, 0), torch.bfloat16, 151936, False),
+        ((9, 0), torch.bfloat16, 50257, False),
+        ((8, 0), torch.bfloat16, 151936, False),
+        ((10, 0), torch.bfloat16, 151936, False),
     ],
 )
 def test_quack_cross_entropy_only_on_supported_gpus_and_rows(capability, dtype, vocab, supported):
@@ -97,9 +92,10 @@ requires_quack_cross_entropy = pytest.mark.skipif(
 
 @pytest.mark.gpu
 @requires_quack_cross_entropy
-@pytest.mark.parametrize("vocab", [37, 32002, 201088])
+@pytest.mark.parametrize("vocab", [37, 32002, 151936, 201088])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype):
+@pytest.mark.parametrize("with_grad", [True, False])
+def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype, with_grad):
     """quack's fused kernel gives the per-token loss and logits gradient of the eager math (the path on CPUs and on
     GPUs quack does not support), zero on masked tokens."""
     torch.manual_seed(0)
@@ -109,17 +105,22 @@ def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, dtype):
 
     def run():
         loss = torch.empty(300, device="cuda")
-        grad_logits = lm_head_module._cross_entropy(logits.clone(), labels, loss, with_grad=True)
-        return loss, grad_logits.to(dtype)
+        grad_logits = lm_head_module._cross_entropy(logits.clone(), labels, loss, with_grad=with_grad)
+        return loss, grad_logits
 
-    fused = run()
+    fused_loss, fused_grad = run()
     monkeypatch.setattr(lm_head_module, "_quack_cross_entropy_supported", lambda *args: False)
-    torch.testing.assert_close(fused, run())
+    eager_loss, eager_grad = run()
+    torch.testing.assert_close(fused_loss, eager_loss)
+    if with_grad:
+        torch.testing.assert_close(fused_grad.to(dtype), eager_grad.to(dtype))
+    else:
+        assert fused_grad is None and eager_grad is None
 
 
 @pytest.mark.gpu
 @requires_quack_cross_entropy
-@pytest.mark.parametrize("vocab, hidden", [(37, 8), (32002, 100), (201088, 1024)])
+@pytest.mark.parametrize("vocab, hidden", [(37, 8), (32002, 100), (151936, 256), (201088, 1024)])
 @pytest.mark.parametrize("chunk_size", [1, 96, 4096])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("softcap", [None, 20.0])
