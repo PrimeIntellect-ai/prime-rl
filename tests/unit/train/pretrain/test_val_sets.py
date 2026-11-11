@@ -38,15 +38,6 @@ def test_head_logprobs_chunks_match_the_full_softmax():
     assert torch.equal(hits, logits.argmax(-1) == targets)
 
 
-def test_pairs_requests_fit_the_window(tmp_path):
-    (tmp_path / "pairs").mkdir()
-    table = pa.table({"good": ["a long good sentence", "ok"], "bad": ["a long bad sentence!", "no"]})
-    pq.write_table(table, tmp_path / "pairs" / "test.parquet")
-    (tmp_path / "pairs" / "meta.json").write_text(json.dumps({"kind": "pairs"}))
-    eval_set = prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=8, bos=True)
-    assert all(len(ids) - 1 <= 8 for ids, _ in eval_set.requests)
-
-
 def test_requests_without_bos_start_at_the_text(tmp_path):
     for name, kind, columns in [
         ("docs", "ppl", {"text": ["hello"]}),
@@ -56,18 +47,21 @@ def test_requests_without_bos_start_at_the_text(tmp_path):
         (tmp_path / name).mkdir()
         pq.write_table(pa.table(columns), tmp_path / name / "test.parquet")
         (tmp_path / name / "meta.json").write_text(json.dumps({"kind": kind}))
-    docs = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=False)
+    docs = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2)
     assert docs.requests == [([ord(char) for char in "hello"] + [2], 1)]
-    assert docs.context["bytes"].tolist() == [4]  # the first character is context only
-    with_bos = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=True)
-    assert with_bos.requests[0][0][0] == 1 and with_bos.context["bytes"].tolist() == [5]
-    ids, start = prepare_set("cc", tmp_path, CharTokenizer(), seq_len=32, bos=False).requests[0]
+    assert docs.info["bytes"].tolist() == [4]  # the first character is context only
+    with_bos = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=True, end_token=None)
+    assert with_bos.requests == [([1] + [ord(char) for char in "hello"], 1)] and with_bos.info["bytes"].tolist() == [5]
+    ids, start = prepare_set("cc", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2).requests[0]
     assert ids == [ord(char) for char in "Q: yes"] and start == 2
-    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=False).requests[0] == ([97, 98], 1)
+    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2).requests[0] == (
+        [97, 98],
+        1,
+    )
 
 
 def test_ctxcont_picks_the_likeliest_choice_with_and_without_length_normalization():
-    rows = [{"context": "Q:", "continuation": " ab", "choices": [" ab", " c"], "gold": 0}]
+    rows = [{"context": "Q:", "choices": [" ab", " c"], "gold": 0}]
     options = [requests_of(row) for row in rows]
     # The gold choice has the lower total log-prob (-2 vs -1.5) but the higher log-prob per byte (-2/3 vs -3/4).
     logprobs = [np.array([-1.0, -1.0]), np.array([-1.5])]

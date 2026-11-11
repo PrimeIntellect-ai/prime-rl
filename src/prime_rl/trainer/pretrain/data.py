@@ -313,20 +313,26 @@ def documents_start_with_bos(shards: TokenShards, tokenizer: PreTrainedTokenizer
     return all(set(firsts) == {tokenizer.bos_token_id} for firsts, _ in edges.values())
 
 
+def documents_end_token(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> int | None:
+    """The special token all checked documents end with, or None."""
+    edges = document_edges(shards, SEPARATOR_CHECK_DOCUMENTS)
+    ends = {token for _, lasts in edges.values() for token in lasts}
+    return ends.pop() if len(ends) == 1 and ends <= special_token_ids(tokenizer) else None
+
+
 def detect_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> int | None:
     """The special token all checked documents end with, the separator to mask. None when they start with BOS
     instead: the position that predicts a document's first token then has BOS as input, so there is nothing to mask.
     Anything else fails."""
-    edges = document_edges(shards, SEPARATOR_CHECK_DOCUMENTS)
-    ends = {token for _, lasts in edges.values() for token in lasts}
-    if len(ends) == 1 and ends <= special_token_ids(tokenizer):
-        return ends.pop()
+    separator = documents_end_token(shards, tokenizer)
+    if separator is not None:
+        return separator
     if documents_start_with_bos(shards, tokenizer):
         get_logger().info("The documents start with BOS and end without a separator: eod_mask_loss masks nothing")
         return None
     found = "; ".join(
         f"{folder}: " + ", ".join(f"{tokenizer.decode([token])!r} ({token})" for token in dict.fromkeys(lasts))
-        for folder, (_, lasts) in edges.items()
+        for folder, (_, lasts) in document_edges(shards, SEPARATOR_CHECK_DOCUMENTS).items()
     )
     raise ValueError(
         f"eod_mask_loss: the documents must end with one special token, the separator, but they end with {found}; "

@@ -42,6 +42,7 @@ from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
+    documents_end_token,
     documents_start_with_bos,
     setup_document_dataset,
     setup_token_dataset,
@@ -220,7 +221,13 @@ def train(config: SFTConfig | PretrainConfig):
         )
     val_sets = None
     if isinstance(config, PretrainConfig) and config.val is not None and config.val.sets:
-        val_sets = ValSets(config.val, tokenizer, documents_start_with_bos(shards, tokenizer), config.run_dir)
+        val_sets = ValSets(
+            config.val,
+            tokenizer,
+            bos=documents_start_with_bos(shards, tokenizer),
+            end_token=documents_end_token(shards, tokenizer),
+            run_dir=config.run_dir,
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()

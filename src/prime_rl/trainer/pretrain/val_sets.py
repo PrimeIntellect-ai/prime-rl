@@ -1,18 +1,6 @@
-"""Log-likelihood eval sets scored inside the pretraining trainer (``val.sets``). A set lives in
-``<val.data_dir>/<name>/`` as ``test.parquet`` plus ``meta.json`` with its ``kind``:
-
-- ``ppl``: column ``text``. Each document is [BOS +] text + EOS, cut into non-overlapping windows of ``seq_len``
-  scored tokens (later windows start cold). Every token after the first is scored; without BOS, bpb leaves out
-  the bytes of the first text token.
-- ``ctxcont``: ``context``/``continuation`` (+ ``choices``/``gold``, optional ``choice_contexts``). The
-  continuation is scored given [BOS +] context; context and continuation are tokenized jointly and the
-  continuation span is found by character offsets.
-- ``pairs``: ``good``/``bad`` sentences, each scored as [BOS +] sentence from its second token.
-
-Requests start with BOS only if the training documents do (``bos``), so the sets see the training format.
-
+"""Log-likelihood eval sets (``val.sets``, the kinds are described in docs/training.md), scored on the training model.
 A set is tokenized once (`prepare_set`); every validation scores its requests (`score_requests`, the model's LM head
-replaced by `scoring_head`) and summarizes them (`summarize`). `ValSets` runs the validations."""
+replaced by `scoring_head`) and summarizes them (`summarize`)."""
 
 import json
 import math
@@ -48,7 +36,7 @@ class EvalSet:
     name: str
     kind: str
     requests: list[Request]
-    context: dict
+    info: dict
 
 
 def head_logprobs(hidden, weight, targets, chunk: int = 2048, softcap: float | None = None):
@@ -75,8 +63,10 @@ def scoring_head(self, hidden_states, labels, temperature=None, support=None):
     keep = labels != IGNORE_INDEX
     precision = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("highest")
-    logprobs, hits = head_logprobs(hidden[keep], self.weight, labels[keep], softcap=getattr(self, "softcap", None))
-    torch.set_float32_matmul_precision(precision)
+    try:
+        logprobs, hits = head_logprobs(hidden[keep], self.weight, labels[keep], softcap=getattr(self, "softcap", None))
+    finally:
+        torch.set_float32_matmul_precision(precision)
     return {"logprobs": logprobs, "entropy": hits}
 
 
@@ -90,12 +80,6 @@ def scoring_head_active(model: nn.Module) -> Iterator[None]:
         del model.lm_head.forward
 
 
-def pack_requests(requests: list[Request], token_budget: int) -> list[list[int]]:
-    """Request indices grouped into rows of at most ``token_budget`` scored tokens, longest first (`pack_windows`)."""
-    return pack_windows([len(ids) - 1 for ids, _ in requests], token_budget)
-
-
-@torch.no_grad()
 def score_requests(
     model: nn.Module, requests: list[Request], token_budget: int
 ) -> tuple[list[np.ndarray], list[np.ndarray]] | None:
@@ -104,7 +88,7 @@ def score_requests(
     dealt round-robin over the ranks, which run the same number of forwards (each is an FSDP collective), and
     the results are gathered on rank 0."""
     world = get_world()
-    batches = pack_requests(requests, token_budget)
+    batches = pack_windows([len(ids) - 1 for ids, _ in requests], token_budget)
     mine = batches[world.rank :: world.world_size]
     results = []
     for i in range(-(-len(batches) // world.world_size)):
@@ -181,25 +165,29 @@ def requests_of(row: dict) -> list[tuple[str, str]]:
     return [(row["context"], row["continuation"])]
 
 
-def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_len: int, bos: bool) -> EvalSet:
-    """Load and tokenize one eval set; requests start with BOS if ``bos``."""
+def prepare_set(
+    name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_len: int, bos: bool, end_token: int | None
+) -> EvalSet:
+    """Load and tokenize one eval set. Requests start with BOS if ``bos``, and ``ppl`` documents end with
+    ``end_token`` unless it is None, as the training documents do."""
     meta = json.loads((data_dir / name / "meta.json").read_text())
     table = pq.read_table(data_dir / name / "test.parquet")
-    kind, requests, context = meta["kind"], [], {}
+    kind, requests, info = meta["kind"], [], {}
     prefix = [tokenizer.bos_token_id] if bos else []
     if kind == "ppl":
-        texts = table.column("text").to_pylist()
+        texts = [text for text in table.column("text").to_pylist() if text]
         encodings = tokenizer(texts, add_special_tokens=False, return_offsets_mapping=True)
+        suffix = [] if end_token is None else [end_token]
         owner, num_bytes = [], []
         for doc, (text, text_ids) in enumerate(zip(texts, encodings["input_ids"])):
-            ids = [*prefix, *text_ids, tokenizer.eos_token_id]
+            ids = [*prefix, *text_ids, *suffix]
             for begin in range(0, len(ids) - 1, seq_len):
                 requests.append((ids[begin : begin + seq_len + 1], 1))
                 owner.append(doc)
             # Without BOS the first text token is only context.
             scored_text = text if bos else text[encodings["offset_mapping"][doc][0][1] :]
             num_bytes.append(len(scored_text.encode()))
-        context = {"owner": owner, "bytes": np.array(num_bytes)}
+        info = {"owner": owner, "bytes": np.array(num_bytes)}
     elif kind == "ctxcont":
         rows = table.to_pylist()
         options = [requests_of(row) for row in rows]
@@ -208,16 +196,16 @@ def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_l
             for item in options
             for ctx, cont in item
         ]
-        context = {"rows": rows, "options": options}
+        info = {"rows": rows, "options": options}
     elif kind == "pairs":
         good, bad = table.column("good").to_pylist(), table.column("bad").to_pylist()
         encoded = tokenizer(good + bad, add_special_tokens=False)["input_ids"]
         # Cut to the window like the other kinds, so every request fits in a row of ``token_budget`` tokens.
         requests = [([*prefix, *ids][: seq_len + 1], 1) for ids in encoded]
-        context = {"num_good": len(good)}
+        info = {"num_good": len(good)}
     else:
         raise ValueError(f"Unknown eval set kind {kind!r} ({name})")
-    return EvalSet(name, kind, requests, context)
+    return EvalSet(name, kind, requests, info)
 
 
 @dataclass
@@ -234,14 +222,19 @@ class MultiLengthSet:
 
 
 def prepare_multi_length_set(
-    eval_set: str | EvalSetConfig, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_lens: list[int], bos: bool
+    eval_set: str | EvalSetConfig,
+    data_dir: Path,
+    tokenizer: PreTrainedTokenizer,
+    seq_lens: list[int],
+    bos: bool,
+    end_token: int | None,
 ) -> MultiLengthSet:
     """A set (by name, in ``data_dir``) at every length of ``seq_lens``, or of the set's own ``seq_lens`` when it has
     them."""
     name = eval_set if isinstance(eval_set, str) else eval_set.name
     if not isinstance(eval_set, str) and eval_set.seq_lens:
         seq_lens = eval_set.seq_lens
-    versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len, bos) for seq_len in seq_lens}
+    versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len, bos, end_token) for seq_len in seq_lens}
     distinct: dict[tuple[tuple[int, ...], int], int] = {}
     index = {
         seq_len: [distinct.setdefault((tuple(ids), start), len(distinct)) for ids, start in version.requests]
@@ -251,27 +244,23 @@ def prepare_multi_length_set(
 
 
 def set_metrics(name: str, seq_len: int, summary: dict) -> dict[str, float]:
-    """A set's summary as metrics ``val/<set>/<metric>@<length>``, as Python floats (the summaries hold NumPy
-    scalars)."""
     return {f"val/{name}/{key}@{length_label(seq_len)}": float(value) for key, value in summary.items()}
 
 
 def length_label(seq_len: int) -> str:
-    """``2048`` -> ``2k``, the suffix of the metric names."""
     return f"{seq_len // 1024}k" if seq_len % 1024 == 0 else str(seq_len)
 
 
 def summarize(eval_set: EvalSet, logprobs: list[np.ndarray], hits: list[np.ndarray]) -> tuple[dict, dict]:
     """Summary metrics and per-document / per-item arrays of one scored set."""
     if eval_set.kind == "ppl":
-        return summarize_ppl(eval_set.context["bytes"], eval_set.context["owner"], logprobs)
+        return summarize_ppl(eval_set.info["bytes"], eval_set.info["owner"], logprobs)
     if eval_set.kind == "ctxcont":
-        return summarize_ctxcont(eval_set.context["rows"], eval_set.context["options"], logprobs, hits)
-    return summarize_pairs(eval_set.context["num_good"], logprobs)
+        return summarize_ctxcont(eval_set.info["rows"], eval_set.info["options"], logprobs, hits)
+    return summarize_pairs(eval_set.info["num_good"], logprobs)
 
 
 def summarize_ppl(num_bytes: np.ndarray, owner: list[int], logprobs: list[np.ndarray]) -> tuple[dict, dict]:
-    """``num_bytes``: the bytes of each document's scored text."""
     bins = list(zip(POSITION_BINS[:-1], POSITION_BINS[1:]))
     nll = np.zeros(len(num_bytes))
     tokens = np.zeros(len(num_bytes), dtype=np.int64)
@@ -308,7 +297,7 @@ def summarize_ctxcont(rows, options, logprobs, hits) -> tuple[dict, dict]:
     tokens = np.array([choice_tokens[i][g] for i, g in enumerate(gold)])
     greedy = np.array([choice_hits[i][g].all() for i, g in enumerate(gold)])
     greedy_tokens = np.array([choice_hits[i][g].sum() for i, g in enumerate(gold)])
-    num_bytes = np.array([len(row["continuation"].encode()) for row in rows])
+    num_bytes = np.array([len(options[i][g][1].encode()) for i, g in enumerate(gold)])
     summary = {
         "bpb": nll.sum() / (num_bytes.sum() * math.log(2)),
         "loss": nll.sum() / tokens.sum(),
@@ -342,19 +331,26 @@ def summarize_pairs(num_good: int, logprobs) -> tuple[dict, dict]:
 
 
 class ValSets:
-    """The ``val.sets``, tokenized once at startup and scored on the training model. Requests start with BOS if
-    ``bos`` (the training documents do)."""
+    """The ``val.sets``, tokenized once at startup and scored on the training model in the training documents'
+    format: requests start with BOS if ``bos``, and ``ppl`` documents end with ``end_token`` unless it is None."""
 
-    def __init__(self, config: PretrainValConfig, tokenizer: PreTrainedTokenizer, bos: bool, run_dir: Path):
+    def __init__(
+        self,
+        config: PretrainValConfig,
+        tokenizer: PreTrainedTokenizer,
+        bos: bool,
+        end_token: int | None,
+        run_dir: Path,
+    ):
         start_time = time.perf_counter()
         self.config = config
         self.run_dir = run_dir
         self.sets = [
-            prepare_multi_length_set(eval_set, config.data_dir, tokenizer, config.seq_lens, bos)
+            prepare_multi_length_set(eval_set, config.data_dir, tokenizer, config.seq_lens, bos, end_token)
             for eval_set in config.sets
         ]
         get_logger().info(
-            f"Prepared {len(self.sets)} validation sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s"
+            f"Prepared {len(self.sets)} validation sets (BOS: {bos}, end token: {end_token}) in {time.perf_counter() - start_time:.0f}s"
         )
 
     @torch.no_grad()

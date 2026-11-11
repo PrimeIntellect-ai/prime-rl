@@ -45,12 +45,10 @@ class PretrainDataConfig(DatatroveDataConfig):
 
 
 class EvalSetConfig(BaseConfig):
-    """An eval set in ``val.data_dir`` with its own context lengths."""
-
     name: str
     """Names the metrics, ``val/<name>/<metric>@<length>``, and the set's directory in ``val.data_dir``."""
 
-    seq_lens: list[int] | None = None
+    seq_lens: list[Annotated[int, Field(ge=1)]] | None = None
     """Context lengths to score this set at instead of ``val.seq_lens``."""
 
 
@@ -67,14 +65,13 @@ class PretrainValConfig(BaseValConfig):
 
     sets: list[str | EvalSetConfig] = []
     """Log-likelihood eval sets to score, by name (a directory in ``data_dir``) or with their own ``seq_lens``. Each
-    directory holds ``test.parquet`` and ``meta.json`` with the set's ``kind``: ``ppl`` (column ``text``), ``ctxcont``
-    (``context``, ``continuation``, optionally ``choices`` and ``gold`` or ``choice_contexts``) or ``pairs`` (``good``,
-    ``bad``). Logged as ``val/<set>/<metric>@<length>``."""
+    directory holds ``test.parquet`` and ``meta.json`` with the set's ``kind``: ``ppl``, ``ctxcont`` or ``pairs`` (see
+    docs/training.md). Logged as ``val/<set>/<metric>@<length>``."""
 
     data_dir: Path | None = None
     """Directory of the eval sets, one directory per set."""
 
-    seq_lens: list[int] | None = None
+    seq_lens: list[Annotated[int, Field(ge=1)]] | None = None
     """Context lengths to score every set at: the window length for ``ppl`` sets and the context limit for
     ``ctxcont`` sets. Defaults to ``data.seq_len`` of training."""
 
@@ -87,9 +84,12 @@ class PretrainValConfig(BaseValConfig):
     """Write the sets' per-document and per-item arrays (npz) and summaries (json) to ``<run_dir>/val/step_N/``."""
 
     @model_validator(mode="after")
-    def validate_data_dir(self):
+    def validate_sets(self):
         if self.sets and self.data_dir is None:
             raise ValueError("val.sets needs val.data_dir")
+        names = [s if isinstance(s, str) else s.name for s in self.sets]
+        if len(set(names)) < len(names):
+            raise ValueError(f"val.sets names must be unique: {names}")
         return self
 
 

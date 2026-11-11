@@ -411,11 +411,11 @@ Validation scores every document in `val.data.paths` on its own, from its first 
 
 | kind | columns | scored | metrics |
 |---|---|---|---|
-| `ppl` | `text` | every token after the first of text + EOS, in non-overlapping windows of the context length | `loss`, `bpb`, loss per position bin |
-| `ctxcont` | `context`, `continuation`, optionally `choices` + `gold` or `choice_contexts` | the continuation given the context, cut from the left to the context length | `loss`, `bpb`, `greedy_em`, `greedy_token_acc`; with choices also `acc` and `acc_norm` (per byte) |
-| `pairs` | `good`, `bad` | each whole sentence | `acc` (the good sentence is likelier) |
+| `ppl` | `text` | [BOS +] text + the training documents' separator, every token after the first, in non-overlapping windows of the context length | `loss`, `bpb`, loss per position bin |
+| `ctxcont` | `context` + `continuation`; `context` + `choices` + `gold`; or `choice_contexts` + `continuation` + `gold` | the (gold) continuation given [BOS +] context, cut from the left to the context length | `loss`, `bpb`, `greedy_em`, `greedy_token_acc`; with several options also `acc`, and with `choices` `acc_norm` (per byte) |
+| `pairs` | `good`, `bad` | each sentence from its second token (from its first after BOS) | `acc` (the good sentence is likelier) |
 
-Requests start with BOS if the training documents do. The metrics are logged as `val/<set>/<metric>@<length>`, e.g. `val/hellaswag/acc_norm@2k`, at each of `val.seq_lens` (default: `data.seq_len`). A set can have its own lengths: `{ name = "...", seq_lens = [...] }`. The sets are tokenized once at startup and scored on all GPUs, packed into rows of `val.micro_batch_tokens` tokens. `val.save_arrays` also writes the per-document and per-item arrays of every validation to `<run_dir>/val/step_N/`. Context parallelism is not supported.
+Requests start with BOS if the training documents do, and `ppl` documents end with the separator the training documents end with (none if they have none). The metrics are logged as `val/<set>/<metric>@<length>`, e.g. `val/hellaswag/acc_norm@2k`, at each of `val.seq_lens` (default: `data.seq_len`). A set can have its own lengths: `{ name = "...", seq_lens = [...] }`. The sets are tokenized once at startup and scored on all GPUs, packed into rows of `val.micro_batch_tokens` tokens. `val.save_arrays` also writes the per-document and per-item arrays of every validation to `<run_dir>/val/step_N/`. Context parallelism is not supported.
 
 For example, these public sets:
 
@@ -437,8 +437,7 @@ def write_set(name, kind, rows):
 
 hellaswag = load_dataset("Rowan/hellaswag", split="validation")
 write_set("hellaswag", "ctxcont", [
-    {"context": row["ctx"], "continuation": " " + row["endings"][int(row["label"])],
-     "choices": [" " + ending for ending in row["endings"]], "gold": int(row["label"])}
+    {"context": row["ctx"], "choices": [" " + ending for ending in row["endings"]], "gold": int(row["label"])}
     for row in hellaswag
 ])
 lambada = load_dataset("EleutherAI/lambada_openai", "en", split="test")
