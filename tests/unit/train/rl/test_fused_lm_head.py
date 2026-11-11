@@ -237,6 +237,34 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
     torch.testing.assert_close(vanilla(hidden0.detach())["logits"], logits.detach(), rtol=0, atol=1e-6)
 
 
+@pytest.mark.gpu
+def test_fp32_output_head_matches_fp32_logits():
+    """BF16 operands: with ``fp32_output`` the logprobs and cross-entropy match FP32 logits of the same operands, while
+    BF16 logits are off by their rounding; the gradients stay BF16 either way."""
+    torch.manual_seed(0)
+    n, h, v = 64, 256, 8203
+    hidden = torch.randn(1, n, h, device="cuda").bfloat16().requires_grad_()
+    weight = (torch.randn(v, h, device="cuda") * 0.5).bfloat16()
+    labels = torch.randint(0, v, (1, n), device="cuda")
+    temperature = torch.ones(1, n, device="cuda")
+    logits = hidden.detach().float() @ weight.float().t()
+    expected_logprobs = torch.log_softmax(logits, dim=-1).gather(-1, labels[..., None]).squeeze(-1)
+    expected_loss = torch.nn.functional.cross_entropy(logits[0], labels[0], reduction="sum")
+
+    errors = {}
+    for fp32_output in (False, True):
+        lm = FusedOutputLinear(h, v, chunk_size=16, fp32_output=fp32_output).to("cuda", torch.bfloat16)
+        lm.weight.data.copy_(weight)
+        logprobs = lm(hidden, labels, temperature)["logprobs"]
+        loss = lm(hidden, labels)["loss"]
+        grads = torch.autograd.grad(logprobs.sum() + loss, (hidden, lm.weight))
+        assert [grad.dtype for grad in grads] == [torch.bfloat16, torch.bfloat16]
+        errors[fp32_output] = ((logprobs - expected_logprobs).abs().max(), (loss - expected_loss).abs())
+
+    torch.testing.assert_close(errors[True], (torch.tensor(0.0, device="cuda"),) * 2, rtol=0, atol=1e-3)
+    assert errors[False][0] > 10 * errors[True][0]
+
+
 def test_fused_lm_head_requires_labels():
     """Test that FusedOutputLinear raises assertion error when labels is None."""
     torch.manual_seed(0)
