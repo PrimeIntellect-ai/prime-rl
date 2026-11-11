@@ -14,7 +14,15 @@ import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
-from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry,
+    retry_if_exception,
+    retry_never,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_exponential,
+)
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -541,13 +549,15 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
-    """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+) -> None:
+    """POST an admin op with a bounded per-attempt timeout, retrying transient errors unless ``retry_errors`` is off.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
+        retry=retry_if_exception(_is_retryable_admin_error) if retry_errors else retry_never,
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
