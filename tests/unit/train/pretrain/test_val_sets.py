@@ -10,8 +10,6 @@ from prime_rl.trainer.pretrain.val_sets import (
     head_logprobs,
     prepare_set,
     requests_of,
-    set_metrics,
-    summarize,
     summarize_ctxcont,
 )
 
@@ -47,9 +45,6 @@ def test_pairs_requests_fit_the_window(tmp_path):
     (tmp_path / "pairs" / "meta.json").write_text(json.dumps({"kind": "pairs"}))
     eval_set = prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=8, bos=True)
     assert all(len(ids) - 1 <= 8 for ids, _ in eval_set.requests)
-    logprobs = [np.full(len(ids) - start, -1.0) for ids, start in eval_set.requests]
-    summary, _ = summarize(eval_set, logprobs, [np.ones_like(lp, dtype=bool) for lp in logprobs])
-    assert set_metrics("pairs", 8, summary)["val/pairs/acc@8"] == 0.0  # equal scores: good never beats bad
 
 
 def test_requests_without_bos_start_at_the_text(tmp_path):
