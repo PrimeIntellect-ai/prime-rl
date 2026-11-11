@@ -160,6 +160,8 @@ class EngineLoadSample:
     kv_read_delta: float | None = None
     prefill_delta: float | None = None
     max_num_seqs: int | None = None
+    # The server whose data-parallel MoE engines step in lockstep with this one (None: it steps on its own)
+    lockstep_group: str | None = None
 
 
 @dataclass(frozen=True)

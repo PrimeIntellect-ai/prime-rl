@@ -117,6 +117,31 @@ class InferencePoll:
     """The engines were paused for a weight update."""
 
 
+def _engine_steps(samples: list[EngineLoadSample]) -> list[EngineSteps]:
+    """One point per engine for the batch fit, and one per lockstep group: data-parallel MoE ranks step together, so
+    the group's step time follows the batch of the whole group, and it holds the KV and sequences of all its ranks."""
+    groups: dict[str | None, list[EngineLoadSample]] = {}
+    for sample in samples:
+        groups.setdefault(sample.lockstep_group, []).append(sample)
+    members = [[sample] for sample in groups.pop(None, [])] + list(groups.values())
+    points = []
+    for engines in members:
+        seqs = [s.max_num_seqs for s in engines]
+        capacity = [s.kv_capacity_tokens for s in engines]
+        points.append(
+            EngineSteps(
+                steps=sum(s.steps_delta for s in engines) / len(engines),
+                busy=sum(s.busy_delta for s in engines) / len(engines),
+                decode_seqs=sum(s.decode_seqs_delta or 0.0 for s in engines),
+                kv_read=sum(s.kv_read_delta or 0.0 for s in engines),
+                prefill=sum(s.prefill_delta or 0.0 for s in engines),
+                max_num_seqs=sum(seqs) if None not in seqs else None,
+                kv_capacity=sum(capacity) if None not in capacity else None,
+            )
+        )
+    return points
+
+
 def inference_poll(
     samples: list[EngineLoadSample], seconds: float, *, finished: int, env_bound: bool, paused: bool = False
 ) -> InferencePoll:
@@ -130,19 +155,7 @@ def inference_poll(
         reported = [sample.busy_delta for sample in group if sample.busy_delta is not None]
         complete = len(reported) == len(group) and seconds > 0
         busy[role] = min(sum(reported) / (len(group) * seconds), 1.0) if complete else None
-        engines[role] = [
-            EngineSteps(
-                steps=sample.steps_delta,
-                busy=sample.busy_delta,
-                decode_seqs=sample.decode_seqs_delta or 0.0,
-                kv_read=sample.kv_read_delta or 0.0,
-                prefill=sample.prefill_delta or 0.0,
-                max_num_seqs=sample.max_num_seqs,
-                kv_capacity=sample.kv_capacity_tokens,
-            )
-            for sample in group
-            if sample.steps_delta and sample.busy_delta
-        ]
+        engines[role] = _engine_steps([s for s in group if s.steps_delta and s.busy_delta])
     return InferencePoll(
         seconds=seconds,
         generated=sum(sample.generation_tokens_delta for sample in samples if sample.role != "prefill"),

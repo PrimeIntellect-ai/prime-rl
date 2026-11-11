@@ -73,15 +73,21 @@ def step_contents(scheduler_output) -> tuple[int, int, int]:
 def monkey_patch_engine_busy_time():
     """Count the wall time of every engine step that executed the model (the engine core runs steps only while it has
     requests, and a step that executed nothing, waiting on a KV transfer, yields instead of computing), and what each
-    scheduled step held."""
+    scheduled step held.
+
+    Data-parallel MoE engines step in lockstep (``DPEngineCoreProc``): a rank without ready requests runs a dummy
+    forward so the expert collectives stay in step with its peers. Its GPU is as occupied as theirs, so dummy steps
+    count as busy steps holding nothing, and every rank of the group reports the group's busy time. The engines say
+    they are ``lockstep`` so the advisor fits the group as one engine."""
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm.v1.engine.core import EngineCoreProc
+    from vllm.v1.engine.core import DPEngineCoreProc, EngineCore, EngineCoreProc
 
     if getattr(EngineCoreProc._process_engine_step, "_prime_rl_busy", False):
         return
     directory = busy_dir()
     original_step = EngineCoreProc._process_engine_step
     original_schedule = Scheduler.schedule
+    original_dummy = EngineCore.execute_dummy_batch
 
     def schedule(self, *args, **kwargs):
         output = original_schedule(self, *args, **kwargs)
@@ -106,12 +112,26 @@ def monkey_patch_engine_busy_time():
                 write_busy(
                     directory,
                     self.engine_index,
-                    {**counters, "max_num_seqs": self.scheduler.max_num_running_reqs},
+                    {
+                        **counters,
+                        "max_num_seqs": self.scheduler.max_num_running_reqs,
+                        "lockstep": isinstance(self, DPEngineCoreProc),
+                    },
                 )
             except OSError:
                 pass
         return executed
 
+    def execute_dummy_batch(self):
+        start = time.perf_counter()
+        result = original_dummy(self)
+        if isinstance(self, DPEngineCoreProc):
+            counters = self.scheduler.__dict__.setdefault("_prime_rl_counters", dict.fromkeys(COUNTERS, 0.0))
+            counters["busy_s"] += time.perf_counter() - start
+            counters["steps"] += 1
+        return result
+
     _process_engine_step._prime_rl_busy = True
     EngineCoreProc._process_engine_step = _process_engine_step
+    EngineCore.execute_dummy_batch = execute_dummy_batch
     Scheduler.schedule = schedule

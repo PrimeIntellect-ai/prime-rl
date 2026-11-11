@@ -424,8 +424,11 @@ class InferenceMetricsCollector:
         self.busy_by_engine[sample.key] = counters
         if previous is None or counters.get("busy_s", 0.0) < previous.get("busy_s", 0.0):
             return None
-        deltas = {name: counters[name] - previous.get(name, 0.0) for name in counters if name != "max_num_seqs"}
+        static = ("max_num_seqs", "lockstep")
+        deltas = {name: counters[name] - previous.get(name, 0.0) for name in counters if name not in static}
         deltas["max_num_seqs"] = counters.get("max_num_seqs")
+        if "lockstep" in counters:
+            deltas["lockstep"] = counters["lockstep"]
         return deltas
 
     def build_load_sample(self, sample: EngineSample) -> EngineLoadSample:
@@ -458,6 +461,7 @@ class InferenceMetricsCollector:
             kv_read_delta=deltas.get("kv_read_tokens") if deltas else None,
             prefill_delta=deltas.get("prefill_tokens") if deltas else None,
             max_num_seqs=int(deltas["max_num_seqs"]) if deltas and deltas.get("max_num_seqs") else None,
+            lockstep_group=str(sample.endpoint.key) if deltas and deltas.get("lockstep") else None,
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

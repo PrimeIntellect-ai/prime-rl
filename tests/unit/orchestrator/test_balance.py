@@ -222,3 +222,44 @@ def test_polls_without_busy_time_do_not_blank_the_window():
             InferencePoll(seconds=POLL_S, generated=1000, finished=1, env_bound=False, busy={"inference": busy})
         )
     assert balance.utilization("inference") == pytest.approx(0.4)
+
+
+def test_lockstep_moe_ranks_are_fit_as_one_engine():
+    from prime_rl.orchestrator.balance import inference_poll
+    from prime_rl.orchestrator.concurrency import EngineLoadSample
+
+    clock = Clock()
+    balance = BalanceAdvisor(BalanceConfig(pools=pools(), window_minutes=30, sustain_minutes=10), clock=clock)
+    # A DP4 MoE engine: the ranks step together, each step taking 20 ms + 0.1 ms per sequence across the group, with
+    # the sequences spread unevenly (an idle rank runs dummy steps). KV for 512 sequences of 2k context in all.
+    shares = [0.5, 0.3, 0.2, 0.0]
+    for i in range(45 * 12):
+        clock.now += POLL_S
+        group_seqs = [32, 48, 64][i % 3]
+        step = 0.02 + 1e-4 * group_seqs
+        steps = POLL_S / step
+        samples = [
+            EngineLoadSample(
+                engine_id=f"server/{rank}",
+                role=None,
+                kv_capacity_tokens=int(128 * 2048 / 0.95),
+                max_model_len=None,
+                waiting=0,
+                generation_tokens_delta=int(share * group_seqs * steps),
+                busy_delta=POLL_S,
+                steps_delta=steps,
+                decode_seqs_delta=share * group_seqs * steps,
+                kv_read_delta=2048 * share * group_seqs * steps,
+                prefill_delta=0.0,
+                max_num_seqs=1024,
+                lockstep_group="server",
+            )
+            for rank, share in enumerate(shares)
+        ]
+        balance.observe(inference_poll(samples, POLL_S, finished=1, env_bound=False))
+        if i % 24 == 23:
+            balance.observe_step(TrainerStep(rollouts=24, tokens=24 * TRAINED_PER_ROLLOUT, period=120, busy=120))
+    fit = balance.evaluate().capacities["inference"].batch
+    # The group holds 512 sequences: its throughput there over its throughput at 48
+    assert fit.full_batch == pytest.approx(512, rel=0.01)
+    assert fit.gain == pytest.approx((512 / (0.02 + 0.0512)) / (48 / (0.02 + 0.0048)), rel=0.05)
