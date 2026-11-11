@@ -282,10 +282,10 @@ class BalanceAdvisor:
                 entries.popleft()
 
     def utilization(self, role: str) -> float | None:
-        """The role's busy share over the window, outside weight-update pauses. None without busy time."""
-        polls = [p for _, p in self.polls if p.seconds > 0 and not p.paused]
-        timed = [p for p in polls if p.busy.get(role) is not None]
-        if not timed or len(timed) < len(polls) or sum(p.seconds for p in timed) < MIN_COVERAGE * self.window_s:
+        """The role's busy share over the window's polls that report it, outside weight-update pauses. None when they
+        cover too little of the window."""
+        timed = [p for _, p in self.polls if p.seconds > 0 and not p.paused and p.busy.get(role) is not None]
+        if sum(p.seconds for p in timed) < MIN_COVERAGE * self.window_s:
             return None
         busy = sum(p.busy[role] * p.seconds for p in timed) / sum(p.seconds for p in timed)
         return busy if busy > 0 else None

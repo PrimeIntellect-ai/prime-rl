@@ -214,6 +214,11 @@ def server(config: InferenceConfig):
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
+    # Fix the engine counters' directory before vLLM spawns engine cores and API servers, so they all share it
+    from prime_rl.inference.vllm.engine_busy import busy_dir
+
+    busy_dir()
+
     namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")

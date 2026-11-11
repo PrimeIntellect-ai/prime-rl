@@ -209,3 +209,16 @@ def test_saturated_decode_engines_extrapolate_to_a_full_batch():
     now = 48 / (0.02 + 1e-4 * 48 + 1e-7 * 2048 * 48)
     assert fit.gain == pytest.approx(full / now, rel=0.05)
     assert advice.capacities["inference"].rate > 2 * advice.rate
+
+
+def test_polls_without_busy_time_do_not_blank_the_window():
+    clock = Clock()
+    balance = BalanceAdvisor(BalanceConfig(pools=pools(), window_minutes=30), clock=clock)
+    for i in range(45 * 12):
+        clock.now += POLL_S
+        # One poll in ten misses an engine's busy time (a failed fetch, an engine that has not stepped yet)
+        busy = None if i % 10 == 0 else 0.4
+        balance.observe(
+            InferencePoll(seconds=POLL_S, generated=1000, finished=1, env_bound=False, busy={"inference": busy})
+        )
+    assert balance.utilization("inference") == pytest.approx(0.4)
