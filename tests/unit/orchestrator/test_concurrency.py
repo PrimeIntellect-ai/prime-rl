@@ -341,3 +341,35 @@ def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
     dispatcher.out_q.put_nowait(episode)
     assert asyncio.run(dispatcher.get()) is episode
     assert dispatcher.queued_train_rollouts == 1
+
+
+def test_partial_groups_do_not_keep_the_cap_from_binding():
+    """Finished rollouts of incomplete groups hold no permits, so admission fills the cap and the controller can see
+    it bind (and climb) while the trainer waits for batches."""
+    batchable = [0]
+    dispatcher = Dispatcher(
+        train_envs=None,
+        eval_envs=None,
+        train_source=None,
+        eval_source=None,
+        policy_clients=None,
+        policy=Policy(version=0, model_name="policy"),
+        progress=None,
+        initial_max_inflight=100,
+        max_inflight_ceiling=None,
+        dispatch_per_minute=None,
+        run_id="run",
+        run_name=None,
+        unconsumed_train_rollouts=lambda: batchable[0],
+        batch_size=lambda: 16,
+        trainer_rate=lambda: None,
+    )
+    dispatcher.current_inflight = 85
+    dispatcher.inflight = {object(): SimpleNamespace(kind="train") for _ in range(85)}
+    # 2,500 finished rollouts wait on siblings: none are batchable, so they hold nothing
+    assert dispatcher.held_permits == 0
+    assert dispatcher.train_admission_open()
+    # A real backlog of complete groups beyond one batch still holds permits
+    batchable[0] = 16 + 20
+    assert dispatcher.held_permits == 20
+    assert not dispatcher.train_admission_open()

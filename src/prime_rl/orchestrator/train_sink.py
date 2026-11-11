@@ -193,11 +193,10 @@ class TrainSink(Reconfigurable):
         failures = sum(len(group) for group in self.pending_group_failures.values())
         return episodes + failures
 
-    def unbatched_rollouts(self) -> int:
-        """Finished rollouts not cut into a batch yet: those of groups still waiting for members, and the queued
-        ones."""
-        waiting = sum(len(episode.traces) for group in self.pending_groups.values() for episode in group)
-        return waiting + len(self.pending_batch)
+    def batchable_rollouts(self) -> int:
+        """Finished rollouts the trainer could take now: those queued for the next batch. Rollouts of groups still
+        waiting for members do not count, since no batch can take them until their siblings finish."""
+        return len(self.pending_batch)
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
