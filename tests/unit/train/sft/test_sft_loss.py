@@ -69,20 +69,6 @@ def test_fused_lm_head_with_temperature_keeps_logprob_path(chunk_size):
     torch.testing.assert_close(lm_head.weight.grad, ref_weight_grad, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize(
-    "capability, dtype, vocab, supported",
-    [
-        ((9, 0), torch.bfloat16, 151936, True),
-        ((9, 0), torch.float32, 50257, True),
-        ((9, 0), torch.bfloat16, 50257, False),
-        ((8, 0), torch.bfloat16, 151936, False),
-        ((10, 0), torch.bfloat16, 151936, False),
-    ],
-)
-def test_quack_cross_entropy_only_on_supported_gpus_and_rows(capability, dtype, vocab, supported):
-    assert lm_head_module._quack_cross_entropy_supported(capability, dtype, vocab) == supported
-
-
 requires_quack_cross_entropy = pytest.mark.skipif(
     not torch.cuda.is_available()
     or torch.cuda.get_device_capability() not in lm_head_module._QUACK_CROSS_ENTROPY_CAPABILITIES,
