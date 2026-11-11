@@ -1481,7 +1481,11 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_ty
     config = RLConfig.model_validate(
         {
             "model": {"name": name, "init": {"type": init_type}},
-            "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
             "inference": {},
         }
     )
