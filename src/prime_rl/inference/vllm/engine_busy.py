@@ -52,13 +52,15 @@ def read_busy(directory: Path) -> dict[str, dict[str, float]]:
 
 def step_contents(scheduler_output) -> tuple[int, int, int]:
     """Sequences decoding, the context they read from KV, and prefill tokens in one scheduled step. A scheduled
-    request decodes when it runs one token (plus its speculative ones); everything else is prefill."""
+    request decodes when it runs one token (plus its speculative ones) on top of its computed context; everything
+    else is prefill. A new request can decode on its first step: on a P/D decode engine, or after a full prefix-cache
+    hit."""
     decode_seqs = kv_read = prefill = 0
     scheduled = scheduler_output.num_scheduled_tokens
-    for request in scheduler_output.scheduled_new_reqs:
-        prefill += scheduled.get(request.req_id, 0)
     cached = scheduler_output.scheduled_cached_reqs
-    for req_id, computed in zip(cached.req_ids, cached.num_computed_tokens):
+    requests = [(r.req_id, r.num_computed_tokens) for r in scheduler_output.scheduled_new_reqs]
+    requests += zip(cached.req_ids, cached.num_computed_tokens)
+    for req_id, computed in requests:
         tokens = scheduled.get(req_id, 0)
         if tokens <= 1 + len(scheduler_output.scheduled_spec_decode_tokens.get(req_id, ())):
             decode_seqs += 1
