@@ -935,6 +935,30 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     config.attn = resolved
 
 
+def configure_kv_precision(model: nn.Module, config: ModelConfig) -> None:
+    """Round attention's keys and values like the engines' KV cache (``model.kv_precision``) in every layer on the
+    shared ``FlashAttention``."""
+    if config.kv_precision == "bf16":
+        return
+    from prime_rl.trainer.models.layers.attn import FlashAttention
+
+    layers = [module for module in model.modules() if isinstance(module, FlashAttention)]
+    if not layers:
+        get_logger().warning(
+            f"model.kv_precision = {config.kv_precision!r} applies to attention on the shared FlashAttention, which this "
+            "model does not use: keys and values stay unrounded (DeepSeek V4 has dsv4_kv_precision)."
+        )
+        return
+    for layer in layers:
+        layer.kv_precision = config.kv_precision
+        layer.kv_scale = config.kv_scale
+        layer.kv_fp8_query = config.kv_fp8_query
+    get_logger().info(
+        f"Rounding keys and values to {config.kv_precision} (scale {config.kv_scale}"
+        f"{', query too' if config.kv_fp8_query else ''}) in {len(layers)} attention layers, as the engines' KV cache"
+    )
+
+
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
@@ -985,6 +1009,7 @@ def setup_model(
 
     configure_moe_runtime(model, config, parallel_dims)
     configure_ngram_runtime(model, parallel_dims)
+    configure_kv_precision(model, config)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.

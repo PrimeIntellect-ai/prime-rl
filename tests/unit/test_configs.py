@@ -1476,3 +1476,18 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+@pytest.mark.parametrize(
+    "vllm, trainer, expected",
+    [
+        ({"kv_cache_dtype": "fp8"}, {}, "fp8"),
+        ({"kv_cache_dtype": "fp8_e4m3"}, {}, "fp8"),
+        ({}, {}, "bf16"),
+        # An explicit setting is kept (an ablation of the mismatch)
+        ({"kv_cache_dtype": "fp8"}, {"kv_precision": "bf16"}, "bf16"),
+    ],
+)
+def test_trainer_rounds_kv_like_the_engines_cache(vllm, trainer, expected):
+    config = RLConfig.model_validate({"trainer": {"model": trainer}, "orchestrator": {}, "inference": {"vllm": vllm}})
+    assert config.trainer.model.kv_precision == expected

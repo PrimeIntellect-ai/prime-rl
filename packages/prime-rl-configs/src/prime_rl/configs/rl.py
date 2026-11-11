@@ -501,6 +501,38 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_kv_precision(self):
+        """Engines with an FP8 KV cache attend over rounded keys and values; the trainer recomputes attention without
+        a cache. Round the trainer's keys and values the same way (``model.kv_precision``) unless set explicitly."""
+        if self.inference is None:
+            return self
+        cache = getattr(self.inference.vllm, "kv_cache_dtype", None) or "auto"
+        model = self.trainer.model
+        explicit = "kv_precision" in model.model_fields_set
+        if cache in ("fp8", "fp8_e4m3"):
+            if not explicit:
+                model.kv_precision = "fp8"
+            if getattr(self.inference.vllm, "calculate_kv_scales", False):
+                warnings.warn(
+                    "inference.vllm.calculate_kv_scales computes KV scales on the engines, which the trainer's fixed "
+                    "model.kv_scale cannot follow: rollouts round keys and values differently.",
+                    stacklevel=2,
+                )
+        elif cache == "fp8_e5m2":
+            warnings.warn(
+                "inference.vllm.kv_cache_dtype = 'fp8_e5m2': the trainer rounds keys and values only to E4M3, so rollouts "
+                "attend over other values than the trainer computes.",
+                stacklevel=2,
+            )
+        elif cache in ("auto", "bfloat16", "float16") and model.kv_precision == "fp8":
+            warnings.warn(
+                "model.kv_precision = 'fp8' rounds keys and values the engines keep in full precision "
+                f"(inference.vllm.kv_cache_dtype = {cache!r}).",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb(self):
         if self.inference is not None and self.inference.vllm.enable_eplb:
             raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
