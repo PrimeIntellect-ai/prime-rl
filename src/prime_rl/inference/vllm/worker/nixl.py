@@ -145,11 +145,11 @@ class NIXLWeightUpdateWorker(Worker):
         plan.receive_arenas.clear()
 
     @torch.no_grad()
-    def initialize_transfer(self) -> WeightTransferPlan:
+    def initialize_transfer(self, placement: tuple[tuple, list] | None = None) -> WeightTransferPlan:
         """The plan for the next pull. A plan replays copies traced into fixed expert slots, so when EPLB has moved
-        experts since it was traced, it is traced again for the current placement. Group generations carry over:
-        they count the trainer's publications, not plans."""
-        placement = self.current_expert_placement()
+        experts since it was traced, it is traced again for the current placement (``placement``, read here if not
+        given). Group generations carry over: they count the trainer's publications, not plans."""
+        placement = placement or self.current_expert_placement()
         fingerprint = placement[0] if placement is not None else None
         if self.weight_transfer_plan is not None:
             if self.weight_transfer_plan.placement == fingerprint:
@@ -519,8 +519,9 @@ class NIXLWeightUpdateWorker(Worker):
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
-        plan = self.initialize_transfer()
+        # One read of the placement for the plan and the kernels, so both see the same expert slots
         placement = self.current_expert_placement()
+        plan = self.initialize_transfer(placement)
         moe_kernels = stash_moe_kernels([experts for experts, _ in placement[1]]) if placement is not None else []
 
         started = time.perf_counter()
