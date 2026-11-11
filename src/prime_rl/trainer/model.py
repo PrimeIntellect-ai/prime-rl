@@ -337,6 +337,12 @@ def get_model(
     model_config.dsa_backend = config.dsa_backend
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
+        model_config.indexer_precision = config.dsv4_indexer_precision
+    elif config.dsv4_indexer_precision == "mxfp4":
+        logger.warning(
+            f'model.dsv4_indexer_precision = "mxfp4" has no effect on {model_config.model_type}: vLLM 0.33 uses the '
+            "MXFP4 indexer cache only for DeepSeek V4's indexers, so this model's indexer scores in FP8 on both sides."
+        )
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)

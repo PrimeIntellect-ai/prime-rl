@@ -2,7 +2,9 @@
 
 Scoring formula: I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
 
-FP8 quantization vendored from vLLM (Apache 2.0).
+FP8 quantization vendored from vLLM (Apache 2.0). With `mxfp4`, the queries and keys are rounded to vLLM's MXFP4
+indexer cache instead (`mxfp4_indexer`) and their decoded values, which have two significant bits, are scored in fp32,
+where every product is exact.
 """
 
 import functools
@@ -13,6 +15,7 @@ import torch.distributed as dist
 import triton
 import triton.language as tl
 
+from prime_rl.trainer.models.kernels.mxfp4_indexer import mxfp4_round
 from prime_rl.utils.logger import get_logger
 
 FP8_MAX = 448.0
@@ -32,6 +35,8 @@ TOPK_COST_PER_KEY = 0.13
 @functools.cache
 def _deep_select_supported(device: torch.device) -> bool:
     """DeepSelect is built for sm_90a, sm_100a and sm_103a only."""
+    if device.type != "cuda":
+        return False
     capability = torch.cuda.get_device_capability(device)
     supported = importlib.util.find_spec("deep_select") is not None and capability in ((9, 0), (10, 0), (10, 3))
     get_logger().info(f"DSA indexer top-k uses {'DeepSelect' if supported else 'torch.topk'}")
@@ -153,6 +158,7 @@ def fp8_indexer(
     weight_scale: float = 1.0,
     amax_floor: float = FP8_EPS,
     cp_group_name: str | None = None,
+    mxfp4: bool = False,
 ) -> torch.Tensor:
     """FP8 indexer: UE8M0 quantization + DeepGEMM `fp8_fp4_mqa_logits` scoring + topk.
 
@@ -166,6 +172,8 @@ def fp8_indexer(
         weight_scale: constant scaling factor for weights
         amax_floor: lower bound on each query head's and key's absolute maximum before its UE8M0 scale is taken
         cp_group_name: contiguous CP group; rank r and rank P-1-r split their causal scoring work, same output
+        mxfp4: score `q` and `k` as vLLM's MXFP4 indexer cache stores them (`amax_floor` unused); `w` should then
+            already be the weights that indexer scores with (`mxfp4_indexer_weights`)
 
     Returns:
         [S_q, topk] int32 selected token indices per query (sentinel = S_k)
@@ -175,21 +183,30 @@ def fp8_indexer(
     S_q, H, D = q.shape
     S_k = k.shape[0]
 
-    q_flat = q.reshape(S_q * H, D).contiguous()
-    q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True, eps=amax_floor)
     S_k_aligned = triton.cdiv(max(S_k, 1), KEY_ALIGNMENT) * KEY_ALIGNMENT
     k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
-    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
+    if mxfp4:
+        # Decoded values (exact in fp32); the block scales live in them, so no key scales and no query scale in w
+        q_fp8 = mxfp4_round(q.float())
+        k_fp8 = mxfp4_round(k.float())
+        k_scales = None
+        w = w.float()
+        # Scored against every key, per head: keep the (rows, H, S_k) scores near LOGITS_CHUNK_BYTES
+        chunk_rows = max(1, LOGITS_CHUNK_BYTES // (4 * H * S_k_aligned))
+    else:
+        q_flat = q.reshape(S_q * H, D).contiguous()
+        q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True, eps=amax_floor)
+        k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
 
-    q_fp8 = q_fp8.view(S_q, H, D)
-    k_scales = k_scales.view(S_k_aligned)
+        q_fp8 = q_fp8.view(S_q, H, D)
+        k_scales = k_scales.view(S_k_aligned)
 
-    # Fold q_scale into weights
-    q_scales = q_scales.view(S_q, H)
-    w = w * q_scales
+        # Fold q_scale into weights
+        q_scales = q_scales.view(S_q, H)
+        w = w * q_scales
+        chunk_rows = max(MIN_CHUNK_ROWS, LOGITS_CHUNK_BYTES // (4 * S_k_aligned))
 
     indices = torch.empty((S_q, topk), dtype=torch.int32, device=q.device)
-    chunk_rows = max(MIN_CHUNK_ROWS, LOGITS_CHUNK_BYTES // (4 * S_k_aligned))
     if cp_group_name is None:
         _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices)
         return indices
@@ -213,7 +230,7 @@ def fp8_indexer(
         works = dist.batch_isend_irecv([dist.P2POp(dist.isend, t, peer, group) for t in sent])
     if recv_chunks:
         received = [
-            torch.empty(recv_rows, H, D, dtype=torch.uint8, device=q.device),
+            torch.empty(recv_rows, H, D * q_fp8.element_size(), dtype=torch.uint8, device=q.device),
             w.new_empty(recv_rows, H),
             ks.new_empty(recv_rows),
             ke.new_empty(recv_rows),
@@ -232,7 +249,7 @@ def fp8_indexer(
         q_recv, w_recv, ks_recv, ke_recv = received
         partner_indices = torch.empty((recv_rows, topk), dtype=torch.int32, device=q.device)
         _select_topk(
-            q_recv.view(torch.float8_e4m3fn),
+            q_recv.view(q_fp8.dtype),
             k_fp8,
             k_scales,
             w_recv,
@@ -273,6 +290,9 @@ def _trailing_chunks_to_send(chunk_costs: list[int], partner_cost: int) -> int:
 
 
 def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
+    if k_scales is None:
+        _select_topk_decoded(q_fp8, k_fp8, w, ks, ke, S_k, chunk_rows, indices)
+        return
     from vllm.third_party import deep_gemm
 
     q_scales = None
@@ -306,6 +326,23 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
         indices[start:end] = chunk_indices.masked_fill_(out_of_range, S_k)
 
 
+def _select_topk_decoded(q, k, w, ks, ke, S_k, chunk_rows, indices):
+    """`_select_topk` on decoded fp32 queries `[S_q, H, D]` and keys `[S_k_aligned, D]`: each query's scores against
+    every key, with the keys outside `[ks, ke)` at -inf."""
+    columns = torch.arange(k.shape[0], device=k.device)
+    for start in range(0, q.shape[0], chunk_rows):
+        end = min(start + chunk_rows, q.shape[0])
+        scores = torch.relu(torch.matmul(q[start:end], k.T))  # (rows, H, S_k_aligned)
+        logits = torch.einsum("rhk,rh->rk", scores, w[start:end])
+        del scores
+        row_ks, row_ke = ks[start:end, None], ke[start:end, None]
+        logits.masked_fill_((columns < row_ks) | (columns >= row_ke), float("-inf"))
+        chunk_indices = select_topk(logits, ke[start:end], indices.shape[1], S_k)
+        del logits
+        out_of_range = (chunk_indices < row_ks) | (chunk_indices >= row_ke)
+        indices[start:end] = chunk_indices.masked_fill_(out_of_range, S_k)
+
+
 @fp8_indexer.register_fake
-def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EPS, cp_group_name=None):
+def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EPS, cp_group_name=None, mxfp4=False):
     return q.new_empty((q.shape[0], topk), dtype=torch.int32)

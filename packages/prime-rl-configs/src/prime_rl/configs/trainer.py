@@ -336,6 +336,14 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_indexer_precision: Literal["fp8", "mxfp4"] = "fp8"
+    """Precision the DeepSeek V4 Lightning Indexer scores queries and keys at, as vLLM's indexer K cache stores them.
+    ``fp8``: vLLM's default cache, one UE8M0-scaled E4M3 row per key and query head. ``mxfp4``: vLLM's
+    ``attention_config.indexer_kv_dtype = "mxfp4"`` cache (SM10x engines), E2M1 with a UE8M0 scale per 32 channels for
+    keys and queries, and the BF16 head weights its scoring takes. ``rl`` sets it from
+    ``inference.vllm.attention_config.indexer_kv_dtype``. vLLM 0.33 wires the MXFP4 cache only into DeepSeek V4's
+    indexers (V4, V4-Flash, V4.1), so other sparse-attention models keep scoring in FP8."""
+
     kv_precision: Literal["bf16", "fp8"] = "bf16"
     """Precision attention reads keys and values at (models on the shared ``FlashAttention``). ``fp8`` rounds them as
     vLLM's ``fp8`` KV cache stores them (``kv_cache_dtype = "fp8"``: E4M3, saturating, at ``kv_scale``), with a

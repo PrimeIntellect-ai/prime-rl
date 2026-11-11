@@ -1491,3 +1491,52 @@ def test_score_centering_replays_top_p_alone():
 def test_trainer_rounds_kv_like_the_engines_cache(vllm, trainer, expected):
     config = RLConfig.model_validate({"trainer": {"model": trainer}, "orchestrator": {}, "inference": {"vllm": vllm}})
     assert config.trainer.model.kv_precision == expected
+
+
+@pytest.mark.parametrize(
+    "vllm, trainer, expected_precision, expected_attention_config",
+    [
+        (
+            {"attention_config": {"indexer_kv_dtype": "mxfp4", "indexer_sparse_logits": True}},
+            {},
+            "mxfp4",
+            {"indexer_kv_dtype": "mxfp4", "indexer_sparse_logits": True},
+        ),
+        # `--vllm.attention-config '{...}'` arrives as JSON
+        ({"attention_config": '{"indexer_kv_dtype": "mxfp4"}'}, {}, "mxfp4", {"indexer_kv_dtype": "mxfp4"}),
+        ({"attention_config": {"indexer_kv_dtype": "fp8"}}, {}, "fp8", {"indexer_kv_dtype": "fp8"}),
+        # An MXFP4 trainer pins an unspecified engine indexer cache, which "auto" makes fp8 on CUDA
+        ({}, {"dsv4_indexer_precision": "mxfp4"}, "mxfp4", {"indexer_kv_dtype": "mxfp4"}),
+        (
+            {"attention_config": {"indexer_kv_dtype": "auto", "backend": "FLASHMLA"}},
+            {"dsv4_indexer_precision": "mxfp4"},
+            "mxfp4",
+            {"indexer_kv_dtype": "mxfp4", "backend": "FLASHMLA"},
+        ),
+        ({}, {}, "fp8", None),
+    ],
+)
+def test_dsv4_indexer_precision_follows_the_engines_indexer_cache(
+    vllm, trainer, expected_precision, expected_attention_config
+):
+    config = RLConfig.model_validate({"trainer": {"model": trainer}, "orchestrator": {}, "inference": {"vllm": vllm}})
+    assert config.trainer.model.dsv4_indexer_precision == expected_precision
+    assert getattr(config.inference.vllm, "attention_config", None) == expected_attention_config
+
+
+def test_dsv4_mxfp4_indexer_rejects_another_engine_indexer_cache():
+    with pytest.raises(ValidationError, match="models vLLM's MXFP4 indexer cache"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {"dsv4_indexer_precision": "mxfp4"}},
+                "orchestrator": {},
+                "inference": {"vllm": {"attention_config": {"indexer_kv_dtype": "fp8"}}},
+            }
+        )
+
+
+def test_dsv4_mxfp4_indexer_reaches_the_vllm_namespace():
+    config = RLConfig.model_validate(
+        {"trainer": {"model": {"dsv4_indexer_precision": "mxfp4"}}, "orchestrator": {}, "inference": {}}
+    )
+    assert config.inference.to_namespace().attention_config == {"indexer_kv_dtype": "mxfp4"}
