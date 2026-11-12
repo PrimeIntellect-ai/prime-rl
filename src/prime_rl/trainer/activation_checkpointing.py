@@ -19,7 +19,7 @@ from torch.utils.checkpoint import (
     create_selective_checkpoint_contexts,
 )
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig
+from prime_rl.configs.trainer import MODULE_TARGET_SEPARATOR, ActivationCheckpointConfig
 
 # FSDP's replay-specific hooks emit a different number of profiler markers.
 SAC_IGNORED_OPS.update(
@@ -94,10 +94,6 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
 # An operation target matches one qualified operator name, while a namespace
 # target matches every operation registered in that namespace.
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
-
-# A module-qualified target, "<operation or namespace>@<module path pattern>", matches only inside
-# the modules whose path relative to the checkpointed block matches the pattern.
-MODULE_TARGET_SEPARATOR = "@"
 
 
 def _split_targets(targets: Iterable[str]) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
