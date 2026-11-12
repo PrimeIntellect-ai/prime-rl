@@ -25,6 +25,10 @@ launch_inference_rank() {
         --server.host 0.0.0.0 --server.port "$port"
         --vllm.data-parallel-size "$dp" --vllm.data-parallel-size-local 1 --vllm.api-server-count 1)
     [ -n "$rpc" ] && cmd+=(--vllm.data-parallel-rpc-port "$rpc")
+    {% if uses_modelexpress_server and not use_nixl_broadcast -%}
+    # A pulling engine reaches the ModelExpress server itself; inference.json carries the submit-time host.
+    cmd+=(--weight-broadcast.host "$WEIGHT_BROADCAST_HOST")
+    {% endif -%}
     # Per-rank vLLM overrides go through a JSON file merged into [inference.vllm]
     # (dict-valued keys like compilation_config can't be inlined as CLI flags).
     if [ -n "$extra" ]; then
