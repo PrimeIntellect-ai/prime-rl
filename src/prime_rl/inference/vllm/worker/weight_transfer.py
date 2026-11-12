@@ -135,8 +135,6 @@ def load_weights_checkpoint_layerwise(
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
-    # Before the layerwise reload, which turns a tied parameter into a separate one.
-    expected = {name for name, _ in model.named_parameters()}
     # Compiled draft forwards can retain tensor attributes such as fused KV projections.
     tensor_attributes = [
         (module, name, value)
@@ -146,8 +144,7 @@ def load_weights_checkpoint_layerwise(
     ]
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
-        loaded = model.load_weights(state_iter)  # type: ignore
-        check_update_covers_dummy_weights(expected, loaded, model_config, vllm_config)
+        model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
         if preserve_tensor_attributes:
             for module in model.modules():
@@ -161,21 +158,6 @@ def load_weights_checkpoint_layerwise(
                     raise ValueError(f"Weight reload changed the layout of {type(module).__name__}.{name}")
                 original.copy_(updated)
                 setattr(module, name, original)
-
-
-def check_update_covers_dummy_weights(expected: set[str], loaded: set[str] | None, model_config, vllm_config) -> None:
-    """A dummy-loaded engine keeps random values in every parameter an update does not write. As in vLLM's own load,
-    quantized models (whose scales are not in the update) and models that do not report what they loaded are not
-    checked."""
-    if vllm_config.load_config.load_format != "dummy" or model_config.quantization is not None or loaded is None:
-        return
-    missing = sorted(expected - loaded)
-    if missing:
-        more = f", +{len(missing) - 5} more" if len(missing) > 5 else ""
-        raise ValueError(
-            f"The weight update does not cover {len(missing)} parameters of the dummy-loaded model: "
-            f'{", ".join(missing[:5])}{more}. Set inference.vllm.load_format = "auto" to load them from model.name'
-        )
 
 
 @torch.no_grad()

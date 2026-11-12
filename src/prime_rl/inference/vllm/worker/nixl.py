@@ -17,11 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import (
-    WeightRPCMixin,
-    check_update_covers_dummy_weights,
-    update_mla_absorbed_weights,
-)
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -165,8 +161,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
         regular_by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
         persistent: list[RecordedCopy] = []
         original_loaders: list[tuple[torch.Tensor, Any]] = []
-        # Before the layerwise reload, which turns a tied parameter into a separate one.
-        expected = {name for name, _ in model.named_parameters()}
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             try:
@@ -183,7 +177,7 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
                             loader,
                         )
 
-                loaded = model.load_weights(
+                model.load_weights(
                     make_hf_lazy_weights(
                         table,
                         device=self.device,
@@ -191,7 +185,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
                         hf_config=self.model_runner.model_config.hf_text_config,
                     )
                 )
-                check_update_covers_dummy_weights(expected, loaded, self.model_runner.model_config, self.vllm_config)
 
                 for copy in recorder.copies:
                     if copy.is_persistent or copy.destination_name in SKIP_TENSORS:

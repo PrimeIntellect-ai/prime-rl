@@ -711,25 +711,3 @@ class InferenceConfig(BaseConfig):
             namespace.kv_transfer_config = kv_transfer_config
 
         return namespace
-
-
-def setup_dummy_load(inference: InferenceConfig, *, init_type: str, lora_enabled: bool, transport: str) -> None:
-    """A server that the trainer feeds gets its weights from the trainer's startup broadcast, so it loads none. LoRA
-    broadcasts only the adapter and the broadcast holds no speculative drafter, so those load from disk. ModelExpress and
-    online quantization skip the check that an update covers every parameter, so an HF model loads from disk with them.
-    An explicit ``load_format`` wins."""
-    vllm = inference.vllm
-    extra = vllm.model_extra or {}
-    overrides = [extra]
-    if isinstance(inference.deployment, DisaggregatedInferenceDeploymentConfig):
-        overrides += [inference.deployment.prefill_vllm_overrides, inference.deployment.decode_vllm_overrides]
-    drafter = any(key.replace("-", "_") == "speculative_config" for override in overrides for key in override)
-    if drafter and init_type != "hf":
-        raise ValueError(
-            f'inference.vllm.speculative_config loads the drafter from disk with the model, which init type "{init_type}" '
-            'does not: use model.init.type = "hf"'
-        )
-    if "load_format" in extra or lora_enabled or drafter:
-        return
-    if init_type != "hf" or (transport != "modelexpress" and vllm.quantization is None):
-        vllm.load_format = "dummy"

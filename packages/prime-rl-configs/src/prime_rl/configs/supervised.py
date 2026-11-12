@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from pydantic import Field, model_validator
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
+from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -22,6 +22,7 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+from prime_rl.utils.validation import check_derived
 
 
 class BaseDataConfig(BaseConfig):
@@ -199,10 +200,15 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     stacklevel=2,
                 )
 
-        if self.model.init.type != "hf" and self.model.lora is not None:
-            raise ValueError(
-                'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
-            )
+        # Weights other than the HF model's reach the server with the trainer's startup broadcast.
+        if self.inference is not None and self.model.init.type != "hf":
+            if self.model.lora is not None:
+                raise ValueError(
+                    'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
+                )
+            check_derived(self.inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
+            self.inference.vllm.load_format = "dummy"
+
         if self.weight_broadcast is None:
             if self.model.lora is not None or self.inference is None:
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
@@ -216,14 +222,6 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     "LoRA training is not yet supported with in-memory weight broadcast. "
                     "Set weight_broadcast.type = 'filesystem'."
                 )
-
-        if self.inference is not None:
-            setup_dummy_load(
-                self.inference,
-                init_type=self.model.init.type,
-                lora_enabled=self.model.lora is not None,
-                transport=self.weight_broadcast.type,
-            )
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
