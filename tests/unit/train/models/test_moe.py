@@ -87,9 +87,7 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
     model = torch.nn.Module()
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([torch.nn.Identity(), moe])
-    config = ModelConfig.model_validate(
-        {"init": {"type": "hf"}, "moe": {"compute": {**compute, "apply_to": selection}}}
-    )
+    config = ModelConfig.model_validate({"moe": {"compute": {**compute, "apply_to": selection}}})
     dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
 
     configure_moe_runtime(model, config, dims)
@@ -105,7 +103,7 @@ def test_mega_moe_dispatch_requires_expert_parallelism():
     model = torch.nn.Module()
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([moe])
-    config = ModelConfig.model_validate({"init": {"type": "hf"}, "moe": {"dispatch": {"type": "mega_moe"}}})
+    config = ModelConfig.model_validate({"moe": {"dispatch": {"type": "mega_moe"}}})
     dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
 
     with pytest.raises(ValueError, match="expert-parallel group"):

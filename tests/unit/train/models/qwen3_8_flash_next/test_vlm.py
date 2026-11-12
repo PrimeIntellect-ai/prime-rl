@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import InitConfig, ModelConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -66,7 +66,7 @@ def get_vlm_config():
 
 
 def get_model(config, device="cuda"):
-    runtime_config = ModelConfig(init=InitConfig(type="hf"))
+    runtime_config = ModelConfig()
     resolve_auto_attn(runtime_config)
     with torch.device(device):
         model = AutoModelForCausalLMPrimeRL.from_config(

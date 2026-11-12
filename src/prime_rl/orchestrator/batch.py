@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.configs.trainer import RLModelConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.perf import FlopCounter
 from prime_rl.transports.batch.types import (
@@ -699,7 +699,7 @@ class BatchPacker:
         # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
         self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
         # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
-        model_config = RLModelConfig(
+        model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
         )
         self.bin_cost = FlopCounter(get_model(model_config, device=torch.device("meta")))
