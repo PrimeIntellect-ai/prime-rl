@@ -203,7 +203,7 @@ def flashmla_sparse_mla_forward(
     q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sm_scale: float, d_v: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """FlashMLA sparse prefill forward; returns a natural-log LSE."""
-    from flash_mla import flash_mla_sparse_fwd
+    from prime_rl.trainer.models.kernels import flash_mla_sparse_fwd
 
     B, S, H, D_qk = q.shape
     S_kv, kv_group = kv.shape[1:3]

@@ -247,6 +247,26 @@ def bucket_deltas(sample: EngineSample, previous: TimedSnapshot | None) -> dict[
     return deltas
 
 
+def counter_delta(sample: EngineSample, previous: TimedSnapshot | None, names: tuple[str, ...]) -> int:
+    """Increase of a counter (under its legacy or OpenMetrics sample name) since the previous scrape. The first
+    scrape has no baseline: a nonzero cumulative counter (e.g. after an orchestrator restart) is not fresh."""
+    if previous is None:
+        return 0
+    delta = 0
+    for name in names:
+        if name in sample.snapshot.counters:
+            delta = max(delta, int(sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)))
+    return delta
+
+
+def histogram_sum_delta(sample: EngineSample, previous: TimedSnapshot | None, name: str) -> float:
+    """Increase of a histogram's ``_sum`` since the previous scrape (0 on the first scrape or a reset)."""
+    if previous is None or name not in sample.snapshot.histograms:
+        return 0.0
+    delta = sample.snapshot.histograms[name].sum - previous.snapshot.histograms.get(name, HistogramSnapshot()).sum
+    return max(delta, 0.0)
+
+
 def build_scope_metrics(
     scope: str,
     values_per_engine: list[dict[str, float]],
@@ -406,30 +426,16 @@ class InferenceMetricsCollector:
         elif num_gpu_blocks.isdigit() and block_size.isdigit():
             kv_capacity_tokens = int(num_gpu_blocks) * int(block_size)
 
-        # First poll has no baseline — a nonzero cumulative counter (e.g. after
-        # an orchestrator restart) is not a fresh preemption
         previous = self.previous.get(sample.key)
-        preemptions_delta = 0
-        if previous is not None:
-            for name in ("num_preemptions", "num_preemptions_total"):
-                if name in sample.snapshot.counters:
-                    delta = sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)
-                    preemptions_delta = max(preemptions_delta, int(delta))
-
         return EngineLoadSample(
             engine_id=sample.engine_id,
             role=sample.endpoint.role,
             kv_capacity_tokens=kv_capacity_tokens,
             max_model_len=self.max_model_len_by_endpoint.get(sample.endpoint.key),
-            kv_usage=sample.snapshot.gauges.get("kv_cache_usage_perc", 0.0),
-            running=int(sample.snapshot.gauges.get("num_requests_running", 0.0)),
             waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
-            waiting_capacity=(
-                int(capacity_waiting)
-                if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None
-                else None
-            ),
-            preemptions_delta=preemptions_delta,
+            finished_delta=counter_delta(sample, previous, ("request_success", "request_success_total")),
+            generation_tokens_delta=counter_delta(sample, previous, ("generation_tokens", "generation_tokens_total")),
+            latency_delta=histogram_sum_delta(sample, previous, "e2e_request_latency_seconds"),
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

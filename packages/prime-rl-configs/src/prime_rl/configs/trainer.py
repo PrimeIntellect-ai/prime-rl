@@ -19,6 +19,7 @@ from prime_rl.configs.shared import (
     VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
+    validate_step_dir,
 )
 from prime_rl.configs.specdecode import SpeculatorConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
@@ -38,6 +39,9 @@ class ActivationCheckpointConfig(BaseConfig):
 
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+
+    token_chunk_size: int | None = Field(None, ge=3)
+    """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -218,9 +222,10 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
+    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -277,6 +282,9 @@ class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
+    init_from: Path | None = None
+    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
+
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
@@ -325,7 +333,7 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "cudnn_flashmla"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, vLLM's bundled FlashMLA (installed with the ``gpu`` extra), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -341,6 +349,12 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def validate_init_from(self):
+        if self.init_from is not None:
+            validate_step_dir(self.init_from, field="model.init_from")
+        return self
 
     @model_validator(mode="after")
     def validate_cp(self):
@@ -741,6 +755,20 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_retain(self):
+        if not self.rollout_transport.retain:
+            return self
+        if not (self.ckpt and self.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
             )
         return self
 

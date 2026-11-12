@@ -4,7 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -105,6 +105,12 @@ class NemotronHDecoderLayer(nn.Module):
                     **moe_kwargs,
                 )
 
+    @property
+    def is_token_local(self) -> bool:
+        """Every op in the block is independent per position, so each token's output depends on that token alone
+        (see ``TokenChunkedCheckpointWrapper``). True for the MoE layers, which are norm, MoE and residual only."""
+        return self.layer_type == "moe"
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -161,7 +167,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
         )
@@ -207,7 +213,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         labels: torch.LongTensor | None = None,
         temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
+        support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
@@ -223,7 +229,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
             outputs.last_hidden_state,
             labels,
             temperature=temperature,
-            sampling_mask=sampling_mask,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:

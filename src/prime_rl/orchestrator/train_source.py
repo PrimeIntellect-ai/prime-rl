@@ -42,12 +42,14 @@ class TrainSource(Reconfigurable):
 
         self.streaming = {env.name for env in self.envs if env.num_tasks is None}
         self.env_names = [env.name for env in self.envs]
+        self.envs_by_name = {env.name: env for env in self.envs}
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
-        # Group id -> (env name, task key), in draw order.
-        self.open_groups: dict[str, tuple[str, str]] = {}
-        self.reopened: deque[tuple[str, vf.Task]] = deque()
+        # Group id -> (env name, task key, group size), in draw order. The size is fixed at
+        # draw time, so a live group size change never resizes an open group.
+        self.open_groups: dict[str, tuple[str, str, int]] = {}
+        self.reopened: deque[tuple[str, vf.Task, int]] = deque()
 
     def reconfigure(self, update: ConfigUpdate) -> None:
         ratios = {source.resolved_name: source.ratio for source in update.config.train.source}
@@ -56,13 +58,19 @@ class TrainSource(Reconfigurable):
     def next_task(self, *, step: int) -> TaskRequest:
         # A reopened group was already counted by its sampler, and its env is fixed.
         if self.reopened:
-            env_name, task = self.reopened.popleft()
+            env_name, task, group_size = self.reopened.popleft()
         else:
             env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
             task = next(self.curricula[env_name].sampler)
+            group_size = self.envs_by_name[env_name].config.group_size
         group_id = str(uuid.uuid4())
-        self.open_groups[group_id] = (env_name, task.key)
-        return TaskRequest(env_name=env_name, task=task, step=step, group_id=group_id)
+        self.open_groups[group_id] = (env_name, task.key, group_size)
+        return TaskRequest(env_name=env_name, task=task, step=step, rollouts=group_size, group_id=group_id)
+
+    def group_size(self, group_id: str) -> int | None:
+        """The size an open group was drawn with; None once the group closed."""
+        group = self.open_groups.get(group_id)
+        return group[2] if group is not None else None
 
     def close_groups(self, group_ids: Iterable[str]) -> None:
         """Close groups that shipped samples or finalized without training."""
@@ -99,7 +107,10 @@ class TrainSource(Reconfigurable):
             "rng": self.rng.getstate(),
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
             # Groups still waiting to re-run come last: no new task is drawn before they all re-run.
-            "open_groups": [*self.open_groups.values(), *((env_name, task.key) for env_name, task in self.reopened)],
+            "open_groups": [
+                *self.open_groups.values(),
+                *((env_name, task.key, group_size) for env_name, task, group_size in self.reopened),
+            ],
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
@@ -121,16 +132,18 @@ class TrainSource(Reconfigurable):
             get_logger().info(f"Dropped the checkpointed curriculum state of env {name}, which is no longer configured")
         self._reopen(state_dict.get("open_groups", []))
 
-    def _reopen(self, open_groups: list[tuple[str, str]]) -> None:
+    def _reopen(self, open_groups: list[tuple[str, str] | tuple[str, str, int]]) -> None:
         removed_env: Counter[str] = Counter()
         removed_task: Counter[str] = Counter()
-        for env_name, task_key in open_groups:
+        for group in open_groups:
+            env_name, task_key = group[:2]
             if env_name not in self.curricula:
                 removed_env[env_name] += 1
             elif (task := self.curricula[env_name].sampler.find_task(task_key)) is None:
                 removed_task[env_name] += 1
             else:
-                self.reopened.append((env_name, task))
+                group_size = group[2] if len(group) == 3 else self.envs_by_name[env_name].config.group_size
+                self.reopened.append((env_name, task, group_size))
         for name, count in sorted(removed_env.items()):
             get_logger().info(f"Dropped {count} open group(s) of env {name}, which is no longer configured")
         for name, count in sorted(removed_task.items()):

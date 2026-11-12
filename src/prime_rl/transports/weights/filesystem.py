@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 from pathlib import Path
 
 import torch.nn as nn
@@ -7,8 +9,13 @@ from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
-from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
-from prime_rl.utils.pathing import wait_for_path
+from prime_rl.transports.weights.base import (
+    FINISHED_MARKER,
+    RECEIVER_READY_MARKER,
+    SENDER_READY_MARKER,
+    WeightReceiver,
+    WeightSender,
+)
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -66,8 +73,13 @@ class FileSystemWeightReceiver(WeightReceiver):
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
-        self._ack(step)
-        await wait_for_path(weights_dir / FINISHED_MARKER)
+        # A trainer restarted mid-broadcast offers the version again: acknowledge every offer.
+        while not (weights_dir / FINISHED_MARKER).exists():
+            if (weights_dir / SENDER_READY_MARKER).exists() and not (weights_dir / RECEIVER_READY_MARKER).exists():
+                # The trainer resets the directory for a new offer; the next pass acknowledges it.
+                with contextlib.suppress(FileNotFoundError):
+                    self._ack(step)
+            await asyncio.sleep(0.1)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:

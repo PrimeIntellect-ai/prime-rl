@@ -4,7 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
@@ -137,7 +137,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
 class Qwen3_5Model(Qwen3_5PreTrainedModel):
     def __init__(self, config: Qwen3_5TextConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             Qwen3_5DecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
@@ -334,7 +334,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.LongTensor | None = None,
         temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
+        support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
@@ -368,7 +368,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
             outputs.last_hidden_state,
             labels,
             temperature=temperature,
-            sampling_mask=sampling_mask,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:
