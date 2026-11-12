@@ -171,8 +171,9 @@ def test_fast_climb_ends_where_growth_stops_paying():
     assert 130 <= ctl.max_inflight < 400
 
 
-def test_step_up_that_pays_is_kept():
-    ctl, pool = controller()
+@pytest.mark.parametrize("hungry", [False, True], ids=["no-trainer", "trainer-hungrier-than-the-engines"])
+def test_step_up_that_pays_is_kept(hungry):
+    ctl, pool = controller(trainer=trainer(100.0) if hungry else None)
     ctl.climbing = False
     run(ctl, pool, lambda inflight: 10 * inflight, polls=400)  # throughput in proportion to the pool
     assert ctl.max_inflight > 200 and all(limit >= 100 for limit in pool.limits)
