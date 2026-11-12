@@ -59,7 +59,7 @@ from prime_rl.trainer.utils import (
     prepare_gradient_offload,
     print_sample,
     scale_gradients_,
-    setup_full_cpu_optimizer_offload,
+    setup_cpu_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.vlm import setup_processor
@@ -108,8 +108,7 @@ def train(config: SFTConfig | PretrainConfig):
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
     )
-    if config.model.offload == "full":
-        setup_full_cpu_optimizer_offload()
+    setup_cpu_offload(config.model)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
