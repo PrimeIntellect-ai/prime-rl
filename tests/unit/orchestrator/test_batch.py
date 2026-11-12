@@ -8,7 +8,7 @@ from prime_rl.orchestrator.batch import (
     prepare_batch,
     prepare_sample,
 )
-from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, PayloadSlice, TrainingSample
+from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, MMVideoRef, PayloadSlice, TrainingSample
 
 SAMPLE_DTYPES = {
     "token_ids": np.int32,
@@ -507,6 +507,29 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     assert n_placeholders == 2  # only img0's two placeholders remain
     assert mb.mm_refs is not None
     assert [(ref.url, ref.offset, ref.length) for ref in mb.mm_refs.images] == [("data:image/png;base64,first", 1, 2)]
+
+
+def test_prepare_sample_truncates_mm_at_video_boundary():
+    """A cut inside a video's placeholder range, even between its frame groups, drops the whole video."""
+    mm_token_type_ids = [0, 1, 0, 0, 2, 0, 0, 2, 0, 0]
+    sample = _sample(
+        token_ids=list(range(10, 20)),
+        mask=[False] * 9 + [True],
+        logprobs=[0.0] * 10,
+        temperatures=[1.0] * 10,
+        advantages=[0.0] * 9 + [1.0],
+        env_name="test-env",
+        mm_token_type_ids=mm_token_type_ids,
+        mm_refs=MMRefs(
+            images=[MMImageRef(url="data:image/png;base64,image", offset=1, length=1)],
+            videos=[MMVideoRef(url="data:video/mp4;base64,video", offset=3, length=6)],
+        ),
+    )
+
+    mb = prepare_sample(sample, seq_len=6)
+    assert len(mb.input_ids) == 3
+    assert [(ref.offset, ref.length) for ref in mb.mm_refs.images] == [(1, 1)]
+    assert mb.mm_refs.videos == []
 
 
 def test_prepare_batch_packs_multimodal_with_text():

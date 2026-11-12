@@ -16,6 +16,7 @@ from prime_rl.transports.batch.types import (
     MicroBatch,
     MMImageRef,
     MMRefs,
+    MMVideoRef,
     PayloadSlice,
     TrainingSample,
 )
@@ -151,15 +152,12 @@ def balanced_partition(weights: Sequence[int], num_partitions: int) -> list[list
 
 def _truncate_mm_refs(refs: MMRefs, seq_len: int) -> tuple[int, MMRefs | None]:
     cut = seq_len
-    kept: list[MMImageRef] = []
-    for image in refs.images:
-        end = image.offset + image.length
-        if image.offset < seq_len < end:
-            cut = image.offset
-            break
-        if end <= seq_len:
-            kept.append(image)
-    return cut, MMRefs(images=kept) if kept else None
+    for ref in [*refs.images, *refs.videos]:
+        if ref.offset < seq_len < ref.offset + ref.length:
+            cut = min(cut, ref.offset)
+    images = [image for image in refs.images if image.offset + image.length <= cut]
+    videos = [video for video in refs.videos if video.offset + video.length <= cut]
+    return cut, MMRefs(images=images, videos=videos) if images or videos else None
 
 
 def multimodal_sample_error(sample: TrainingSample) -> str | None:
@@ -172,11 +170,12 @@ def multimodal_sample_error(sample: TrainingSample) -> str | None:
     if sample.mm_refs is not None and mm_token_type_ids is None:
         return "multimodal samples require mm_token_type_ids"
     if sample.mm_refs is not None:
-        previous_end = 0
-        for image in sample.mm_refs.images:
-            if image.offset < previous_end or image.offset + image.length > len(sample.token_ids):
-                return "multimodal image refs must be ordered, non-overlapping, and within token_ids"
-            previous_end = image.offset + image.length
+        for modality, refs in (("image", sample.mm_refs.images), ("video", sample.mm_refs.videos)):
+            previous_end = 0
+            for ref in refs:
+                if ref.offset < previous_end or ref.offset + ref.length > len(sample.token_ids):
+                    return f"multimodal {modality} refs must be ordered, non-overlapping, and within token_ids"
+                previous_end = ref.offset + ref.length
     return None
 
 
@@ -409,6 +408,14 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                     length=image.length,
                 )
                 for image in sample.mm_refs.images
+            )
+            mm_refs.videos.extend(
+                MMVideoRef(
+                    url=video.url,
+                    offset=offset + video.offset,
+                    length=video.length,
+                )
+                for video in sample.mm_refs.videos
             )
         seq_lens.extend(sample.seq_lens)
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
