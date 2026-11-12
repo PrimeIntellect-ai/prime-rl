@@ -188,7 +188,7 @@ def _vllm_q_norm_rope(
     if rows.numel() == 0:
         return q.new_empty(q.shape)
     # The kv input is only read for the cache insert, which an empty `slot_mapping` skips.
-    kv = rows.view(-1)[: rows.shape[0] * head_dim].view(-1, head_dim)
+    kv = rows.new_empty(rows.shape[0], head_dim)
     out = torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
         rows,
         kv,
