@@ -1467,9 +1467,9 @@ def test_model_init_seed_requires_type_scratch():
 
 
 def test_model_init_checkpoint_requires_a_step_dir():
-    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "checkpoint"})
+    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt_weights"})
     with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
-        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "checkpoint"})
+        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt_weights"})
 
 
 def test_score_centering_replays_top_p_alone():

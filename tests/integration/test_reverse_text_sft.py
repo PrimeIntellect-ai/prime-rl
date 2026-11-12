@@ -148,7 +148,7 @@ def rl_from_checkpoint_process(
         "--model.name",
         (run_dir / "checkpoints" / "step_5").as_posix(),
         "--trainer.model.init.type",
-        "checkpoint",
+        "ckpt_weights",
         "--inference.vllm.load-format",
         "dummy",
         "--trainer.optim.lr",

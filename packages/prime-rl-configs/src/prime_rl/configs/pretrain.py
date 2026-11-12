@@ -74,7 +74,7 @@ PretrainSchedulerConfig: TypeAlias = Annotated[
 
 
 class PretrainInitConfig(InitConfig):
-    type: Literal["scratch", "hf", "checkpoint"] = "scratch"
+    type: Literal["scratch", "hf", "ckpt_weights"] = "scratch"
 
 
 class PretrainModelConfig(ModelConfig):
