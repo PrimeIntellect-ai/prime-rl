@@ -1,5 +1,5 @@
 import pytest
-from transformers import Qwen3Config
+from transformers import AutoTokenizer, Qwen3Config
 
 from prime_rl.configs.trainer import InitConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import check_ckpt_weights_dir, setup_tokenizer
@@ -19,3 +19,5 @@ def test_a_model_name_without_a_tokenizer_asks_for_tokenizer_name(tmp_path):
     Qwen3Config().save_pretrained(tmp_path)
     with pytest.raises(FileNotFoundError, match="set tokenizer.name"):
         setup_tokenizer(TokenizerConfig(name=str(tmp_path)), model_name=str(tmp_path))
+    AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B").backend_tokenizer.save(str(tmp_path / "tokenizer.json"))
+    assert len(setup_tokenizer(TokenizerConfig(name=str(tmp_path)), model_name=str(tmp_path))) > 1
