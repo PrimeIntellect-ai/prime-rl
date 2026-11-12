@@ -17,7 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -83,7 +83,7 @@ class WeightTransferPlan:
     groups: list[WeightTransferGroup]
 
 
-class NIXLWeightUpdateWorker(Worker):
+class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
     @property
     def raw_model(self) -> nn.Module:
         return cast(nn.Module, self.model_runner.get_model())
