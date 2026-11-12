@@ -23,7 +23,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
-    RLInitConfig,
+    InitConfig,
     TokenizerConfig,
     TrainerConfig,
     rl_micro_batch_multiple,
@@ -105,7 +105,7 @@ class SharedModelConfig(BaseConfig):
     vlm: "VLMConfig | None" = None
     """VLM configuration. Set this to enable vision-language model support."""
 
-    init: RLInitConfig | None = None
+    init: InitConfig | None = None
     """Where the trainer's weights start. Propagates to ``trainer.model.init``."""
 
 
