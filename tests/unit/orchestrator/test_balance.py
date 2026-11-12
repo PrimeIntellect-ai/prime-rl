@@ -2,7 +2,8 @@ import pytest
 
 from prime_rl.configs.orchestrator import BalanceConfig, BalancePoolConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.orchestrator.balance import BalanceAdvisor, Capacity, InferencePoll, TrainerStep, best_split
+from prime_rl.orchestrator.balance import BalanceAdvisor, Capacity, InferencePoll, best_split
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 
 POLL_S = 5.0
 
@@ -27,7 +28,8 @@ def run(pool_list, *, trainer_busy, inference_busy, env_bound=False, paused=lamb
     """A run shipping 64 rollouts per 120 s step, the engines finishing them at the same pace. Returns the advisor
     and its notices."""
     clock = Clock()
-    balance = BalanceAdvisor(BalanceConfig(pools=pool_list, sustain_minutes=10), clock=clock)
+    trainer = TrainerCapacity()
+    balance = BalanceAdvisor(BalanceConfig(pools=pool_list, sustain_minutes=10), trainer, clock=clock)
     notices, credit = [], 0.0
     for i in range(int(minutes * 60 / POLL_S)):
         clock.now += POLL_S
@@ -35,7 +37,7 @@ def run(pool_list, *, trainer_busy, inference_busy, env_bound=False, paused=lamb
         finished, credit = int(credit), credit - int(credit)
         balance.observe(InferencePoll(POLL_S, finished, env_bound, dict(inference_busy), paused=paused(i)))
         if clock.now % 120 == 0:
-            balance.observe_step(TrainerStep(rollouts=64, tokens=64 * 1000, period=120, busy=120 * trainer_busy))
+            trainer.shipped(64, requested_at=clock.now - 120 * (1 - trainer_busy), now=clock.now)
             if (advice := balance.evaluate()) is not None and (notice := balance.notice(advice)) is not None:
                 notices.append(notice)
     return balance.advice, notices

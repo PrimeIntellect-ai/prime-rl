@@ -46,7 +46,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.balance import BalanceAdvisor, TrainerStep, inference_poll
+from prime_rl.orchestrator.balance import BalanceAdvisor, inference_poll
 from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
@@ -61,6 +61,7 @@ from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metric
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
     EvalBatch,
@@ -193,12 +194,11 @@ class Orchestrator:
         self.ships = 0
         self.shipped_at: float | None = None
         self.trainer_rate: float | None = None
-        # Balance advice: the wall-clock time of the last ship (the trainer's busy time runs from it to its next
-        # request), the last metrics poll and the train rollouts finished by then
-        self.shipped_wall: float | None = None
+        self.trainer_capacity = TrainerCapacity()
+        # Balance advice: the last metrics poll and the train rollouts finished by then
         self.balance_polled_at: float | None = None
         self.balance_finished = 0
-        self.balance = BalanceAdvisor(config.balance) if config.balance.enabled else None
+        self.balance = BalanceAdvisor(config.balance, self.trainer_capacity) if config.balance.enabled else None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -750,8 +750,8 @@ class Orchestrator:
         trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
-        trained = sum(len(micro_batch.input_ids) for row in micro_batch_grid for micro_batch in row)
-        self.observe_trainer_step(batch.cohort.num_traces, trained)
+        self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
+        self.advise_balance()
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
@@ -870,21 +870,11 @@ class Orchestrator:
             )
         )
 
-    def observe_trainer_step(self, rollouts: int, tokens: int) -> None:
-        """Record a shipped batch with the time the trainer spent before asking for it, then log a notice when
-        another split of the GPUs is clearly faster. The first two ships carry the trainer's warmup and are not
-        recorded."""
-        shipped_wall = time.time()
-        previous, self.shipped_wall = self.shipped_wall, shipped_wall
-        if self.balance is None or previous is None or self.ships <= 2:
-            return
-        period = shipped_wall - previous
-        requested_at = self.sender.last_requested_at
-        busy = min(max(requested_at - previous, 0.0), period) if requested_at is not None else None
-        self.balance.observe_step(TrainerStep(rollouts=rollouts, tokens=tokens, period=period, busy=busy))
-        advice = self.balance.evaluate()
-        if advice is not None and (notice := self.balance.notice(advice)) is not None:
-            get_logger().warning(notice)
+    def advise_balance(self) -> None:
+        """Log a notice when another split of the GPUs is clearly faster."""
+        if self.balance is not None and (advice := self.balance.evaluate()) is not None:
+            if (notice := self.balance.notice(advice)) is not None:
+                get_logger().warning(notice)
 
     async def trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
@@ -969,6 +959,7 @@ class Orchestrator:
             **disp_drain,
             **watcher_gauges,
             **self.concurrency.gauges(),
+            **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
         }
         if self.balance is not None:

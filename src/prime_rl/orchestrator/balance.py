@@ -7,7 +7,7 @@ its units; the advisor searches every valid split of the same units for the fast
 
     speed(split) = min over pools p of  capacity_p * units'_p / units_p
 
-- **Trainer:** busy from receiving a batch to requesting the next (training, broadcasting, saving).
+- **Trainer:** ``TrainerCapacity``, the rollouts it consumes per second of busy time.
 - **Inference:** the seconds the engines spent executing model steps (``/prime_rl/engine_busy``), outside weight-update
   pauses, per role under P/D. Engines that step whenever they hold a sequence (decode) read as busy below their knee
   too, so from ``SATURATED_BUSY`` on, and when busy time is not reported, a role's capacity is only a lower bound.
@@ -26,9 +26,7 @@ from dataclasses import dataclass
 
 from prime_rl.configs.orchestrator import BalanceConfig, BalancePoolConfig
 from prime_rl.orchestrator.concurrency import EngineLoadSample
-
-MIN_STEPS = 3
-"""Trainer steps the window must hold before the pools are measured."""
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 
 MIN_COVERAGE = 0.5
 """Share of the window the measured polls must cover."""
@@ -53,17 +51,6 @@ class InferencePoll:
 
 
 @dataclass(frozen=True)
-class TrainerStep:
-    rollouts: int
-    tokens: int
-    """Tokens the trainer processes for the batch, padding included."""
-    period: float
-    """Seconds since the previous batch shipped."""
-    busy: float | None
-    """Seconds of ``period`` before the trainer requested this batch; None when the transport did not report it."""
-
-
-@dataclass(frozen=True)
 class Capacity:
     rate: float
     """Train rollouts per second the pool sustains busy all the time at its current size."""
@@ -80,7 +67,6 @@ class Advice:
     best_speed: float
     bottleneck: str
     """The pool with the least capacity, or ``environment``."""
-    trained_per_rollout: float
 
     @property
     def gain(self) -> float:
@@ -131,21 +117,20 @@ def best_split(pools: list[BalancePoolConfig], capacities: dict[str, Capacity]) 
 
 
 class BalanceAdvisor:
-    def __init__(self, config: BalanceConfig, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, config: BalanceConfig, trainer: TrainerCapacity, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.config = config
+        self.trainer = trainer
         self.clock = clock
         self.window_s = config.window_minutes * 60
         self.polls: deque[tuple[float, InferencePoll]] = deque()
-        self.steps: deque[tuple[float, TrainerStep]] = deque()
         self.candidate: dict[str, int] | None = None
         self.candidate_since = 0.0
         self.advice: Advice | None = None
 
     def observe(self, poll: InferencePoll) -> None:
         self.polls.append((self.clock(), poll))
-
-    def observe_step(self, step: TrainerStep) -> None:
-        self.steps.append((self.clock(), step))
 
     def utilization(self, role: str) -> float | None:
         """The role's busy share over the window's polls that report it, outside weight-update pauses."""
@@ -159,23 +144,19 @@ class BalanceAdvisor:
     def evaluate(self) -> Advice | None:
         """Measure every pool over the window and search the splits. None until the window holds enough."""
         now = self.clock()
-        for entries in (self.polls, self.steps):
-            while entries and now - entries[0][0] > self.window_s:
-                entries.popleft()
-        pools = self.config.pools or []
-        steps = [s for _, s in self.steps]
+        while self.polls and now - self.polls[0][0] > self.window_s:
+            self.polls.popleft()
+        pools, trainer = self.config.pools or [], self.trainer
         poll_seconds = sum(p.seconds for _, p in self.polls)
-        if not pools or len(steps) < MIN_STEPS or poll_seconds < MIN_COVERAGE * self.window_s:
+        if not pools or trainer.rate is None or poll_seconds < MIN_COVERAGE * self.window_s:
             return None
-        rollouts, period = sum(s.rollouts for s in steps), sum(s.period for s in steps)
-        # Rollouts the engines finished per second: the trainer's pace decouples from it while a backlog builds
+        # What the run ships per second, and the rollouts the engines finished per second: the trainer's pace
+        # decouples from it while a backlog builds
+        rate = sum(s.rollouts for s in trainer.steps) / sum(s.period for s in trainer.steps)
         finished = sum(p.finished for _, p in self.polls) / poll_seconds
-        if rollouts <= 0 or period <= 0 or finished <= 0:
+        if finished <= 0:
             return None
-        rate = rollouts / period
-        busy = [s.busy for s in steps]
-        trainer_busy = sum(busy) / period if None not in busy and sum(busy) > 0 else None
-        capacities = {"trainer": Capacity(rate / (trainer_busy or 1.0), trainer_busy, trainer_busy is None)}
+        capacities = {"trainer": Capacity(trainer.rate, trainer.busy, False)}
         for pool in pools:
             if pool.name != "trainer":
                 share = self.utilization(pool.name)
@@ -192,8 +173,7 @@ class BalanceAdvisor:
             slowest = min(c.rate for c in capacities.values())
             close = {name: c for name, c in capacities.items() if c.rate <= 1.1 * slowest}
             bottleneck = min(close, key=lambda name: (close[name].lower_bound, close[name].rate))
-        trained = sum(s.tokens for s in steps) / rollouts
-        self.advice = Advice(capacities, current, best, speed, best_speed, bottleneck, trained)
+        self.advice = Advice(capacities, current, best, speed, best_speed, bottleneck)
         return self.advice
 
     def notice(self, advice: Advice) -> str | None:
@@ -227,7 +207,7 @@ class BalanceAdvisor:
             "balance/environment/bottleneck": float(advice.bottleneck == "environment"),
         }
         for name, capacity in advice.capacities.items():
-            gauges[f"balance/{name}/capacity"] = capacity.rate * advice.trained_per_rollout  # trained tok/s
+            gauges[f"balance/{name}/capacity"] = capacity.rate  # train rollouts per second
             if capacity.busy is not None:
                 gauges[f"balance/{name}/busy"] = capacity.busy
             gauges[f"balance/{name}/best_units"] = float(advice.best[name])

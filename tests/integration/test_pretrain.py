@@ -29,11 +29,12 @@ def wandb_name(branch_name: str) -> str:
 
 @pytest.fixture(scope="module")
 def token_dir(output_dir: Path) -> Path:
-    """Reverse-Text-SFT as one datatrove token shard: every conversation one document, ending with EOS."""
+    """Reverse-Text-SFT as one datatrove token shard: every conversation one document, ending with Qwen's document
+    separator <|endoftext|> (its EOS, <|im_end|>, ends a chat turn)."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    separator = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     documents = [
-        tokenizer.encode("\n".join(message["content"] for message in row["prompt"] + row["completion"]))
-        + [tokenizer.eos_token_id]
+        tokenizer.encode("\n".join(message["content"] for message in row["prompt"] + row["completion"])) + [separator]
         for row in load_dataset("PrimeIntellect/Reverse-Text-SFT", split="train")
     ]
     path = output_dir / "pretrain-tokens"
