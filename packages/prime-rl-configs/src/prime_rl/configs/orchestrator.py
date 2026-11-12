@@ -476,6 +476,28 @@ class OrchestratorControlConfig(ControlConfig):
     """Port the control API listens on, next to the trainer's 8040 on a single node."""
 
 
+class SpeculativeDecodingConfig(BaseConfig):
+    draft: Annotated[Path, Live()]
+    """Draft checkpoint the inference engines serve; at launch, the one they started with. A live update
+    loads the new draft on every engine at the next policy weight sync. It must keep the served draft's
+    architecture and tensor shapes. A failed load restores the previous draft and reverts this value."""
+
+    num_speculative_tokens: Annotated[int | None, Live()] = Field(None, ge=0)
+    """Draft tokens per step on every engine; None keeps the launch count and 0 turns drafting off. A live
+    change takes effect at the next policy weight sync, when every engine re-records its CUDA graphs for the
+    new count. With 0 the draft stops running; its KV cache goes stale until drafting resumes."""
+
+    max_num_speculative_tokens: int | None = None
+    """The inference servers' launch draft count, which bounds ``num_speculative_tokens``. Filled by ``rl``."""
+
+    @model_validator(mode="after")
+    def validate_num_speculative_tokens(self):
+        bounded = self.num_speculative_tokens is not None and self.max_num_speculative_tokens is not None
+        if bounded and self.num_speculative_tokens > self.max_num_speculative_tokens:
+            raise ValueError(f"num_speculative_tokens must be at most {self.max_num_speculative_tokens}")
+        return self
+
+
 class OrchestratorConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
@@ -571,6 +593,19 @@ class OrchestratorConfig(BaseConfig):
     control: OrchestratorControlConfig | None = None
     """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
     accepted, update the config live). If None, it takes no control requests."""
+
+    speculative_decoding: SpeculativeDecodingConfig | None = None
+    """Draft model served by the policy engines. Auto-filled by the ``rl`` entrypoint from the inference
+    servers' speculative config; set it for standalone orchestrator runs that should swap drafts."""
+
+    @model_validator(mode="after")
+    def validate_draft_swaps(self):
+        dynamo = self.model.client.dynamo
+        if self.speculative_decoding is not None and dynamo is not None and dynamo.enabled:
+            raise ValueError("Draft swaps use prime-rl's engine admin routes, which Dynamo deployments do not serve")
+        if self.speculative_decoding is not None and self.weight_broadcast.type == "modelexpress":
+            raise ValueError("Draft swaps load with filesystem, NCCL or NIXL weight broadcasts, not modelexpress")
+        return self
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

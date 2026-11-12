@@ -1,9 +1,10 @@
 import asyncio
 import gc
 from argparse import Namespace
+from typing import Literal
 
 import uvloop
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
@@ -16,6 +17,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -71,6 +73,51 @@ async def update_weights_from_modelexpress(request: Request):
     await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
     await client.update_weight_version(str(data["weight_version"]))
     return {"status": "ok"}
+
+
+@router.post("/update_draft_weights")
+async def update_draft_weights(request: Request):
+    """Load a draft checkpoint from disk on every engine. Cached draft KV stays; the target verifies every token."""
+    weight_dir = (await request.json())["weight_dir"]
+    client = engine_client(request)
+    speculative_config = client.vllm_config.speculative_config
+    if speculative_config is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+    try:
+        draft = local_draft_dir(weight_dir)
+        check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), draft)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    await client.collective_rpc("update_draft_weights", args=(str(draft),))
+    return {"status": "ok"}
+
+
+@router.post("/speculative_decoding")
+async def speculative_decoding(request: Request):
+    """Set the draft tokens per step on every engine: 0 turns drafting off, null restores the launch count.
+    Workers re-record their CUDA graphs for the new count. Pause the engines first so data-parallel ranks
+    switch together."""
+    num = (await request.json())["num_speculative_tokens"]
+    client = engine_client(request)
+    speculative_config = client.vllm_config.speculative_config
+    if speculative_config is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+    launch = speculative_config.num_speculative_tokens
+    num = launch if num is None else num
+    if not 0 <= num <= launch:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"num_speculative_tokens must be in [0, {launch}]")
+    await client.collective_rpc("set_num_speculative_tokens", args=(num,))
+    await client.engine_core.call_utility_all_async("set_scheduled_speculative_tokens", num)
+    return {"status": "ok"}
+
+
+@router.get("/weight_fingerprint/{target}")
+async def weight_fingerprint(request: Request, target: Literal["model", "draft"]):
+    # vLLM's public collective RPC discards all but the first DP engine's result.
+    results = await engine_client(request).engine_core.call_utility_all_async(
+        "collective_rpc", "get_weight_fingerprint", None, (), {"target": target}
+    )
+    return {"results": [worker for engine in results for worker in engine]}
 
 
 @router.post("/load_lora_adapter")
