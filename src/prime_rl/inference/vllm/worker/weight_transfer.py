@@ -51,9 +51,10 @@ class WeightRPCMixin:
     """Weight RPCs shared by every weight-transport worker extension."""
 
     def update_draft_weights(self, weight_dir: str) -> None:
-        """Load a draft checkpoint from disk, independent of the policy weight transport."""
+        """Load a draft checkpoint from disk, independent of the policy weight transport. The checkpoint is read
+        in full first: an unreadable file then fails before the reload takes the served draft apart."""
         draft = get_weight_model(self.model_runner, "draft")
-        weights = checkpoint_weights(draft, weight_dir, get_draft_load_config(self.vllm_config))
+        weights = list(checkpoint_weights(draft, weight_dir, get_draft_load_config(self.vllm_config)))
         load_draft_weights(self.model_runner, weights, self.vllm_config)
 
     def get_weight_fingerprint(self, target: WeightTarget = "model") -> dict:

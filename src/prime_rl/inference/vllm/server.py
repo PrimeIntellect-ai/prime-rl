@@ -1,7 +1,6 @@
 import asyncio
 import gc
 from argparse import Namespace
-from pathlib import Path
 from typing import Literal
 
 import uvloop
@@ -85,10 +84,11 @@ async def update_draft_weights(request: Request):
     if speculative_config is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
     try:
-        check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), Path(weight_dir))
+        draft = local_draft_dir(weight_dir)
+        check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), draft)
     except (OSError, ValueError) as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
-    await client.collective_rpc("update_draft_weights", args=(weight_dir,))
+    await client.collective_rpc("update_draft_weights", args=(str(draft),))
     return {"status": "ok"}
 
 

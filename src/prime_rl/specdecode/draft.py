@@ -6,8 +6,9 @@ PROVENANCE_KEYS = ("_name_or_path", "transformers_version", "speculators_version
 
 
 def local_draft_dir(name: str, revision: str | None = None) -> Path:
+    """A draft directory, or a Hub id resolved from the local Hugging Face cache."""
     path = Path(name)
-    if path.is_dir():
+    if path.is_dir() or path.is_absolute():
         return path
     from huggingface_hub import snapshot_download
 
