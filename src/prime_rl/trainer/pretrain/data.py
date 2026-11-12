@@ -384,6 +384,10 @@ def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray | None:
     for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
         if token_id in special:
             continue
+        if token_id in tokenizer.added_tokens_decoder:
+            # Added tokens hold their text as is, not in the byte alphabet.
+            lengths[token_id] = len(token.encode())
+            continue
         if not set(token) <= BYTE_CHARS:
             return None
         lengths[token_id] = len(token)
