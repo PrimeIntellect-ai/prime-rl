@@ -104,18 +104,12 @@ def _fake_parallel_dims(cp: int, rank: int, leaders_group: dist.ProcessGroup | N
     )
 
 
-def _previous_flush(writer: AnnotationWriter, world_size: int) -> list[dict[str, Any]] | None:
-    """The implementation this replaces: every rank gathers pickled records to rank 0."""
-    from prime_rl.monitors.file.traces.update import make_update
-
-    records = [
-        make_update(trace_id, branches={branch_index: {"trainer_logprobs": logprobs, "entropies": entropies}})
-        for trace_id, branch_index, logprobs, entropies in writer._pending
-    ]
-    writer._pending = []
-    gathered = [[] for _ in range(world_size)] if dist.get_rank() == 0 else None
-    dist.gather_object(records, gathered, dst=0)
-    return None if gathered is None else [record for rank_records in gathered for record in rank_records]
+def _exported_streams(leader: int, cp: int, world: SimpleNamespace):
+    """What one CP leader's writer holds after the test's micro batches."""
+    writer = AnnotationWriter(_fake_parallel_dims(cp, leader, None), world, float_decimals=3)
+    for step in range(2):
+        writer.export(*_micro_batch(leader, step))
+    return writer._pending
 
 
 def _flush_worker(rank: int, world_size: int, cp: int) -> None:
@@ -129,39 +123,27 @@ def _flush_worker(rank: int, world_size: int, cp: int) -> None:
 
     monitors.log_annotations = capture
 
-    def export(writer: AnnotationWriter) -> None:
-        # CP peers see the same micro batches as their leader.
-        for step in range(2):
-            writer.export(*_micro_batch(rank - rank % cp, step))
-
-    previous = AnnotationWriter(_fake_parallel_dims(cp, rank, leaders_group), world, float_decimals=3)
-    export(previous)
-    expected = _previous_flush(previous, world_size)
-
     writer = AnnotationWriter(_fake_parallel_dims(cp, rank, leaders_group), world, float_decimals=3)
-    export(writer)
-    if rank not in leaders:
-        # Non-leaders take no part in the gather: they return before any collective.
-        writer.flush()
-        assert logged == []
-        return
+    # CP peers see the same micro batches as their leader.
+    for step in range(2):
+        writer.export(*_micro_batch(rank - rank % cp, step))
+    # Non-leaders take no part in the gather: they return before any collective.
     writer.flush()
     if rank != 0:
         assert logged == []
         return
 
     (records,) = logged
-    assert [(r["trace_id"], [b["index"] for b in r["branches"]]) for r in records] == [
-        (r["trace_id"], [b["index"] for b in r["branches"]]) for r in expected
-    ]
-    assert {r["trace_id"].split("-")[0] for r in records} == {f"r{leader}" for leader in leaders}
-    for record, want in zip(records, expected):
-        assert record.keys() == want.keys()
-        for branch, want_branch in zip(record["branches"], want["branches"]):
-            for field in ("trainer_logprobs", "entropies"):
-                np.testing.assert_array_equal(branch[field], want_branch[field])
+    expected = [stream for leader in leaders for stream in _exported_streams(leader, cp, world)]
+    assert len(records) == len(expected) > 0
+    for record, (trace_id, branch_index, logprobs, entropies) in zip(records, expected):
+        assert record["trace_id"] == trace_id
+        (branch,) = record["branches"]
+        assert branch["index"] == branch_index
+        np.testing.assert_array_equal(branch["trainer_logprobs"], logprobs)
+        np.testing.assert_array_equal(branch["entropies"], entropies)
 
 
 @pytest.mark.parametrize("world_size,cp", [(4, 2), (4, 1), (6, 3)])
-def test_flush_gathers_cp_leaders_only_and_matches_previous_records(world_size, cp):
+def test_flush_logs_every_cp_leaders_streams_once_on_rank_0(world_size, cp):
     _spawn(_flush_worker, world_size, cp)

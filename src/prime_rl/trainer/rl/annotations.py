@@ -88,10 +88,9 @@ def gather_streams(
     """Gather ``(trace_id, branch_index, logprobs, entropies)`` streams to the group's
     first rank, in group-rank order; returns None on the other ranks.
 
-    ``gather_object`` would pickle each member's arrays, pad every member to the largest
-    and copy each received buffer twice into ``bytes`` on the receiver. Instead only the
-    keys travel as objects; the floats travel as one ``(2, n)`` float32 tensor per
-    member, which the receiver copies to host once and splits into views."""
+    Only the keys travel as objects. The floats travel as one ``(2, n)`` float32 tensor
+    per member, padded to the longest member, which the receiver copies to host once
+    and splits into views."""
     rank, size = dist.get_rank(group), dist.get_world_size(group)
     device = torch.device("cuda", torch.cuda.current_device()) if dist.get_backend(group) == "nccl" else None
     keys = [(trace_id, branch_index, len(logprobs)) for trace_id, branch_index, logprobs, _ in streams]
