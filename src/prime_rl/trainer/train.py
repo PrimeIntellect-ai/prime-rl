@@ -153,7 +153,7 @@ def train(config: SFTConfig | PretrainConfig):
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "checkpoint"
+    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "ckpt_weights"
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
@@ -236,7 +236,7 @@ def train(config: SFTConfig | PretrainConfig):
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
         )
-    elif config.model.init.type == "checkpoint":
+    elif config.model.init.type == "ckpt_weights":
         ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")

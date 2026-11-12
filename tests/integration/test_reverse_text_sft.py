@@ -148,7 +148,7 @@ def rl_from_checkpoint_process(
         "--model.name",
         (run_dir / "checkpoints" / "step_5").as_posix(),
         "--model.init.type",
-        "checkpoint",
+        "ckpt_weights",
         "--trainer.optim.lr",
         "0",
         "--monitors.wandb.project",

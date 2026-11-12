@@ -485,19 +485,19 @@ A resume can add, remove or change train and eval sources.
 |---|---|---|---|
 | `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
 | `hf` | The weights of `model.name` | `model.name` | `uv run sft`, `uv run rl` |
-| `checkpoint` | The trainer checkpoint in `model.name`, a step directory (`.../step_<N>`) of another run | The `config.json` and tokenizer files in that step directory | |
+| `ckpt_weights` | The trainer checkpoint in `model.name`, a step directory (`.../step_<N>`) of another run | The `config.json` and tokenizer files in that step directory | |
 
-Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `checkpoint` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `checkpoint` run sets it explicitly.
+Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `ckpt_weights` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `ckpt_weights` run sets it explicitly.
 
-With a type other than `hf`, the inference server of an RL run or of SFT online evals loads no weights (vLLM's `load_format = "dummy"`) and gets the trainer's weights from its startup broadcast. In RL, the shared `[model]` sets both: `model.name` reaches the trainer, orchestrator and inference, so with `checkpoint` all of them read the architecture and the tokenizer from the step directory, and `model.init` reaches the trainer.
+With a type other than `hf`, the inference server of an RL run or of SFT online evals loads no weights (vLLM's `load_format = "dummy"`) and gets the trainer's weights from its startup broadcast. In RL, the shared `[model]` sets both: `model.name` reaches the trainer, orchestrator and inference, so with `ckpt_weights` all of them read the architecture and the tokenizer from the step directory, and `model.init` reaches the trainer.
 
 ```bash
 # SFT from a pretraining checkpoint
-uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --model.init.type checkpoint \
+uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --model.init.type ckpt_weights \
   --renderer.name qwen3
 
 # RL from an SFT checkpoint
-uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --model.init.type checkpoint \
+uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --model.init.type ckpt_weights \
   --orchestrator.renderer.name qwen3
 ```
 

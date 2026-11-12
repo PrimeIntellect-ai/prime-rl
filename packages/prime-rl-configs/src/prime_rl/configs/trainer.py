@@ -273,9 +273,9 @@ class MoERuntimeConfig(BaseConfig):
 class InitConfig(BaseConfig):
     """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
 
-    type: Literal["scratch", "hf", "checkpoint"] = "hf"
+    type: Literal["scratch", "hf", "ckpt_weights"] = "hf"
     """``scratch``: the model's own random init; ``model.name`` supplies the architecture and the tokenizer. ``hf``: the
-    weights of ``model.name``. ``checkpoint``: ``model.name`` is a checkpoint step directory (``.../step_<N>``) of
+    weights of ``model.name``. ``ckpt_weights``: ``model.name`` is a checkpoint step directory (``.../step_<N>``) of
     another run, whose ``config.json`` and tokenizer files supply the architecture and the tokenizer; only its weights
     load, and the run starts at step 0 with a fresh optimizer, scheduler and data."""
 
@@ -367,8 +367,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_checkpoint_name(self):
-        if self.init.type == "checkpoint":
-            validate_step_dir(Path(self.name), field='model.name with model.init.type = "checkpoint"')
+        if self.init.type == "ckpt_weights":
+            validate_step_dir(Path(self.name), field='model.name with model.init.type = "ckpt_weights"')
         return self
 
     @model_validator(mode="after")
