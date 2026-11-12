@@ -386,6 +386,8 @@ def get_model(
             f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {target_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
         )
         target_config.num_hidden_layers = num_hidden_layers
+        if getattr(target_config, "layer_types", None) is not None:
+            target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
     custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
