@@ -986,6 +986,33 @@ def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
         _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
 
 
+@pytest.mark.parametrize("outputs", [4, 24])
+@pytest.mark.parametrize("fn_dtype", [torch.float32, torch.bfloat16])
+def test_fused_mhc_pre_backward_ignores_matmul_precision(outputs, fn_dtype):
+    """The mHC input side's backward runs TF32 dots, so its gradients are bit for bit the same at every
+    `matmul_precision`."""
+    hc, hidden, num_tokens = 4, 512, 130
+    x = (torch.randn(1, num_tokens, hc, hidden, device="cuda") * 4).to(torch.bfloat16)
+    fn = (torch.randn(outputs, hc * hidden, device="cuda") * 0.05).to(fn_dtype)
+    scale = torch.rand(outputs, device="cuda") + 0.5
+    base = torch.randn(outputs, device="cuda") * 0.5
+    inputs = _leaves(x, fn, scale, base)
+    collapsed, logits = fused_mhc_pre(*inputs, 1e-6, 1e-6)
+    grad_outputs = (torch.randn_like(collapsed), torch.randn_like(logits))
+
+    initial_precision = torch.get_float32_matmul_precision()
+    grads = {}
+    try:
+        for precision in ("high", "highest"):
+            torch.set_float32_matmul_precision(precision)
+            grads[precision] = torch.autograd.grad((collapsed, logits), inputs, grad_outputs, retain_graph=True)
+    finally:
+        torch.set_float32_matmul_precision(initial_precision)
+
+    for name, high, highest in zip(("x", "fn", "scale", "base"), grads["high"], grads["highest"]):
+        assert torch.equal(high, highest), f"grad {name}"
+
+
 def _compressor_pool_reference(kv, gate, position_bias, layout, n_series):
     """The torch path's pooling, in the inputs' dtype: gather each window, overlap the `Ca` series, softmax, sum."""
     head_dim = kv.shape[1] // n_series
