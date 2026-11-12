@@ -58,10 +58,10 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class SFTDataConfig(BaseDataConfig):
-    type: Literal["sft"] = "sft"
+class HFDataConfig(BaseDataConfig):
+    """Rows of a HF dataset, loaded with ``datasets.load_dataset`` and interleaved across subsets and splits."""
 
-    name: str = "PrimeIntellect/Reverse-Text-SFT"
+    name: str
     """HF dataset name or path."""
 
     revision: str | None = None
@@ -85,13 +85,6 @@ class SFTDataConfig(BaseDataConfig):
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
 
-    columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Columns that carry per-sample renderer arguments."""
-
-    # Configuring
-    loss_mask: LossMaskConfig = LossMaskConfig()
-    """Which message types contribute to the loss."""
-
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
         if self.subsets is not None or self.splits is not None:
@@ -111,6 +104,20 @@ class SFTDataConfig(BaseDataConfig):
                         "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
                     )
         return self
+
+
+class SFTDataConfig(HFDataConfig):
+    type: Literal["sft"] = "sft"
+
+    name: str = "PrimeIntellect/Reverse-Text-SFT"
+    """HF dataset name or path."""
+
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns that carry per-sample renderer arguments."""
+
+    # Configuring
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
 
 
 class SFTCrossEntropyLossConfig(BaseConfig):
