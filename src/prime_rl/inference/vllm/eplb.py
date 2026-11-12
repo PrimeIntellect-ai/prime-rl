@@ -1,5 +1,5 @@
 from collections.abc import Callable, Sequence
-from functools import wraps
+from functools import cache, wraps
 from pathlib import Path
 from typing import Any
 
@@ -62,15 +62,6 @@ def current_expert_placement(eplb_state: Any, model_config: Any) -> tuple[tuple,
     return tuple(tuple(placement) for placement in placements), layers
 
 
-def moved_slots(fingerprint: tuple, num_routed_experts: int) -> int:
-    """Physical slots holding another expert than at startup."""
-    return sum(
-        logical_id != physical_id % num_routed_experts
-        for placement in fingerprint
-        for physical_id, logical_id in enumerate(placement)
-    )
-
-
 EXPERT_LOAD_FILE = "expert_load.pt"
 """Per-layer expert token counts the trainer writes into a weight update's step dir (``[moe_layers, experts]``)."""
 
@@ -87,7 +78,7 @@ def trainer_placement(
 
 
 def install_trainer_placement(
-    eplb_state: Any, model_config: Any, weight_dir: str | None, node_count: Any
+    eplb_state: Any, model_config: Any, weight_dir: str | None, node_count: Callable[[], int] = lambda: ep_node_count()
 ) -> int | None:
     """If the trainer published expert counts with this update (``EXPERT_LOAD_FILE`` in ``weight_dir``), place the
     experts by them: commit EPLB's maps (physical-to-logical, logical-to-physical, replica counts) without moving any
@@ -122,6 +113,7 @@ def install_trainer_placement(
     return moved
 
 
+@cache
 def ep_node_count() -> int:
     """Hosts in this rank's EP group: the same on every rank, unlike vLLM's per-engine node count when one EP group
     spans several servers."""

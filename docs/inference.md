@@ -245,8 +245,6 @@ rebalance_interval = 1  # trainer steps between placements
 - Works with NCCL, filesystem and NIXL weight updates; a NIXL engine traces its load plan again after each new placement, which a larger `rebalance_interval` amortizes. ModelExpress replays a plan traced for the startup placement and is rejected. Sparse filesystem deltas rewrite only changed bits, so they need experts moved inside the pause instead (`feat/sparse-eplb`).
 - `num_redundant_experts` defaults to one per expert parallel rank (without replica slots a placement can only move experts, not split a hot expert's load); `num_experts + num_redundant_experts` must divide by the expert parallel size. `log_balancedness` logs the mean over max per-rank expert load every 100 steps (1.0 is balanced). Routed-experts replay is unaffected, since vLLM records logical expert ids.
 
-See the [two-node math debug config](../configs/debug/eplb/README.md) for an RL reload check with online FP8 quantization.
-
 ### KV Cache Offload
 
 Maximizing KV-Cache space is crucial to support high-concurrency workloads. You can offload the KV cache to CPU memory (and, behind it, disk) by setting `inference.kv_cache_offload`. It is a discriminated config with two composable tiers, `cpu` and `disk`: a `cpu` tier is always required, and an optional `disk` tier is layered behind it (GPU → DRAM → disk). Disk-only is not supported.

@@ -9,9 +9,7 @@ from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
 
 from prime_rl.inference.vllm.eplb import (
     current_expert_placement,
-    ep_node_count,
     install_trainer_placement,
-    moved_slots,
     remap_expert_weight_loader,
 )
 
@@ -37,12 +35,7 @@ def load_weights_checkpoint_layerwise(
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
         if eplb_state is not None:
-            fingerprint, layers = current_expert_placement(eplb_state, model_config)
-            num_routed_experts = eplb_state.model_states[model_config.compute_hash()].model.num_routed_experts
-            logger.info(
-                "Reloading EPLB experts with %d physical slots moved from their initial placement",
-                moved_slots(fingerprint, num_routed_experts),
-            )
+            _, layers = current_expert_placement(eplb_state, model_config)
             for experts, destinations in layers:
                 moe_kernels += stash_moe_kernels([experts])
                 kernel_parameters, _ = get_layerwise_info(experts).kernel_tensors
@@ -81,23 +74,12 @@ def restore_moe_kernels(moe_kernels: list) -> None:
         quant_method.moe_kernel = kernel
 
 
-_ep_node_count: int | None = None
-
-
 def place_experts_from_trainer(eplb_state: "EplbState | None", model_config, weight_dir: str | None) -> None:
     """Place the experts by the counts the trainer published with this update, before its weights are written (see
     ``install_trainer_placement``)."""
-    global _ep_node_count
     if eplb_state is None:
         return
-
-    def node_count() -> int:
-        global _ep_node_count
-        if _ep_node_count is None:
-            _ep_node_count = ep_node_count()
-        return _ep_node_count
-
-    moved = install_trainer_placement(eplb_state, model_config, weight_dir, node_count)
+    moved = install_trainer_placement(eplb_state, model_config, weight_dir)
     if moved is not None:
         logger.info("Placed EPLB experts from the trainer's expert counts: %d physical slots changed", moved)
 

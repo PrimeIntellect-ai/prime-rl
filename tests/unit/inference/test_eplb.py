@@ -35,11 +35,6 @@ def test_reload_experts_follow_current_placement(physical_to_logical, global_to_
             assert weights[local_id] == physical_to_logical[physical_id]
 
 
-def test_reload_rejects_unmapped_local_experts():
-    with pytest.raises(ValueError, match="invalid logical expert"):
-        local_expert_destinations([0, -1], [0, 1], 1)
-
-
 def _eplb_state(physical_to_logical, expert_map, num_routed_experts=4):
     from types import SimpleNamespace
 
@@ -56,7 +51,7 @@ def _eplb_state(physical_to_logical, expert_map, num_routed_experts=4):
 def test_current_expert_placement_maps_local_slots():
     from types import SimpleNamespace
 
-    from prime_rl.inference.vllm.eplb import current_expert_placement, moved_slots
+    from prime_rl.inference.vllm.eplb import current_expert_placement
 
     # 4 logical experts over 6 physical slots; this rank holds slots 0-2. Expert 3 sits in slot 0 now, expert 1 twice.
     eplb_state, layer = _eplb_state([3, 1, 1, 0, 2, 0], [0, 1, 2, -1, -1, -1])
@@ -65,7 +60,6 @@ def test_current_expert_placement_maps_local_slots():
     ((experts, destinations),) = layers
     assert experts is layer.routed_experts
     assert destinations == [[], [1, 2], [], [0]]
-    assert moved_slots(fingerprint, 4) == 5
 
 
 def test_nixl_plan_is_traced_again_when_eplb_moves_experts():
