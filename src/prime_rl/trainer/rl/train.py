@@ -316,7 +316,7 @@ def train(config: TrainerConfig):
         logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
-    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     while True:
         # Reset peak memory stats
@@ -364,6 +364,11 @@ def train(config: TrainerConfig):
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
+            # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
+            # Reading the result on the host waits for every rank's contribution, which each
+            # rank makes only after its fetch: without this, a data master that finished
+            # fetching first deleted the arrays while its CP peers were still fetching them.
+            failed = failed.cpu()
             # Every rank has fetched its arrays now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
