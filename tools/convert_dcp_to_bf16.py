@@ -60,6 +60,9 @@ CONVERSION_OVERRIDES = {
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json", "pretrain.json")
 
+# The model fields an export reads from the run's resolved config, so configs of older versions export too.
+EXPORT_FIELDS = ("name", "trust_remote_code", "vlm", "lora")
+
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:
     """The DCP checkpoint id for a step dir (``step_{n}``) or its ``trainer`` subdir."""
@@ -86,9 +89,9 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
             "- the checkpoint must live in its run directory"
         )
 
-    model = ModelConfig(**run_config["model"])
+    model = {key: value for key, value in run_config["model"].items() if key in EXPORT_FIELDS}
     tokenizer = TokenizerConfig(**run_config["tokenizer"])
-    return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
+    return ModelConfig(**model, **CONVERSION_OVERRIDES), tokenizer
 
 
 def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
