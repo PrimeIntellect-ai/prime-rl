@@ -630,6 +630,9 @@ def test_halo_shards_give_every_entry_and_window_slot_exactly_once():
             shard = local.cp_halo.entry_shards[rate]
             assert shard.entry_tok_idx.shape == (capacity, rate)
             assert shard.entry_tok_idx.max() < rows + n_queries
+            cudnn_pool_size = local.cp_halo.cudnn_pool_size(rate)
+            assert shard.cu_entries[-1] <= cudnn_pool_size
+            assert shard.pool_row.max() < cudnn_pool_size
             slots = slice(rank * capacity, (rank + 1) * capacity)
             pooled_tok_idx[slots] = shard.entry_tok_idx + rank * n_queries - rows
             pooled_local_idx[slots] = shard.entry_local_idx

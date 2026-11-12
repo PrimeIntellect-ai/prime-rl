@@ -326,7 +326,7 @@ class EntryShard:
         cu_seqlens = torch.nn.functional.pad(tile_lens.cumsum(0), (1, 0)).to(torch.int32)
         cu_entries = torch.nn.functional.pad((tile_lens // compress_rate).cumsum(0), (1, 0)).to(torch.int32)
         # The tiles pooled in front of the owned run belong to the halo and are read past; the
-        # cuDNN output carries `capacity` rows plus them, and the bound covers both.
+        # cuDNN output carries `capacity` rows plus them, and `CPHalo.cudnn_pool_size` covers both.
         pool_row = torch.arange(capacity, device=device) + cu_entries[-1] - n_owned
 
         # `capacity` follows this rank's row length and `n_entries` the document lengths.
@@ -371,6 +371,15 @@ class CPHalo:
         tail = x[:, -self.rows :].movedim(1, 0).contiguous()
         halo = funcol.wait_tensor(torch.ops._c10d_functional.all_to_all_single(tail, recv, send, group_name))
         return torch.cat([halo.movedim(0, 1), x], dim=1)
+
+    def cudnn_pool_size(self, compress_rate: int) -> int:
+        """Output rows of the cuDNN pooling over the halo view, covering `cu_entries[-1]` and every `pool_row`.
+
+        The shard's `capacity` slots plus the entries pooled in front of the owned run, which lie in
+        at most `rows + compress_rate - 1` tokens.
+        """
+        capacity = self.entry_shards[compress_rate].entry_tok_idx.shape[0]
+        return capacity + -(-self.rows // compress_rate)
 
 
 @dataclass(frozen=True)
@@ -689,9 +698,7 @@ class DeepseekV4Compressor(nn.Module):
             shard = packed.cp_halo.entry_shards[self.compress_rate]
             cu_seqlens, cu_entries, pool_row = shard.cu_seqlens, shard.cu_entries, shard.pool_row
             entry_tok_idx, entry_local_idx = shard.entry_tok_idx, shard.entry_local_idx
-            # `pool_row` skips the halo entries pooled in front of the owned run, so the bound covers
-            # them and the padding slots past the run.
-            out_rows = shard.entry_tok_idx.shape[0] + 3 * (packed.cp_halo.rows // self.compress_rate) + 6
+            out_rows = packed.cp_halo.cudnn_pool_size(self.compress_rate)
         else:
             layout = packed.compression_layouts[self.compress_rate]
             cu_seqlens, cu_entries, pool_row = layout.cu_seqlens, layout.cu_entries, None
