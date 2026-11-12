@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from transformers import AutoConfig, AutoProcessor, AutoTokenizer, GenerationConfig, Qwen3Config
+from transformers import AutoConfig, AutoProcessor, AutoTokenizer, GenerationConfig, Qwen3Config, Qwen3VLConfig
 
 from prime_rl.trainer.ckpt import ModelFiles, check_model_config
 
@@ -59,3 +59,14 @@ def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenize
     (tmp_path / "config.json").write_text(json.dumps(saved))
     with pytest.raises(ValueError, match=r"has another architecture: layer_types \(differs from index 1\)$"):
         check_model_config(config, tmp_path)
+
+
+def test_a_vlm_checkpoint_compares_its_sub_configs_by_architecture(tmp_path):
+    config = Qwen3VLConfig()
+    saved = json.loads(config.to_json_string(use_diff=False))
+    saved["text_config"]["transformers_version"] = "0.0.0"
+    saved["vision_config"]["dtype"] = "float16"
+    (tmp_path / "config.json").write_text(json.dumps(saved))
+    check_model_config(config, tmp_path)
+    with pytest.raises(ValueError, match=r"text_config\.hidden_size 4096 -> 1024"):
+        check_model_config(Qwen3VLConfig(text_config={"hidden_size": 1024}), tmp_path)
