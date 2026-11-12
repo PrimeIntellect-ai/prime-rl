@@ -11,6 +11,7 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.distributed.checkpoint import FileSystemWriter
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -365,7 +366,10 @@ class CheckpointManager:
         return staging, write
 
     def _write(self, staging: Staging, path: Path) -> None:
-        dcp_save(staging.wait(), checkpoint_id=path, process_group=self.write_group)
+        # The default writer's copy-ahead loader syncs the thread's current stream, which is the default
+        # stream training runs on, about once per tensor. The staged tensors are already in pinned host memory.
+        writer = FileSystemWriter(path, per_thread_copy_ahead=0)
+        dcp_save(staging.wait(), storage_writer=writer, process_group=self.write_group)
 
     def _save_mapping(self, path: Path, model: nn.Module) -> None:
         """Write the prime -> HF conversion of the saved model weights as views, so a reader can
