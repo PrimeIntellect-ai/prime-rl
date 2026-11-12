@@ -32,9 +32,6 @@ def apply_shared_vllm_patches():
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
     monkey_patch_engine_gc()
-    from prime_rl.inference.vllm.engine_busy import monkey_patch_engine_busy_time
-
-    monkey_patch_engine_busy_time()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()
     from prime_rl.inference.vllm.request_replay import patch_request_replay

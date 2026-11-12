@@ -28,11 +28,6 @@ in full only once it completes (its context grows call by call), so the controll
   down to ``STEP_MIN``.
 - **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond the target while the cap binds,
   without cancelling. A queue still above ``QUEUE_CANCEL`` once a trim has drained cancels the excess.
-- **Trainer demand**: in RL the trainer consumes rollouts at its own pace, and tokens generated beyond it only wait
-  and go stale. Given the trainer's demand (the tokens per second the engines must generate to keep it busy, from the
-  balance advisor), a cap whose throughput clears it by ``TRAINER_MARGIN`` is **fed**: no step up from a fed level,
-  steps down from it are sized by the surplus, and a step down that leaves the trainer fed is kept even when
-  throughput falls. A trainer that then waits ``TRAINER_STARVED`` of a step for its batch takes the cut back.
 - **Throughput drop**: two windows in a row ``THROUGHPUT_DROP`` below the best window's throughput with as many units
   in flight (a KV thrash, a collapsed frontend) trim the cap in proportion to the throughput lost, without
   cancelling. A third, with the engines the bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue
@@ -137,12 +132,6 @@ RESUME_SKIP_POLLS = 6
 BEST_HALF_LIFE_POLLS = 360
 """The best window's throughput decays with this half-life, so slow workload drift does not read as a drop."""
 
-TRAINER_MARGIN = 0.1
-"""Throughput a fed level keeps above the trainer's demand."""
-
-TRAINER_STARVED = 0.1
-"""Share of a trainer step spent waiting for its batch that takes back a cut the trainer's demand allowed."""
-
 COLOCATED = "colocated"
 """Role of engines that both prefill and decode (no P/D role)."""
 
@@ -162,8 +151,6 @@ class EngineLoadSample:
     generation_tokens_delta: int = 0
     # Summed end-to-end latency (arrival at the engine to finish) of the requests in ``finished_delta``
     latency_delta: float = 0.0
-    # Seconds the engine spent executing model steps since the previous poll (None: not reported)
-    busy_delta: float | None = None
 
 
 @dataclass(frozen=True)
@@ -383,10 +370,6 @@ class ConcurrencyController(Reconfigurable):
         self.drops = 0
         # The cap a throughput drop trimmed to: the drop lies above it, so steps up past it stay smallest
         self.ceiling: float | None = None
-        # Generated tokens per second that keep the trainer busy (None: unknown), and whether the kept cap is a cut
-        # only the trainer's demand allowed
-        self.demand: float | None = None
-        self.fed_cut = False
 
         self.set_limit: Callable[[int], None] = lambda n_max: None
         self.get_inflight: Callable[[], int] = lambda: 0
@@ -500,20 +483,6 @@ class ConcurrencyController(Reconfigurable):
             self.climb(poll, growth, calls)
         else:
             self.measure(poll)
-
-    def trainer_step(self, demand: float | None, waited: float) -> None:
-        """The trainer's demand in generated tokens per second (None: unknown) and the share of its last step it
-        waited for its batch. A trainer starving after a cut its demand allowed takes the cut back."""
-        self.demand = demand
-        if waited >= TRAINER_STARVED and self.fed_cut and self.target is None and not self.climbing:
-            self.fed_cut = False
-            self.cap = self.clamp(self.max_inflight * STEP_MAX**0.7)
-            self.apply_limit(int(self.cap), reason=f"trainer waited {waited:.0%} of a step")
-            self.restart_steps(direction=-1)
-
-    def fed(self, throughput: float) -> bool:
-        """Throughput clears the trainer's demand by ``TRAINER_MARGIN``."""
-        return self.demand is not None and throughput >= (1 + TRAINER_MARGIN) * self.demand
 
     def set_target(self, target: int | None) -> None:
         """Pin the cap at ``target``, outside the configured band too, or hand it back to the adaptive loop with
@@ -677,10 +646,6 @@ class ConcurrencyController(Reconfigurable):
         else:
             self.elasticity = elasticity(level.window, base.window)
             keep = (self.elasticity >= ELASTICITY) == up
-            if up and self.fed(base.window.throughput):
-                keep = False  # the trainer was fed already: the units would only add staleness
-            elif not up and not keep and self.fed(level.window.throughput):
-                keep = self.fed_cut = True  # throughput fell, but the trainer stays fed
         # Whether the units at the level the steps settle on pay: a kept step up and a rejected step down measured
         # it; a rejected step up says only that the units above do not
         if keep or not up:
@@ -693,7 +658,6 @@ class ConcurrencyController(Reconfigurable):
         )
         if keep:
             self.base = level
-            self.fed_cut = self.fed_cut and not up
             # How far the step cleared the threshold: in proportion going up, held throughput going down
             margin = (self.elasticity - ELASTICITY) / (1 - ELASTICITY) if up else 1 - self.elasticity / ELASTICITY
             self.step = max(STEP_MIN, STEP_MAX ** min(1.0, margin))
@@ -709,17 +673,9 @@ class ConcurrencyController(Reconfigurable):
         """Step the cap from the reference level in the current direction. No step up while the cap does not bind,
         or while the queue is at the target and growth did not pay last."""
         base = self.base
-        fed = self.fed(base.window.throughput)
-        if self.direction > 0 and (base.window.inflight < BINDING_FRACTION * base.cap or self.headroom == 0.0 or fed):
+        if self.direction > 0 and (base.window.inflight < BINDING_FRACTION * base.cap or self.headroom == 0.0):
             self.direction = -1
         step = self.step if self.direction > 0 else min(self.step, STEP_MAX**0.7)
-        if fed:
-            # Size the cut by the surplus over the trainer's target; hold where the smallest step would starve it
-            surplus = base.window.throughput / ((1 + TRAINER_MARGIN) * self.demand)
-            if surplus < STEP_MIN:
-                self.level = Level(cap=base.cap)
-                return
-            step = min(surplus, STEP_MAX**0.7)
         if self.direction > 0 and self.ceiling is not None and base.cap * step > self.ceiling:
             step = STEP_MIN
         cap = int(self.clamp(base.cap * step**self.direction))
@@ -864,19 +820,6 @@ class ConcurrencyController(Reconfigurable):
     def capacity(self) -> int | None:
         """Total KV tokens across decode engines; None until the first poll."""
         return sum(self.capacity_by_engine.values()) or None
-
-    @property
-    def binding(self) -> bool:
-        """The last poll's units in flight fill the cap."""
-        return bool(self.polls) and self.polls[-1].inflight >= BINDING_FRACTION * self.max_inflight
-
-    @property
-    def env_bound(self) -> bool:
-        """The configured ``max_inflight`` holds the cap while growth still pays: the episodes' external resources,
-        not the engines, bound the pool."""
-        ceiling = self.config.max_inflight
-        growing = self.climbing or self.paying
-        return ceiling is not None and self.max_inflight >= ceiling and self.binding and growing
 
     # ── observability ────────────────────────────────────────────────────────
 

@@ -466,43 +466,6 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
-class BalancePoolConfig(BaseConfig):
-    """One GPU pool of the deployment, as the balance advisor sees it."""
-
-    name: Literal["trainer", "inference", "prefill", "decode"]
-    """The pool: the trainer, colocated inference engines, or the prefill or decode engines of a P/D deployment."""
-
-    units: int = Field(ge=1)
-    """Units (GPUs on a single node, else nodes) the pool holds."""
-
-    sizes: list[int]
-    """Unit counts the pool can run on: whole engine replicas, or what the trainer's parallelism divides."""
-
-
-class BalanceConfig(BaseConfig):
-    """Advice on the trainer / inference (and prefill / decode) GPU split. The orchestrator measures each pool's
-    throughput over its busy time and logs, under ``balance/*``, how fast the run would be with the same units split
-    differently; when a split stays clearly faster, it logs a notice."""
-
-    enabled: bool = True
-    """Measure the pools and log ``balance/*``. The advice itself needs ``pools``, which ``rl`` fills."""
-
-    pools: list[BalancePoolConfig] | None = None
-    """The deployment's GPU pools, trainer first. Filled by ``rl`` from ``deployment`` and ``inference.deployment``."""
-
-    unit: Literal["GPU", "node"] = "GPU"
-    """What a pool unit is. Filled by ``rl``."""
-
-    window_minutes: float = Field(30.0, gt=0)
-    """Span the pool measurements average over."""
-
-    min_gain: float = Field(0.1, ge=0)
-    """Relative speedup a split must promise before it is advised."""
-
-    sustain_minutes: float = Field(30.0, ge=0)
-    """How long one split must keep promising ``min_gain`` before the notice."""
-
-
 # Top-k set on truncated policy sampling that has none: the kept ids of every sampled token travel to the
 # trainer, and top-p alone can keep most of the vocabulary on a flat distribution.
 TRAIN_TOP_K_DEFAULT = 10000
@@ -580,9 +543,6 @@ class OrchestratorConfig(BaseConfig):
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
-
-    balance: BalanceConfig = BalanceConfig()
-    """Trainer / inference GPU split advice (``[orchestrator.balance]``)."""
 
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Freezes the startup heap, turns off automatic full collections (each one holds the GIL and stalls the event loop for as long as it takes to walk every held episode) and runs one every N steps instead. Young collections still run. Set to null to use Python's default GC behavior."""

@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import BalancePoolConfig, OrchestratorConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -772,16 +772,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_balance_pools(self):
-        """Describe the deployment's GPU pools to the orchestrator's balance advisor."""
-        balance = self.orchestrator.balance
-        if balance.enabled and balance.pools is None and self.inference is not None:
-            unit = "GPU" if self.deployment.type == "single_node" else "node"
-            update = {"pools": balance_pools(self), "unit": unit}
-            self.orchestrator = self.orchestrator.model_copy(update={"balance": balance.model_copy(update=update)})
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_inference_client(self):
         """Auto-configure the orchestrator policy client from the inference server config.
 
@@ -823,49 +813,3 @@ class RLConfig(BaseConfig):
         return self
 
     ### Warnings
-
-
-def balance_pools(config: RLConfig) -> list[BalancePoolConfig] | None:
-    """The deployment's trainer and inference pools with the unit counts each can run on, or None without inference
-    engines. Units are GPUs on a single node, else nodes."""
-    deployment, inference, model = config.deployment, config.inference, config.trainer.model
-    single = deployment.type == "single_node"
-    infer_units = deployment.num_infer_gpus if single else deployment.total_infer_nodes
-    if infer_units == 0:
-        return None
-    train_units = deployment.num_train_gpus if single else deployment.num_train_nodes
-    total = train_units + infer_units
-    gpus = 1 if single else deployment.gpus_per_node
-    ep = model.ep if isinstance(model.ep, int) else 1
-
-    def trainer_fits(units: int) -> bool:
-        # Data parallel over context-parallel groups; HSDP over whole islands; an explicit EP divides each island
-        world = units * gpus
-        island = world // model.dp_replicate
-        return (
-            units % (1 if single else model.dp_replicate) == 0
-            and world % (model.cp * model.dp_replicate) == 0
-            and island % ep == 0
-        )
-
-    def pool(name: str, units: int, step: int, fits=lambda units: True) -> BalancePoolConfig:
-        sizes = [size for size in range(step, total, step) if fits(size)]
-        return BalancePoolConfig(name=name, units=units, sizes=sizes)
-
-    pools = [pool("trainer", train_units, 1, trainer_fits)]
-    infer = inference.deployment
-    if single:
-        # One server; its data-parallel size follows the GPUs
-        pools.append(pool("inference", infer_units, inference.vllm.tensor_parallel_size))
-    elif infer.type == "disaggregated":
-        replicas = deployment.num_infer_replicas
-        for role in ("prefill", "decode"):
-            nodes = getattr(infer, f"{role}_nodes_per_replica") * replicas
-            pools.append(pool(role, nodes * getattr(infer, f"num_{role}_replicas"), nodes))
-    elif infer.type == "multi_node" and not inference.vllm.enable_expert_parallel:
-        # Every inference node runs its own server: grow by a node per replica
-        pools.append(pool("inference", infer_units, deployment.num_infer_replicas))
-    else:
-        # One server spans a replica's nodes: grow by whole replicas
-        pools.append(pool("inference", infer_units, deployment.infer_nodes_per_replica))
-    return pools

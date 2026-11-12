@@ -41,14 +41,6 @@ WORKER_EXTENSION_CLS = {
 }
 
 
-@router.get("/prime_rl/engine_busy")
-async def engine_busy():
-    """Seconds each of this server's engine cores spent executing model steps, by engine index."""
-    from prime_rl.inference.vllm.engine_busy import busy_dir, read_busy
-
-    return {"engines": read_busy(busy_dir())}
-
-
 @router.post("/pause")
 async def pause(request: Request):
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")
@@ -213,11 +205,6 @@ def server(config: InferenceConfig):
     lora_target_modules = config.vllm.lora_target_modules
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
-
-    # Fix the engine counters' directory before vLLM spawns engine cores and API servers, so they all share it
-    from prime_rl.inference.vllm.engine_busy import busy_dir
-
-    busy_dir()
 
     namespace = config.to_namespace()
 

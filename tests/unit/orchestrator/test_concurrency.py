@@ -152,11 +152,9 @@ def test_fast_climb_ends_where_growth_stops_paying():
     assert 130 <= ctl.max_inflight < 400
 
 
-@pytest.mark.parametrize("demand", [None, 1e9], ids=["no-trainer-demand", "trainer-hungrier-than-the-engines"])
-def test_step_up_that_pays_is_kept(demand):
+def test_step_up_that_pays_is_kept():
     ctl, pool = controller()
     ctl.climbing = False
-    ctl.trainer_step(demand, waited=0.0)
     run(ctl, pool, lambda inflight: 10 * inflight, polls=400)  # throughput in proportion to the pool
     assert ctl.max_inflight > 200 and all(limit >= 100 for limit in pool.limits)
 
@@ -168,19 +166,6 @@ def test_step_up_that_buys_nothing_returns():
     rejected = pool.limits.index(100)
     assert max(pool.limits) == 150  # one step up, rejected
     assert all(75 <= limit <= 115 for limit in pool.limits[rejected:])  # then small steps around the knee
-
-
-def test_fed_trainer_cuts_the_cap_and_a_starving_one_takes_the_cut_back():
-    ctl, pool = controller()
-    ctl.climbing = False
-    # Throughput in proportion to the pool, but the trainer consumes 600 tokens/s: 1000 at 100 units only go stale
-    ctl.trainer_step(600.0, waited=0.0)
-    run(ctl, pool, lambda inflight: 10 * inflight, polls=600)
-    assert max(pool.limits) < 100  # never restored, although every cut lost throughput
-    assert 60 <= ctl.max_inflight <= 80  # settled just above the 660 tokens/s the trainer needs
-    cap = ctl.max_inflight
-    ctl.trainer_step(600.0, waited=0.3)
-    assert ctl.max_inflight > cap
 
 
 def test_queue_does_not_hold_growth_that_pays():
