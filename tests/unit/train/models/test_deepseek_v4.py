@@ -152,11 +152,11 @@ def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.M
     return module
 
 
-def _single_doc(input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _single_doc(input_ids: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
     """`position_ids` and `seq_lens` for a row holding one document per batch entry."""
     batch, seq_len = input_ids.shape
     position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, -1)
-    return position_ids, torch.tensor([seq_len], device=input_ids.device)
+    return position_ids, [seq_len]
 
 
 def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
@@ -178,7 +178,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
         rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
     return PackedContext.build(
         rotary_emb=rotary,
-        seq_lens=torch.tensor(doc_lens, device="cuda"),
+        seq_lens=list(doc_lens),
         device=torch.device("cuda"),
     )
 

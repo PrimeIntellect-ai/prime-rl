@@ -87,17 +87,14 @@ def build_mrope_position_ids(
     mm_token_type_ids: torch.LongTensor,
     image_grid_thw: torch.LongTensor | None,
     spatial_merge_size: int,
-    seq_lens: torch.Tensor,
+    seq_lens: list[int],
 ) -> torch.LongTensor:
     """``[3, 1, seq]`` MRoPE positions for a packed row: text advances all three axes together, each image spans
     its (temporal, height, width) grid from the current position, and positions restart at every sequence."""
-    seq_lens = seq_lens.to(device=input_ids.device, dtype=torch.long)
-
     image_grids = iter(image_grid_thw) if image_grid_thw is not None else None
     position_ids = torch.empty(3, 1, input_ids.shape[1], dtype=input_ids.dtype, device=input_ids.device)
     offset = 0
-    for sequence_length_tensor in seq_lens:
-        sequence_length = int(sequence_length_tensor)
+    for sequence_length in seq_lens:
         token_types = mm_token_type_ids[0, offset : offset + sequence_length]
         current_position = 0
         sequence_positions = []

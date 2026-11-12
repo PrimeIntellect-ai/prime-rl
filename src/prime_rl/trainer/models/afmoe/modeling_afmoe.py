@@ -332,7 +332,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         """
@@ -349,7 +349,8 @@ class AfmoeModel(AfmoePreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device),
+            seq_lens,
+            device=inputs_embeds.device,
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
@@ -427,7 +428,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:

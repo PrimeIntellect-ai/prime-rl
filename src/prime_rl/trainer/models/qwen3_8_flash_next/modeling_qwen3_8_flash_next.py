@@ -186,7 +186,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         """``input_ids`` are always required, image placeholders included: PLE hashes their n-grams even when
@@ -198,7 +198,8 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         cu_seqlens, _ = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(inputs_embeds.device),
+            seq_lens,
+            device=inputs_embeds.device,
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
@@ -243,7 +244,7 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         pixel_values: torch.Tensor | None,
         image_grid_thw: torch.LongTensor | None,
         mm_token_type_ids: torch.LongTensor | None,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
     ) -> tuple[torch.Tensor, torch.LongTensor]:
         vision_config = self.config.vision_config
         inputs_embeds = self.language_model.embed_tokens(input_ids)
@@ -291,7 +292,7 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         if self.visual is None:
@@ -369,7 +370,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:

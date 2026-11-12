@@ -157,7 +157,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         if inputs_embeds is None:
@@ -166,7 +166,8 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(inputs_embeds.device),
+            seq_lens,
+            device=inputs_embeds.device,
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
@@ -206,7 +207,7 @@ class Qwen3_5VLMModel(nn.Module):
         pixel_values: torch.Tensor | None,
         image_grid_thw: torch.LongTensor | None,
         mm_token_type_ids: torch.LongTensor | None,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
     ) -> tuple[torch.Tensor, torch.LongTensor]:
         inputs_embeds = self.language_model.embed_tokens(input_ids)
         has_images = pixel_values is not None
@@ -257,7 +258,7 @@ class Qwen3_5VLMModel(nn.Module):
         mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         if self.visual is None:
@@ -340,7 +341,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> PrimeLmOutput:
         if self.is_vlm:

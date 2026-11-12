@@ -143,7 +143,7 @@ def test_forward_backward_and_packing(text_config):
     prime_output = prime_model(
         input_ids,
         position_ids=position_ids,
-        seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"),
+        seq_lens=[input_ids.shape[1]],
     )
     prime_output["logits"].sum().backward()
     assert torch.isfinite(prime_output["logits"]).all()
@@ -163,7 +163,7 @@ def test_forward_backward_and_packing(text_config):
         packed = prime_model(
             input_ids,
             position_ids=packed_position_ids,
-            seq_lens=torch.tensor([50, 50], device="cuda"),
+            seq_lens=[50, 50],
             routed_experts=routed_experts,
         )["logits"]
         unpacked = torch.cat(
@@ -171,7 +171,7 @@ def test_forward_backward_and_packing(text_config):
                 prime_model(
                     input_ids[:, start : start + 50],
                     position_ids=packed_position_ids[:, :50],
-                    seq_lens=torch.tensor([50], device="cuda"),
+                    seq_lens=[50],
                     routed_experts=routed_experts[:, start : start + 50] if routed_experts is not None else None,
                 )["logits"]
                 for start in (0, 50)
@@ -190,7 +190,7 @@ def test_moe_router_replay():
         input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
-    seq_lens = torch.tensor([input_ids.shape[1]], device="cuda")
+    seq_lens = [input_ids.shape[1]]
     out_normal = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
 
     num_layers = prime_model.config.num_hidden_layers

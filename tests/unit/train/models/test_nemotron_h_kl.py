@@ -56,8 +56,8 @@ def _make_model(device="cuda"):
     return model
 
 
-def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
-    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+def _seq_lens(input_ids: torch.Tensor) -> list[int]:
+    return [input_ids.shape[1]]
 
 
 def _get_logprobs_vanilla(model, input_ids):

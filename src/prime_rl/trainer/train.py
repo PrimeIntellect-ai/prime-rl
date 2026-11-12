@@ -264,7 +264,7 @@ def train(config: SFTConfig | PretrainConfig):
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
         loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
-        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].tolist()
         mm_kwargs = micro_batch.get("mm_kwargs")
         if mm_kwargs is not None:
             mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}

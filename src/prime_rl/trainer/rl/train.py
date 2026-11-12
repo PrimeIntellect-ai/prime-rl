@@ -518,7 +518,7 @@ def train(config: TrainerConfig):
                 else None
             )
 
-            seq_lens = micro_batch["seq_lens"].to("cuda")
+            seq_lens = micro_batch["seq_lens"].tolist()
 
             labels = shift_tensor_left(input_ids)
 

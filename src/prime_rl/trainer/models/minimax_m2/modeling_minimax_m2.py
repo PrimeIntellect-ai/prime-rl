@@ -139,13 +139,13 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+        seq_lens (`list[int]`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
@@ -157,7 +157,8 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device),
+            seq_lens,
+            device=inputs_embeds.device,
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
@@ -209,12 +210,12 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
         temperature: Union[torch.Tensor, None] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+        seq_lens (`list[int]`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
