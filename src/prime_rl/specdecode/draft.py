@@ -3,6 +3,8 @@ from pathlib import Path
 
 # Provenance, not architecture. Loads cast to the served dtype.
 PROVENANCE_KEYS = ("_name_or_path", "transformers_version", "speculators_version", "dtype", "torch_dtype")
+# Served drafts share the target's embedding and LM head and loads skip them, so checkpoints may leave them out.
+TARGET_SHARED_TENSORS = ("embed_tokens.weight", "lm_head.weight")
 
 
 def local_draft_dir(name: str, revision: str | None = None) -> Path:
@@ -44,6 +46,10 @@ def check_draft_swap(served: Path, new: Path) -> None:
     if changed:
         raise ValueError(f"Draft {new} differs from the served draft {served} in {changed}")
     served_shapes, new_shapes = tensor_shapes(served), tensor_shapes(new)
-    changed = sorted(k for k in served_shapes.keys() | new_shapes.keys() if served_shapes.get(k) != new_shapes.get(k))
+    optional = {
+        k for k in served_shapes.keys() ^ new_shapes.keys() if k.removeprefix("model.") in TARGET_SHARED_TENSORS
+    }
+    names = (served_shapes.keys() | new_shapes.keys()) - optional
+    changed = sorted(k for k in names if served_shapes.get(k) != new_shapes.get(k))
     if changed:
         raise ValueError(f"Draft {new} tensors differ from the served draft {served}: {changed[:8]}")
