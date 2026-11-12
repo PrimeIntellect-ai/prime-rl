@@ -1466,6 +1466,11 @@ def test_model_init_seed_requires_type_scratch():
         SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
 
 
+def test_model_init_scratch_rejects_lora():
+    with pytest.raises(ValidationError, match='model.init.type = "scratch" does not load'):
+        SFTConfig.model_validate({"model": {"init": {"type": "scratch"}, "lora": {}}})
+
+
 def test_model_init_checkpoint_requires_a_step_dir():
     TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt"})
     with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):

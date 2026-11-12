@@ -373,6 +373,12 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_scratch_lora(self):
+        if self.init.type == "scratch" and self.lora is not None:
+            raise ValueError('model.lora adapts pretrained weights, which model.init.type = "scratch" does not load')
+        return self
+
+    @model_validator(mode="after")
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
