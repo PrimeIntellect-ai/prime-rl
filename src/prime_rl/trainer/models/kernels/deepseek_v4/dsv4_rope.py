@@ -6,18 +6,22 @@ adjacently. Eagerly, every rotation widens the cos/sin tables and rebuilds the w
 `torch.cat`, a large share of attention time. `dsv4_rope` rotates in one kernel pass, reading
 fp32 cos and sin from a `[cos | sin]` cache by position, bit for bit with vLLM's `rotary_embedding`.
 `dsv4_q_norm_rope` puts the query's RMSNorm in the same op so the query is rounded to bf16 once, and at the
-shapes vLLM serves it runs vLLM's own fused prefill kernel.
+shapes vLLM serves it runs vLLM's own fused prefill kernel. `dsv4_indexer_q_rope_quant` rotates the
+Lightning Indexer's query and quantizes it to FP8 in one op, as vLLM does.
 """
 
 import torch
 import triton
 import triton.language as tl
 
+from prime_rl.trainer.models.kernels.fp8_indexer import per_token_group_quant_fp8
 from prime_rl.trainer.models.layers.norms import get_quack_rmsnorm
 
 VLLM_Q_NORM_ROPE_HEAD_DIM = 512
 VLLM_Q_NORM_ROPE_ROPE_DIM = 64
 VLLM_Q_NORM_ROPE_NUM_HEADS = (8, 16, 32, 64, 128)
+VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
+"""The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
 
 
 @triton.autotune(
@@ -288,3 +292,40 @@ def _dsv4_q_norm_rope_autograd_backward(ctx, grad: torch.Tensor):
 
 
 dsv4_q_norm_rope.register_autograd(_dsv4_q_norm_rope_autograd_backward, setup_context=_dsv4_q_norm_rope_setup_context)
+
+
+@torch.library.custom_op("prime_rl::dsv4_indexer_q_rope_quant", mutates_args=())
+def dsv4_indexer_q_rope_quant(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, w: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The indexer query's RoPE and per-head UE8M0 FP8 quantization, each head's scale folded into `w`.
+
+    On bf16 CUDA queries this is vLLM's fused kernel, bit for bit with the unfused `dsv4_rope` +
+    `per_token_group_quant_fp8` pair that runs elsewhere. Both floor each head's absolute maximum at
+    `VLLM_INDEXER_FP8_AMAX_FLOOR`.
+
+    Args:
+        q: `(tokens, heads, head_dim)`, unrotated.
+        cos_sin_cache: `(max_position, rope_dim)` fp32 and contiguous, cos then sin, one entry per pair each.
+        position_ids: int32 or int64, one per token, each in `[0, max_position)`.
+        w: `(tokens, heads)` bf16 per-head weights.
+
+    Returns:
+        The float8_e4m3fn query, shaped like `q`, and the fp32 weights times each head's query scale.
+    """
+    if q.is_cuda and q.dtype == torch.bfloat16 and q.ndim == 3 and q.stride(-1) == 1:
+        from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
+
+        return fused_indexer_q_rope_quant(position_ids.reshape(-1).long(), q, cos_sin_cache, w, 1.0, 1.0)
+    rotated = _triton_rope(q, cos_sin_cache, position_ids, False)
+    q_fp8, q_scales = per_token_group_quant_fp8(
+        rotated.reshape(-1, q.shape[-1]), group_size=q.shape[-1], use_ue8m0=True, eps=VLLM_INDEXER_FP8_AMAX_FLOOR
+    )
+    return q_fp8.view(q.shape), w * q_scales.view(q.shape[:-1])
+
+
+@dsv4_indexer_q_rope_quant.register_fake
+def _dsv4_indexer_q_rope_quant_fake(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, w: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return q.new_empty(q.shape, dtype=torch.float8_e4m3fn), w.new_empty(w.shape, dtype=torch.float32)

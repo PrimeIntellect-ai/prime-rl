@@ -146,8 +146,13 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
     dsv4_compressed_kv_fake_quant,
     dsv4_swa_kv_fake_quant,
 )
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
-from prime_rl.trainer.models.kernels.fp8_indexer import VLLM_INDEXER_FP8_AMAX_FLOOR, fp8_indexer
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
+    VLLM_INDEXER_FP8_AMAX_FLOOR,
+    dsv4_indexer_q_rope_quant,
+    dsv4_q_norm_rope,
+    dsv4_rope,
+)
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer_prequantized
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -790,17 +795,16 @@ class DeepseekV4Indexer(nn.Module):
         entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
         # fp8_indexer has no batch axis
-        top_k_indices = fp8_indexer(
-            q[0],
+        q_fp8, scaled_w = dsv4_indexer_q_rope_quant(q[0], cos_sin_cache, packed.position_ids, w[0])
+        top_k_indices = fp8_indexer_prequantized(
+            q_fp8,
             compressed_kv[0],
-            w[0],
+            scaled_w,
             entry_start,
             entry_stop,
             self.index_topk,
             amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
             cp_group_name=cp_group.group_name if cp_world_size > 1 else None,
-            cos_sin_cache=cos_sin_cache,
-            position_ids=packed.position_ids,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
