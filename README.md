@@ -55,6 +55,7 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Muse Glimmer, text only (`muse_glimmer`) | `meta-models/Muse-Glimmer-30B` | no | — | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ✅ |
+| Nemotron H Omni (`nemotron_h_omni`, text only) | `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16` | yes | ✅ | ✅ |
 | Trinity (`afmoe`) | `arcee-ai/Trinity-Mini`, … | yes | ✅ | ✅ |
 | GLM-4 · GLM-4.5 MoE · INTELLECT-3 (`glm4_moe`) | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5-Air`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | yes | ✅ | ✅ |
 | GPT-OSS (`gpt_oss`) | `unsloth/gpt-oss-20b-BF16`, … | yes | ✅ | ✅ |
