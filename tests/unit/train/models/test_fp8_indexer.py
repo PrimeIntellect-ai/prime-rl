@@ -217,7 +217,10 @@ def test_fused_rope_quant_is_bit_for_bit_with_the_unfused_pair(monkeypatch):
     assert torch.equal(fallback_q.view(torch.uint8), expected_q.view(torch.uint8))
     assert torch.equal(fallback_w, expected_w)
 
-    expected_picks = fp8_indexer(dsv4_rope(q, cos_sin, positions), k, w, ks.int(), ke.int(), TOPK)
+    monkeypatch.undo()
+    expected_picks = fp8_indexer(
+        dsv4_rope(q, cos_sin, positions), k, w, ks.int(), ke.int(), TOPK, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR
+    )
     fused_picks = fp8_indexer(
         q,
         k,

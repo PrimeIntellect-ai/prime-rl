@@ -13,17 +13,11 @@ import torch
 import triton
 import triton.language as tl
 
-from prime_rl.trainer.models.kernels.vllm_ops import vllm_op
 from prime_rl.trainer.models.layers.norms import get_quack_rmsnorm
 
-VLLM_Q_NORM_ROPE_OP = "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert"
-VLLM_Q_NORM_ROPE_SIGNATURE = (
-    "(Tensor q_in, Tensor kv, Tensor k_cache, Tensor slot_mapping, Tensor position_ids, Tensor cos_sin_cache, "
-    "int q_head_padded, float eps, int cache_block_size, bool apply_q_norm, bool kv_mxfp8, bool apply_q_rope, "
-    "bool is_q_interleaved) -> (Tensor)"
-)
-# The head counts vLLM compiles the op for.
-VLLM_Q_NORM_ROPE_HEADS = (8, 16, 32, 64, 128)
+VLLM_Q_NORM_ROPE_HEAD_DIM = 512
+VLLM_Q_NORM_ROPE_ROPE_DIM = 64
+VLLM_Q_NORM_ROPE_NUM_HEADS = (8, 16, 32, 64, 128)
 
 
 @triton.autotune(
@@ -174,38 +168,37 @@ def _q_norm_rope_backward_kernel(
 def _vllm_q_norm_rope(
     q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
 ) -> torch.Tensor | None:
-    """vLLM's fused prefill q norm + RoPE of `q`, or `None` outside the op's contract or without the op."""
+    """vLLM's fused prefill q norm + RoPE of `q`, or `None` outside the op's contract."""
     num_heads, head_dim = q.shape[-2:]
     if not (
         q.is_cuda
         and q.dtype == torch.bfloat16
-        and head_dim == 512
-        and cos_sin_cache.shape[-1] == 64
-        and num_heads in VLLM_Q_NORM_ROPE_HEADS
+        and head_dim == VLLM_Q_NORM_ROPE_HEAD_DIM
+        and cos_sin_cache.shape[-1] == VLLM_Q_NORM_ROPE_ROPE_DIM
+        and num_heads in VLLM_Q_NORM_ROPE_NUM_HEADS
     ):
         return None
-    op = vllm_op(VLLM_Q_NORM_ROPE_OP, VLLM_Q_NORM_ROPE_SIGNATURE)
-    if op is None:
-        return None
+    import vllm._C_stable_libtorch  # noqa: F401
+
     rows = q.reshape(-1, num_heads, head_dim).contiguous()
     if rows.numel() == 0:
         return q.new_empty(q.shape)
     # The kv input is only read for the cache insert, which an empty `slot_mapping` skips.
     kv = rows.view(-1)[: rows.shape[0] * head_dim].view(-1, head_dim)
-    out = op(
+    out = torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
         rows,
         kv,
         q.new_empty(1, 1, dtype=torch.uint8),
         q.new_empty(0, dtype=torch.int64),
         position_ids.reshape(-1).long(),
         cos_sin_cache,
-        num_heads,
-        eps,
-        1,
-        True,
-        False,
-        True,
-        False,
+        q_head_padded=num_heads,
+        eps=eps,
+        cache_block_size=1,
+        apply_q_norm=True,
+        kv_mxfp8=False,
+        apply_q_rope=True,
+        is_q_interleaved=False,
     )
     return out.view(q.shape)
 
@@ -216,9 +209,9 @@ def dsv4_q_norm_rope(
 ) -> torch.Tensor:
     """Unweighted RMSNorm over `head_dim`, then interleaved RoPE, in fp32 and rounded once to `q`'s dtype.
 
-    At the shapes vLLM serves (bf16, `head_dim` 512, `rope_dim` 64, 8 to 128 heads), the forward is vLLM's
-    own fused prefill kernel, so it matches serving bit for bit. Elsewhere, or without vLLM's op, an fp32
-    RMSNorm feeds the rotation, which differs from vLLM's on a few elements per million by one ulp. The
+    At the shapes vLLM serves (bf16, `head_dim` 512, `rope_dim` 64, 8, 16, 32, 64 or 128 heads), the forward
+    is vLLM's own fused prefill kernel, so it matches serving bit for bit. Elsewhere an fp32 RMSNorm feeds
+    the rotation, which differs from vLLM's on a few elements per million by one ulp. The
     backward is one kernel that reads `q` and the gradient once. Each direction is one op that autograd
     and Inductor cannot see into, so the backward needs no fp32 intermediate and Inductor cannot reorder
     the norm's reduction.
