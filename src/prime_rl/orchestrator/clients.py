@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal
 
@@ -12,7 +14,15 @@ import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
-from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry,
+    retry_if_exception,
+    retry_never,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_exponential,
+)
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -166,6 +176,9 @@ class AdminPlane:
     # Replaced, never mutated.
     update_times: dict[str, list[float]] = {}
 
+    after_transfer: Callable[[], Awaitable[None]] | None = None
+    """Runs after each policy transfer while the engines are still paused (a draft swap)."""
+
     def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config)
         self.roles = roles
@@ -252,9 +265,36 @@ class AdminPlane:
                 json={"weight_dir": weight_dir_posix, "weight_version": step},
                 timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
+            if self.after_transfer is not None:
+                await self.after_transfer()
         finally:
             resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
+
+    async def update_draft_weights(self, weight_dir: Path) -> None:
+        """Load a draft checkpoint from disk on every engine. Call while the engines are paused."""
+        await _post_all(
+            self.clients,
+            "/update_draft_weights",
+            json={"weight_dir": weight_dir.as_posix()},
+            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+            retry_errors=False,
+        )
+
+    async def draft_digests(self) -> list[str]:
+        """One digest of the draft-owned tensors per inference worker."""
+
+        async def fetch(client: AsyncClient) -> list[str]:
+            response = await client.get("/weight_fingerprint/draft", timeout=ADMIN_TIMEOUT_S)
+            response.raise_for_status()
+            return [
+                hashlib.sha256(
+                    json.dumps(sorted((name, t["sha256"]) for name, t in worker.items())).encode()
+                ).hexdigest()
+                for worker in response.json()["results"]
+            ]
+
+        return [digest for digests in await asyncio.gather(*map(fetch, self.clients)) for digest in digests]
 
     async def update_modelexpress_weights(
         self,
@@ -509,13 +549,15 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
-    """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+) -> None:
+    """POST an admin op with a bounded per-attempt timeout, retrying transient errors unless ``retry_errors`` is off.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
+        retry=retry_if_exception(_is_retryable_admin_error) if retry_errors else retry_never,
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,

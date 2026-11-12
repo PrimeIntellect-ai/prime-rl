@@ -17,6 +17,7 @@ This page covers the inference configuration and the supported features/deployme
     - [Expert Load Balancing](#expert-load-balancing)
     - [KV Cache Offload](#kv-cache-offload)
     - [HiSparse](#hisparse)
+    - [Speculative Decoding](#speculative-decoding)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
@@ -220,7 +221,7 @@ The queue serves the elasticity: while the last measured step showed that the ep
 
 While the engines are paused for a weight update the controller freezes, and it ignores the queue the pause leaves behind for the next 30 s.
 
-In RL, rollouts made faster than the trainer consumes them only wait and go stale, so the dispatcher holds train admission to what the trainer takes. A finished train rollout keeps its permit until the trainer takes it, except for one batch of finished rollouts waiting (so the trainer finds its next batch ready). While the trainer is the bottleneck (its batch was ready before it asked for it), train episodes in flight are also held to what keeps it fed, by Little's law: the rollouts per second it takes times the average generation lifetime, plus 10%. Both only stop new train groups; eval episodes are not held back. The controller sees the episodes in flight, and its queue rule trims only while the cap binds, so a pool the dispatcher holds below the cap does not read as overload.
+In RL, rollouts made faster than the trainer consumes them only wait and go stale, so the dispatcher holds train admission to what the trainer takes. A finished train rollout the trainer could take (its group is complete) keeps its permit until the trainer takes it, except for one batch of finished rollouts waiting (so the trainer finds its next batch ready). While the trainer is the bottleneck (its batch was ready before it asked for it), train episodes in flight are also held to what keeps it fed, by Little's law: the rollouts per second it takes times the average generation lifetime, plus 10%. Both only stop new train groups; eval episodes are not held back. The controller sees the episodes in flight, and its queue rule trims only while the cap binds, so a pool the dispatcher holds below the cap does not read as overload.
 
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`. `max_inflight` is unbounded by default; set it when episodes hold other scarce resources (e.g. sandboxes).
 
@@ -309,6 +310,24 @@ host_pool_gib = 160   # pinned host RAM per GPU worker
 
 prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
 
+### Speculative Decoding
+
+Serve a draft model with vLLM's speculative config. `examples/specdecode/deepseek-v4/dspark.toml` serves a DSpark draft against DeepSeek-V4-Flash with 3 draft tokens and an FP8 draft KV cache; it caps each engine at 512 sequences and 2048-token CUDA graphs, which DeepGEMM's sparse-attention indexer needs with several draft tokens per sequence. On DeepSeek-V4's packed KV layout, a sliding-window draft's KV group is resized to fit within the target's widest group so it does not widen every KV block.
+
+```toml
+[inference.vllm.speculative_config]
+method = "dspark"
+model = "/path/to/draft"
+num_speculative_tokens = 3
+kv_cache_dtype = "fp8"
+```
+
+Sampling replay works with a draft: each accepted position carries its own captured support. Untruncated sampler logprobs (score centering without top-p or top-k) are rejected with a draft, and vLLM rejects adaptive verification with sampling replay.
+
+The `rl` entrypoint fills `[orchestrator.speculative_decoding] draft` with the inference draft. Change it live with the control API's `update_config`: the orchestrator loads the new draft on every engine at the next policy weight sync, while the engines are paused, and requires every worker to report the same draft fingerprint. A draft must keep the served draft's architecture and tensor shapes; others are rejected when submitted. If a load fails, the engines go back to the previous draft, the orchestrator reverts the setting as a new config revision, and `speculator/draft_load_failures` counts it. Draft KV written before a swap stays with the episodes already running, including their later turns, which reuse their own prefix-cache blocks. A draft fine-tuned from the served one keeps its KV encoding; a draft trained from scratch cannot read that KV, so those episodes draft poorly wherever the output depends on earlier context, such as copying from it, until it leaves the draft's attention window. Episodes started after the swap never reuse it: swaps happen at a weight sync, and the orchestrator salts the prefix cache with the policy version (`cache_salt`). Outputs are unaffected, since the target verifies every token.
+
+The engine admin routes are `POST /update_draft_weights` with `{"weight_dir": "/path/to/draft"}` and `GET /weight_fingerprint/{model,draft}`. Acceptance is logged as `inference/{scope}/spec_decode_acceptance_rate` and `inference/{scope}/spec_decode_acceptance_length` (including the bonus token).
+
 ### Optimized P/D disaggregation deployment
 
 For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
@@ -378,7 +397,7 @@ Capture runs on vLLM's V2 model runner (selected automatically). Truncated polic
 
 Capture reads the logits vLLM's sampler has already masked (its top-k/top-p kernel finds the nucleus threshold without sorting the vocabulary, and the sampled token is drawn from exactly that set). Per sampling step, one GPU pass counts each replayed request's kept tokens and the log-normalizer over them, and a second pass compacts their ids and logprobs into one flat buffer at prefix-summed offsets. Only the step's real total is copied to the host. The buffer holds `inference.sampling_support_capacity` entries (default 16M, 128 MB); requests whose supports do not fit in a step fail with an explicit error rather than being truncated. The server logs the maximum per-step total every minute.
 
-Online eval uses the chat-completions client with logprobs disabled. The chat endpoint already strips returned router data. An omitted eval top-k is explicitly disabled (`-1`) rather than inherited from the model generation config. Token-renderer training clients retain their required sampled logprobs. Router instrumentation itself remains engine-wide; this does not remove its model-side overhead. Request-scoped mask capture currently rejects speculative decoding rather than silently capturing eval supports through the rejection sampler.
+Online eval uses the chat-completions client with logprobs disabled. The chat endpoint already strips returned router data. An omitted eval top-k is explicitly disabled (`-1`) rather than inherited from the model generation config. Token-renderer training clients retain their required sampled logprobs. Router instrumentation itself remains engine-wide; this does not remove its model-side overhead. Under speculative decoding, the verifier captures one support per accepted position for replay requests only; untruncated sampler logprobs are rejected.
 
 When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request.
 

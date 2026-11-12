@@ -19,6 +19,7 @@ from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.eplb import current_expert_placement, remap_expert_weight_loader
 from prime_rl.inference.vllm.worker.weight_transfer import (
+    WeightRPCMixin,
     place_experts_from_trainer,
     restore_moe_kernels,
     stash_moe_kernels,
@@ -92,7 +93,7 @@ class WeightTransferPlan:
     """EPLB's expert placement the plan was traced for (None without EPLB)."""
 
 
-class NIXLWeightUpdateWorker(Worker):
+class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
     @property
     def raw_model(self) -> nn.Module:
         return cast(nn.Module, self.model_runner.get_model())
