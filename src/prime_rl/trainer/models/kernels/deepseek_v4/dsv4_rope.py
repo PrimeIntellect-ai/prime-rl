@@ -22,6 +22,8 @@ VLLM_Q_NORM_ROPE_ROPE_DIM = 64
 VLLM_Q_NORM_ROPE_NUM_HEADS = (8, 16, 32, 64, 128)
 VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
 """The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
+Q_NORM_ROPE_BACKWARD_BLOCK_H = 4
+Q_NORM_ROPE_BACKWARD_NUM_WARPS = 2
 
 
 @triton.autotune(
@@ -256,8 +258,7 @@ def _dsv4_q_norm_rope_backward(
     if grad_q.numel() == 0:
         return grad_q
     num_heads, head_dim = q.shape[-2:]
-    block_h = 4
-    _q_norm_rope_backward_kernel[(position_ids.numel(), triton.cdiv(num_heads, block_h))](
+    _q_norm_rope_backward_kernel[(position_ids.numel(), triton.cdiv(num_heads, Q_NORM_ROPE_BACKWARD_BLOCK_H))](
         grad,
         q,
         grad_q,
@@ -267,8 +268,8 @@ def _dsv4_q_norm_rope_backward(
         eps,
         head_dim,
         cos_sin_cache.shape[-1],
-        BLOCK_H=block_h,
-        num_warps=2,
+        BLOCK_H=Q_NORM_ROPE_BACKWARD_BLOCK_H,
+        num_warps=Q_NORM_ROPE_BACKWARD_NUM_WARPS,
     )
     return grad_q
 
