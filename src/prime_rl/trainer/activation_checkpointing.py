@@ -1,6 +1,5 @@
 """Whole-block activation checkpointing with an operator-based policy."""
 
-import re
 from collections.abc import Callable, Iterable
 from fnmatch import fnmatchcase
 from functools import partial
@@ -9,7 +8,6 @@ import torch
 import torch.fx.traceback as fx_traceback
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    _CHECKPOINT_PREFIX,
     CheckpointImpl,
     CheckpointWrapper,
     checkpoint_wrapper,
@@ -100,8 +98,6 @@ DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIV
 # A module-qualified target, "<operation or namespace>@<module path pattern>", matches only inside
 # the modules whose path relative to the checkpointed block matches the pattern.
 MODULE_TARGET_SEPARATOR = "@"
-# Dynamo names a module by its source, e.g. L['self'].__dict__['_modules']['_checkpoint_wrapped_module'].mlp.
-_DYNAMO_MODULE_SUBSCRIPT = re.compile(r"(?:\.__dict__\['_modules'\])?\['([^']+)'\]")
 
 
 def _split_targets(targets: Iterable[str]) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
@@ -128,12 +124,15 @@ def _traced_block_module_paths() -> list[str]:
             "Module-qualified activation checkpointing targets need the checkpointed blocks to run under "
             "torch.compile without graph breaks, which records the module of each traced operation."
         )
-    paths = []
-    for source_name, _module_class in fx_traceback.get_current_meta().get("nn_module_stack", {}).values():
-        _, found, path = _DYNAMO_MODULE_SUBSCRIPT.sub(r".\1", source_name).rpartition(_CHECKPOINT_PREFIX)
-        if found:
-            paths.append(path)
-    return paths
+    module_sources = [source for source, _ in fx_traceback.get_current_meta().get("nn_module_stack", {}).values()]
+    if not module_sources:
+        return []
+    checkpointed_block_prefix = f"{module_sources[0]}."
+    return [
+        source.removeprefix(checkpointed_block_prefix)
+        for source in module_sources[1:]
+        if source.startswith(checkpointed_block_prefix)
+    ]
 
 
 def _matches_module_target(
