@@ -31,10 +31,7 @@ def load_weights_checkpoint_layerwise(
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
-    if eplb_state is not None:
-        eplb_state.drain_async()
-        torch.cuda.synchronize(device)
-        place_experts_from_trainer(eplb_state, model_config, weight_dir)
+    place_experts_from_trainer(eplb_state, model_config, weight_dir)
     weight_loaders = []
     moe_kernels = []
     with torch.device(device), set_current_vllm_config(vllm_config):
@@ -88,8 +85,8 @@ _ep_node_count: int | None = None
 
 
 def place_experts_from_trainer(eplb_state: "EplbState | None", model_config, weight_dir: str | None) -> None:
-    """Under ``eplb.placement = "trainer"``, place the experts by the counts the trainer published with this update,
-    before its weights are written (see ``install_trainer_placement``)."""
+    """Place the experts by the counts the trainer published with this update, before its weights are written (see
+    ``install_trainer_placement``)."""
     global _ep_node_count
     if eplb_state is None:
         return

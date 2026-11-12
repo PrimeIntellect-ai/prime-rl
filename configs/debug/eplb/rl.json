@@ -95,13 +95,8 @@
       "enforce_eager": true,
       "gpu_memory_utilization": 0.6,
       "max_num_seqs": 32,
-      "eplb_config": {
-        "communicator": "nixl",
-        "use_async": true,
-        "window_size": 16,
-        "step_interval": 16,
+      "eplb": {
         "num_redundant_experts": 8,
-        "log_balancedness": true,
         "log_balancedness_interval": 16
       },
       "limit_mm_per_prompt": {

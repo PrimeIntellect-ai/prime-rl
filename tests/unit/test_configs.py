@@ -894,19 +894,13 @@ def test_eplb_placement_from_the_trainer():
                 "enable_eplb": True,
                 "enable_expert_parallel": True,
                 "data_parallel_size": 4,
-                "eplb": {"placement": "trainer", "rebalance_interval": 5},
+                "eplb": {"rebalance_interval": 5},
             }
         },
     }
-    config = RLConfig.model_validate(data)
     # The trainer publishes its expert counts every rebalance_interval steps
-    assert config.trainer.weight_broadcast.expert_load_interval == 5
-    eplb_config = config.inference.to_namespace().eplb_config
-    # vLLM never rearranges on its own; the placement settings stay prime-rl's
-    assert eplb_config["step_interval"] == 2**31 - 1 and eplb_config["use_async"] is False
-    assert "placement" not in eplb_config and "rebalance_interval" not in eplb_config
-
-    data["inference"]["vllm"]["eplb"] = {}
+    assert RLConfig.model_validate(data).trainer.weight_broadcast.expert_load_interval == 5
+    data["inference"]["vllm"]["enable_eplb"] = False
     assert RLConfig.model_validate(data).trainer.weight_broadcast.expert_load_interval is None
 
 
@@ -916,15 +910,15 @@ def test_eplb_defaults_for_rl():
     namespace = InferenceConfig.model_validate(
         {"vllm": {"enable_eplb": True, "enable_expert_parallel": True, "data_parallel_size": 4}}
     ).to_namespace()
-    # One replica slot per expert parallel rank; vLLM picks the communicator
-    assert namespace.eplb_config["num_redundant_experts"] == 4
-    assert "communicator" not in namespace.eplb_config
-    assert namespace.eplb_config["use_async"] is True
-    assert not hasattr(namespace, "eplb")
-    # vLLM accepts the defaults
+    # One replica slot per expert parallel rank; vLLM never rearranges on its own (weight updates place the experts)
+    config = namespace.eplb_config
+    assert config["num_redundant_experts"] == 4
+    assert config["step_interval"] == 2**31 - 1 and config["use_async"] is False
+    assert "rebalance_interval" not in config and not hasattr(namespace, "eplb")
+    # vLLM accepts them
     from vllm.config.parallel import EPLBConfig
 
-    EPLBConfig(**namespace.eplb_config)
+    EPLBConfig(**config)
 
     namespace = InferenceConfig.model_validate(
         {"vllm": {"enable_eplb": True, "data_parallel_size": 4, "eplb": {"num_redundant_experts": 0}}}

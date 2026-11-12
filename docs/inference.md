@@ -228,43 +228,24 @@ The cap starts from a safe bound derived from the engines (KV capacity divided b
 
 ### Expert Load Balancing
 
-vLLM's expert parallel load balancer (EPLB) moves and replicates MoE experts across expert parallel ranks by their measured load, so no rank waits on a hot expert. RL supports it with NCCL, filesystem and NIXL weight updates: a reload writes each expert into every slot EPLB currently gives it, and drains asynchronous expert moves first so none can overwrite the incoming policy. NIXL replays a load plan traced for one placement, so an engine traces it again on the first update after EPLB moves experts. Routed-experts replay is unaffected, since vLLM records logical expert ids before EPLB's mapping. ModelExpress replays a plan traced before any rearrangement and is rejected.
-
-One switch turns it on, with defaults chosen for RL:
+Expert parallel load balancing (EPLB) places and replicates MoE experts across expert parallel ranks so no rank waits on a hot expert. In RL the trainer drives it:
 
 ```toml
 [inference.vllm]
 enable_expert_parallel = true
 enable_eplb = true
-```
 
-| `[inference.vllm.eplb]` | default | why |
-|---|---|---|
-| `num_redundant_experts` | one per expert parallel rank | without replica slots EPLB can only move experts, not split a hot expert's load |
-| `communicator` | vLLM's choice (NIXL when installed, else gloo) | `torch_nccl` is incompatible with async moves and hangs under load |
-| `use_async` | `true` | experts move in the background; weight updates drain moves in flight |
-| `window_size` / `step_interval` | 1000 / 3000 forward steps | vLLM's defaults |
-| `log_balancedness` | `true`, every 100 steps | mean over max per-rank expert load in the engine logs (1.0 is balanced) |
-
-#### Placement from the trainer
-
-By default each engine measures its own expert load and rearranges while it serves, copying expert weights between ranks. In RL the trainer can place them instead:
-
-```toml
 [inference.vllm.eplb]
-placement = "trainer"
 rebalance_interval = 1  # trainer steps between placements
 ```
 
-- Every `rebalance_interval` steps the trainer writes its per-layer expert token counts (summed over the steps since the last placement and over all its ranks) into the weight update's step dir. With router replay these counts are the engines' own routing of the same tokens.
+- Every `rebalance_interval` steps the trainer writes its per-layer expert token counts (summed over the steps since the last placement and over all its ranks) into the weight update's step dir, for every transport. The engines must be able to read the step dir (the shared filesystem multi-node RL already uses); without the file an update keeps the current placement.
 - Inside that weight update, before writing weights, every engine computes the placement from the counts with vLLM's EPLB policy and installs it. The update then writes each expert straight into its new slots, so no expert weights move between ranks and nothing moves while the engines serve.
-- The placement depends on the counts alone. Every server of an EP group (one vLLM server per data parallel rank across nodes) and a restarted engine derive the same one, and all servers update in the same pause.
-- vLLM's own trigger is off (`window_size`, `step_interval` and `use_async` do not apply). Works with NCCL, filesystem and NIXL weight updates; a NIXL engine traces its load plan again after each new placement, which a larger `rebalance_interval` amortizes. The step dir must be on a filesystem the engines can read.
+- The placement depends on the counts alone: every server of an EP group (one vLLM server per data parallel rank across nodes) and a restarted engine derive the same one, and all servers update in the same pause.
+- Works with NCCL, filesystem and NIXL weight updates; a NIXL engine traces its load plan again after each new placement, which a larger `rebalance_interval` amortizes. ModelExpress replays a plan traced for the startup placement and is rejected. Sparse filesystem deltas rewrite only changed bits, so they need experts moved inside the pause instead (`feat/sparse-eplb`).
+- `num_redundant_experts` defaults to one per expert parallel rank (without replica slots a placement can only move experts, not split a hot expert's load); `num_experts + num_redundant_experts` must divide by the expert parallel size. `log_balancedness` logs the mean over max per-rank expert load every 100 steps (1.0 is balanced). Routed-experts replay is unaffected, since vLLM records logical expert ids.
 
-`num_experts + num_redundant_experts` must divide by the expert parallel size (tensor parallel × data parallel). For the NIXL communicator, set `UCX_NET_DEVICES` to the InfiniBand ports of each node (for example, `mlx5_0:1,mlx5_1:1`).
-
-See the [two-node math debug config](../configs/debug/eplb/README.md) for an RL
-reload check with online FP8 quantization and asynchronous EPLB.
+See the [two-node math debug config](../configs/debug/eplb/README.md) for an RL reload check with online FP8 quantization.
 
 ### KV Cache Offload
 

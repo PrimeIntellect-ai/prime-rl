@@ -50,9 +50,7 @@ def remap_expert_weight_loader(loader: Callable, destinations: Sequence[Sequence
 
 def current_expert_placement(eplb_state: Any, model_config: Any) -> tuple[tuple, list[tuple[Any, list[list[int]]]]]:
     """EPLB's current placement: a fingerprint of it (every layer's physical-to-logical map) and, per MoE layer, its
-    routed-experts module with each logical expert's current local slots. Drains async moves first, so the placement
-    is the one the weights sit in."""
-    eplb_state.drain_async()
+    routed-experts module with each logical expert's current local slots."""
     state = eplb_state.model_states[model_config.compute_hash()]
     placements = state.physical_to_logical_map.cpu().tolist()
     layers = []
@@ -106,7 +104,6 @@ def install_trainer_placement(
     path = Path(weight_dir) / EXPERT_LOAD_FILE
     if not path.exists():
         return None
-    eplb_state.drain_async()
     state = eplb_state.model_states[model_config.compute_hash()]
     model = state.model
     load = torch.load(path, map_location="cpu", weights_only=True)

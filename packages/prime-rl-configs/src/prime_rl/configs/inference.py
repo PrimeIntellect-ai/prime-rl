@@ -33,43 +33,20 @@ QuantizationType = Literal["fp8_per_block", "mxfp8"]
 
 
 class EPLBConfig(BaseConfig):
-    """vLLM's EPLB settings, with defaults for RL. Weight updates load each expert into every slot it currently
-    occupies, so rebalancing and weight updates can both run."""
-
-    placement: Literal["engine", "trainer"] = "engine"
-    """Where the expert placement comes from.
-
-    - ``engine``: vLLM measures expert load over ``window_size`` forward steps and rearranges every
-      ``step_interval`` steps, moving expert weights between ranks while it serves.
-    - ``trainer``: the trainer publishes its expert token counts with the weights every ``rebalance_interval``
-      steps (with router replay they are the engines' routing of the same tokens), and every engine places its
-      experts by them inside that weight update. The update writes each expert straight into its new slots, so no
-      weights move between ranks, and every server of an EP group derives the same placement from the same counts.
-      ``window_size``, ``step_interval`` and ``use_async`` do not apply."""
+    """Expert placement for RL. Every ``rebalance_interval`` steps the trainer publishes its expert token counts with
+    the weights, and every engine places its experts by them inside that weight update: the update writes each expert
+    straight into its new slots, so no expert weights move between ranks and nothing moves while the engines serve.
+    The placement depends on the counts alone, so every server of an EP group, and a restarted engine, derive the
+    same one."""
 
     rebalance_interval: int = Field(1, ge=1)
-    """With ``placement = "trainer"``: trainer steps between placements; each one counts the tokens of every step
-    since the last. A NIXL engine traces its load plan again after a placement, so a larger interval amortizes that."""
+    """Trainer steps between placements; each one counts the tokens of every step since the last. A NIXL engine
+    traces its load plan again after a placement, so a larger interval amortizes that."""
 
     num_redundant_experts: int | None = Field(None, ge=0)
     """Extra expert slots, which hold replicas of the most loaded experts. None (the default) gives every expert
-    parallel rank one: without replicas EPLB can only move experts between ranks, not split a hot expert's load.
-    ``num_experts + num_redundant_experts`` must divide by the expert parallel size."""
-
-    window_size: int = Field(1000, gt=0)
-    """Forward steps of expert load the placement is computed from."""
-
-    step_interval: int = Field(3000, gt=0)
-    """Forward steps between rearrangements."""
-
-    use_async: bool = True
-    """Move experts in the background over later steps instead of stalling one. A weight update drains moves in
-    flight before it loads."""
-
-    communicator: Literal["torch_gloo", "pynccl", "nixl"] | None = None
-    """Backend that moves expert weights between ranks. None lets vLLM choose: NIXL when installed (it is with
-    prime-rl), else gloo. ``torch_nccl`` is not offered: vLLM rejects it with async moves, and its batched sends hang
-    under load."""
+    parallel rank one: without replicas a placement can only move experts between ranks, not split a hot expert's
+    load. ``num_experts + num_redundant_experts`` must divide by the expert parallel size."""
 
     log_balancedness: bool = True
     """Log the mean over max per-rank expert load (1.0 is perfectly balanced) every
@@ -78,11 +55,11 @@ class EPLBConfig(BaseConfig):
     log_balancedness_interval: int = Field(100, gt=0)
 
     def to_vllm(self, expert_parallel_size: int) -> dict[str, Any]:
-        config = self.model_dump(exclude_none=True, exclude={"placement", "rebalance_interval"})
+        config = self.model_dump(exclude_none=True, exclude={"rebalance_interval"})
         config.setdefault("num_redundant_experts", expert_parallel_size)
-        if self.placement == "trainer":
-            # vLLM never rearranges on its own: weight updates place the experts
-            config.update(step_interval=2**31 - 1, use_async=False)
+        # vLLM never rearranges on its own, so it never moves expert weights between ranks (gloo, unused, is the
+        # cheapest communicator to set up): weight updates place the experts
+        config.update(step_interval=2**31 - 1, use_async=False, communicator="torch_gloo")
         return config
 
 
@@ -156,8 +133,8 @@ class VllmConfig(BaseConfig):
     """Enable expert parallelism for MoE models."""
 
     enable_eplb: bool = False
-    """Enable vLLM's expert parallel load balancer (EPLB): it rearranges and replicates MoE experts across expert
-    parallel ranks by their measured load. ``eplb`` holds its settings; the defaults are set for RL."""
+    """Enable expert parallel load balancing (EPLB): MoE experts are placed and replicated across expert parallel
+    ranks by the trainer's routing counts at weight updates. ``eplb`` holds its settings."""
 
     eplb: "EPLBConfig" = Field(default_factory=lambda: EPLBConfig())
     """EPLB settings, passed to vLLM as ``eplb_config`` when ``enable_eplb`` is on."""

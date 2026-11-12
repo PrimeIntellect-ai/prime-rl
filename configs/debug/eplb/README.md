@@ -5,12 +5,10 @@ inference GPUs. The debug algorithm retains every group, and zero learning rate
 isolates reload errors from policy updates. Inference uses BF16 checkpoint weights
 with online FP8 per-block quantization, TP8/EP8, and the Triton MoE kernel.
 
-Async EPLB moves experts through NIXL, with eight redundant experts and a short
-rebalance interval. Policy weights travel from the trainer through NCCL. Set
-`UCX_NET_DEVICES` to the cluster's InfiniBand device ports before submitting:
+The trainer places the experts at every weight update, with eight redundant experts. Policy weights travel from
+the trainer through NCCL:
 
 ```bash
-export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1  # Replace with this cluster's ports.
 uv run rl @ configs/debug/eplb/rl.json --run.name eplb-math
 ```
 
@@ -24,8 +22,7 @@ For an EPLB-disabled control on a separate pair of nodes:
 
 ```bash
 uv run rl @ configs/debug/eplb/rl.json --run.name eplb-math-control \
-  --no-inference.vllm.enable-eplb \
-  --inference.vllm.eplb-config '{"use_async":false,"num_redundant_experts":0}'
+  --no-inference.vllm.enable-eplb
 ```
 
 Compare trainer `mismatch_kl/all/mean` across repeated broadcasts. Reload logs

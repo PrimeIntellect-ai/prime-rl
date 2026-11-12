@@ -46,8 +46,8 @@ class BaseWeightBroadcastConfig(BaseConfig):
 
     expert_load_interval: int | None = Field(None, ge=1)
     """Every this many steps, write the per-layer expert token counts of the steps since the last write into the
-    weight update's step dir, where engines place their experts by them (``inference.vllm.eplb.placement =
-    "trainer"``). Set by ``rl``; None writes none."""
+    weight update's step dir, where engines place their experts by them (``inference.vllm.enable_eplb``). Set by
+    ``rl``; None writes none."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):

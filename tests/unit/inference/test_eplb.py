@@ -50,19 +50,18 @@ def _eplb_state(physical_to_logical, expert_map, num_routed_experts=4):
         physical_to_logical_map=torch.tensor([physical_to_logical]),
         model=SimpleNamespace(moe_layers=[layer], num_routed_experts=num_routed_experts),
     )
-    drained = []
-    return SimpleNamespace(drain_async=lambda: drained.append(True), model_states={"m": state}), layer, drained
+    return SimpleNamespace(model_states={"m": state}), layer
 
 
-def test_current_expert_placement_drains_and_maps_local_slots():
+def test_current_expert_placement_maps_local_slots():
     from types import SimpleNamespace
 
     from prime_rl.inference.vllm.eplb import current_expert_placement, moved_slots
 
     # 4 logical experts over 6 physical slots; this rank holds slots 0-2. Expert 3 sits in slot 0 now, expert 1 twice.
-    eplb_state, layer, drained = _eplb_state([3, 1, 1, 0, 2, 0], [0, 1, 2, -1, -1, -1])
+    eplb_state, layer = _eplb_state([3, 1, 1, 0, 2, 0], [0, 1, 2, -1, -1, -1])
     fingerprint, layers = current_expert_placement(eplb_state, SimpleNamespace(compute_hash=lambda: "m"))
-    assert drained and fingerprint == ((3, 1, 1, 0, 2, 0),)
+    assert fingerprint == ((3, 1, 1, 0, 2, 0),)
     ((experts, destinations),) = layers
     assert experts is layer.routed_experts
     assert destinations == [[], [1, 2], [], [0]]
@@ -149,7 +148,7 @@ def test_trainer_placement_installs_maps_without_moving_weights(tmp_path, monkey
             num_moe_layers=1, num_logical_experts=8, num_physical_experts=12, num_expert_groups=1, weights=weights
         ),
     )
-    eplb_state = SimpleNamespace(drain_async=lambda: None, model_states={"m": state}, policy=_policy())
+    eplb_state = SimpleNamespace(model_states={"m": state}, policy=_policy())
     monkeypatch.setattr(parallel_state, "get_ep_group", lambda: SimpleNamespace(world_size=4))
     # vLLM pins host copies when CUDA is present; this host may have none
     import vllm.distributed.eplb.eplb_state as eplb_module
