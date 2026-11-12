@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transports.batch.base import BatchReceiver, BatchSender
+from prime_rl.transports.batch.base import BatchReceiver, BatchSender, dummy_micro_batch, redistribute
 from prime_rl.transports.batch.filesystem import FileSystemBatchReceiver, FileSystemBatchSender
-from prime_rl.transports.batch.types import MicroBatch
+from prime_rl.transports.batch.types import MicroBatch, MMRefs
 from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 
 
@@ -38,10 +38,22 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _filesystem_receivers(output_dir: Path, transport: None = None) -> list[BatchReceiver]:
+def _filesystem_receivers(
+    output_dir: Path,
+    transport: None = None,
+    rank_to_data_rank: list[int] = RANK_TO_DATA_RANK,
+    micro_batch_multiple: int = 1,
+) -> list[BatchReceiver]:
     return [
-        FileSystemBatchReceiver(output_dir, data_rank, rank, world_size=len(RANK_TO_DATA_RANK))
-        for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
+        FileSystemBatchReceiver(
+            output_dir,
+            data_rank,
+            len(set(rank_to_data_rank)),
+            micro_batch_multiple,
+            rank,
+            world_size=len(rank_to_data_rank),
+        )
+        for rank, data_rank in enumerate(rank_to_data_rank)
     ]
 
 
@@ -50,17 +62,24 @@ def _filesystem(output_dir: Path, retain: bool = False) -> tuple[BatchSender, li
     return sender, _filesystem_receivers(output_dir), None
 
 
-def _zmq_receivers(output_dir: Path, transport: ZMQTransportConfig) -> list[BatchReceiver]:
+def _zmq_receivers(
+    output_dir: Path,
+    transport: ZMQTransportConfig,
+    rank_to_data_rank: list[int] = RANK_TO_DATA_RANK,
+    micro_batch_multiple: int = 1,
+) -> list[BatchReceiver]:
     return [
         ZMQBatchReceiver(
             output_dir,
             data_rank,
+            len(set(rank_to_data_rank)),
+            micro_batch_multiple,
             rank,
-            world_size=len(RANK_TO_DATA_RANK),
+            world_size=len(rank_to_data_rank),
             current_step=0,
             transport=transport,
         )
-        for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
+        for rank, data_rank in enumerate(rank_to_data_rank)
     ]
 
 
@@ -147,5 +166,147 @@ def test_restarted_ranks_get_the_retained_steps_until_a_checkpoint_covers_them(
     asyncio.run(_send(sender, restarted))
     assert sender.log.read(0, data_rank=0) is None
     assert sender.log.read(1, data_rank=0) is not None
+    for transport in [sender, *receivers, *restarted]:
+        transport.close()
+
+
+def _trained_tokens(receivers: list[BatchReceiver], micro_batch_multiple: int = 1) -> list[list[int]]:
+    """Per data rank, the tokens that train, after checking that every rank holds the same
+    number of micro batches, each as long as its sequences and a multiple of the trainer's."""
+    received = {receiver.data_rank: receiver.receive() for receiver in receivers}
+    assert len({len(micro_batches) for micro_batches in received.values()}) == 1
+    for micro_batch in [mb for micro_batches in received.values() for mb in micro_batches]:
+        num_tokens = len(np.frombuffer(micro_batch.input_ids, np.int32))
+        assert sum(micro_batch.sequence_lengths) == sum(micro_batch.seq_lens) == num_tokens
+        assert num_tokens % micro_batch_multiple == 0
+    return [
+        [
+            token
+            for micro_batch in received[data_rank]
+            for token, trains in zip(
+                np.frombuffer(micro_batch.input_ids, np.int32).tolist(), np.frombuffer(micro_batch.loss_mask, np.bool_)
+            )
+            if trains
+        ]
+        for data_rank in sorted(received)
+    ]
+
+
+@pytest.mark.parametrize(
+    "rank_to_data_rank, micro_batch_multiple",
+    [([0], 1), ([0, 1, 2], 1), ([0, 0, 1, 1, 2, 2], 2)],
+    ids=["one-data-rank", "three-data-ranks", "three-data-ranks-cp2"],
+)
+@pytest.mark.parametrize(
+    "setup_transport, setup_receivers",
+    [(_filesystem, _filesystem_receivers), (_zmq, _zmq_receivers)],
+    ids=["filesystem", "zmq"],
+)
+def test_a_trainer_restarted_with_another_number_of_data_ranks_gets_every_micro_batch(
+    tmp_path: Path,
+    setup_transport: Callable,
+    setup_receivers: Callable,
+    rank_to_data_rank: list[int],
+    micro_batch_multiple: int,
+):
+    sender, receivers, transport = setup_transport(tmp_path, retain=True)
+    asyncio.run(_send(sender, receivers))
+
+    # The retained step was published for two data ranks.
+    restarted = setup_receivers(tmp_path, transport, rank_to_data_rank, micro_batch_multiple)
+    for receiver in restarted:
+        receiver.wait()
+    trained = _trained_tokens(restarted, micro_batch_multiple)
+    assert sorted(token for tokens in trained for token in tokens) == [_tokens(0, 0), _tokens(0, 1)]
+
+    # So was the step the sender is waiting on, which it deals again for the new trainer.
+    async def send_live() -> None:
+        grid = [[_micro_batch(_tokens(1, data_rank))] for data_rank in range(2)]
+        waits = [asyncio.to_thread(receiver.wait) for receiver in restarted]
+        await asyncio.wait_for(asyncio.gather(sender.send(grid), *waits), timeout=10)
+
+    asyncio.run(send_live())
+    trained = _trained_tokens(restarted, micro_batch_multiple)
+    assert sorted(token for tokens in trained for token in tokens) == [_tokens(1, 0), _tokens(1, 1)]
+    assert sender.data_world_size == len(set(rank_to_data_rank))
+    assert sender.log.data_world_size(1) == len(set(rank_to_data_rank))
+    for transport in [sender, *receivers, *restarted]:
+        transport.close()
+
+
+def test_redistribute_drops_old_dummies_and_keeps_modalities_aligned():
+    def micro_batch(token: int, num_tokens: int, multimodal: bool = False) -> MicroBatch:
+        return MicroBatch(
+            input_ids=np.full(num_tokens, token, np.int32),
+            loss_mask=np.ones(num_tokens, np.bool_),
+            advantages=np.ones(num_tokens, np.float32),
+            inference_logprobs=np.zeros(num_tokens, np.float32),
+            position_ids=np.arange(num_tokens, dtype=np.int32),
+            sequence_lengths=[num_tokens],
+            temperatures=np.ones(num_tokens, np.float32),
+            env_names=["env"],
+            seq_lens=[num_tokens],
+            mm_refs=MMRefs(images=[]) if multimodal else None,
+        )
+
+    image, long, short = micro_batch(0, 4, multimodal=True), micro_batch(1, 8), micro_batch(2, 2)
+    two_ranks = [[image, long], [dummy_micro_batch(image), short]]
+
+    three_ranks = redistribute(two_ranks, 3)
+
+    assert [len(rank) for rank in three_ranks] == [2, 2, 2]
+    # Every rank runs a multimodal micro batch first, then a text one.
+    assert [[mb.mm_refs is not None for mb in rank] for rank in three_ranks] == [[True, False]] * 3
+    trained = [mb for rank in three_ranks for mb in rank if np.asarray(mb.loss_mask).any()]
+    assert sorted(int(mb.input_ids[0]) for mb in trained) == [0, 1, 2]
+    assert redistribute(two_ranks, 1) == [[image, long, short]]
+
+
+@pytest.mark.parametrize(
+    "setup_transport, setup_receivers",
+    [(_filesystem, _filesystem_receivers), (_zmq, _zmq_receivers)],
+    ids=["filesystem", "zmq"],
+)
+def test_a_trainer_restarted_with_more_context_parallel_ranks_gets_longer_micro_batches(
+    tmp_path: Path, setup_transport: Callable, setup_receivers: Callable
+):
+    sender, receivers, transport = setup_transport(tmp_path, retain=True)
+    asyncio.run(_send(sender, receivers))
+    # Ranks 0 and 1 of the old trainer asked for step 1 before it was killed.
+    if isinstance(sender, ZMQBatchSender):
+        for receiver in receivers[:2]:
+            receiver.socket.send(receiver.request_encoder.encode(receiver.request()))
+            receiver.close()
+
+    # Two data ranks of two context-parallel ranks each become one data rank of four.
+    restarted = setup_receivers(tmp_path, transport, rank_to_data_rank=[0, 0, 0, 0], micro_batch_multiple=4)
+
+    async def send_live() -> None:
+        grid = [[_micro_batch(_tokens(1, data_rank))] for data_rank in range(2)]
+        send = asyncio.create_task(sender.send(grid))
+        # Ranks 2 and 3 of the new trainer ask first, which completes the old trainer's world size.
+        waits = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in restarted[2:]]
+        await asyncio.sleep(0.5)
+        waits += [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in restarted[:2]]
+        await asyncio.wait_for(asyncio.gather(send, *waits), timeout=10)
+
+    for step, send in ((0, None), (1, send_live)):
+        if send is None:
+            for receiver in restarted:
+                receiver.wait()
+        else:
+            asyncio.run(send())
+        for receiver in restarted:
+            micro_batches = receiver.receive()
+            assert [mb.sequence_lengths for mb in micro_batches] == [[4], [4]]
+            assert [mb.padding for mb in micro_batches] == [3, 3]
+            assert [np.frombuffer(mb.loss_mask, np.bool_).tolist() for mb in micro_batches] == [
+                [True, False, False, False]
+            ] * 2
+            assert sorted(int(np.frombuffer(mb.input_ids, np.int32)[0]) for mb in micro_batches) == [
+                _tokens(step, 0),
+                _tokens(step, 1),
+            ]
+    assert (sender.data_world_size, sender.micro_batch_multiple) == (1, 4)
     for transport in [sender, *receivers, *restarted]:
         transport.close()

@@ -1,4 +1,3 @@
-import copy
 import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -11,6 +10,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.perf import FlopCounter
+from prime_rl.transports.batch.base import STREAM_FILL, dummy_micro_batch, pad_micro_batch
 from prime_rl.transports.batch.types import (
     MICRO_BATCH_DTYPES,
     MicroBatch,
@@ -19,11 +19,6 @@ from prime_rl.transports.batch.types import (
     PayloadSlice,
     TrainingSample,
 )
-
-# Backfill value per component weight stream when a packed sample doesn't
-# carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
-# means no component (weight 0.0).
-STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
 
 
 @dataclass
@@ -516,64 +511,6 @@ def _distribute_group(
     return [[group[i] for i in partition] for partition in partitions]
 
 
-def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
-    """
-    Pad a micro batch with loss-masked tokens up to the next multiple of `pad_to_multiple_of`.
-    Args:
-        micro_batch: The micro batch to pad.
-        pad_to_multiple_of: The multiple to pad the sequence length up to.
-    Returns:
-        The padded micro batch.
-    """
-
-    padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
-
-    if len(micro_batch.env_names) != len(micro_batch.sequence_lengths):
-        raise ValueError(
-            f"MicroBatch.env_names must name every sequence: "
-            f"env_names={len(micro_batch.env_names)}, sequences={len(micro_batch.sequence_lengths)}"
-        )
-
-    if not (pad_to_multiple_of > 1 and padding_size > 0):
-        return micro_batch
-
-    # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text rows pad with their
-    # own tokens. Multimodal rows keep a constant id: a repeated image placeholder would have no feature to receive.
-    # `np.pad` appends zeros of the stream's own dtype unless given another value.
-    tail = (0, padding_size)
-    if micro_batch.mm_refs is None:
-        # `np.resize` repeats the row end to end.
-        pad_ids = np.resize(micro_batch.input_ids, padding_size)
-        micro_batch.input_ids = np.concatenate([micro_batch.input_ids, pad_ids])
-    else:
-        micro_batch.input_ids = np.pad(micro_batch.input_ids, tail, constant_values=1)
-    micro_batch.advantages = np.pad(micro_batch.advantages, tail)
-    micro_batch.loss_mask = np.pad(micro_batch.loss_mask, tail)
-    micro_batch.position_ids = np.concatenate([micro_batch.position_ids, np.arange(padding_size, dtype=np.int32)])
-    micro_batch.sequence_lengths[-1] += padding_size
-    micro_batch.seq_lens[-1] += padding_size
-    micro_batch.padding += padding_size
-    micro_batch.inference_logprobs = np.pad(micro_batch.inference_logprobs, tail)
-    # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
-    micro_batch.temperatures = np.pad(micro_batch.temperatures, tail, constant_values=1.0)
-    if micro_batch.ref_logprobs is not None:
-        micro_batch.ref_logprobs = np.pad(micro_batch.ref_logprobs, tail)
-    # Padding is loss-masked, so no component trains it; fill every stream
-    # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
-    # still reads as rl-empty to consumers that key off nonzero weights
-    # (e.g. the per-env mismatch metrics).
-    for stream_name in STREAM_FILL:
-        stream = getattr(micro_batch, stream_name)
-        if stream is not None:
-            setattr(micro_batch, stream_name, np.pad(stream, tail))
-    if micro_batch.mm_token_type_ids is not None:
-        micro_batch.mm_token_type_ids = np.pad(micro_batch.mm_token_type_ids, tail)
-    if micro_batch.staleness is not None:
-        micro_batch.staleness = np.pad(micro_batch.staleness, tail, constant_values=-1)
-
-    return micro_batch
-
-
 def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     """Every per-token array must stay position-aligned with ``input_ids``
     through packing and padding — a field extended without backfill would
@@ -616,34 +553,11 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     )
 
 
-def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
-    """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
-    dummy = copy.deepcopy(source)
-    dummy.advantages = np.zeros(len(dummy.input_ids), dtype=np.float32)
-    dummy.loss_mask = np.zeros(len(dummy.input_ids), dtype=np.bool_)
-    # ce/ref_kl membership is weight != 0 (independent of loss_mask), so the
-    # streams must go too or the dummy would still train those tokens.
-    dummy.rl_weights = None
-    dummy.ce_weights = None
-    dummy.ref_kl_weights = None
-    # Fully loss-masked: fetch only the routing rows the forward pass replays, since
-    # replaying sampling masks would be pure wasted work.
-    dummy.payloads = (
-        [msgspec.structs.replace(payload, fields=["routed_experts"]) for payload in dummy.payloads]
-        if _has_routing(dummy)
-        else None
-    )
-    # The copied identity would double-annotate the source's traces.
-    dummy.trace_ids = None
-    dummy.branch_indices = None
-    return dummy
-
-
 def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
     """Pad a group of micro batches so its length is divisible by num_train_workers."""
     num_padding = -len(group) % num_train_workers
     if num_padding > 0 and len(group) > 0:
-        dummy = _make_dummy_batch(group[0])
+        dummy = dummy_micro_batch(group[0])
         group.extend([dummy] * num_padding)
     return group
 
@@ -695,14 +609,20 @@ class BatchPacker:
 
     def __init__(self, config: OrchestratorConfig):
         self.seq_len = config.seq_len
-        self.num_train_workers = config.num_train_workers
-        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
-        self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
+        self.pad_to_seq_len = config.pad_to_seq_len
+        self.resize(config.num_train_workers, config.pad_to_multiple_of)
         # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
         model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
         )
         self.bin_cost = FlopCounter(get_model(model_config, device=torch.device("meta")))
+
+    def resize(self, num_train_workers: int, micro_batch_multiple: int) -> None:
+        """Pack for a trainer with this many data ranks that needs micro batches in this multiple."""
+        self.num_train_workers = num_train_workers
+        # Rows hold at most `seq_len` tokens, so padding to a multiple of `row_len` pads every row to exactly `row_len`
+        row_len = -(-self.seq_len // micro_batch_multiple) * micro_batch_multiple
+        self.pad_to_multiple_of = row_len if self.pad_to_seq_len else micro_batch_multiple
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(

@@ -14,10 +14,17 @@ LOG_POLL_INTERVAL_MS = 1000
 
 
 class ZMQBatchSender(BatchSender):
-    def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
+    def __init__(
+        self,
+        output_dir: Path,
+        data_world_size: int,
+        current_step: int,
+        transport: ZMQTransportConfig,
+        micro_batch_multiple: int = 1,
+    ):
         """ZMQ micro batch sender. One ROUTER socket in the orchestrator answers the DEALER socket of
         every trainer rank, replying to each rank on the connection it asked on."""
-        super().__init__(output_dir, data_world_size, transport.retain)
+        super().__init__(output_dir, data_world_size, micro_batch_multiple, transport.retain)
         # Async context so ``send`` yields instead of blocking the orchestrator event loop
         self.context = zmq.asyncio.Context.instance()
         self.socket: zmq.asyncio.Socket = self.context.socket(zmq.ROUTER)
@@ -40,6 +47,12 @@ class ZMQBatchSender(BatchSender):
             await asyncio.to_thread(self.log.write, self.current_step, buffers)
         wait_start = time.perf_counter()
         rank_to_request = await self._wait_for_requests()
+        _, request = next(iter(rank_to_request.values()))
+        fitted = await asyncio.to_thread(self.fit, micro_batch_grid, buffers, request)
+        if fitted is not buffers:
+            buffers = fitted
+            if self.retain:
+                await asyncio.to_thread(self.log.write, self.current_step, buffers)
         send_start = time.perf_counter()
         self.last_wait_s = send_start - wait_start
         if self.retain:
@@ -85,14 +98,17 @@ class ZMQBatchSender(BatchSender):
 
     async def _wait_for_requests(self) -> dict[int, tuple[bytes, BatchRequest]]:
         """Collect one request per trainer rank for the current step. Each request carries the
-        trainer world size, so the first one says how many to wait for. A rank that asks again
-        (a restarted trainer) replaces its earlier request."""
-        identity, request = await self._receive_request()
-        rank_to_request = {request.rank: (identity, request)}
-        while len(rank_to_request) < request.world_size:
+        trainer's shape, whose world size says how many to wait for. Requests are collected per
+        shape: a trainer that died with requests still queued, and its successor of another
+        shape, can arrive interleaved. A rank that asks again (a restarted trainer of the same
+        shape) replaces its earlier request."""
+        shape_to_requests: dict[tuple[int, int, int], dict[int, tuple[bytes, BatchRequest]]] = {}
+        while True:
             identity, request = await self._receive_request()
+            rank_to_request = shape_to_requests.setdefault(request.shape, {})
             rank_to_request[request.rank] = (identity, request)
-        return rank_to_request
+            if len(rank_to_request) == request.world_size:
+                return rank_to_request
 
 
 class ZMQBatchReceiver(BatchReceiver):
@@ -100,6 +116,8 @@ class ZMQBatchReceiver(BatchReceiver):
         self,
         output_dir: Path,
         data_rank: int,
+        data_world_size: int,
+        micro_batch_multiple: int,
         rank: int,
         world_size: int,
         current_step: int,
@@ -108,21 +126,21 @@ class ZMQBatchReceiver(BatchReceiver):
         """ZMQ micro batch receiver. Every trainer rank owns one DEALER socket and requests each step
         before reading it. With ``transport.retain``, a step the sender already published is read
         from the log instead, which is how a restarted trainer gets the steps since its checkpoint."""
-        super().__init__(output_dir, data_rank, rank, world_size, current_step)
+        super().__init__(output_dir, data_rank, data_world_size, micro_batch_multiple, rank, world_size, current_step)
         self.context = zmq.Context.instance()
         self.socket: zmq.Socket = self.context.socket(zmq.DEALER)
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
         self.request_encoder = msgspec.msgpack.Encoder()
         self.retain = transport.retain
-        self.payload: bytes | zmq.Frame | None = None
+        self.micro_batches: list[MicroBatch] | None = None
         self.logger.debug(f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
     def wait(self) -> None:
         requested = False
         while True:
             if self.retain:
-                self.payload = self.log.read(self.current_step, self.data_rank)
-                if self.payload is not None:
+                self.micro_batches = self.read_log()
+                if self.micro_batches is not None:
                     return
             if not requested:
                 self.socket.send(self.request_encoder.encode(self.request()))
@@ -131,13 +149,12 @@ class ZMQBatchReceiver(BatchReceiver):
                 step, payload = self.socket.recv_multipart(copy=False)
                 # A reply to a request for a step that was then read from the log arrives late.
                 if int.from_bytes(step.bytes, "big") == self.current_step:
-                    self.payload = payload
+                    self.micro_batches = self.decoder.decode(payload)
                     return
 
     def receive(self) -> list[MicroBatch]:
         """The micro batches ``wait`` got from the orchestrator or the log."""
-        micro_batches: list[MicroBatch] = self.decoder.decode(self.payload)
-        self.payload = None
+        micro_batches, self.micro_batches = self.micro_batches, None
         self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self.current_step}")
         self.current_step += 1
         return micro_batches

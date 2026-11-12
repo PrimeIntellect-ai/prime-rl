@@ -287,7 +287,11 @@ class Orchestrator:
         self.packer = BatchPacker(config)
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
-            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+            config.output_dir,
+            config.num_train_workers,
+            config.pad_to_multiple_of,
+            self.progress.step,
+            config.rollout_transport,
         )
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
@@ -736,6 +740,8 @@ class Orchestrator:
         send_start_time = time.perf_counter()
         self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
+        # A trainer restarted with another shape: pack the next steps for it.
+        self.packer.resize(self.sender.data_world_size, self.sender.micro_batch_multiple)
         self.unsent_rollouts = 0
         shipped_at = time.perf_counter()
         # The trainer's first step in a process includes its warmup, so its pace counts from the second one

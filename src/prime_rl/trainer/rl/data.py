@@ -238,6 +238,7 @@ class DataLoader:
         output_dir: Path,
         start_step: int,
         dp_world_size: int,
+        micro_batch_multiple: int,
         config: TransportConfig,
     ):
         self.world = get_world()
@@ -255,6 +256,8 @@ class DataLoader:
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
             data_rank=dp_rank,
+            data_world_size=dp_world_size,
+            micro_batch_multiple=micro_batch_multiple,
             rank=self.world.rank,
             world_size=self.world.world_size,
             current_step=start_step,
