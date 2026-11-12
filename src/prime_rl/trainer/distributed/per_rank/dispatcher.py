@@ -45,8 +45,8 @@ class PerRankTokenDispatcher(TokenDispatcherBase[PerRankDispatchState]):
     once per selected expert. The receiving rank lays out the expert input as `TorchTokenDispatcher` does (aligned
     groups in expert order, each expert's routes by source rank, then token order), applies the routing weights and
     sums each token's expert outputs before the combine, which therefore also returns one row per token and rank, in
-    the experts' output dtype. The backward does not need the combine's output, so full activation checkpointing does
-    not replay the combine.
+    the experts' output dtype. The backward does not need the combine's output, so under torch.compile full activation
+    checkpointing does not replay the combine.
 
     Two slot maps move every row (`scatter_slots`, `sum_slots`). Home map: token t's slot r owns its row in the send
     buffer to rank r, so the send buffer is a scatter of the tokens and the final combine a sum over their slots.
