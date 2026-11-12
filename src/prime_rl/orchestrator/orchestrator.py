@@ -193,10 +193,8 @@ class Orchestrator:
         self.ships = 0
         self.shipped_at: float | None = None
         self.trainer_rate: float | None = None
-        # Balance advice: when this process started and first shipped (the cost of a restart), the wall-clock time
-        # of the last ship (the trainer's busy time runs from it to its next request), and the last metrics poll
-        self.started_at = time.monotonic()
-        self.first_shipped_at: float | None = None
+        # Balance advice: the wall-clock time of the last ship (the trainer's busy time runs from it to its next
+        # request), the last metrics poll and the train rollouts finished by then
         self.shipped_wall: float | None = None
         self.balance_polled_at: float | None = None
         self.balance_finished = 0
@@ -753,7 +751,7 @@ class Orchestrator:
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
         trained = sum(len(micro_batch.input_ids) for row in micro_batch_grid for micro_batch in row)
-        self.observe_trainer_step(batch.cohort.num_traces, trained, step)
+        self.observe_trainer_step(batch.cohort.num_traces, trained)
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
@@ -872,34 +870,20 @@ class Orchestrator:
             )
         )
 
-    def observe_trainer_step(self, rollouts: int, tokens: int, step: int) -> None:
+    def observe_trainer_step(self, rollouts: int, tokens: int) -> None:
         """Record a shipped batch with the time the trainer spent before asking for it, then log a notice when
         another split of the GPUs is clearly faster. The first two ships carry the trainer's warmup and are not
         recorded."""
         shipped_wall = time.time()
         previous, self.shipped_wall = self.shipped_wall, shipped_wall
-        if self.first_shipped_at is None:
-            self.first_shipped_at = time.monotonic()
         if self.balance is None or previous is None or self.ships <= 2:
             return
         period = shipped_wall - previous
         requested_at = self.sender.last_requested_at
-        if requested_at is not None:
-            busy = min(max(requested_at - previous, 0.0), period)
-        elif self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S:
-            busy = period
-        else:
-            busy = None
+        busy = min(max(requested_at - previous, 0.0), period) if requested_at is not None else None
         self.balance.observe_step(TrainerStep(rollouts=rollouts, tokens=tokens, period=period, busy=busy))
         advice = self.balance.evaluate()
-        if advice is None:
-            return
-        remaining_s = None
-        if self.config.max_steps is not None and advice.rate > 0:
-            remaining_s = max(self.config.max_steps - step, 0) * rollouts / advice.rate
-        restart_s = self.first_shipped_at - self.started_at + (self.dispatcher.generation_s or 0.0)
-        notice = self.balance.notice(advice, remaining_s=remaining_s, restart_s=restart_s)
-        if notice is not None:
+        if advice is not None and (notice := self.balance.notice(advice)) is not None:
             get_logger().warning(notice)
 
     async def trigger_eval(self, step: int) -> None:

@@ -153,15 +153,6 @@ class EngineLoadSample:
     latency_delta: float = 0.0
     # Seconds the engine spent executing model steps since the previous poll (None: not reported)
     busy_delta: float | None = None
-    # What the engine's steps held since the previous poll (None: not reported): steps executed, and summed over its
-    # scheduled steps, the sequences decoding, the context they read and the prefill tokens; and its max_num_seqs
-    steps_delta: float | None = None
-    decode_seqs_delta: float | None = None
-    kv_read_delta: float | None = None
-    prefill_delta: float | None = None
-    max_num_seqs: int | None = None
-    # The server whose data-parallel MoE engines step in lockstep with this one (None: it steps on its own)
-    lockstep_group: str | None = None
 
 
 @dataclass(frozen=True)

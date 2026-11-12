@@ -467,8 +467,7 @@ class ConcurrencyConfig(BaseConfig):
 
 
 class BalancePoolConfig(BaseConfig):
-    """One GPU pool of the deployment, as the balance advisor sees it: how many units it holds, in which steps it
-    can change, and the config key that sets it."""
+    """One GPU pool of the deployment, as the balance advisor sees it."""
 
     name: Literal["trainer", "inference", "prefill", "decode"]
     """The pool: the trainer, colocated inference engines, or the prefill or decode engines of a P/D deployment."""
@@ -476,36 +475,23 @@ class BalancePoolConfig(BaseConfig):
     units: int = Field(ge=1)
     """Units (GPUs on a single node, else nodes) the pool holds."""
 
-    step: int = Field(1, ge=1)
-    """Units the pool grows or shrinks by: one replica of its engines, or the trainer's parallelism granularity."""
-
-    minimum: int = Field(1, ge=1)
-    """Fewest units the pool can run on."""
-
-    keys: list[str] = []
-    """Config keys that set the pool's size, each set to ``units // step * per_step``."""
-
-    per_step: list[int] = []
-    """The value each key in ``keys`` moves by per step of the pool."""
+    sizes: list[int]
+    """Unit counts the pool can run on: whole engine replicas, or what the trainer's parallelism divides."""
 
 
 class BalanceConfig(BaseConfig):
     """Advice on the trainer / inference (and prefill / decode) GPU split. The orchestrator measures each pool's
-    throughput over its busy time and logs, under ``balance/*``, the speed the run would have with the pools resized;
-    when another split of the same GPUs would be clearly faster for long enough, it logs a notice with the config to
-    restart with."""
+    throughput over its busy time and logs, under ``balance/*``, how fast the run would be with the same units split
+    differently; when a split stays clearly faster, it logs a notice."""
 
     enabled: bool = True
     """Measure the pools and log ``balance/*``. The advice itself needs ``pools``, which ``rl`` fills."""
 
     pools: list[BalancePoolConfig] | None = None
-    """The deployment's GPU pools. Filled by ``rl`` from ``deployment`` and ``inference.deployment``."""
+    """The deployment's GPU pools, trainer first. Filled by ``rl`` from ``deployment`` and ``inference.deployment``."""
 
     unit: Literal["GPU", "node"] = "GPU"
     """What a pool unit is. Filled by ``rl``."""
-
-    infer_replicas: int = Field(1, ge=1)
-    """``deployment.num_infer_replicas``: a P/D split is advised per replica. Filled by ``rl``."""
 
     window_minutes: float = Field(30.0, gt=0)
     """Span the pool measurements average over."""

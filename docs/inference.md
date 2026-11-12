@@ -226,27 +226,13 @@ The cap starts from a safe bound derived from the engines (KV capacity divided b
 
 ## GPU Split Advice
 
-Once concurrency adapts, an RL run is a pipeline of GPU pools: the inference engines make rollouts (in P/D, prefill engines feed decode engines) and the trainer consumes them. The slowest pool sets the run's speed while the others idle part of each step, and which pool that is moves during a run as episodes grow longer. The orchestrator measures what each pool sustains at its current size and logs under `balance/*` how fast the run would be with the same nodes (or, on one node, GPUs) split differently. It never tries another split: each pool's capacity is its throughput over its busy share, what it would make busy all the time, and is assumed to scale with its units. Rates are trained tokens per second (padding included); internally the pools are matched per train rollout, the unit both sides share.
+An RL run is a pipeline of GPU pools: inference engines make rollouts (in P/D, prefill engines feed decode engines) and the trainer consumes them. The slowest pool sets the run's speed. The orchestrator measures each pool's capacity as its throughput over its busy share and logs under `balance/*` how fast the run would be with the same GPUs (nodes, multi-node) split differently, among the splits the deployment allows (whole inference replicas, the trainer's parallelism):
 
-- **Trainer** (`balance/trainer/capacity`, `balance/trainer/busy`): busy from receiving a batch to requesting the next (training, broadcasting, checkpointing).
-- **Inference** (`balance/inference/capacity`, `balance/inference/busy`): the seconds the engines spent executing model steps, outside weight-update pauses, which prime-rl's vLLM plugin counts and serves at `/prime_rl/engine_busy`. Under P/D, prefill and decode engines are measured apart. KV offload, Mooncake, HiSparse and P/D transfers are inside the measurement. On the kv-stress benchmark, engines held 48% busy by a bottlenecked trainer predicted the knee they reached when let run within about 5%, slightly under it.
-- **Saturated engines** (`balance/<pool>/batch_gain`): engines that step whenever they hold a sequence (decode) read as fully busy below their knee too, since their spare capacity is in batch size, not time. For a role at least 75% busy, the advisor fits how step time grows with what a step holds (sequences decoding, the context they read, prefill tokens), from per-step counters the plugin records, and extrapolates to the batch the engines could hold: their GPU KV cache over the context per sequence, or `max_num_seqs`. Without a reliable fit (too few polls, too little variation in batch size) busy time stands, which only underestimates.
-- **Environment**: a cap held at `concurrency.max_inflight` while more episodes would still pay means the episodes' external resources (e.g. sandboxes) bound the run; no split is advised, raise the cap instead.
+- **Trainer**: busy from receiving a batch to requesting the next.
+- **Inference**: the seconds the engines spent executing model steps, outside weight-update pauses, counted by prime-rl's vLLM plugin; per role under P/D. Engines that step whenever they hold a sequence (decode) look busy below their knee too, so from 75% busy, and for engines that report no busy time, the capacity is only a lower bound.
+- **Environment**: a cap held at `concurrency.max_inflight` while more episodes would still pay means external resources (e.g. sandboxes) bound the run; no split is advised.
 
-Engines that report no busy time (external servers) count only what they make now, a lower bound: a split that takes units from them never looks better than it is. The advisor searches every split that keeps the deployment valid (whole inference replicas, the trainer's HSDP islands or context-parallel groups) for the fastest (`balance/best_speed`, `balance/<pool>/best_units`, `balance/gain`). When one split promises at least 10% (`min_gain`) for 30 minutes (`sustain_minutes`), and, with `max_steps` set, the time it saves exceeds a restart (this run's time to its first batch plus a generation lifetime), the orchestrator logs a notice:
-
-```
-[balance] Decode-bound for the last 31 min.
-  trainer   capacity   1.7M tok/s at 40 nodes (busy 62%)
-  prefill   capacity   2.7M tok/s at 8 nodes (busy 40%)
-  decode    capacity   1.1M tok/s at 16 nodes (busy 98%, batch 120 -> 128 seqs)
-  current      trainer 40 / prefill 8 / decode 16 nodes  1.1M tok/s
-  recommended  trainer 36 / prefill 6 / decode 22 nodes  1.5M tok/s (+38%)
-  restart ~20 min, saves ~19.4 h of the ~70.0 h left
-  To apply, stop the run and resume it with: --deployment.num_train_nodes 36 --inference.deployment.num_prefill_replicas 6 --inference.deployment.num_decode_replicas 11 --deployment.num_infer_nodes 28
-```
-
-`[orchestrator.balance]` sets the window (`window_minutes`) and the thresholds.
+When a split promises at least 10% (`min_gain`) for 30 minutes (`sustain_minutes`), the orchestrator logs a notice such as `[balance] Inference-bound: trainer 4 -> 2, inference 4 -> 6 GPUs would be at least 50% faster`. The advice needs short weight updates (NCCL, NIXL or sparse filesystem): a long transfer hides the engines' load.
 
 ## Advanced Configuration
 
