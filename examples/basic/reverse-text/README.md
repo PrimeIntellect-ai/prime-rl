@@ -1,6 +1,6 @@
 # Reverse Text
 
-We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. We will use a SFT warmup to learn the skill of text reversal on longer documents and then a quick RL run on the `reverse-text` taskset. We use a similar setup in our CI and for development.
+We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. We will use a SFT warmup to learn the skill of text reversal and then a quick RL run on the `reverse-text` taskset. We use a similar setup in our CI and for development.
 
 > The commands in this example were designed to be run on 2 GPUs (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
 
@@ -34,7 +34,7 @@ This is of course just a quick vibe check and no full-fledged evaluation, but we
 
 ## SFT
 
-We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `willcb/R1-reverse-wikipedia-paragraphs-v1-1000` ([HF](https://huggingface.co/datasets/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) which contains 1K examples of reversals of small paragraphs.
+We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `PrimeIntellect/Reverse-Text-SFT` ([HF](https://huggingface.co/datasets/PrimeIntellect/Reverse-Text-SFT)), which contains 1K examples of reversing 5-20 word sentences character-by-character into `<reversed_text>` tags. Its prompts use the `reverse-text` env's system prompt and tag its completions the same way, so the online eval measures the warmup instead of scoring 0.
 
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
 
