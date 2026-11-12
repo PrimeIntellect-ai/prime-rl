@@ -445,7 +445,8 @@ def setup_tokenizer(config: TokenizerConfig, model_name: str) -> PreTrainedToken
     # The tokenizer name defaults to the model name, a folder of which may hold only a config.json (transformers then
     # loads an empty tokenizer).
     model_dir = Path(model_name)
-    if config.name == model_name and model_dir.is_dir() and not (model_dir / "tokenizer_config.json").exists():
+    tokenizer_files = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    if config.name == model_name and model_dir.is_dir() and not any((model_dir / f).exists() for f in tokenizer_files):
         raise FileNotFoundError(f"No tokenizer at model.name {model_name}; set tokenizer.name")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
