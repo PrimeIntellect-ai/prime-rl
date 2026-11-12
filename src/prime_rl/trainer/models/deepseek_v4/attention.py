@@ -639,8 +639,9 @@ class DeepseekV4Compressor(nn.Module):
     def _fetch(
         self, proj: torch.Tensor, packed: PackedContext, cp_group: dist.ProcessGroup | None, cp_world_size: int
     ) -> torch.Tensor:
-        """`proj` at every token the pooling reads: the halo view under halo exchange, else the whole row,
-        gathered over the ranks when CP shards it."""
+        """`proj` at every token the pooling reads: the halo view under halo exchange, else the whole
+        row, gathered over the ranks when CP shards it.
+        """
         if packed.cp_halo is not None:
             return packed.cp_halo.prepend(proj, cp_group.group_name)
         if cp_world_size > 1:
