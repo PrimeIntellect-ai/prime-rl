@@ -720,17 +720,16 @@ def setup_dummy_load(inference: InferenceConfig, *, init_type: str, lora_enabled
     An explicit ``load_format`` wins."""
     vllm = inference.vllm
     extra = vllm.model_extra or {}
-    if "load_format" in extra or lora_enabled:
-        return
     overrides = [extra]
     if isinstance(inference.deployment, DisaggregatedInferenceDeploymentConfig):
         overrides += [inference.deployment.prefill_vllm_overrides, inference.deployment.decode_vllm_overrides]
-    if any(key.replace("-", "_") == "speculative_config" for override in overrides for key in override):
-        if init_type != "hf":
-            raise ValueError(
-                f'inference.vllm.speculative_config loads its drafter from model.name, which init type "{init_type}" '
-                'does not provide: use model.init.type = "hf"'
-            )
+    drafter = any(key.replace("-", "_") == "speculative_config" for override in overrides for key in override)
+    if drafter and init_type != "hf":
+        raise ValueError(
+            f'inference.vllm.speculative_config loads its drafter from model.name, which init type "{init_type}" '
+            'does not provide: use model.init.type = "hf"'
+        )
+    if "load_format" in extra or lora_enabled or drafter:
         return
     if init_type != "hf" or (transport != "modelexpress" and vllm.quantization is None):
         vllm.load_format = "dummy"

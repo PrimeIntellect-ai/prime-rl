@@ -1514,8 +1514,12 @@ def test_an_hf_model_loads_from_disk_what_the_broadcast_does_not_cover_or_check(
     assert getattr(config.vllm, "load_format", None) == load_format
 
 
-def test_a_speculative_drafter_requires_the_hf_init():
-    config = InferenceConfig(vllm={"speculative_config": {"method": "mtp"}})
+@pytest.mark.parametrize(
+    "vllm",
+    [{"speculative_config": {"method": "mtp"}}, {"speculative_config": {"method": "mtp"}, "load_format": "auto"}],
+)
+def test_a_speculative_drafter_requires_the_hf_init(vllm):
+    config = InferenceConfig(vllm=vllm)
     with pytest.raises(ValueError, match="loads its drafter from model.name"):
         setup_dummy_load(config, init_type="ckpt", lora_enabled=False, transport="nccl")
 
