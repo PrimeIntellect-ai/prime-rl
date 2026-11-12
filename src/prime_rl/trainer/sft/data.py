@@ -85,6 +85,7 @@ class FakeDataset(StatefulIterableDataset):
                 "seq_lens": [seq_len],
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
+                "sample_data": None,
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += seq_len
@@ -444,6 +445,7 @@ class SFTDataset(HFDataset):
             "seq_lens": [len(input_ids)],
             "mm_kwargs": mm_kwargs,
             "mm_token_type_ids": mm_token_type_ids,
+            "sample_data": None,
         }
 
 
