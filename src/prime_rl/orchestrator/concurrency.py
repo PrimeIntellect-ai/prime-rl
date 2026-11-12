@@ -151,6 +151,19 @@ class EngineLoadSample:
     generation_tokens_delta: int = 0
     # Summed end-to-end latency (arrival at the engine to finish) of the requests in ``finished_delta``
     latency_delta: float = 0.0
+    # Seconds the engine spent executing model steps since the previous poll (None: not reported)
+    busy_delta: float | None = None
+    # What the engine's steps held since the previous poll (None: not reported): steps executed, and summed over its
+    # scheduled steps, the sequences decoding, the context they read and the prefill tokens; and its max_num_seqs
+    steps_delta: float | None = None
+    decode_seqs_delta: float | None = None
+    kv_read_delta: float | None = None
+    prefill_delta: float | None = None
+    max_num_seqs: int | None = None
+    # The server whose data-parallel MoE engines step in lockstep with this one (None: it steps on its own)
+    lockstep_group: str | None = None
+    # Share of the engine's GPU KV cache in use at the poll (vLLM's ``kv_cache_usage_perc``)
+    kv_usage: float | None = None
 
 
 @dataclass(frozen=True)
@@ -820,6 +833,19 @@ class ConcurrencyController(Reconfigurable):
     def capacity(self) -> int | None:
         """Total KV tokens across decode engines; None until the first poll."""
         return sum(self.capacity_by_engine.values()) or None
+
+    @property
+    def binding(self) -> bool:
+        """The last poll's units in flight fill the cap."""
+        return bool(self.polls) and self.polls[-1].inflight >= BINDING_FRACTION * self.max_inflight
+
+    @property
+    def env_bound(self) -> bool:
+        """The configured ``max_inflight`` holds the cap while growth still pays: the episodes' external resources,
+        not the engines, bound the pool."""
+        ceiling = self.config.max_inflight
+        growing = self.climbing or self.paying
+        return ceiling is not None and self.max_inflight >= ceiling and self.binding and growing
 
     # ── observability ────────────────────────────────────────────────────────
 

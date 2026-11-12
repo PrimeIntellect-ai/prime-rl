@@ -46,10 +46,11 @@ from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.balance import BalanceAdvisor, inference_poll
 from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
-from prime_rl.orchestrator.concurrency import ConcurrencyController
+from prime_rl.orchestrator.concurrency import ConcurrencyController, EngineLoadSample
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.draft import DraftLoader
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -198,6 +199,10 @@ class Orchestrator:
         self.shipped_at: float | None = None
         self.trainer_rate: float | None = None
         self.trainer_capacity = TrainerCapacity()
+        # Balance advice: the last metrics poll and the train rollouts finished by then
+        self.balance_polled_at: float | None = None
+        self.balance_finished = 0
+        self.balance = BalanceAdvisor(config.balance, self.trainer_capacity) if config.balance.enabled else None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -403,7 +408,7 @@ class Orchestrator:
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
             roles=config.inference_metrics_roles,
-            on_load=self.concurrency.observe,
+            on_load=self.observe_inference,
             log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
@@ -757,6 +762,7 @@ class Orchestrator:
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
         self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
+        self.advise_balance()
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
@@ -855,6 +861,33 @@ class Orchestrator:
             f"train episode(s); any in-flight evals will complete)"
         )
 
+    def observe_inference(self, samples: list[EngineLoadSample]) -> None:
+        """One inference metrics poll: the concurrency controller acts on it, then the balance advisor records it."""
+        self.concurrency.observe(samples)
+        if self.balance is None:
+            return
+        now = time.monotonic()
+        seconds = now - self.balance_polled_at if self.balance_polled_at is not None else 0.0
+        self.balance_polled_at = now
+        held = self.dispatcher.trainer_target is not None or self.dispatcher.held_permits > 0
+        finished = self.dispatcher.finished_train_rollouts
+        finished, self.balance_finished = finished - self.balance_finished, finished
+        self.balance.observe(
+            inference_poll(
+                samples,
+                seconds,
+                finished=finished,
+                env_bound=self.concurrency.env_bound and not held,
+                paused=self.concurrency.paused,
+            )
+        )
+
+    def advise_balance(self) -> None:
+        """Log a notice when another split of the GPUs is clearly faster."""
+        if self.balance is not None and (advice := self.balance.evaluate()) is not None:
+            if (notice := self.balance.notice(advice)) is not None:
+                get_logger().warning(notice)
+
     async def trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
         fires. No-op when eval is not configured."""
@@ -941,6 +974,8 @@ class Orchestrator:
             **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
         }
+        if self.balance is not None:
+            payload |= self.balance.gauges()
         if self.draft_loader is not None:
             payload |= self.draft_loader.gauges()
         if self.gc is not None:

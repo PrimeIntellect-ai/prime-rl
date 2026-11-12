@@ -324,6 +324,11 @@ class InferenceMetricsCollector:
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.max_model_len_by_endpoint: dict[str, int] = {}
+        # Engine step counters per (endpoint, engine label) at the previous poll, the latest per endpoint, and the
+        # endpoints that serve none
+        self.busy_by_engine: dict[tuple[str, str], dict[str, float]] = {}
+        self.busy_by_endpoint: dict[str, dict[str, dict[str, float]]] = {}
+        self.no_busy: set[str] = set()
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
@@ -383,6 +388,7 @@ class InferenceMetricsCollector:
             return
 
         await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
+        await asyncio.gather(*[self.fetch_busy(endpoint) for endpoint in self.endpoints])
         metrics = self.build_metrics(samples) if self.log_metrics else {}
         load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
@@ -413,6 +419,38 @@ class InferenceMetricsCollector:
         except Exception as e:
             get_logger().debug(f"Failed to fetch max_model_len from {endpoint.client.base_url}: {e!r}")
 
+    async def fetch_busy(self, endpoint: MetricsEndpoint) -> None:
+        """Each engine's step counters (``/prime_rl/engine_busy``). A server without the route (not prime-rl's) is not
+        asked again."""
+        if endpoint.key in self.no_busy:
+            return
+        try:
+            response = await endpoint.client.get("/prime_rl/engine_busy", timeout=FETCH_TIMEOUT)
+            if response.status_code == 404:
+                self.no_busy.add(endpoint.key)
+                return
+            response.raise_for_status()
+            self.busy_by_endpoint[endpoint.key] = {str(k): v for k, v in response.json()["engines"].items()}
+        except Exception as e:
+            self.busy_by_endpoint.pop(endpoint.key, None)
+            get_logger().debug(f"Failed to fetch engine busy time from {endpoint.client.base_url}: {e!r}")
+
+    def step_deltas(self, sample: EngineSample) -> dict[str, float] | None:
+        """The sample's engine counters since the previous poll; None on the first poll or a restart."""
+        counters = self.busy_by_endpoint.get(sample.endpoint.key, {}).get(sample.engine_label)
+        if counters is None:
+            return None
+        previous = self.busy_by_engine.get(sample.key)
+        self.busy_by_engine[sample.key] = counters
+        if previous is None or counters.get("busy_s", 0.0) < previous.get("busy_s", 0.0):
+            return None
+        static = ("max_num_seqs", "lockstep")
+        deltas = {name: counters[name] - previous.get(name, 0.0) for name in counters if name not in static}
+        deltas["max_num_seqs"] = counters.get("max_num_seqs")
+        if "lockstep" in counters:
+            deltas["lockstep"] = counters["lockstep"]
+        return deltas
+
     def build_load_sample(self, sample: EngineSample) -> EngineLoadSample:
         """Raw per-engine load facts for the concurrency controller."""
         cache_config = sample.snapshot.cache_config
@@ -427,6 +465,7 @@ class InferenceMetricsCollector:
             kv_capacity_tokens = int(num_gpu_blocks) * int(block_size)
 
         previous = self.previous.get(sample.key)
+        deltas = self.step_deltas(sample)
         return EngineLoadSample(
             engine_id=sample.engine_id,
             role=sample.endpoint.role,
@@ -436,6 +475,14 @@ class InferenceMetricsCollector:
             finished_delta=counter_delta(sample, previous, ("request_success", "request_success_total")),
             generation_tokens_delta=counter_delta(sample, previous, ("generation_tokens", "generation_tokens_total")),
             latency_delta=histogram_sum_delta(sample, previous, "e2e_request_latency_seconds"),
+            busy_delta=deltas.get("busy_s") if deltas else None,
+            steps_delta=deltas.get("steps") if deltas else None,
+            decode_seqs_delta=deltas.get("decode_seqs") if deltas else None,
+            kv_read_delta=deltas.get("kv_read_tokens") if deltas else None,
+            prefill_delta=deltas.get("prefill_tokens") if deltas else None,
+            max_num_seqs=int(deltas["max_num_seqs"]) if deltas and deltas.get("max_num_seqs") else None,
+            lockstep_group=str(sample.endpoint.key) if deltas and deltas.get("lockstep") else None,
+            kv_usage=sample.snapshot.gauges.get("kv_cache_usage_perc"),
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

@@ -13,6 +13,7 @@ This page covers the inference configuration and the supported features/deployme
 - [Router](#router)
     - [Routing policies](#routing-policies)
 - [Adaptive Concurrency](#adaptive-concurrency)
+- [GPU Split Advice](#gpu-split-advice)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
     - [HiSparse](#hisparse)
@@ -223,6 +224,17 @@ While the engines are paused for a weight update the controller freezes, and it 
 In RL, rollouts made faster than the trainer consumes them only wait and go stale, so the dispatcher holds train admission to what the trainer takes. A finished train rollout the trainer could take (its group is complete) keeps its permit until the trainer takes it, except for one batch of finished rollouts waiting (so the trainer finds its next batch ready). While the trainer is the bottleneck (its batch was ready before it asked for it), train episodes in flight are also held to what keeps it fed, by Little's law: the rollouts per second it takes times the average generation lifetime, plus 10%. Both only stop new train groups; eval episodes are not held back. The controller sees the episodes in flight, and its queue rule trims only while the cap binds, so a pool the dispatcher holds below the cap does not read as overload.
 
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`. `max_inflight` is unbounded by default; set it when episodes hold other scarce resources (e.g. sandboxes).
+
+## GPU Split Advice
+
+An RL run is a pipeline of GPU pools: inference engines make rollouts (in P/D, prefill engines feed decode engines) and the trainer consumes them. The slowest pool sets the run's speed. The orchestrator measures each pool's capacity as its throughput over its busy share and logs under `balance/*` how fast the run would be with the same GPUs (nodes, multi-node) split differently, among the splits the deployment allows (whole inference replicas, the trainer's parallelism):
+
+- **Trainer**: busy from receiving a batch to requesting the next.
+- **Inference**: the seconds the engines spent executing model steps, outside weight-update pauses, counted by prime-rl's vLLM plugin; per role under P/D.
+- **Saturated engines** (`balance/<pool>/batch_gain`): engines that step whenever they hold a sequence (decode) look busy below their knee too, since their spare capacity is in batch size. From 75% busy the advisor fits how step time grows with what a step holds (sequences decoding, the context they read, prefill tokens; data-parallel MoE ranks that step in lockstep as one engine) and extrapolates to a full batch: the batch that fills 60% of the engines' KV cache at today's use per sequence, or `max_num_seqs`. 60% is where a pinned-concurrency sweep on Qwen3-30B-A3B peaked; fuller caches thrashed. Without a reliable fit, and for engines that report no busy time, the capacity is only a lower bound.
+- **Environment**: a cap held at `concurrency.max_inflight` while more episodes would still pay means external resources (e.g. sandboxes) bound the run; no split is advised.
+
+When a split promises at least 10% (`min_gain`) for 30 minutes (`sustain_minutes`), the orchestrator logs a notice such as `[balance] Inference-bound: trainer 4 -> 2, inference 4 -> 6 GPUs would be at least 50% faster`. The advice needs short weight updates (NCCL, NIXL or sparse filesystem): a long transfer hides the engines' load.
 
 ## Advanced Configuration
 
