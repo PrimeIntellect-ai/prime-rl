@@ -203,9 +203,6 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
             )
-        if self.inference is not None:
-            setup_dummy_load(self.inference.vllm, lora_enabled=self.model.lora is not None)
-
         if self.weight_broadcast is None:
             if self.model.lora is not None or self.inference is None:
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
@@ -219,6 +216,14 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     "LoRA training is not yet supported with in-memory weight broadcast. "
                     "Set weight_broadcast.type = 'filesystem'."
                 )
+
+        if self.inference is not None:
+            setup_dummy_load(
+                self.inference.vllm,
+                init_type=self.model.init.type,
+                lora_enabled=self.model.lora is not None,
+                transport=self.weight_broadcast.type,
+            )
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,

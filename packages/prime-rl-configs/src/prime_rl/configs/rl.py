@@ -413,17 +413,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_dummy_load(self):
-        if self.trainer.model.init.type != "hf" and self.trainer.model.lora is not None:
-            raise ValueError(
-                'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
-            )
-        # A fake-data trainer broadcasts nothing.
-        if self.inference is not None and self.trainer.data.fake is None:
-            setup_dummy_load(self.inference.vllm, lora_enabled=self.trainer.model.lora is not None)
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
@@ -476,6 +465,23 @@ class RLConfig(BaseConfig):
         )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dummy_load(self):
+        model = self.trainer.model
+        if model.init.type != "hf" and model.lora is not None:
+            raise ValueError(
+                'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
+            )
+        # A fake-data trainer broadcasts nothing.
+        if self.inference is not None and self.trainer.data.fake is None:
+            setup_dummy_load(
+                self.inference.vllm,
+                init_type=model.init.type,
+                lora_enabled=model.lora is not None,
+                transport=self.trainer.weight_broadcast.type,
+            )
         return self
 
     @model_validator(mode="after")

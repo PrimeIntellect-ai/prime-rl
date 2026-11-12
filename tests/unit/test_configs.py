@@ -1492,17 +1492,24 @@ def test_trainer_fed_inference_loads_dummy_weights(init_type: str):
 
 
 @pytest.mark.parametrize(
-    ("vllm", "lora_enabled", "load_format"),
+    ("vllm", "lora_enabled", "transport", "load_format"),
     [
-        ({"speculative_config": {"method": "mtp"}}, False, None),
-        ({}, True, None),
-        ({"load_format": "auto"}, False, "auto"),
+        ({"speculative_config": {"method": "mtp"}}, False, "nccl", None),
+        ({}, True, "filesystem", None),
+        ({}, False, "modelexpress", None),
+        ({"load_format": "auto"}, False, "nccl", "auto"),
     ],
 )
-def test_inference_loads_from_disk_what_the_broadcast_does_not_cover(vllm: dict, lora_enabled: bool, load_format):
+def test_inference_loads_from_disk_what_the_broadcast_does_not_cover(vllm, lora_enabled, transport, load_format):
     config = VllmConfig(**vllm)
-    setup_dummy_load(config, lora_enabled=lora_enabled)
+    setup_dummy_load(config, init_type="hf", lora_enabled=lora_enabled, transport=transport)
     assert getattr(config, "load_format", None) == load_format
+
+
+def test_a_speculative_drafter_requires_the_hf_init():
+    config = VllmConfig(speculative_config={"method": "mtp"})
+    with pytest.raises(ValueError, match="loads its drafter from model.name"):
+        setup_dummy_load(config, init_type="ckpt", lora_enabled=False, transport="nccl")
 
 
 def test_lora_requires_the_hf_init():

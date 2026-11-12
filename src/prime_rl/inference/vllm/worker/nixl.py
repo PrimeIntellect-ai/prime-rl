@@ -17,7 +17,10 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import (
+    check_update_covers_dummy_weights,
+    update_mla_absorbed_weights,
+)
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -177,7 +180,7 @@ class NIXLWeightUpdateWorker(Worker):
                             loader,
                         )
 
-                model.load_weights(
+                loaded = model.load_weights(
                     make_hf_lazy_weights(
                         table,
                         device=self.device,
@@ -185,6 +188,7 @@ class NIXLWeightUpdateWorker(Worker):
                         hf_config=self.model_runner.model_config.hf_text_config,
                     )
                 )
+                check_update_covers_dummy_weights(model, loaded, self.model_runner.model_config, self.vllm_config)
 
                 for copy in recorder.copies:
                     if copy.is_persistent or copy.destination_name in SKIP_TENSORS:

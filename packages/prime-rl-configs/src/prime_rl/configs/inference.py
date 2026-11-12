@@ -185,12 +185,22 @@ class VllmConfig(BaseConfig):
         return self
 
 
-def setup_dummy_load(vllm: VllmConfig, lora_enabled: bool) -> None:
+def setup_dummy_load(vllm: VllmConfig, *, init_type: str, lora_enabled: bool, transport: str) -> None:
     """A server that the trainer feeds gets its weights from the trainer's startup broadcast, so it loads none. LoRA
-    broadcasts only the adapter and a speculative drafter never gets updates, so those load from disk; an explicit
+    broadcasts only the adapter and a speculative drafter never gets updates, so those load from disk. An HF model
+    also loads from disk with ModelExpress, which does not check that an update covers every parameter. An explicit
     ``load_format`` wins."""
     extra = vllm.model_extra or {}
-    if not lora_enabled and "speculative_config" not in extra and "load_format" not in extra:
+    if "load_format" in extra or lora_enabled:
+        return
+    if "speculative_config" in extra:
+        if init_type != "hf":
+            raise ValueError(
+                f'inference.vllm.speculative_config loads its drafter from model.name, which init type "{init_type}" '
+                'does not provide: use model.init.type = "hf"'
+            )
+        return
+    if init_type != "hf" or transport != "modelexpress":
         vllm.load_format = "dummy"
 
 
