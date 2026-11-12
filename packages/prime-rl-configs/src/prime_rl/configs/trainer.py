@@ -28,6 +28,10 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 
+# A module-qualified target, "<operation or namespace>@<module path pattern>", matches only inside
+# the modules whose path relative to the checkpointed block matches the pattern.
+MODULE_TARGET_SEPARATOR = "@"
+
 
 class ActivationCheckpointConfig(BaseConfig):
     mode: Literal["full", "selective"] = "full"
@@ -43,8 +47,8 @@ class ActivationCheckpointConfig(BaseConfig):
     @classmethod
     def validate_targets(cls, targets: list[str] | None) -> list[str] | None:
         for target in targets or []:
-            operation, separator, module_pattern = target.partition("@")
-            if not operation or (separator and (not module_pattern or "@" in module_pattern)):
+            operation, separator, module_pattern = target.partition(MODULE_TARGET_SEPARATOR)
+            if not operation or (separator and (not module_pattern or MODULE_TARGET_SEPARATOR in module_pattern)):
                 raise ValueError(
                     f"Invalid activation checkpointing target {target!r}: expected an operator or namespace, "
                     "optionally followed by '@<module path pattern>'."
@@ -381,7 +385,11 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def module_qualified_ac_targets_require_compile(self):
-        if self.compile is None and self.ac is not None and any("@" in target for target in self.ac.targets or []):
+        if (
+            self.compile is None
+            and self.ac is not None
+            and any(MODULE_TARGET_SEPARATOR in target for target in self.ac.targets or [])
+        ):
             raise ValueError("Module-qualified model.ac.targets require model.compile.")
         return self
 

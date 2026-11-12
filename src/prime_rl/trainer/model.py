@@ -31,6 +31,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
+    MODULE_TARGET_SEPARATOR,
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
@@ -39,7 +40,6 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.activation_checkpointing import (
-    MODULE_TARGET_SEPARATOR,
     TokenChunkedCheckpointWrapper,
     get_activation_checkpoint_wrapper,
     unmatched_module_patterns,
