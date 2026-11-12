@@ -13,7 +13,7 @@ from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.dashboard.server import trace_updates
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path
-from prime_rl.monitors.file.traces.chunks import ChunkedBinary, ChunkedJsonl, bin_numbers
+from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.update import fold_trace_updates, make_update, update_index_row
 
 
@@ -117,18 +117,30 @@ def test_streams_larger_than_a_chunk_never_span_chunks(tmp_path):
             assert _stream_values(update, field).tobytes() == np.asarray(expected, dtype=np.float32).tobytes()
 
 
-def test_relaunched_binary_appends_to_the_highest_bin(tmp_path):
-    first = ChunkedBinary(tmp_path, max_bytes=24)
-    assert first.append(b"a" * 10) == (0, 0)
-    assert first.append(b"b" * 20) == (1, 0)
-    first.close()
+def test_relaunch_after_sealing_reads_both_runs(tmp_path):
+    first = np.float32([0.5, np.nan, -1.25])
+    second = np.float32([np.nan, 2.0])
+    for trace_id, values in (("first", first), ("second", second)):
+        monitor = FileMonitor(FileMonitorConfig())
+        asyncio.run(monitor.init(tmp_path))
+        asyncio.run(monitor.log_annotations([make_update(trace_id, branches={0: {"trainer_logprobs": values}})]))
+        asyncio.run(monitor.finalize())
+    monitor = FileMonitor(FileMonitorConfig())
+    asyncio.run(monitor.init(tmp_path))
+    asyncio.run(monitor.log_annotations([make_update("info-only", info={"origin": 3})]))
+    asyncio.run(monitor.finalize())
 
-    relaunched = ChunkedBinary(tmp_path, max_bytes=64)
-    assert relaunched.append(b"c" * 4) == (1, 20)
-    relaunched.close()
-
-    assert bin_numbers(tmp_path) == [0, 1]
-    assert (tmp_path / "00001.bin").read_bytes() == b"b" * 20 + b"c" * 4
+    stream = get_annotations_dir(tmp_path) / "unknown"
+    assert sorted(path.name for path in stream.iterdir()) == [
+        "00000.bin.zst",
+        "00000.jsonl.zst",
+        "00001.bin.zst",
+        "00001.jsonl.zst",
+        "00002.jsonl.zst",
+    ]
+    for trace_id, values in (("first", first), ("second", second)):
+        (update,) = trace_updates(tmp_path, trace_id)
+        assert _stream_values(update, "trainer_logprobs").tobytes() == values.tobytes()
 
 
 def test_v1_record_folds_alongside_v2_records(tmp_path):

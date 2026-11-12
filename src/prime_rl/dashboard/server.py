@@ -899,7 +899,7 @@ def resolve_stream_refs(stream: Path, update: dict) -> None:
             if not isinstance(ref, dict):
                 continue
             try:
-                with open(stream / f"{ref['bin']:05d}.bin", "rb") as f:
+                with open_chunk(stream, ref["bin"], ".bin") as f:
                     f.seek(ref["offset"])
                     data = f.read(ref["count"] * 4)
                 if len(data) != ref["count"] * 4:

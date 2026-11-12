@@ -20,7 +20,7 @@ from prime_rl.env.encoding import pack, unpack
 from prime_rl.env.types import TraceSummary
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
-from prime_rl.monitors.file.traces.chunks import bin_path, chunk_path
+from prime_rl.monitors.file.traces.chunks import chunk_path
 from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, read_live
 from prime_rl.orchestrator.algo.routing import assign_advantages
@@ -84,7 +84,7 @@ def test_received_episode_writes_plain_records(tmp_path):
     (annotation,) = chunk_path(stream, 0).read_bytes().splitlines()
     (branch,) = orjson.loads(annotation)["branches"]
     ref = branch["advantages"]
-    with open(bin_path(stream, ref["bin"]), "rb") as f:
+    with open(chunk_path(stream, ref["bin"], ".bin"), "rb") as f:
         f.seek(ref["offset"])
         decoded = np.frombuffer(f.read(ref["count"] * 4), dtype=np.float32)
     assert np.array_equal(decoded, np.float32([0.0, 0.0, 0.7, 0.7]))

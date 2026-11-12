@@ -15,7 +15,7 @@ from verifiers.v1.types import decode_ndarray
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
-from prime_rl.monitors.file.traces.chunks import ChunkedBinary, ChunkedJsonl
+from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import STREAM_FIELDS, update_index_row
@@ -42,7 +42,7 @@ def _live_value(value: Any) -> Any:
     return value
 
 
-def _binary_branch(branch: dict[str, Any], binary: ChunkedBinary) -> dict[str, Any]:
+def _binary_branch(branch: dict[str, Any], binary: ChunkedJsonl) -> dict[str, Any]:
     """A branch with its per-token streams replaced by refs into the binary sidecar,
     their float32 bytes appended to it."""
     line = dict(branch)
@@ -74,7 +74,7 @@ class FileMonitor(Monitor):
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
-        self._binaries: dict[Path, ChunkedBinary] = {}
+        self._binaries: dict[Path, ChunkedJsonl] = {}
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
@@ -164,10 +164,12 @@ class FileMonitor(Monitor):
             self._streams[directory] = (stream, open(get_index_path(directory), "ab"))
         return self._streams[directory]
 
-    def _binary(self, directory: Path) -> ChunkedBinary:
+    def _binary(self, directory: Path) -> ChunkedJsonl:
         """A stream's binary sidecar, opened on first use and kept open."""
         if directory not in self._binaries:
-            self._binaries[directory] = ChunkedBinary(directory, self.config.chunk_bytes)
+            self._binaries[directory] = ChunkedJsonl(
+                directory, self.config.chunk_bytes, self.config.compress, suffix=".bin"
+            )
         return self._binaries[directory]
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
