@@ -1,7 +1,9 @@
 import logging
 import os
 import shutil
+import sys
 import time
+import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -23,8 +25,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
-from torch.distributed.tensor.parallel import parallelize_module
+from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -37,9 +38,10 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.multimodal import ForwardPolicy
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.activation_checkpointing import (
+    TokenChunkedCheckpointWrapper,
+    get_activation_checkpoint_wrapper,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -57,18 +59,19 @@ from prime_rl.trainer.models.fusions import (
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
+from prime_rl.trainer.ngram_runtime import configure_ngram_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
@@ -119,11 +122,8 @@ torch._dynamo.config.recompile_limit = 16  # default: 8
 torch._dynamo.config.cache_size_limit = 64  # default: 8
 
 
-def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
+def freeze_vision_encoder(vision_encoder: nn.Module) -> None:
     logger = get_logger()
-    vision_encoder = get_vision_encoder(model, override=override_attr)
-    if vision_encoder is None:
-        raise ValueError("Could not find vision encoder to freeze")
     num_frozen = 0
     for param in vision_encoder.parameters():
         param.requires_grad = False
@@ -206,72 +206,82 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
-def get_load_balance_stats(
-    model: nn.Module,
-    group: dist.ProcessGroup | None = None,
-) -> dict[str, Tensor | None]:
-    """Compute routing stats after summing raw counts across the group, if given.
-
-    Also returns this rank's raw per-layer expert counts (`[num_moe_layers, num_experts]`) for step-level stats.
-    """
-    per_layer_max_vio = []
-    per_layer_routing_confidence = []
+def take_moe_routing_stats(model: nn.Module) -> Tensor:
+    """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 1]` (tokens per expert,
+    then the routing confidence sum), and reset them."""
     block_mlps = list(iter_moe_blocks(model))
     if not block_mlps:
-        return {"max_vio": None, "routing_confidence": None, "tokens_per_expert": torch.empty(0, 0)}
-
-    local_tokens_per_expert = torch.stack([block_mlp.tokens_per_expert for block_mlp in block_mlps])
-    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
-    if group is not None:
-        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
-        packed_stats = torch.cat(
-            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
-        )
-        dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
-        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
-
-    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
-        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
-        balanced_load = tokens_per_expert.mean()
-        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.detach())
-
-        routing_confidence = routing_confidence_sum / num_routed_tokens
-        per_layer_routing_confidence.append(routing_confidence.detach())
-
+        return torch.empty(0, 0)
+    stats = torch.stack(
+        [
+            torch.cat((block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum.reshape(1)))
+            for block_mlp in block_mlps
+        ]
+    )
+    for block_mlp in block_mlps:
         block_mlp.tokens_per_expert.zero_()
         block_mlp.routing_confidence_sum.zero_()
-    return {
-        "max_vio": torch.stack(per_layer_max_vio),
-        "routing_confidence": torch.stack(per_layer_routing_confidence),
-        "tokens_per_expert": local_tokens_per_expert,
-    }
+    return stats
 
 
 def get_global_moe_stats(
     model: nn.Module,
+    routing_stats: list[Tensor],
     ep_group: dist.ProcessGroup | None,
     dp_cp_group: dist.ProcessGroup,
 ) -> tuple[dict[str, Tensor], Tensor]:
-    """Reduce one microstep's routing stats across EP, then DP and CP ranks.
+    """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step,
+    or with EP, also one EP imbalance per micro step and layer.
 
-    Also returns this rank's unreduced per-layer expert counts, to accumulate over the step for `get_expert_load_stats`.
+    Also returns this rank's unreduced per-layer expert counts summed over the micro steps, for `get_expert_load_stats`.
     """
-    stats = {}
-    load_balance_stats = get_load_balance_stats(model, group=ep_group)
-    tokens_per_expert = load_balance_stats.pop("tokens_per_expert")
-    for name, values in load_balance_stats.items():
-        if values is None:
-            continue
-        value = values.max() if name == "max_vio" else values.mean()
-        if name == "max_vio":
-            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
-        else:
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            value /= dist.get_world_size(dp_cp_group)
-        stats[name] = value
-    return stats, tokens_per_expert
+    stats = torch.stack(routing_stats)
+    tokens_per_expert = stats[..., :-1].sum(dim=0)
+    if stats.numel() == 0:
+        return {}, tokens_per_expert
+    if ep_group is not None:
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=ep_group)
+
+    per_layer_max_vio = []
+    per_layer_routing_confidence = []
+    for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
+        top_k = block_mlp.router.top_k
+        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-1], layer_stats[:, -1]
+        num_routed_tokens = layer_tokens_per_expert.sum(dim=1) / top_k
+        layer_tokens_per_expert = layer_tokens_per_expert.sort(dim=1, descending=True).values[:, top_k:]
+        balanced_load = layer_tokens_per_expert.mean(dim=1)
+        per_layer_max_vio.append((layer_tokens_per_expert.amax(dim=1) - balanced_load) / balanced_load)
+        per_layer_routing_confidence.append(routing_confidence_sum / num_routed_tokens)
+
+    max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
+    mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
+    if ep_group is not None:
+        # Every rank of an EP group holds the same `[micro_steps, layers]` imbalances. A layer waits for the busiest
+        # rank of its EP group and, through its FSDP collectives, for the slowest group: take the max over DP groups,
+        # with the DP mean beside it.
+        rank_imbalance = compute_ep_imbalance(stats[..., :-1], dist.get_world_size(ep_group))
+        max_stats.append(rank_imbalance)
+        mean_stats.append(rank_imbalance)
+    max_stats, mean_stats = torch.cat(max_stats, dim=1), torch.cat(mean_stats, dim=1)
+    dist.all_reduce(max_stats, op=dist.ReduceOp.MAX, group=dp_cp_group)
+    dist.all_reduce(mean_stats, op=dist.ReduceOp.SUM, group=dp_cp_group)
+    mean_stats /= dist.get_world_size(dp_cp_group)
+
+    moe_stats = {"max_vio": max_stats[:, 0], "routing_confidence": mean_stats[:, 0]}
+    if ep_group is not None:
+        moe_stats["ep_imbalance/rank"] = max_stats[:, 1:]
+        moe_stats["ep_imbalance/rank_dp_mean"] = mean_stats[:, 1:]
+    return moe_stats, tokens_per_expert
+
+
+def compute_ep_imbalance(tokens_per_expert: Tensor, ep: int) -> Tensor:
+    """The busiest EP rank's load over the mean rank load, from `[..., num_experts]` counts summed over the EP group.
+
+    EP rank r holds experts [r * num_experts / ep, (r + 1) * num_experts / ep) and runs the grouped GEMMs of every
+    route to them, padding routes included (they run through the GEMMs too).
+    """
+    rank_routes = tokens_per_expert.unflatten(-1, (ep, -1)).sum(dim=-1)
+    return rank_routes.amax(dim=-1) / rank_routes.mean(dim=-1)
 
 
 def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
@@ -309,8 +319,6 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    is_vlm_training = config.vlm is not None
-
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
@@ -318,9 +326,8 @@ def get_model(
         ),
     )
     model_config.use_cache = False
-    is_vlm_arch = is_vlm_architecture(model_config)
 
-    if is_vlm_training:
+    if config.vlm is not None:
         logger.info(f"Detected vision-language model: {config.name}")
 
     for subconfig_key in getattr(model_config, "sub_configs", {}):
@@ -380,7 +387,7 @@ def get_model(
         )
         target_config.num_hidden_layers = num_hidden_layers
 
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
+    custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
             f"{model_config.model_type!r} has no PrimeRL model implementation. "
@@ -439,23 +446,6 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
-def setup_processor(config: ModelConfig):
-    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
-    from transformers import AutoProcessor
-
-    logger = get_logger()
-    try:
-        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    except (ValueError, OSError, KeyError) as e:
-        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
-        return None
-    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
-        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
-        return None
-    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
-    return processor
-
-
 def _expert_shard_placement_fn(
     experts: nn.Module,
     expert_mesh_info: FSDPMeshInfo,
@@ -505,31 +495,30 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         expert_mesh_info = _get_mesh_info(dp_mod_ep_mesh)
         assert isinstance(expert_mesh_info, FSDPMeshInfo)
 
-    is_vlm_training = config.vlm is not None
-    if is_vlm_training:
-        vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+    if config.vlm is not None:
+        vision_encoder = get_vision_encoder(model)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
-    language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
+    for table in [module for module in model.modules() if isinstance(module, NGramTable)]:
+        if isinstance(table.weight, DTensor):
+            table_mesh = (
+                parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
+                if parallel_dims.dp_replicate_enabled
+                else parallel_dims.get_mesh("dp_shard_mod_head")
+            )
+        else:
+            table_mesh = hsdp_mesh
+        fully_shard(table, mesh=table_mesh, **fsdp_config)
+        table.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+
+    language_model = get_language_model(model)
     transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:
-        for module in transformer_block.modules():
-            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
-                embedding = module.ngram_embedding
-                dp_mod_head_mesh = (
-                    parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
-                    if parallel_dims.dp_replicate_enabled
-                    else parallel_dims.get_mesh("dp_shard_mod_head")
-                )
-                parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
-                fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
-                embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
-
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
@@ -641,6 +630,33 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def clear_padding_idx(model: nn.Module) -> None:
+    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
+    embedding at zero and keep it frozen, also after a resume."""
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            module.padding_idx = None
+
+
+@torch.no_grad()
+def initialize_from_scratch(model: nn.Module) -> None:
+    """Initialize the weights with the model's own init (``initialize_weights``, which applies its
+    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
+    get_logger().info("Initializing the weights from scratch")
+    model.to_empty(device="cuda")
+    torch.distributed.barrier()
+    model.init_buffers_post_meta()
+    local_params = {
+        name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
+    }
+    for param in local_params.values():
+        param.fill_(float("nan"))
+    model.initialize_weights()
+    uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
+    if uninitialized:
+        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -719,6 +735,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
+        # Tied checkpoints ship no lm_head weight: the head loads through the input embedding it shares.
+        assert model.lm_head.weight is model.get_input_embeddings().weight, (
+            f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
+        )
         state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
@@ -761,27 +781,66 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 DYNAMIC_INT_ARGS = (
     # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
     "max_seqlen",
+    # DeepSeek V4: largest compressed-entry count of any document in the row. Sizes the HCA picks.
+    "max_entries_per_doc",
+)
+
+# Tensor args, as (name, dim), whose dim changes between calls. Marking the tensor itself does not reach a compiled
+# layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
+# the arg instead, so callers must pass these args by keyword.
+DYNAMIC_TENSOR_ARG_DIMS = (
+    # DeepSeek V4: the decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    ("mhc_states", 1),
 )
 
 
-def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+def mark_dynamic_args() -> None:
+    """Add DYNAMIC_INT_ARGS and DYNAMIC_TENSOR_ARG_DIMS to torch.compiler.config.dynamic_sources, keeping its entries."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    patterns = []
     for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
-        pattern = rf".*\['{arg}'\]"
+        # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
+        # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
+    for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
+        patterns.append(rf".*\['{arg}'\]:{dim}")
+    for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
+def load_lazy_modules() -> None:
+    """Finish loading the lazily imported modules in ``sys.modules``.
+
+    FLA reads ``sys.modules`` inside compiled code, so Dynamo wraps the whole dict and checks every module's type.
+    That check loads a lazy module (wandb's ``azure.storage.blob``), which grows ``sys.modules`` mid-iteration
+    and crashes the trace with "dictionary changed size during iteration".
+    """
+    for module in list(sys.modules.values()):
+        module_type = type(module)
+        if (
+            issubclass(module_type, types.ModuleType)
+            and module_type.__getattribute__ is not types.ModuleType.__getattribute__
+        ):
+            getattr(module, "__name__", None)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    mark_dynamic_int_args()
+    # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
+    # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
+    load_lazy_modules()
+    mark_dynamic_args()
     language_model = get_language_model(model)
-    for layer_id in range(len(language_model.layers)):
-        # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    for layer in language_model.layers:
+        if isinstance(layer, TokenChunkedCheckpointWrapper):
+            layer.compile_chunk(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        else:
+            # Doing it in-place avoids mangled fqn which can break checkpoint loading
+            layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -817,7 +876,7 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     """Apply LoRA and identify any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
-        frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+        frozen_vision_encoder = get_vision_encoder(model)
     elif config.vlm is None:
         frozen_vision_encoder = get_vision_encoder(model)
         if frozen_vision_encoder is not None:
@@ -880,6 +939,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -924,6 +984,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    configure_ngram_runtime(model, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -931,19 +992,24 @@ def setup_model(
             freeze_all_except_lora(model)
 
     if frozen_vision_encoder is not None:
-        freeze_vision_encoder(
-            model,
-            override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
-        )
+        freeze_vision_encoder(frozen_vision_encoder)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
+        if config.ac.token_chunk_size is not None and parallel_dims.ep not in (1, parallel_dims.cp):
+            # Every chunk runs the EP all-to-alls. An EP group wider than CP spans ranks holding different rows,
+            # whose chunk counts can differ, so one rank would wait on a collective its peers never start.
+            raise ValueError(
+                f"model.ac.token_chunk_size requires ep == 1 or ep == cp, got ep={parallel_dims.ep}, cp={parallel_dims.cp}"
+            )
         apply_ac(model, config.ac)
     if config.compile is not None:
         apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
 
+    if init_from_scratch:
+        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
@@ -952,6 +1018,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
+    elif init_from_scratch:
+        initialize_from_scratch(model)
     else:
         load_dcp_from_hf(model, config)
 
@@ -968,10 +1036,8 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    topk_ids: Int[Tensor, "batch seq head"] | None = None,
+    support: TokenSupport | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
-    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -979,27 +1045,16 @@ def forward(
 ) -> PrimeLmOutput:
     kwargs = {
         "input_ids": input_ids,
+        "position_ids": position_ids,
         "labels": labels,
         "temperature": temperature,
-        "sampling_mask": sampling_mask,
+        "support": support,
     }
-
-    if topk_ids is not None:
-        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # SFT still uses its existing eager processor path and does not provide
-        # an adapter policy yet, so preserve its current kwargs-based behavior.
-        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
-        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
-            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
-        if policy.pass_position_ids:
-            kwargs["position_ids"] = position_ids
-    else:
-        kwargs["position_ids"] = position_ids
 
     kwargs["seq_lens"] = seq_lens
     kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, select_topk
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, per_token_group_quant_fp8, select_topk
 
 pytestmark = [
     pytest.mark.gpu,
@@ -112,6 +112,32 @@ def test_selection_agreement(segments):
     assert p1 > AGREEMENT_P1, f"p1 set agreement {p1} below {AGREEMENT_P1}"
 
 
+def test_selection_matches_float64_on_quantized_inputs():
+    """The kernel's picks against float64 scores of its own FP8-quantized inputs.
+
+    Only the kernel's float32 rounding differs from the reference, so the picks of every query agree
+    up to a key or two at the top-k boundary.
+    """
+    ks, ke = ranges(SEGMENTS[0])
+    readable = readable_mask(ks, ke)
+
+    q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()
+    k = torch.randn(NUM_K, DIM, device="cuda").bfloat16()
+    w = torch.randn(NUM_Q, HEADS, device="cuda").bfloat16()
+
+    q_fp8, q_scales = per_token_group_quant_fp8(q.reshape(NUM_Q * HEADS, DIM), DIM)
+    k_fp8, k_scales = per_token_group_quant_fp8(k, DIM)
+    per_head = (q_fp8.double().view(NUM_Q, HEADS, DIM) @ k_fp8.double().T).relu_()
+    head_weights = w.double() * q_scales.double().view(NUM_Q, HEADS)
+    scores = torch.einsum("th,ths->ts", head_weights, per_head) * k_scales.double().view(1, NUM_K)
+    ref_selected = selected_mask(scores.masked_fill(~readable, float("-inf")).topk(TOPK, dim=-1).indices) & readable
+    kernel_selected = selected_mask(fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK).long())
+
+    n_picks = readable.sum(-1).clamp(max=TOPK)
+    agreement = (ref_selected & kernel_selected).sum(-1)[n_picks > 0] / n_picks[n_picks > 0]
+    assert agreement.min().item() >= 1 - 2 / TOPK
+
+
 @pytest.mark.skipif(
     not torch.cuda.is_available() or not fp8_indexer_module._deep_select_supported(torch.device("cuda")),
     reason="DeepSelect not installed or not built for this GPU",
@@ -158,7 +184,7 @@ def test_query_chunks_match_one_pass(segments, monkeypatch):
     """Scoring the queries in chunks picks exactly what one pass over all of them picks.
 
     The keys are a few distinct rows repeated, so most scores tie and the picks depend on how
-    `topk` breaks ties. Chunks of 64 queries leave a ragged last chunk.
+    `topk` breaks ties. Chunks of 512 queries leave a ragged last chunk.
     """
     ks, ke = ranges(segments)
     q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()

@@ -1,10 +1,11 @@
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import (
     ClientConfig,
@@ -29,6 +30,10 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
+    """P/D role of each ``client.admin_base_url`` entry, in the same order: labels inference
+    metrics and lets the concurrency controller read prefill and decode engines apart."""
+
     dispatch_per_minute: int | None = Field(None, ge=1)
     """Rate limit on episode dispatch: at most this many episodes start per minute. Each
     episode counts once, so a group of ``group_size`` episodes counts ``group_size``
@@ -47,9 +52,20 @@ class ServedEvalConfig(EvalSourcesConfig):
     and the heartbeat goes stale on Better Stack after its grace period. Size that
     period + grace above the longest legitimate gap between episodes."""
 
+    @model_validator(mode="after")
+    def validate_inference_metrics_roles(self):
+        if self.inference_metrics_roles is not None:
+            admin_urls = self.client.admin_base_url or []
+            if len(self.inference_metrics_roles) != len(admin_urls):
+                raise ValueError(
+                    f"inference_metrics_roles has {len(self.inference_metrics_roles)} role(s) but "
+                    f"client.admin_base_url has {len(admin_urls)} URL(s): give one role per admin URL"
+                )
+        return self
+
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
-        """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
+        """Where each eval source's env worker pool lives, keyed by ``("eval", resolved_name)``.
         Same contract as ``OrchestratorConfig.env_addresses``: an explicit ``serve.address``
         is an externally managed server; None means the launcher spawns the server and the
         eval learns its address from the file it publishes."""
@@ -63,9 +79,13 @@ class EvalResumeConfig(BaseConfig):
 
 class EvalConfig(ServedEvalConfig):
     """``uv run eval``: evaluate the configured sources once against a live inference
-    server, then exit. Every source's env server is spawned by the eval process unless
+    pool, then exit. Every source's env worker pool is spawned by the eval process unless
     the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
     ``prime login``) with the concurrency pinned at 128."""
+
+    mode: Literal["eval"] | None = None
+    """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run eval`` accepts only
+    "eval" (or no mode)."""
 
     model: str = Field("deepseek/deepseek-v4.1-flash", validation_alias=AliasChoices("model", "m"))
     """Model id — the ``model`` field of every eval request and the startup model check."""
@@ -80,7 +100,7 @@ class EvalConfig(ServedEvalConfig):
     concurrency: ConcurrencyConfig = ConcurrencyConfig(min_inflight=128, max_inflight=128)
     """In-flight episodes, pinned at 128 (``-c N`` repins). External APIs expose no vLLM
     ``/metrics`` to adapt to; against a vLLM server set ``min_inflight < max_inflight`` to
-    let the band adapt to KV usage like the orchestrator's."""
+    let the band adapt to the engines' load like the orchestrator's."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
     """Default rollouts per example. Can be overridden per env."""
@@ -108,7 +128,7 @@ class EvalConfig(ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
+    monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     @property
@@ -172,14 +192,9 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
-
-    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
-    converts the trainer's ``[monitors.prime]`` into a
-    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
-    type would drop (or forbid) the prime block at the eval.json
-    dump/re-parse boundary."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``): the
+    trainer's, so the process logs to the trainer's W&B and Prime runs."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):

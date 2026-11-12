@@ -7,8 +7,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
+from vllm.entrypoints.common.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
-from vllm.entrypoints.launchers.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
@@ -37,6 +37,7 @@ WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
 }
 
 
@@ -63,6 +64,15 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/update_weights_from_modelexpress")
+async def update_weights_from_modelexpress(request: Request):
+    data = await request.json()
+    client = engine_client(request)
+    await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
+    await client.update_weight_version(str(data["weight_version"]))
+    return {"status": "ok"}
+
+
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
     """Wrapper around vLLM's /v1/load_lora_adapter.
@@ -73,23 +83,13 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     the base model is served as ``<model>-base``; see ``InferenceConfig.to_namespace``.)
     vLLM's native loader rejects a same-name reload unless ``load_inplace=True``, so
     we force it here — that makes the worker re-read the new weights during
-    ``add_lora``, reusing the existing ``lora_int_id``.
-
-    We then reset the stored request's flag back to ``False``. ``load_inplace`` is
-    a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
-    every generation request; left ``True`` it would force a disk reload on each
-    scheduler step. The orchestrator awaits this endpoint before dispatching
-    rollouts for the new version, so the reset always lands before generation.
-    The reset runs regardless of success/error: vLLM only stores the adapter on
-    success today, but resetting whatever is stored keeps us correct even if a
-    future version were to leave a ``load_inplace=True`` request behind on error.
+    ``add_lora``, reusing the existing ``lora_int_id``. vLLM resets the stored
+    request's flag to ``False`` before caching it (vllm-project/vllm#41482), so it
+    does not force a disk reload on every later generation request.
     """
     handler = models(raw_request)
     lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
-    stored = handler.lora_requests.get(lora_request.lora_name)
-    if stored is not None:
-        stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)
@@ -118,10 +118,10 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     session_id = data.get("session_id", "default")
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, session_id),
-    )
+    args = (host, port, rank_offset, inference_world_size, timeout, session_id)
+    if "staging_buffer_bytes" in data:
+        args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
+    await engine_client(request).collective_rpc("init_broadcaster", args=args)
     return {"status": "ok"}
 
 

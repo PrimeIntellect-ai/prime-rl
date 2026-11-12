@@ -53,6 +53,19 @@ def test_tensor_stats_match_torch():
     assert stats.compute_stats() == {}
 
 
+def test_tensor_stats_groups_without_all():
+    stats = TensorStats()
+    values = torch.tensor([1.0, 2.0, 3.0, 4.0], device="cuda")
+    groups = torch.tensor([0, 0, 2, 2], device="cuda")
+    stats.add("kl", values, values < 4, groups, ["0", "1", "2-3"], fold_all=False)
+
+    metrics = stats.compute_stats()
+
+    assert metrics["kl/0/mean"] == 1.5
+    assert metrics["kl/2-3/mean"] == 3.0
+    assert not any(key.startswith(("kl/all/", "kl/1/")) for key in metrics)
+
+
 def test_tensor_stats_accepts_cpu_values():
     stats = TensorStats()
     stats.add("on_gpu", torch.tensor(1.0, device="cuda"))

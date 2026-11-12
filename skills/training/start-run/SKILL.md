@@ -1,11 +1,13 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint. Standalone evals are the `eval` skill.
+description: Launch local or SLURM prime-rl training runs with the rl, sft, and inference entrypoints, including dry runs. Model Factory uses model-factory; standalone evals use eval.
 ---
 
 # Start a run
 
-All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
+For "run this on model factory", use the [model-factory skill](../../model-factory/SKILL.md). Explicit SLURM jobs use this skill even on a Model Factory cluster.
+
+The local entrypoints below run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
 SLURM launches write generated scripts and coordination files under `<run_dir>/launcher/`, with batch logs under `launcher/logs/`. Local launches do not create this directory. Every launch writes configs and `command.txt` under `configs/attempt_<n>/`. `configs/latest` points to the current attempt. The command uses shell-safe quoting.
 

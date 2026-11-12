@@ -33,7 +33,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 3. Native integration with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments through the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), including built-in support for SWE and agentic environments.
 4. End-to-end post-training: SFT, RL training, and evals.
 5. Multi-node deployment with Slurm support.
-6. Multimodal support for VLMs such as Qwen3.5.
+6. Multimodal support for Qwen3.5 and Qwen3.8 VLMs, with [image RL and SFT examples](examples/extra/vlm/README.md).
 7. Hackable, modular, and extensible by design.
 8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.3/).
 
@@ -50,6 +50,7 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
+| Qwen3.8 Flash Next VLM (`qwen4_exp`) | `Qwen/Qwen3.8-Flash-Next` | yes | ✅ | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Muse Glimmer, text only (`muse_glimmer`) | `meta-models/Muse-Glimmer-30B` | no | — | ✅ |

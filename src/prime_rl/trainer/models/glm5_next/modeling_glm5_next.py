@@ -24,7 +24,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
 from prime_rl.trainer.models.glm5_next.sparse_attention import PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -144,9 +144,6 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
 class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Glm5NextConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["Glm5NextDecoderLayer"]
-    _can_compile_fullgraph = False
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -273,9 +270,6 @@ class Glm5NextModel(nn.Module):
 
 
 class Glm5NextForCausalLM(Glm5NextPreTrainedModel):
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
     def __init__(self, config: Glm5NextConfig | Glm5NextTextConfig) -> None:
         super().__init__(config)
         text_config = getattr(config, "text_config", config)
@@ -303,7 +297,7 @@ class Glm5NextForCausalLM(Glm5NextPreTrainedModel):
         labels: torch.LongTensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
         temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
+        support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
@@ -325,7 +319,7 @@ class Glm5NextForCausalLM(Glm5NextPreTrainedModel):
             outputs.last_hidden_state[:, slice_indices],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
-            sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:

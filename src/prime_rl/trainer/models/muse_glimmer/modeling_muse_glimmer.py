@@ -5,7 +5,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 from prime_rl.trainer.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerConfig, MuseGlimmerTextConfig
@@ -137,11 +137,6 @@ class MuseGlimmerDecoderLayer(GradientCheckpointingLayer):
 class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
     config_class = MuseGlimmerConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["MuseGlimmerDecoderLayer"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _can_compile_fullgraph = True
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -237,9 +232,6 @@ class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
     """Text-only MuseGlimmer. Built from the composite checkpoint config, its weights keep the
     checkpoint's `model.language_model.*` names; the vision tower is not loaded."""
 
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
     def __init__(self, config: MuseGlimmerConfig | MuseGlimmerTextConfig) -> None:
         super().__init__(config)
         text_config = getattr(config, "text_config", config)
@@ -264,7 +256,7 @@ class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
         labels: torch.LongTensor | None = None,
         logits_to_keep: int | Tensor = 0,
         temperature: Tensor | None = None,
-        sampling_mask: Tensor | None = None,
+        support: TokenSupport | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
@@ -285,7 +277,7 @@ class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
             outputs.last_hidden_state[:, slice_indices],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
-            sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:
