@@ -1473,14 +1473,8 @@ def test_model_init_checkpoint_requires_a_step_dir():
 
 
 @pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("ckpt_weights", "dummy")])
-def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
-    tmp_path, init_type: str, load_format: str | None
-):
-    name = "Qwen/Qwen3-0.6B"
-    if init_type == "ckpt_weights":
-        name = str(tmp_path / "step_500")
-        Path(name).mkdir()
-        (Path(name) / "config.json").write_text("{}")
+def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_type: str, load_format: str | None):
+    name = "runs/sft/checkpoints/step_500" if init_type == "ckpt_weights" else "Qwen/Qwen3-0.6B"
     config = RLConfig.model_validate(
         {
             "model": {"name": name, "init": {"type": init_type}},
