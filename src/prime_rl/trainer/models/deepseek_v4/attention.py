@@ -716,7 +716,10 @@ class DeepseekV4Compressor(nn.Module):
 
         entry_first_tok_pos = entry_local_idx * self.compress_rate
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
-        return dsv4_rope(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
+        compressed = dsv4_rope(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
+        if packed.cp_halo is not None:
+            compressed = gather_for_cp(compressed, cp_group)[:, shard.gathered_row]
+        return compressed
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
