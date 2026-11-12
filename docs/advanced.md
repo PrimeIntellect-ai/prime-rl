@@ -51,7 +51,7 @@ Both skip `lm_head`, the router and a few gate/projection modules by default (`i
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
-- `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100). With `fp8_all_gather = true`, FSDP all-gathers the routed experts' weights as their 128x128-block FP8 casts instead of bf16: half the all-gather bytes, and the forward and the activation-checkpoint recompute share one cast per all-gather, with the same numerics. Turn it on when FSDP shards the experts across nodes; within one node, where the all-gather is cheap, it is slightly slower. It needs equal whole-expert FSDP shards and no `fusions.shard_fused_on_dim1`; checkpoints hold plain tensors either way.
+- `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
@@ -84,6 +84,14 @@ recipe = "mxfp8_rceil"
 [trainer.model.moe.dispatch]
 type = "torch"
 transport = "mxfp8"
+```
+
+With `type = "deepgemm_fp8"`, `fp8_all_gather = true` has FSDP all-gather the routed experts' weights as their FP8 blocks instead of BF16, which halves the all-gather traffic with the same numerics. It pays off when FSDP shards the experts across nodes; within a node, where the all-gather is cheap, it is slightly slower:
+
+```toml
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+fp8_all_gather = true
 ```
 
 All MoE compute backends accept `apply_to`:
