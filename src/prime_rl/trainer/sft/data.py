@@ -1,6 +1,7 @@
 import json
 import time
 import uuid
+from abc import abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
@@ -13,7 +14,7 @@ from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_tra
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, HFDataConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -202,7 +203,81 @@ class RendererResolver:
         return renderer
 
 
-class SFTDataset(StatefulIterableDataset):
+class HFDataset(StatefulIterableDataset):
+    """Rows of a HF dataset: shuffled per epoch, sharded across data ranks, processed one at a time."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        shuffle: bool = True,
+        seed: int = 0,
+        non_dp_size: int = 1,
+        max_examples: int | None = None,
+        max_epochs: int | None = None,
+    ):
+        super().__init__(non_dp_size)
+        self.logger = get_logger()
+        self.dataset = dataset
+        self.num_examples = len(self.dataset)
+        self.shuffle = shuffle
+        self.seed = seed
+        self.max_examples = max_examples
+        self.max_epochs = max_epochs
+
+        # If specified, select a subset of the dataset
+        if self.max_examples is not None:
+            self.num_examples = min(self.num_examples, self.max_examples)
+            self.dataset = self.dataset.take(self.max_examples)
+
+    @abstractmethod
+    def _process(self, example: dict) -> dict | None: ...
+
+    def __iter__(self):
+        self._setup_world_info()
+        dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+        while True:
+            self.step += 1
+
+            # Determine epoch from current step
+            epoch = (self.step - 1) // self.num_examples
+
+            # Break if max epochs is reached
+            if self.max_epochs is not None and epoch >= self.max_epochs:
+                break
+
+            # Update stored epoch if new epoch is reached, optionally shuffle
+            if epoch > self.epoch:
+                self.epoch = epoch
+                dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+
+            # Skip samples that don't belong to this data rank
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+
+            # Get example
+            example = dataset[(self.step - 1) % self.num_examples]
+
+            # Process example
+            processed_example = self._process(cast(dict, example))
+
+            # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
+            if processed_example is None:
+                continue
+
+            # Yield the example
+            example = cast(dict, example)
+            subset_or_split = example.get("__subset") or example.get("__split")
+            self.logger.debug(
+                f"Yield example {example.get('__index', '')}"
+                + (f" from {subset_or_split} " if subset_or_split else " ")
+                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+            )
+            self.num_samples[subset_or_split] += 1
+            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
+            yield processed_example
+
+
+class SFTDataset(HFDataset):
     """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
     def __init__(
@@ -219,10 +294,14 @@ class SFTDataset(StatefulIterableDataset):
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
-        super().__init__(non_dp_size)
-        self.logger = get_logger()
-        self.dataset = dataset
-        self.num_examples = len(self.dataset)
+        super().__init__(
+            dataset,
+            shuffle=shuffle,
+            seed=seed,
+            non_dp_size=non_dp_size,
+            max_examples=max_examples,
+            max_epochs=max_epochs,
+        )
         self.renderers = renderers
         self.columns = columns
         # Default names are optional: a dataset carries either messages or
@@ -232,18 +311,9 @@ class SFTDataset(StatefulIterableDataset):
             column = getattr(columns, field)
             if column != field and column not in dataset.column_names:
                 raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
-        self.shuffle = shuffle
-        self.seed = seed
         self.seq_len = seq_len
         self.loss_mask_config = loss_mask_config
-        self.max_examples = max_examples
-        self.max_epochs = max_epochs
         self.multimodal = multimodal
-
-        # If specified, select a subset of the dataset
-        if self.max_examples is not None:
-            self.num_examples = min(self.num_examples, self.max_examples)
-            self.dataset = self.dataset.take(self.max_examples)
 
     def _process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
@@ -376,53 +446,9 @@ class SFTDataset(StatefulIterableDataset):
             "mm_token_type_ids": mm_token_type_ids,
         }
 
-    def __iter__(self):
-        self._setup_world_info()
-        dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
-        while True:
-            self.step += 1
-
-            # Determine epoch from current step
-            epoch = (self.step - 1) // self.num_examples
-
-            # Break if max epochs is reached
-            if self.max_epochs is not None and epoch >= self.max_epochs:
-                break
-
-            # Update stored epoch if new epoch is reached, optionally shuffle
-            if epoch > self.epoch:
-                self.epoch = epoch
-                dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
-
-            # Skip samples that don't belong to this data rank
-            if (self.step - 1) % self.data_world_size != self.data_rank:
-                continue
-
-            # Get example
-            example = dataset[(self.step - 1) % self.num_examples]
-
-            # Process example
-            processed_example = self._process(cast(dict, example))
-
-            # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
-            if processed_example is None:
-                continue
-
-            # Yield the example
-            example = cast(dict, example)
-            subset_or_split = example.get("__subset") or example.get("__split")
-            self.logger.debug(
-                f"Yield example {example.get('__index', '')}"
-                + (f" from {subset_or_split} " if subset_or_split else " ")
-                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
-            )
-            self.num_samples[subset_or_split] += 1
-            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
-            yield processed_example
-
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, SFTDataConfig):
+    if not isinstance(data, HFDataConfig):
         return
     if Path(data.name).exists():
         get_logger().info(f"Data {data.name} found at local path, skipping download")
@@ -475,7 +501,7 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+def load_sft_dataset(config: HFDataConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     logger = get_logger()
     if config.subsets is None and config.splits is None:
