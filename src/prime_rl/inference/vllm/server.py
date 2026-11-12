@@ -1,14 +1,15 @@
 import asyncio
 import gc
 from argparse import Namespace
+from typing import Literal
 
 import uvloop
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
+from vllm.entrypoints.common.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
-from vllm.entrypoints.launchers.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
@@ -16,6 +17,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -73,6 +75,32 @@ async def update_weights_from_modelexpress(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/update_draft_weights")
+async def update_draft_weights(request: Request):
+    """Load a draft checkpoint from disk on every engine. Cached draft KV stays; the target verifies every token."""
+    weight_dir = (await request.json())["weight_dir"]
+    client = engine_client(request)
+    speculative_config = client.vllm_config.speculative_config
+    if speculative_config is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+    try:
+        draft = local_draft_dir(weight_dir)
+        check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), draft)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    await client.collective_rpc("update_draft_weights", args=(str(draft),))
+    return {"status": "ok"}
+
+
+@router.get("/weight_fingerprint/{target}")
+async def weight_fingerprint(request: Request, target: Literal["model", "draft"]):
+    # vLLM's public collective RPC discards all but the first DP engine's result.
+    results = await engine_client(request).engine_core.call_utility_all_async(
+        "collective_rpc", "get_weight_fingerprint", None, (), {"target": target}
+    )
+    return {"results": [worker for engine in results for worker in engine]}
+
+
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
     """Wrapper around vLLM's /v1/load_lora_adapter.
@@ -83,23 +111,13 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     the base model is served as ``<model>-base``; see ``InferenceConfig.to_namespace``.)
     vLLM's native loader rejects a same-name reload unless ``load_inplace=True``, so
     we force it here — that makes the worker re-read the new weights during
-    ``add_lora``, reusing the existing ``lora_int_id``.
-
-    We then reset the stored request's flag back to ``False``. ``load_inplace`` is
-    a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
-    every generation request; left ``True`` it would force a disk reload on each
-    scheduler step. The orchestrator awaits this endpoint before dispatching
-    rollouts for the new version, so the reset always lands before generation.
-    The reset runs regardless of success/error: vLLM only stores the adapter on
-    success today, but resetting whatever is stored keeps us correct even if a
-    future version were to leave a ``load_inplace=True`` request behind on error.
+    ``add_lora``, reusing the existing ``lora_int_id``. vLLM resets the stored
+    request's flag to ``False`` before caching it (vllm-project/vllm#41482), so it
+    does not force a disk reload on every later generation request.
     """
     handler = models(raw_request)
     lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
-    stored = handler.lora_requests.get(lora_request.lora_name)
-    if stored is not None:
-        stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)

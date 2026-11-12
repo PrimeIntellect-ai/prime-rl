@@ -26,12 +26,16 @@ def update_request(config: OrchestratorConfig, **values) -> dict:
     return {"type": "update_config", "config": dump_resolved_config(config) | values}
 
 
-def test_pause_request(run):
-    response = run.client.post("/v1/actions", json={"type": "pause", "step": 3})
+@pytest.mark.parametrize("action_type", ["pause", "checkpoint"])
+def test_step_action_request(run, action_type):
+    response = run.client.post("/v1/actions", json={"type": action_type, "step": 3})
 
-    assert response.status_code == 202
-    assert response.json()["state"] == "pending"
-    assert response.json()["step"] == 3
+    assert response.status_code == 202, response.text
+    assert {key: response.json()[key] for key in ("type", "state", "step")} == {
+        "type": action_type,
+        "state": "pending",
+        "step": 3,
+    }
 
 
 def test_update_config_applied(run):
@@ -74,3 +78,16 @@ def test_update_config_conflicts_with_queued_update(run):
     response = run.client.post("/v1/actions", json=update_request(run.config, batch_size=128))
 
     assert response.status_code == 409
+
+
+def test_checkpoints(tmp_path):
+    (tmp_path / "step_10" / "trainer").mkdir(parents=True)
+    (tmp_path / "step_10" / "trainer" / ".metadata").touch()
+    (tmp_path / "step_2" / "trainer").mkdir(parents=True)
+    (tmp_path / "weights").mkdir()
+    client = TestClient(create_app(Controller(requires_step=False), ckpt_dir=tmp_path))
+
+    assert client.get("/v1/checkpoints").json() == {
+        "checkpoints": [{"step": 2, "complete": False}, {"step": 10, "complete": True}]
+    }
+    assert TestClient(create_app(Controller(requires_step=False))).get("/v1/checkpoints").status_code == 404

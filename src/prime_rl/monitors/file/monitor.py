@@ -15,7 +15,7 @@ from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
-from prime_rl.monitors.file.traces.index import index_row
+from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
@@ -129,7 +129,7 @@ class FileMonitor(Monitor):
                     ]
                 if "open" in delta:
                     line["dispatch"] = event["dispatch"]
-                # deltas key semantic links by node index (int)
+                # env-defined dicts (`info`, `metrics`, task data) may be keyed by int
                 appends.setdefault(path, []).append(
                     orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS)
                 )
@@ -159,14 +159,17 @@ class FileMonitor(Monitor):
 
         def write() -> None:
             stream, index = self._stream(get_trace_stream(self.output_dir))
-            # An index row goes out with every episode: summarising the record here,
-            # while it is already in hand, saves every reader from parsing a stream
+            # An index row goes out with every episode: summarising the episode here,
+            # while it is still in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
             for episode in episodes:
-                record = episode.to_record(float_decimals=self.config.float_decimals)
-                chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
+                # `to_json` encodes in short steps, so a long episode never holds the GIL
+                # (and the event loop) for the whole encode.
+                line = episode.to_json(float_decimals=self.config.float_decimals)
+                chunk, offset = stream.append(line, b"\n")
                 self._logged += 1
-                index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))
+                row = index_row(self._logged, index_record(episode), chunk, offset)
+                index.write(orjson.dumps(row, default=str, option=OPTS))
             stream.flush()
             index.flush()
 
