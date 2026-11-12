@@ -14,9 +14,9 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
 
 MAX_OPEN_FILES = 256
-# Best-fit packing reads the document index of nearly every file for every group, so more indexes than token files stay
-# mapped: indexes are small, the limit is the file descriptor each map holds.
-MAX_OPEN_INDEXES = 512
+# Best-fit packing reads the document index of nearly every file for every group, so many more indexes than token files
+# stay mapped. Indexes are small, but every map holds a file descriptor (the trainer raises the soft limit).
+MAX_OPEN_INDEXES = 4096
 
 # Best-fit packing packs the documents of this many windows together: larger groups pad less, but every data rank and
 # dataloader worker packs every group.

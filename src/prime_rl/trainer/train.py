@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401
 
 import math
+import resource
 import time
 import asyncio
 from contextlib import nullcontext
@@ -188,6 +189,9 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
+        # Every mapped token file and document index holds a file descriptor.
+        _, max_open_files = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max_open_files, max_open_files))
         shards = TokenShards(config.data.paths)
         if config.data.eod_mask_loss:
             eod_mask_token = detect_separator(shards, tokenizer)
