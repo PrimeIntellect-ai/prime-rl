@@ -1,5 +1,3 @@
-from unittest.mock import MagicMock
-
 import pytest
 import torch
 from pydantic import ValidationError
@@ -72,7 +70,7 @@ def test_added_modules_load_from_the_checkpoint(checkpoint, monkeypatch):
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
     model = get_model(model_config(checkpoint), device=torch.device("meta"))
-    load_dcp_from_hf(model, model_config(checkpoint), parallel_dims=MagicMock())
+    load_dcp_from_hf(model, model_config(checkpoint))
 
     for name, tensor in model.state_dict().items():
         torch.testing.assert_close(tensor.cpu(), expected[name].to(tensor.dtype))
