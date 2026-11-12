@@ -18,6 +18,7 @@ def test_draft_swap_requires_same_architecture_and_tensors(tmp_path):
 
     served = draft("served")
     check_draft_swap(served, draft("refreshed", verifier="/ckpt/b"))
+    check_draft_swap(draft("with-target-weights", tensors=("fc.weight", "lm_head.weight")), served)
     with pytest.raises(ValueError, match="block_size"):
         check_draft_swap(served, draft("wider", block_size=16))
     with pytest.raises(ValueError, match="confidence_head"):
