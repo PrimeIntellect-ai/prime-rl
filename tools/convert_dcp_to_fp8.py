@@ -65,7 +65,9 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights-FP8")
     parser.add_argument("--block-size", type=int, default=128)
-    parser.add_argument("--workers", type=int, default=1, help="decoder layers loaded and written at once (default: 1)")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="decoder layers or n-gram tables loaded and written at once (default: 1)"
+    )
     parser.add_argument(
         "--device", choices=("cpu", "cuda"), default="cpu", help="FP8 quantization device (default: cpu)"
     )

@@ -9,10 +9,14 @@ import pytest
 import torch
 import torch.distributed.checkpoint as dcp
 from safetensors.torch import load_file
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex, TensorStorageMetadata
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, PreTrainedTokenizerFast
 
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import get_model
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
@@ -190,6 +194,9 @@ def test_only_the_default_output_dir_is_replaced_without_overwrite(tmp_path, exp
             exporter.resolve_output_dir(checkpoint, path, "weights")
         assert exporter.resolve_output_dir(checkpoint, path, "weights", overwrite=True) == path
     assert (other_step / "trainer").is_dir() and file.read_bytes() == b"data"
+    if Path("/proc").is_mount():
+        with pytest.raises(ValueError, match="mount point"):
+            exporter.resolve_output_dir(checkpoint, Path("/proc"), "weights", overwrite=True)
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -199,7 +206,8 @@ def test_publish_export_replaces_complete_directory_with_expected_permissions(tm
         (output / "assets").mkdir(parents=True)
         (output / "assets" / "old.json").write_text("old")
         (output / "model-old.safetensors").write_bytes(b"old")
-        output.chmod(0o705)
+        output.chmod(0o2705)
+    tmp_path.chmod(0o2755)
     with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
         staging = Path(directory)
         (staging / "assets").mkdir()
@@ -216,12 +224,13 @@ def test_publish_export_replaces_complete_directory_with_expected_permissions(tm
         Path("model.safetensors"),
     }
     assert (output / "model.safetensors").read_bytes() == b"new"
-    assert output.stat().st_mode & 0o777 == (0o705 if existing else 0o750)
+    assert output.stat().st_mode & 0o7777 == (0o2705 if existing else 0o2750)
     assert list(tmp_path.iterdir()) == [output]
 
 
+@pytest.mark.parametrize("error", [OSError, KeyboardInterrupt])
 @pytest.mark.parametrize("fail_restore", [False, True])
-def test_failed_publish_preserves_previous_export(tmp_path, exporter, monkeypatch, fail_restore):
+def test_failed_publish_preserves_previous_export(tmp_path, exporter, monkeypatch, fail_restore, error):
     output = tmp_path / "weights"
     output.mkdir()
     (output / "model.safetensors").write_bytes(b"old")
@@ -232,11 +241,11 @@ def test_failed_publish_preserves_previous_export(tmp_path, exporter, monkeypatc
 
         def fail_publish(path, target):
             if path == staging or (fail_restore and path.name == "export"):
-                raise OSError("rename failed")
+                raise error("rename failed")
             return rename(path, target)
 
         monkeypatch.setattr(Path, "rename", fail_publish)
-        with pytest.raises(OSError, match="rename failed"):
+        with pytest.raises(error, match="rename failed"):
             exporter.publish_export(staging, output)
     if fail_restore:
         backup = next(tmp_path.glob(".weights-backup-*/export"))
@@ -244,3 +253,77 @@ def test_failed_publish_preserves_previous_export(tmp_path, exporter, monkeypatc
     else:
         assert (output / "model.safetensors").read_bytes() == b"old"
         assert list(tmp_path.iterdir()) == [output]
+
+
+def test_publish_succeeds_when_the_previous_export_cannot_be_removed(tmp_path, exporter, monkeypatch):
+    output = tmp_path / "weights"
+    output.mkdir()
+    (output / "model.safetensors").write_bytes(b"old")
+    monkeypatch.setattr(exporter.shutil, "rmtree", lambda path: (_ for _ in ()).throw(OSError("busy")))
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "model.safetensors").write_bytes(b"new")
+    exporter.publish_export(staging, output)
+    assert (output / "model.safetensors").read_bytes() == b"new"
+    assert (next(tmp_path.glob(".weights-backup-*/export")) / "model.safetensors").read_bytes() == b"old"
+
+
+def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeypatch):
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    model_dir = tmp_path / "model"
+    Qwen3MoeConfig(
+        hidden_size=16,
+        intermediate_size=16,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        head_dim=8,
+        num_hidden_layers=2,
+        vocab_size=32,
+        moe_intermediate_size=16,
+        num_experts=2,
+        num_experts_per_tok=1,
+    ).save_pretrained(model_dir)
+    tokenizer = Tokenizer(WordLevel({"<eos>": 0, "a": 1}, unk_token="<eos>"))
+    PreTrainedTokenizerFast(tokenizer_object=tokenizer, eos_token="<eos>").save_pretrained(model_dir)
+    run_dir = tmp_path / "run"
+    step_dir = run_dir / "checkpoints" / "step_1"
+    config_dir = run_dir / "configs" / "latest" / "resolved"
+    config_dir.mkdir(parents=True)
+    run_config = {"model": {"name": str(model_dir)}, "tokenizer": {}}
+    (config_dir / "trainer.json").write_text(json.dumps(run_config))
+    # The run config keeps attn=auto, which the exporter must resolve without a GPU.
+    model_config = ModelConfig(**run_config["model"], attn="flash_attention_2")
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    state = {
+        name: torch.randn(tensor.shape) if tensor.is_floating_point() else torch.zeros(tensor.shape, dtype=tensor.dtype)
+        for name, tensor in model.state_dict().items()
+    }
+    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
+
+    def read_export(directory):
+        index = json.loads((directory / "model.safetensors.index.json").read_text())["weight_map"]
+        tensors = {name: tensor for file in set(index.values()) for name, tensor in load_file(directory / file).items()}
+        assert tensors.keys() == index.keys()
+        return tensors, json.loads((directory / "config.json").read_text())
+
+    for _ in range(2):  # the second run replaces the first export
+        output = exporter.convert(step_dir, workers=2)
+        assert output == step_dir / "weights" and (output / "tokenizer.json").is_file()
+        assert [path.name for path in step_dir.iterdir() if path.name.startswith(".")] == []
+        tensors, config = read_export(output)
+        assert config["dtype"] == "bfloat16" and "quantization_config" not in config
+        assert sum(tensor.numel() for tensor in tensors.values()) == sum(tensor.numel() for tensor in state.values())
+        embedding = state["model.embed_tokens.weight"].bfloat16()
+        assert torch.equal(tensors["model.embed_tokens.weight"].view(torch.uint8), embedding.view(torch.uint8))
+
+    fp8 = importlib.import_module("convert_dcp_to_fp8")
+    output = fp8.convert(step_dir, block_size=2, workers=2)
+    assert output == step_dir / "weights-FP8"
+    quantized, config = read_export(output)
+    quantization = config["quantization_config"]
+    assert quantization["quant_method"] == "fp8" and quantization["weight_block_size"] == [2, 2]
+    scaled = {name.removesuffix(".weight_scale_inv") for name in quantized if name.endswith("_scale_inv")}
+    assert scaled and scaled.isdisjoint(quantization["modules_to_not_convert"])
+    assert all(quantized[f"{name}.weight"].dtype == torch.float8_e4m3fn for name in scaled)
+    assert all(quantized[f"{name}.weight"].dtype == torch.bfloat16 for name in quantization["modules_to_not_convert"])
+    assert quantized.keys() - {f"{name}.weight_scale_inv" for name in scaled} == tensors.keys()

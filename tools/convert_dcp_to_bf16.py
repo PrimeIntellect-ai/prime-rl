@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -220,10 +221,11 @@ def write_weights(
                 return torch.empty((0, *weight.shape[1:]), dtype=export_dtype(checkpoint, key))
             return parts[0] if len(parts) == 1 else torch.cat(parts)
 
-        return [
-            write_shard(index + offset, packet)
-            for offset, packet in enumerate(op.iter_prime_to_hf(skeleton[key], resolve_rows))
-        ]
+        shards = []
+        for offset, packet in enumerate(op.iter_prime_to_hf(skeleton[key], resolve_rows)):
+            shards.append(write_shard(index + offset, packet))
+            del packet  # a view of its chunk, which must be free before the next chunk loads
+        return shards
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         shards = list(pool.map(write_layer, range(1, len(layers) + 1), layers))
@@ -274,10 +276,15 @@ def save_model_assets(
 
 
 def publish_export(staging_dir: Path, output_dir: Path) -> None:
-    """Replace a complete export, restoring the old directory if publication fails."""
+    """Replace a complete export, restoring the old directory if publication fails or is interrupted."""
+    logger = get_logger()
     umask = os.umask(0)
     os.umask(umask)
-    mode = output_dir.stat().st_mode & 0o777 if output_dir.is_dir() else 0o777 & ~umask
+    # Keep the old export's mode, or the umask default plus any setgid bit inherited from the parent.
+    if output_dir.is_dir():
+        mode = output_dir.stat().st_mode & 0o7777
+    else:
+        mode = (0o777 & ~umask) | (staging_dir.stat().st_mode & stat.S_ISGID)
     staging_dir.chmod(mode)
     if not output_dir.exists():
         staging_dir.rename(output_dir)
@@ -286,16 +293,19 @@ def publish_export(staging_dir: Path, output_dir: Path) -> None:
     backup_dir = backup_parent / "export"
     try:
         output_dir.rename(backup_dir)
-    except OSError:
+    except BaseException:
         backup_parent.rmdir()
         raise
     try:
         staging_dir.rename(output_dir)
-    except OSError:
+    except BaseException:
         backup_dir.rename(output_dir)
         backup_parent.rmdir()
         raise
-    shutil.rmtree(backup_parent)
+    try:
+        shutil.rmtree(backup_parent)
+    except OSError as error:
+        logger.warning(f"Published {output_dir}, but could not remove the previous export at {backup_parent}: {error}")
 
 
 def resolve_output_dir(checkpoint: Checkpoint, output_dir: Path | None, name: str, overwrite: bool = False) -> Path:
@@ -308,7 +318,11 @@ def resolve_output_dir(checkpoint: Checkpoint, output_dir: Path | None, name: st
     is_empty_dir = output_dir.is_dir() and not any(output_dir.iterdir())
     if output_dir.exists() and not is_empty_dir and output_dir.resolve() != default_dir.resolve() and not overwrite:
         raise ValueError(f"{output_dir} exists and is not the default export dir; pass --overwrite to replace it")
+    if output_dir.is_mount():
+        raise ValueError(f"{output_dir} is a mount point and cannot be replaced; export to a directory inside it")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    if not os.access(output_dir.parent, os.W_OK | os.X_OK):
+        raise PermissionError(f"The export is staged in {output_dir.parent}, which is not writable")
     return output_dir
 
 
@@ -334,7 +348,9 @@ def main() -> None:
         "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights")
-    parser.add_argument("--workers", type=int, default=1, help="decoder layers loaded and written at once (default: 1)")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="decoder layers or n-gram tables loaded and written at once (default: 1)"
+    )
     parser.add_argument(
         "--overwrite", action="store_true", help="replace an existing non-default output_dir and everything in it"
     )
