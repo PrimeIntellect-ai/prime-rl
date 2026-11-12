@@ -5,13 +5,14 @@ entry's pooling window as `DeepseekV4Compressor` lays it out, reading the window
 projections. One kernel runs each direction. The softmax weights and products stay in fp32 and the entry is rounded
 to bf16 once, as vLLM's compressor keeps them in fp32 up to its RMSNorm.
 
-cuDNN validates the kernels on SM100 and newer only, so `cudnn_pooling_supported` admits only those GPUs.
+cuDNN validates the kernels on SM100 and newer only. They use no TMA or tcgen05 instructions and match an fp64
+reference on SM90 as well, so `_compressor_api` lowers cuDNN's capability floor to SM90.
 """
 
 import torch
 from torch import Tensor
 
-MIN_CAPABILITY_MAJOR = 10
+MIN_CAPABILITY_MAJOR = 9
 
 
 def cudnn_pooling_supported(compress_rate: int, head_dim: int) -> bool:
@@ -24,6 +25,7 @@ def cudnn_pooling_supported(compress_rate: int, head_dim: int) -> bool:
 def _compressor_api():
     import cudnn.csa.compressor.api as api
 
+    api.MINIMUM_COMPUTE_CAPABILITY_MAJOR = min(api.MINIMUM_COMPUTE_CAPABILITY_MAJOR, MIN_CAPABILITY_MAJOR)
     return api
 
 

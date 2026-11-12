@@ -927,7 +927,7 @@ def _compressor_pool_reference(kv, gate, position_bias, layout, n_series):
     return (kv * gate.softmax(dim=1)).sum(dim=1)
 
 
-@pytest.mark.skipif(not cudnn_pooling_supported(4, 512), reason="the cuDNN compressor kernels need an SM100+ GPU")
+@pytest.mark.skipif(not cudnn_pooling_supported(4, 512), reason="the cuDNN compressor kernels need an SM90+ GPU")
 @pytest.mark.parametrize(
     ("compress_rate", "n_series", "head_dim"), [(4, 2, 512), (4, 2, 128), (128, 1, 512)], ids=["csa", "indexer", "hca"]
 )
