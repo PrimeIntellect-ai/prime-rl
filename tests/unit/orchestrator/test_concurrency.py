@@ -376,3 +376,30 @@ def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
     dispatcher.out_q.put_nowait(episode)
     assert asyncio.run(dispatcher.get()) is episode
     assert dispatcher.queued_train_rollouts == 1
+
+
+def test_starved_trainer_steps_up_until_fed_and_cuts_stay_above_the_starving_cap():
+    # As above, but the trainer starves below 70 units: a bump still short keeps stepping up, never back down
+    capacity = trainer(0.24)
+    ctl, pool = controller(trainer=capacity)
+    ctl.climbing = False
+    ctl.cap = ctl.max_inflight = 60
+    ctl.fed_cut = True
+    capacity.shipped(24, requested_at=430.0, now=500.0)  # waited 70% of its step at 60 units
+    ctl.trainer_shipped()
+    bumped = ctl.max_inflight
+    run(ctl, pool, lambda inflight: 10 * inflight, polls=600)
+    assert bumped > 60 and min(pool.limits[pool.limits.index(bumped) :]) > 60
+
+
+def test_starvation_after_a_throughput_drop_respects_its_ceiling():
+    ctl, pool = controller(trainer=trainer(0.24))
+    ctl.climbing = False
+    ctl.cap = ctl.max_inflight = 80
+    ctl.ceiling = 90.0  # a KV thrash above 90 trimmed the cap there earlier
+    ctl.fed_cut = True
+    ctl.trainer.shipped(24, requested_at=430.0, now=500.0)
+    ctl.trainer_shipped()
+    assert ctl.max_inflight == 90
+    ctl.trim(70, 80, reason="queue", cancel=False)
+    assert not ctl.fed_cut  # a trim set the cap, so a later wait does not undo it

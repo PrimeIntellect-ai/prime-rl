@@ -391,6 +391,8 @@ class ConcurrencyController(Reconfigurable):
         self.trainer: TrainerCapacity | None = None
         self.finished: int | None = None
         self.fed_cut = False
+        # The cap at which a fed cut starved the trainer: later fed cuts stay above it
+        self.floor: int | None = None
 
         self.set_limit: Callable[[int], None] = lambda n_max: None
         self.get_inflight: Callable[[], int] = lambda: 0
@@ -519,9 +521,12 @@ class ConcurrencyController(Reconfigurable):
         if self.trainer is None or self.trainer.waited < TRAINER_STARVED or not self.fed_cut or self.target is not None:
             return
         self.fed_cut = False
-        self.cap = self.clamp(self.max_inflight * STEP_MAX**0.7)
+        self.floor = self.max_inflight
+        cap = self.max_inflight * STEP_MAX**0.7
+        self.cap = self.clamp(min(cap, self.ceiling) if self.ceiling is not None else cap)
         self.apply_limit(int(self.cap), reason=f"trainer waited {self.trainer.waited:.0%} of a step")
-        self.restart_steps(direction=-1)
+        # Upward: a level still short of the trainer steps up again, and one that feeds it is cut by the fed rule
+        self.restart_steps()
 
     def surplus(self, window: Window) -> float | None:
         """The window's train rollouts per second over the trainer's capacity plus ``TRAINER_MARGIN``; at least 1
@@ -733,11 +738,14 @@ class ConcurrencyController(Reconfigurable):
             self.direction = -1
         step = self.step if self.direction > 0 else min(self.step, STEP_MAX**0.7)
         if fed:
-            # Size the cut by the surplus over the trainer; hold where even the smallest step would starve it
-            if surplus < STEP_MIN:
+            # Size the cut by the surplus over the trainer, above a cap that starved it; hold where even the
+            # smallest step would starve it
+            step = min(surplus, STEP_MAX**0.7)
+            if self.floor is not None:
+                step = min(step, base.cap / (self.floor * STEP_MIN))
+            if step < STEP_MIN:
                 self.level = Level(cap=base.cap)
                 return
-            step = min(surplus, STEP_MAX**0.7)
         if self.direction > 0 and self.ceiling is not None and base.cap * step > self.ceiling:
             step = STEP_MIN
         cap = int(self.clamp(base.cap * step**self.direction))
@@ -832,6 +840,7 @@ class ConcurrencyController(Reconfigurable):
         if cancel and self.on_overload is not None and inflight > target:
             self.on_overload(inflight - target)
         self.draining = True
+        self.fed_cut = False  # the trim, not the trainer, set this cap
         self.trim_turnover = self.turnover
         self.polls.clear()
         self.paying = False
