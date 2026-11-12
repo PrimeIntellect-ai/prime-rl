@@ -221,9 +221,10 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
+    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -742,6 +743,20 @@ class TrainerConfig(BaseTrainerConfig):
             )
         if self.model.lora is not None and self.weight_broadcast.type == "filesystem" and self.weight_broadcast.delta:
             raise ValueError("weight_broadcast.delta does not support LoRA")
+        return self
+
+    @model_validator(mode="after")
+    def validate_retain(self):
+        if not self.rollout_transport.retain:
+            return self
+        if not (self.ckpt and self.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
+            )
         return self
 
     @model_validator(mode="after")

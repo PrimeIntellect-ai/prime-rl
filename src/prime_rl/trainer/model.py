@@ -59,7 +59,7 @@ from prime_rl.trainer.models.fusions import (
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.ngram import NGramTable
@@ -829,6 +829,9 @@ def load_lazy_modules() -> None:
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
+    # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
     load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
@@ -1033,8 +1036,7 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    topk_ids: Int[Tensor, "batch seq head"] | None = None,
+    support: TokenSupport | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
@@ -1046,11 +1048,8 @@ def forward(
         "position_ids": position_ids,
         "labels": labels,
         "temperature": temperature,
-        "sampling_mask": sampling_mask,
+        "support": support,
     }
-
-    if topk_ids is not None:
-        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)

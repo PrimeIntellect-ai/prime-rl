@@ -109,3 +109,48 @@ def test_read_delta_fails_on_a_failed_trainer_rank(tmp_path):
     (delta_dir / rank_failed_marker(1)).write_text(json.dumps({"error": "RuntimeError('boom')"}))
     with ThreadPoolExecutor(1) as pool, pytest.raises(RuntimeError, match="rank 1 failed.*boom"):
         read_delta(tmp_path, pool)
+
+
+def test_receiver_prefetches_again_when_a_restarted_trainer_offers_the_version_anew(tmp_path):
+    import asyncio
+    import shutil
+    from types import SimpleNamespace
+
+    from prime_rl.transports.weights.base import FINISHED_MARKER, RECEIVER_READY_MARKER, SENDER_READY_MARKER
+    from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver
+    from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST
+
+    step_dir = tmp_path / "step_1"
+    prefetched, updated = [], []
+
+    async def prefetch_weights(weights_dir):
+        prefetched.append((weights_dir / DELTA_DIR / MANIFEST).read_text())
+
+    async def update_weights(weights_dir, **_):
+        updated.append(True)
+
+    async def offer(manifest: str) -> None:
+        # The trainer resets the directory, offers v1, waits for the acknowledgement, then writes the delta
+        shutil.rmtree(step_dir, ignore_errors=True)
+        (step_dir / DELTA_DIR).mkdir(parents=True)
+        (step_dir / SENDER_READY_MARKER).touch()
+        while not (step_dir / RECEIVER_READY_MARKER).exists():
+            await asyncio.sleep(0.01)
+        (step_dir / DELTA_DIR / MANIFEST).write_text(manifest)
+
+    admin = SimpleNamespace(prefetch_weights=prefetch_weights, update_weights=update_weights)
+    receiver = FileSystemWeightReceiver(tmp_path, SimpleNamespace(), admin, "model")
+
+    async def run():
+        task = asyncio.create_task(receiver.receive(1))
+        await offer("first")
+        while not prefetched:
+            await asyncio.sleep(0.01)
+        await offer("second")  # the trainer restarted mid-broadcast
+        while len(prefetched) < 2:
+            await asyncio.sleep(0.01)
+        (step_dir / FINISHED_MARKER).touch()
+        await task
+
+    asyncio.run(run())
+    assert prefetched == ["first", "second"] and updated == [True]

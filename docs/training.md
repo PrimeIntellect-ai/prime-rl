@@ -151,7 +151,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 
 A new algorithm is a named class in code, not a config — see [Algorithms § Authoring an Algorithm](algorithms.md#authoring-an-algorithm).
 
-Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.train.algo.teacher]` for `opd` (the frozen model scored against), `[orchestrator.train.algo.sampling.source]` for `sft` (the model it samples from) — each with `name` + `base_url`. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
+Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.train.algo.teacher]` for `opd` (the frozen model scored against) and `sft` (the model it samples from) — each with `name` + `base_url`. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
@@ -359,7 +359,7 @@ Pulled from the console log and mirrored to W&B.
 
 `uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
-**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
+**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop; the trainer checks at startup that the documents end with one. If a document's text contains the separator string, the tokenizer may encode it as the separator token, and the loss at that position is then masked too.
 
 ```python
 # Run with datatrove installed. Tokenize held-out documents into another folder for validation.
@@ -396,14 +396,16 @@ batch_size = 256
 
 [val]                      # optional
 interval = 100
-num_samples = 512          # windows per validation; leave out to read the held-out shards once
+num_samples = 512          # documents per validation; leave out to score every held-out document
 
 [val.data]
 paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+
+Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
 
 **Launch.**
 
@@ -500,6 +502,13 @@ curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{
 curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint", "step": 12}'
 ```
 
+The trainer also lists the checkpoints in its checkpoint dir, ascending by step. A step is `complete` once the trainer finished saving it; an incomplete one is still being written (or was interrupted):
+
+```bash
+curl localhost:8040/v1/checkpoints
+# {"checkpoints": [{"step": 10, "complete": true}, {"step": 12, "complete": false}]}
+```
+
 ### Updating the Config Live
 
 With `--orchestrator.control`, you can also resubmit the full orchestrator config while the run is going. Read the current config, edit it, and submit it back as an `update_config` action:
@@ -523,11 +532,12 @@ Only these fields are live; every other field is frozen:
 | `batch_size`, `max_staleness` | The next batch uses the new size, and queued samples are checked against the new staleness bound. |
 | `concurrency.min_inflight`, `concurrency.max_inflight` | Moves the adaptive concurrency band. A lower limit cancels nothing; new rollouts wait until enough finish. A target set through the concurrency API stays in place. `concurrency.initial_inflight` only seeds the startup cap, so it may change (e.g. to stay below a lower `max_inflight`) without effect. |
 | `train.source[*].ratio` | Changes the env mix weights. |
+| `train.source[*].group_size` | Changes how many rollouts each new group of the source gets. Groups that already started keep the size they started with. `batch_size` must stay divisible by every source's group size, and `concurrency.max_inflight` must stay at least the largest. Set it per source: the group-level `train.group_size` is only a default for the sources and is frozen. |
 | `train.source[*].sampling` | Changes a source's `temperature`, `max_completion_tokens` and `extra_body`. `top_p`, `top_k` and `logprobs` are frozen: they decide sampling replay and top-logprob streams at launch. Set sampling per source: the group-level `train.sampling` is only a default for the sources and is frozen. |
 | `eval.source[*].interval` | Changes eval cadence from the next policy update. |
 | `train.source[*].algo.length_penalty` | Changes a GRPO source's length penalty: its weights, its type, or turning it on (a config) or off (`null`). It applies to every group scored from the next step on, including groups already running, since a group is scored when its last rollout finishes. Set it per source: the group-level `train.algo` is only a default for the sources and is frozen. |
 
-Frozen fields include the model, tokenizer, renderer, transports, monitors, logging, checkpointing, output directory, padding and the trainer topology, which are fixed at launch. `seq_len` and `max_steps` are frozen because the trainer depends on them. Group sizes, algorithms (except the length penalty), curricula, eval sampling and task selection are frozen, as are adding, removing, renaming or reordering sources and turning eval on or off. In the config, a live field is annotated with `Annotated[T, Live()]` (from `prime_rl.configs.diff`); every other field is frozen.
+Frozen fields include the model, tokenizer, renderer, transports, monitors, logging, checkpointing, output directory, padding and the trainer topology, which are fixed at launch. `seq_len` and `max_steps` are frozen because the trainer depends on them. Eval group sizes, algorithms (except the length penalty), curricula, eval sampling and task selection are frozen, as are adding, removing, renaming or reordering sources and turning eval on or off. In the config, a live field is annotated with `Annotated[T, Live()]` (from `prime_rl.configs.diff`); every other field is frozen.
 
 ### Exporting Checkpoints
 
