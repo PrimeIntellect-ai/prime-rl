@@ -33,10 +33,16 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         return buffer
 
     def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
+        """Move optimizer states to CPU or back to GPU (matching each parameter's device).
+
+        AdamW's `step` count stays on the CPU: the non-fused AdamW reads it on the host for every parameter,
+        which would synchronize with the GPU once per parameter if it lived there.
+        """
         for param in self.optimizer.state:
             state = self.optimizer.state[param]
             for key, value in state.items():
+                if key == "step":
+                    continue
                 if isinstance(value, DTensor):
                     local_tensor = value._local_tensor
                     if device == "cpu":
