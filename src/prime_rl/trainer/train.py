@@ -277,7 +277,7 @@ def train(config: SFTConfig | PretrainConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
-            validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
+            validate_cp_seq_lens(seq_lens, input_ids.shape[-1])
             # The VLM shards image inputs itself, after building their positions.
             defer_vlm_cp_to_model = mm_kwargs is not None
             if not defer_vlm_cp_to_model:

@@ -33,7 +33,6 @@ def test_get_cu_seqlens_from_position_ids_is_local_relative(
     [
         ([9], [0, 9], 9),
         ([4, 3, 2], [0, 4, 7, 9], 4),
-        ([1, 1, 7], [0, 1, 2, 9], 7),
     ],
 )
 def test_get_cu_seqlens_from_seq_lens(

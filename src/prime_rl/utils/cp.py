@@ -103,10 +103,10 @@ def gather_for_cp_wo_grad(t: torch.Tensor, cp_world_size: int, cp_group: dist.Pr
     return torch.cat(empty_like_t, dim=1)
 
 
-def validate_cp_seq_lens(seq_lens: torch.Tensor, seq_len: int) -> None:
-    """Attention builds full-sequence cu_seqlens from seq_lens; check on the CPU copy that they cover the sequence."""
-    if int(seq_lens.sum()) != seq_len:
-        raise ValueError(f"seq_lens sum must equal sequence length: {seq_lens.tolist()} vs {seq_len}")
+def validate_cp_seq_lens(seq_lens: list[int], seq_len: int) -> None:
+    """Attention builds full-sequence cu_seqlens from seq_lens; check that they cover the sequence."""
+    if sum(seq_lens) != seq_len:
+        raise ValueError(f"seq_lens sum must equal sequence length: {seq_lens} vs {seq_len}")
 
 
 def setup_cp_params(
