@@ -260,7 +260,8 @@ class EntryShard:
     `capacity = ceil(n_queries / compress_rate)` long. Every rank pools its run into a buffer of
     `capacity` slots, so the buffers all-gather at one size, and `gathered_row` picks the
     sequence's entries back out of the gathered buffers in order. A padding slot pools the first
-    halo row and nothing reads it.
+    halo row (on the cuDNN path, an output row past `cu_entries[-1]`), and `gathered_row` never
+    selects it.
     """
 
     entry_tok_idx: Tensor  # (capacity, compress_rate) int64 - source token per slot, from this rank's first halo row
@@ -347,10 +348,12 @@ class CPHalo:
     """What a CP rank needs to attend from its own shard plus the `rows` tokens before it.
 
     `rows` covers the furthest any query or entry reaches back: a sliding window's
-    `sliding_window - 1` tokens, or an overlapping entry's `2 * compress_rate - 1`. Each rank
-    receives those rows of every per-token tensor it needs from its left neighbor, so the window
-    keys and the compressor projections are read as `rows + n_queries` tokens starting at
-    `cp_rank * n_queries - rows`.
+    `sliding_window - 1` tokens, or `2 * compress_rate - 1` for a compressor. A rank's first owned
+    entry can start `compress_rate - 1` tokens before its shard, and the window before that entry
+    is read too: by the overlapping series of a two-series compressor, and at every rate by the
+    cuDNN pooling, which starts the owned run one entry early. Each rank receives those rows of
+    every per-token tensor it needs from its left neighbor, so the window keys and the compressor
+    projections are read as `rows + n_queries` tokens starting at `cp_rank * n_queries - rows`.
     """
 
     rows: int
