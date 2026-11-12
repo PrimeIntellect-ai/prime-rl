@@ -38,7 +38,7 @@ def _dsv4_compressor_pool(
     cu_entries: Tensor,
     compress_rate: int,
     n_series: int,
-    n_entries: int,
+    out_rows: int,
 ) -> Tensor:
     return _compressor_api().csa_compressor_forward_wrapper(
         kv.contiguous(),
@@ -49,7 +49,7 @@ def _dsv4_compressor_pool(
         ratio=compress_rate,
         head_dim=kv.shape[1] // n_series,
         coff=n_series,
-        total_comp=n_entries,
+        total_comp=out_rows,
     )["out"]
 
 
@@ -62,9 +62,9 @@ def _dsv4_compressor_pool_fake(
     cu_entries: Tensor,
     compress_rate: int,
     n_series: int,
-    n_entries: int,
+    out_rows: int,
 ) -> Tensor:
-    return kv.new_empty(n_entries, kv.shape[1] // n_series)
+    return kv.new_empty(out_rows, kv.shape[1] // n_series)
 
 
 @torch.library.custom_op("prime_rl::dsv4_compressor_pool_backward", mutates_args=())
@@ -138,14 +138,15 @@ def dsv4_compressor_pool(
     cu_entries: Tensor,
     compress_rate: int,
     n_series: int,
-    n_entries: int,
+    out_rows: int,
 ) -> Tensor:
-    """Pool one packed row's `(tokens, n_series * head_dim)` bf16 projections into `(n_entries, head_dim)` bf16 entries.
+    """Pool one packed row's `(tokens, n_series * head_dim)` bf16 projections into `(out_rows, head_dim)` bf16 entries.
 
     `position_bias` is `(compress_rate, n_series * head_dim)` in any float dtype, and its gradient comes back in that
     dtype. `cu_seqlens` and `cu_entries` are int32 `(n_docs + 1,)` offsets of each document's first token and first
-    entry, ending in the totals.
+    entry, ending in the totals. `out_rows` is at least `cu_entries[-1]`: the rows past it are padding, and their
+    incoming gradient is ignored.
     """
     return _dsv4_compressor_pool(
-        kv, gate, position_bias.float(), cu_seqlens, cu_entries, compress_rate, n_series, n_entries
+        kv, gate, position_bias.float(), cu_seqlens, cu_entries, compress_rate, n_series, out_rows
     )
