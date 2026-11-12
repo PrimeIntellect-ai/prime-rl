@@ -647,14 +647,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def clear_padding_idx(model: nn.Module) -> None:
-    """For weights that are not the HF model's: a padding index (which falls back to the EOS id) would start that
-    token's embedding at zero from scratch and keep it frozen, also when training on from a checkpoint."""
-    for module in model.modules():
-        if isinstance(module, nn.Embedding):
-            module.padding_idx = None
-
-
 @torch.no_grad()
 def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
@@ -1026,8 +1018,6 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if config.init.type != "hf":
-        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."

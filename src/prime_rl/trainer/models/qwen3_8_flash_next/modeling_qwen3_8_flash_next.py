@@ -136,7 +136,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
     def __init__(self, config: Qwen3_8FlashNextTextConfig) -> None:
         super().__init__(config)
         self.vocab_size = config.vocab_size
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         ple_layers = [layer_id - 1 for layer_id in sorted(set(config.ple_layer_ids))]
         self.ngram = NGramEmbeddings(
             Qwen3_8FlashNextNGramHasher(config),

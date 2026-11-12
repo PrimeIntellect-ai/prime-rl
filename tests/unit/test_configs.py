@@ -1520,7 +1520,7 @@ def test_an_hf_model_loads_from_disk_what_the_broadcast_does_not_cover_or_check(
 )
 def test_a_speculative_drafter_requires_the_hf_init(vllm):
     config = InferenceConfig(vllm=vllm)
-    with pytest.raises(ValueError, match="loads its drafter from model.name"):
+    with pytest.raises(ValueError, match="loads the drafter from disk"):
         setup_dummy_load(config, init_type="ckpt", lora_enabled=False, transport="nccl")
 
 

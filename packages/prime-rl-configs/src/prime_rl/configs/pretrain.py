@@ -35,6 +35,16 @@ class DatatroveDataConfig(BaseDataConfig):
     whole sample and positions run over it."""
 
 
+class PretrainDataConfig(DatatroveDataConfig):
+    """Training shards."""
+
+    eod_mask_loss: bool = True
+    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
+    the document separator. The separator is the special token the training shards' documents end with, detected at
+    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
+    mask)."""
+
+
 class PretrainValConfig(BaseValConfig):
     data: DatatroveDataConfig
     """Held-out shard folders. Every validation scores each of their documents on its own, from its first token, in
@@ -90,7 +100,7 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 
-    data: DatatroveDataConfig
+    data: PretrainDataConfig
 
     val: PretrainValConfig | None = None
     """Validation on held-out shards. If None, no validation runs."""

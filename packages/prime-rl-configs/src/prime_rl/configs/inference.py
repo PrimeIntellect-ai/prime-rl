@@ -469,7 +469,7 @@ class InferenceConfig(BaseConfig):
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
     enable_return_sampling_mask: bool = False
-    """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling and for recorded sampler logprobs (``sampling.logprobs``, set by score centering), which are captured next to the mask. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Requests opt in with ``extra_args.prl_replay = true``; only these requests require positive temperature. Their supports are captured whole, so top-p alone needs no top-k. Evaluation requests need not opt in. Request-scoped capture currently requires non-speculative decoding."""
+    """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling and for recorded sampler logprobs (``sampling.logprobs``, set by score centering), which are captured next to the mask. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Requests opt in with ``extra_args.prl_replay = true``; only these requests require positive temperature. Their supports are captured whole, so top-p alone needs no top-k. Evaluation requests need not opt in. Under speculative decoding each accepted position carries its own support, and sampler logprobs need truncated (replayed) sampling."""
 
     sampling_support_capacity: int = Field(16 * 2**20, ge=1)
     """Entries (8 bytes each) in the per-step device buffer that holds captured sampling supports: the kept ids of every replayed request in one sampling step, plus sampler rows. Requests whose supports do not fit fail with an explicit error instead of being truncated; the server logs the maximum per-step total every minute."""
@@ -715,7 +715,7 @@ class InferenceConfig(BaseConfig):
 
 def setup_dummy_load(inference: InferenceConfig, *, init_type: str, lora_enabled: bool, transport: str) -> None:
     """A server that the trainer feeds gets its weights from the trainer's startup broadcast, so it loads none. LoRA
-    broadcasts only the adapter and a speculative drafter never gets updates, so those load from disk. ModelExpress and
+    broadcasts only the adapter and the broadcast holds no speculative drafter, so those load from disk. ModelExpress and
     online quantization skip the check that an update covers every parameter, so an HF model loads from disk with them.
     An explicit ``load_format`` wins."""
     vllm = inference.vllm
@@ -726,8 +726,8 @@ def setup_dummy_load(inference: InferenceConfig, *, init_type: str, lora_enabled
     drafter = any(key.replace("-", "_") == "speculative_config" for override in overrides for key in override)
     if drafter and init_type != "hf":
         raise ValueError(
-            f'inference.vllm.speculative_config loads its drafter from model.name, which init type "{init_type}" '
-            'does not provide: use model.init.type = "hf"'
+            f'inference.vllm.speculative_config loads the drafter from disk with the model, which init type "{init_type}" '
+            'does not: use model.init.type = "hf"'
         )
     if "load_format" in extra or lora_enabled or drafter:
         return
