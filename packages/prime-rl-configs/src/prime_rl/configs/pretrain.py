@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
@@ -43,16 +43,45 @@ class PretrainDataConfig(DatatroveDataConfig):
     mask)."""
 
 
+class HeldOutDataConfig(DatatroveDataConfig):
+    name: str
+    """Names the metrics: ``val/<name>/loss@<length>`` and ``val/<name>/bpb@<length>``."""
+
+    seq_lens: list[Annotated[int, Field(ge=1)]] | None = None
+    """Context lengths to score the set at, each at most a row (``seq_len * micro_batch_size`` tokens). Defaults to
+    ``[seq_len]``."""
+
+    @model_validator(mode="after")
+    def validate_seq_lens(self):
+        if self.seq_lens is None:
+            self.seq_lens = [self.seq_len]
+        if max(self.seq_lens) > self.seq_len * self.micro_batch_size:
+            raise ValueError(f"val.data {self.name}: seq_lens must fit in a row of seq_len * micro_batch_size tokens")
+        return self
+
+
 class PretrainValConfig(BaseValConfig):
-    data: DatatroveDataConfig
-    """Held-out shard folders. Every validation scores each of their documents on its own, from its first token, in
-    non-overlapping windows of ``seq_len`` scored tokens (a longer document continues in the next window, without the
-    tokens before). Windows are packed into rows of ``seq_len * micro_batch_size`` tokens; ``seed`` and
-    ``document_masking`` do not apply."""
+    data: list[HeldOutDataConfig] = []
+    """Named sets of held-out shard folders. Every validation scores each document of a set on its own, from its first
+    token, at each of the set's ``seq_lens``: in non-overlapping windows of that many scored tokens (a longer document
+    continues in the next window, without the tokens before), packed into rows of ``seq_len * micro_batch_size``
+    tokens. ``seed`` and ``document_masking`` do not apply."""
 
     num_samples: int | None = Field(None, ge=1)
-    """Documents per validation: the first ``num_samples`` documents of the held-out shards (in folder order, then file
+    """Documents per set and validation: the first ``num_samples`` documents of each set (in folder order, then file
     name order), the same ones every time. If None, every document."""
+
+    def data_configs(self) -> list[HeldOutDataConfig]:
+        return self.data
+
+    @model_validator(mode="after")
+    def validate_data(self):
+        if not self.data:
+            raise ValueError("[val] scores nothing: add a [[val.data]] set")
+        names = [data.name for data in self.data]
+        if len(set(names)) < len(names):
+            raise ValueError(f"val.data names must be unique: {names}")
+        return self
 
 
 class PretrainAdamWConfig(AdamWConfig):

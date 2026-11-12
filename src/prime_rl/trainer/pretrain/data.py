@@ -358,12 +358,34 @@ def setup_token_dataset(
 
 
 def setup_document_dataset(
-    config: DatatroveDataConfig, non_dp_size: int = 1, num_documents: int | None = None
+    config: DatatroveDataConfig, seq_len: int, non_dp_size: int = 1, num_documents: int | None = None
 ) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),
-        seq_len=config.seq_len,
+        seq_len=seq_len,
         row_len=config.seq_len * config.micro_batch_size,
         non_dp_size=non_dp_size,
         num_documents=num_documents,
     )
+
+
+def length_label(seq_len: int) -> str:
+    return f"{seq_len // 1024}k" if seq_len % 1024 == 0 else str(seq_len)
+
+
+# The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.
+BYTE_CHARS = {chr(c) for c in [*range(33, 127), *range(161, 173), *range(174, 256), *range(256, 324)]}
+
+
+def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray:
+    """The UTF-8 bytes of every token id; special and added tokens count 0. Exact for byte-level BPE tokenizers."""
+    special = set(tokenizer.all_special_ids) | set(tokenizer.added_tokens_decoder)
+    lengths = np.zeros(len(tokenizer), dtype=np.int64)
+    for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
+        if token is None or token_id in special:
+            continue
+        if set(token) <= BYTE_CHARS:
+            lengths[token_id] = len(token)
+        else:
+            lengths[token_id] = len(tokenizer.convert_tokens_to_string([token]).encode())
+    return lengths

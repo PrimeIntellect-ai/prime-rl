@@ -1,5 +1,5 @@
 # Qwen3-0.6B trained from scratch on Reverse-Text-SFT as token shards. The test writes the shards and passes their
-# folder as --data.paths and --val.data.paths.
+# folder as --data.paths and as the paths of the held-out set.
 mode = "pretrain"
 max_steps = 20
 
@@ -17,7 +17,9 @@ micro_batch_size = 2
 [val]
 interval = 10
 
-[val.data]
+[[val.data]]
+name = "reverse-text"
 paths = ["set-by-the-test"]
 seq_len = 1024
 micro_batch_size = 2
+seq_lens = [512, 1024]
