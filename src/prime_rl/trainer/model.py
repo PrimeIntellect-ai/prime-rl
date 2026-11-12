@@ -431,9 +431,9 @@ def get_model(
     return model
 
 
-def check_ckpt_weights_dir(config: ModelConfig) -> None:
-    """A ``ckpt_weights`` step directory supplies the architecture with its config.json."""
-    if config.init.type == "ckpt_weights" and not (Path(config.name) / "config.json").exists():
+def check_ckpt_dir(config: ModelConfig) -> None:
+    """A ``ckpt`` step directory supplies the architecture with its config.json."""
+    if config.init.type == "ckpt" and not (Path(config.name) / "config.json").exists():
         raise FileNotFoundError(
             f"model.name {config.name} has no config.json, so the architecture is unknown; copy the model's "
             "config.json into it"

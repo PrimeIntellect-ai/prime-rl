@@ -1467,14 +1467,14 @@ def test_model_init_seed_requires_type_scratch():
 
 
 def test_model_init_checkpoint_requires_a_step_dir():
-    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt_weights"})
+    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt"})
     with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
-        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt_weights"})
+        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
 
 
-@pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("ckpt_weights", "dummy")])
+@pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("ckpt", "dummy")])
 def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_type: str, load_format: str | None):
-    name = "runs/sft/checkpoints/step_500" if init_type == "ckpt_weights" else "Qwen/Qwen3-0.6B"
+    name = "runs/sft/checkpoints/step_500" if init_type == "ckpt" else "Qwen/Qwen3-0.6B"
     config = RLConfig.model_validate(
         {
             "model": {"name": name, "init": {"type": init_type}},

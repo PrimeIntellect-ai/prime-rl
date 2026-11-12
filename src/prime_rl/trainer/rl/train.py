@@ -59,7 +59,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
-    check_ckpt_weights_dir,
+    check_ckpt_dir,
     setup_tokenizer,
     take_moe_routing_stats,
 )
@@ -173,7 +173,7 @@ def train(config: TrainerConfig):
     # Check for checkpoint to resume from
     checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    check_ckpt_weights_dir(config.model)
+    check_ckpt_dir(config.model)
     tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
     processor = None
     if config.model.vlm is not None:
@@ -197,7 +197,7 @@ def train(config: TrainerConfig):
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "ckpt_weights"
+    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "ckpt"
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
@@ -282,7 +282,7 @@ def train(config: TrainerConfig):
             f"Resuming from step {checkpoint_step} "
             f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
         )
-    elif config.model.init.type == "ckpt_weights":
+    elif config.model.init.type == "ckpt":
         ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
