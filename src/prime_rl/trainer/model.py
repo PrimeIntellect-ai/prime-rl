@@ -39,6 +39,7 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.activation_checkpointing import (
+    MODULE_TARGET_SEPARATOR,
     TokenChunkedCheckpointWrapper,
     get_activation_checkpoint_wrapper,
     unmatched_module_patterns,
@@ -763,7 +764,8 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     # FLA's metadata cache must not skip operations during checkpoint replay.
     fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
+    matched_module_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config, matched_module_targets)
     checkpointed_blocks = []
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
@@ -777,6 +779,19 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         unmatched = unmatched_module_patterns(ac_config.targets, checkpointed_blocks)
         if unmatched:
             raise ValueError(f"Activation checkpointing module patterns match no checkpointed submodule: {unmatched}")
+
+        module_targets = [target for target in ac_config.targets if MODULE_TARGET_SEPARATOR in target]
+        if module_targets:
+
+            def check_module_targets_after_first_training_forward(_module, _args, _output) -> None:
+                if not torch.is_grad_enabled():
+                    return
+                check_once.remove()
+                untraced = [target for target in module_targets if target not in matched_module_targets]
+                if untraced:
+                    raise ValueError(f"Activation checkpointing targets matched no traced operation: {untraced}")
+
+            check_once = language_model.register_forward_hook(check_module_targets_after_first_training_forward)
 
     get_logger().info(
         f"Applied {ac_config.mode} activation checkpointing to {len(checkpointed_blocks)} layers (freq={ac_config.freq})"
