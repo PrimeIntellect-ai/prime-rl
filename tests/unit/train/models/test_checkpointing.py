@@ -1,3 +1,5 @@
+from functools import partial
+
 import pytest
 import torch
 from functorch.compile import min_cut_rematerialization_partition, nop
@@ -49,51 +51,31 @@ class TwoProjections(nn.Module):
 
 def test_selective_policy_saves_default_and_custom_targets():
     context = SelectiveCheckpointContext(is_recompute=False)
+    policy = partial(_selective_checkpoint_policy, matched_module_targets=set())
 
-    assert _selective_checkpoint_policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
-    assert (
-        _selective_checkpoint_policy(context, torch.ops.aten._scaled_dot_product_flash_attention.default)
-        is CheckpointPolicy.MUST_SAVE
-    )
-    assert _selective_checkpoint_policy(context, torch.ops.aten.mm.default) is CheckpointPolicy.MUST_SAVE
-    assert _selective_checkpoint_policy(context, torch.ops.aten.addmm.default) is CheckpointPolicy.MUST_SAVE
-    assert _selective_checkpoint_policy(context, torch.ops.aten.bmm.default) is CheckpointPolicy.MUST_SAVE
-    assert _selective_checkpoint_policy(context, torch.ops.aten._grouped_mm.default) is CheckpointPolicy.MUST_SAVE
-    assert (
-        _selective_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
-        is CheckpointPolicy.MUST_SAVE
-    )
-    assert (
-        _selective_checkpoint_policy(context, torch.ops.prime_rl_collectives.mxfp8_all_to_all.default)
-        is CheckpointPolicy.MUST_SAVE
-    )
-    assert _selective_checkpoint_policy(context, torch.ops.aten.silu.default) is CheckpointPolicy.PREFER_RECOMPUTE
+    assert policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.aten._scaled_dot_product_flash_attention.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.aten.mm.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.aten.addmm.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.aten.bmm.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.aten._grouped_mm.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.prime_rl_collectives.mxfp8_all_to_all.default) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.aten.silu.default) is CheckpointPolicy.PREFER_RECOMPUTE
 
     custom_targets = frozenset({"aten::silu", "prime_rl_collectives"})
+    assert policy(context, torch.ops.aten.silu.default, targets=custom_targets) is CheckpointPolicy.MUST_SAVE
     assert (
-        _selective_checkpoint_policy(context, torch.ops.aten.silu.default, targets=custom_targets)
-        is CheckpointPolicy.MUST_SAVE
-    )
-    assert (
-        _selective_checkpoint_policy(
+        policy(
             context,
             torch.ops.prime_rl_collectives.all_to_all_single_equal.default,
             targets=custom_targets,
         )
         is CheckpointPolicy.MUST_SAVE
     )
-    assert (
-        _selective_checkpoint_policy(context, torch.ops.aten.mm.default, targets=custom_targets)
-        is CheckpointPolicy.PREFER_RECOMPUTE
-    )
-    assert (
-        _selective_checkpoint_policy(context, torch.ops.aten.topk.default, targets=custom_targets)
-        is CheckpointPolicy.MUST_SAVE
-    )
-    assert (
-        _selective_checkpoint_policy(context, torch.ops.prime_rl.fp8_indexer.default, targets=custom_targets)
-        is CheckpointPolicy.MUST_SAVE
-    )
+    assert policy(context, torch.ops.aten.mm.default, targets=custom_targets) is CheckpointPolicy.PREFER_RECOMPUTE
+    assert policy(context, torch.ops.aten.topk.default, targets=custom_targets) is CheckpointPolicy.MUST_SAVE
+    assert policy(context, torch.ops.prime_rl.fp8_indexer.default, targets=custom_targets) is CheckpointPolicy.MUST_SAVE
 
 
 @pytest.mark.parametrize("token_chunk_size", [None, 4])

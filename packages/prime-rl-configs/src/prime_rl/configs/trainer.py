@@ -28,8 +28,6 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 
-# A module-qualified target, "<operation or namespace>@<module path pattern>", matches only inside
-# the modules whose path relative to the checkpointed block matches the pattern.
 MODULE_TARGET_SEPARATOR = "@"
 
 

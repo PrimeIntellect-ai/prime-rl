@@ -179,7 +179,7 @@ def _selective_checkpoint_policy(
     *args,
     targets: frozenset[str] = DEFAULT_SELECTIVE_TARGETS,
     module_targets: tuple[tuple[str, str], ...] = (),
-    matched_module_targets: set[str] | None = None,
+    matched_module_targets: set[str],
     **kwargs,
 ) -> CheckpointPolicy:
     runtime_policy = _mandatory_checkpoint_policy(context, operation, *args, **kwargs)
