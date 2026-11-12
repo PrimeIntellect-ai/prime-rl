@@ -22,6 +22,7 @@ from collections import OrderedDict
 from itertools import groupby
 from pathlib import Path
 
+import numpy as np
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
@@ -29,7 +30,7 @@ from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, g
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.live import LiveFolds, live_etag, live_path, live_rows, stage
-from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
+from prime_rl.monitors.file.traces.update import STREAM_FIELDS, branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir, get_platform_run_path
 from prime_rl.utils.process import set_proc_title
@@ -886,6 +887,30 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     return index
 
 
+def resolve_stream_refs(stream: Path, update: dict) -> None:
+    """A v2 record's stream refs, decoded from the binary chunks beside its line.
+
+    Reads back the float32 values v1 wrote inline, NaN as None. A ref that does not
+    resolve leaves no value in its place: fold_trace_updates skips a None stream,
+    while a ref dict left in place would slice it and raise."""
+    for branch in update.get("branches") or []:
+        for field in STREAM_FIELDS:
+            ref = branch.get(field)
+            if not isinstance(ref, dict):
+                continue
+            try:
+                with open(stream / f"{ref['bin']:05d}.bin", "rb") as f:
+                    f.seek(ref["offset"])
+                    data = f.read(ref["count"] * 4)
+                if len(data) != ref["count"] * 4:
+                    raise ValueError("short read")
+            except (KeyError, TypeError, ValueError, OSError):
+                branch[field] = None
+                continue
+            values = np.frombuffer(data, dtype=np.float32).astype(np.float32)
+            branch[field] = [None if math.isnan(value) else value for value in values.tolist()]
+
+
 def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
     """Every update recorded against one trace, read by seeking to each record."""
     entry = annotation_index(run_dir).get(trace_id)
@@ -894,8 +919,11 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
         try:
             with open_chunk(stream, chunk) as f:
                 f.seek(offset)
-                updates.append(orjson.loads(f.readline()))
-        except (OSError, orjson.JSONDecodeError):
+                update = orjson.loads(f.readline())
+            if isinstance(update, dict) and update.get("version") == 2:
+                resolve_stream_refs(stream, update)
+            updates.append(update)
+        except (OSError, orjson.JSONDecodeError, ValueError):
             continue
     return updates
 

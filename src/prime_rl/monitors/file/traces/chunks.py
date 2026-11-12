@@ -116,3 +116,47 @@ class ChunkedJsonl:
         thread = threading.Thread(target=seal, args=(chunk_path(self.directory, number),))
         thread.start()
         self._sealing.append(thread)
+
+
+def bin_path(directory: Path, number: int) -> Path:
+    return directory / f"{number:05d}.bin"
+
+
+def bin_numbers(directory: Path) -> list[int]:
+    return sorted(int(path.name.split(".", 1)[0]) for path in directory.glob("*.bin"))
+
+
+class ChunkedBinary:
+    """Appends raw bytes to the live chunk of a stream and reports where they landed."""
+
+    def __init__(self, directory: Path, max_bytes: int) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        self.directory = directory
+        self.max_bytes = max_bytes
+        numbers = bin_numbers(directory)
+        self.number = numbers[-1] if numbers else 0
+        self.file = open(bin_path(directory, self.number), "ab")
+        self.size = self.file.tell()
+
+    def append(self, data: bytes) -> tuple[int, int]:
+        """Write raw bytes; returns ``(bin, offset)``, the address a reader seeks to."""
+        if self.size and self.size + len(data) > self.max_bytes:
+            self._roll()
+        offset = self.size
+        self.file.write(data)
+        self.size += len(data)
+        return self.number, offset
+
+    def flush(self) -> None:
+        self.file.flush()
+
+    def close(self) -> None:
+        self.file.close()
+        if not self.size:
+            bin_path(self.directory, self.number).unlink()
+
+    def _roll(self) -> None:
+        self.file.close()
+        self.number += 1
+        self.file = open(bin_path(self.directory, self.number), "ab")
+        self.size = 0

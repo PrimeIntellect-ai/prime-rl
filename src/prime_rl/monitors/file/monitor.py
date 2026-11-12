@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
+import numpy as np
 import orjson
 from verifiers.v1.trace import EXCLUDE_FIELDS
 from verifiers.v1.types import decode_ndarray
@@ -14,10 +15,10 @@ from verifiers.v1.types import decode_ndarray
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
-from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
+from prime_rl.monitors.file.traces.chunks import ChunkedBinary, ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
-from prime_rl.monitors.file.traces.update import update_index_row
+from prime_rl.monitors.file.traces.update import STREAM_FIELDS, update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
 
@@ -41,6 +42,20 @@ def _live_value(value: Any) -> Any:
     return value
 
 
+def _binary_branch(branch: dict[str, Any], binary: ChunkedBinary) -> dict[str, Any]:
+    """A branch with its per-token streams replaced by refs into the binary sidecar,
+    their float32 bytes appended to it."""
+    line = dict(branch)
+    for field in STREAM_FIELDS:
+        values = line.get(field)
+        if values is None:
+            continue
+        count = len(values)
+        bin_chunk, offset = binary.append(np.ascontiguousarray(values, dtype=np.float32).tobytes())
+        line[field] = {"bin": bin_chunk, "offset": offset, "count": count}
+    return line
+
+
 class FileMonitor(Monitor):
     """Logs metrics and episodes to local JSONL files."""
 
@@ -59,6 +74,7 @@ class FileMonitor(Monitor):
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
+        self._binaries: dict[Path, ChunkedBinary] = {}
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
@@ -148,6 +164,12 @@ class FileMonitor(Monitor):
             self._streams[directory] = (stream, open(get_index_path(directory), "ab"))
         return self._streams[directory]
 
+    def _binary(self, directory: Path) -> ChunkedBinary:
+        """A stream's binary sidecar, opened on first use and kept open."""
+        if directory not in self._binaries:
+            self._binaries[directory] = ChunkedBinary(directory, self.config.chunk_bytes)
+        return self._binaries[directory]
+
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Append each episode to the trace stream as it completes — every episode is
         serialized exactly once, in arrival order, whatever its kind, so an in-progress
@@ -184,12 +206,17 @@ class FileMonitor(Monitor):
             return
 
         def write() -> None:
-            stream, index = self._stream(get_annotations_dir(self.output_dir) / (self.producer or "unknown"))
+            directory = get_annotations_dir(self.output_dir) / (self.producer or "unknown")
+            stream, index = self._stream(directory)
+            binary = self._binary(directory)
             # the scalars go to a sibling index so a reader can answer "which cohort,
             # what credit" without touching the token streams
             for update in updates:
-                chunk, offset = stream.append(orjson.dumps(update, option=OPTS))
+                line = dict(update)
+                line["branches"] = [_binary_branch(branch, binary) for branch in update.get("branches") or []]
+                chunk, offset = stream.append(orjson.dumps(line, option=OPTS))
                 index.write(orjson.dumps(update_index_row(update, chunk, offset), option=OPTS))
+            binary.flush()
             stream.flush()
             index.flush()
 
@@ -199,4 +226,6 @@ class FileMonitor(Monitor):
         for stream, index in self._streams.values():
             stream.close()
             index.close()
+        for binary in self._binaries.values():
+            binary.close()
         self.logger.info(f"Finalized metrics at {self.path}")
