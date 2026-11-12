@@ -37,7 +37,7 @@ class ActivationCheckpointConfig(BaseConfig):
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] | None = None
-    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them. Append ``@<module path pattern>`` to retain an operator only inside matching modules, for example ``"prime_rl::fp8_blockwise_mm@self_attn.o_b_proj"``. The pattern is an ``fnmatch`` glob over module paths relative to the checkpointed block, and it also covers the matching modules' descendants. Module-qualified targets require ``model.compile``."""
+    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them. Append ``@<module path pattern>`` to retain an operator only inside matching modules, for example ``"prime_rl::fp8_blockwise_mm@self_attn.o_b_proj"``. The pattern is an ``fnmatch`` glob over module paths relative to the checkpointed block, and it also covers the matching modules' descendants. Module-qualified targets require ``model.compile``, and the trainer raises after the first training forward if one matched no traced operation."""
 
     @field_validator("targets")
     @classmethod

@@ -150,7 +150,7 @@ mode = "selective"
 
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
 
-To retain an operator only at some call sites, append `@` and a module path pattern relative to the transformer block. The pattern is an `fnmatch` glob, and it also matches inside the modules it names. Module-qualified targets require `trainer.model.compile`, whose module metadata identifies each call site, and the trainer raises if a pattern matches no module:
+To retain an operator only at some call sites, append `@` and a module path pattern relative to the transformer block. The pattern is an `fnmatch` glob, and it also matches inside the modules it names. Module-qualified targets require `trainer.model.compile`, whose module metadata identifies each call site. The trainer raises if a pattern matches no module, and after the first training forward if a target matched no traced operation, for example because the named module runs a different operator. This example names the FP8 GEMM, which runs only under `trainer.model.quantization.type = "fp8"`:
 
 ```toml
 [trainer.model.ac]

@@ -138,12 +138,17 @@ def _traced_block_module_paths() -> list[str]:
 def _matches_module_target(
     operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
     module_targets: tuple[tuple[str, str], ...],
+    matched_module_targets: set[str],
 ) -> bool:
     module_paths = _traced_block_module_paths()
-    return any(
-        _matches_operation(operation, (operation_target,)) and any(fnmatchcase(path, pattern) for path in module_paths)
+    matched = {
+        f"{operation_target}{MODULE_TARGET_SEPARATOR}{pattern}"
         for operation_target, pattern in module_targets
-    )
+        if _matches_operation(operation, (operation_target,))
+        and any(fnmatchcase(path, pattern) for path in module_paths)
+    }
+    matched_module_targets.update(matched)
+    return bool(matched)
 
 
 def unmatched_module_patterns(targets: Iterable[str], blocks: Iterable[nn.Module]) -> list[str]:
@@ -178,6 +183,7 @@ def _selective_checkpoint_policy(
     *args,
     targets: frozenset[str] = DEFAULT_SELECTIVE_TARGETS,
     module_targets: tuple[tuple[str, str], ...] = (),
+    matched_module_targets: set[str] | None = None,
     **kwargs,
 ) -> CheckpointPolicy:
     runtime_policy = _mandatory_checkpoint_policy(context, operation, *args, **kwargs)
@@ -185,7 +191,7 @@ def _selective_checkpoint_policy(
         return runtime_policy
     if _matches_operation(operation, targets):
         return CheckpointPolicy.MUST_SAVE
-    if module_targets and _matches_module_target(operation, module_targets):
+    if module_targets and _matches_module_target(operation, module_targets, matched_module_targets):
         return CheckpointPolicy.MUST_SAVE
     return CheckpointPolicy.PREFER_RECOMPUTE
 
@@ -237,14 +243,23 @@ class TokenChunkedCheckpointWrapper(CheckpointWrapper):
         return torch.cat(outputs, dim=1)
 
 
-def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
+def get_activation_checkpoint_wrapper(
+    config: ActivationCheckpointConfig, matched_module_targets: set[str] | None = None
+) -> Callable[[nn.Module], nn.Module]:
+    """Return a function that checkpoints a block, adding each module-qualified target that saves a traced operation
+    to ``matched_module_targets``."""
     if config.mode == "full":
         policy = _mandatory_checkpoint_policy
     else:
         targets, module_targets = _split_targets(
             DEFAULT_SELECTIVE_TARGETS if config.targets is None else config.targets
         )
-        policy = partial(_selective_checkpoint_policy, targets=targets, module_targets=module_targets)
+        policy = partial(
+            _selective_checkpoint_policy,
+            targets=targets,
+            module_targets=module_targets,
+            matched_module_targets=set() if matched_module_targets is None else matched_module_targets,
+        )
     checkpoint_kwargs = {
         "checkpoint_impl": CheckpointImpl.NO_REENTRANT,
         "context_fn": partial(create_selective_checkpoint_contexts, policy),
