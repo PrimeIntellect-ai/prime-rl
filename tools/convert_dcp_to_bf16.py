@@ -125,11 +125,11 @@ def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
 
 def get_layers(model: nn.Module) -> list[list[str]]:
     """Group ordinary weights by decoder layer, excluding tied heads and chunked tables."""
-    text_config = getattr(model.config, "text_config", model.config)
     state = model.state_dict()
     chunked = get_chunked_conversion_ops(model, state)
     keys = [key for key in state if key not in chunked]
-    if getattr(text_config, "tie_word_embeddings", False):
+    # The trainer ties the head on the top-level config flag, so the export must drop it on the same one.
+    if getattr(model.config, "tie_word_embeddings", False):
         tied_keys = set(getattr(model, "_tied_weights_keys", None) or ()) | {"lm_head.weight"}
         keys = [key for key in keys if key not in tied_keys]
     return list(group_by_layer(keys).values())
@@ -277,14 +277,18 @@ def publish_export(staging_dir: Path, output_dir: Path) -> None:
     """Replace a complete export, restoring the old directory if publication fails."""
     umask = os.umask(0)
     os.umask(umask)
-    mode = output_dir.stat().st_mode & 0o777 if output_dir.exists() else 0o777 & ~umask
+    mode = output_dir.stat().st_mode & 0o777 if output_dir.is_dir() else 0o777 & ~umask
     staging_dir.chmod(mode)
     if not output_dir.exists():
         staging_dir.rename(output_dir)
         return
     backup_parent = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-backup-", dir=output_dir.parent))
     backup_dir = backup_parent / "export"
-    output_dir.rename(backup_dir)
+    try:
+        output_dir.rename(backup_dir)
+    except OSError:
+        backup_parent.rmdir()
+        raise
     try:
         staging_dir.rename(output_dir)
     except OSError:
@@ -308,9 +312,7 @@ def resolve_output_dir(checkpoint: Checkpoint, output_dir: Path | None, name: st
     return output_dir
 
 
-def convert(
-    ckpt_dir: Path, output_dir: Path | None = None, *, workers: int = 1, overwrite: bool = False
-) -> Path:
+def convert(ckpt_dir: Path, output_dir: Path | None = None, *, workers: int = 1, overwrite: bool = False) -> Path:
     """Export a full trainer checkpoint with CPU streaming only."""
     logger = get_logger()
     checkpoint = open_checkpoint(ckpt_dir)

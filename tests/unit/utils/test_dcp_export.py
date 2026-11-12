@@ -47,9 +47,7 @@ def save_checkpoint(path: Path, state: dict[str, torch.Tensor], row_chunks: int)
             chunks.append(ChunkStorageMetadata(torch.Size([start, 0]), piece_metadata.size))
             stored = metadata.storage_data.pop(next(item for item in metadata.storage_data if item.fqn == piece))
             metadata.storage_data[MetadataIndex(key, chunks[-1].offsets, index)] = stored
-        metadata.state_dict_metadata[key] = TensorStorageMetadata(
-            piece_metadata.properties, state[name].shape, chunks
-        )
+        metadata.state_dict_metadata[key] = TensorStorageMetadata(piece_metadata.properties, state[name].shape, chunks)
     with (path / ".metadata").open("wb") as file:
         pickle.dump(metadata, file)
     return sum(len(table_bounds) - 1 for table_bounds in bounds.values())
