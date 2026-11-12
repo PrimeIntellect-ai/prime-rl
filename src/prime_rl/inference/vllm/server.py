@@ -1,6 +1,7 @@
 import asyncio
 import gc
 from argparse import Namespace
+from typing import Literal
 
 import uvloop
 from fastapi import APIRouter, Request
@@ -55,10 +56,14 @@ async def resume(request: Request):
 
 
 @router.post("/update_weights")
-async def update_weights(request: Request):
+async def update_weights(request: Request, target: Literal["model", "draft"] = "model"):
     data = await request.json()
+    kwargs = {"target": target} if target != "model" else {}
     client = engine_client(request)
-    await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),), kwargs=kwargs)
+    if target == "draft":
+        await client.reset_prefix_cache(reset_running_requests=True)
+        return {"status": "ok"}
     # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
     await client.update_weight_version(str(data["weight_version"]))
     return {"status": "ok"}
@@ -71,6 +76,21 @@ async def update_weights_from_modelexpress(request: Request):
     await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
     await client.update_weight_version(str(data["weight_version"]))
     return {"status": "ok"}
+
+
+@router.get("/weight_fingerprint")
+async def weight_fingerprint(request: Request, target: Literal["model", "draft"] = "model"):
+    core = engine_client(request).engine_core
+    # vLLM's public collective RPC discards all but the first DP engine's result.
+    results = await asyncio.gather(
+        *[
+            core._call_utility_async(
+                "collective_rpc", "get_weight_fingerprint", None, (), {"target": target}, engine=engine
+            )
+            for engine in core.core_engines
+        ]
+    )
+    return {"results": [worker for engine in results for worker in engine]}
 
 
 @router.post("/load_lora_adapter")

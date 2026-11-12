@@ -1,0 +1,27 @@
+backend_port = 18301
+
+[server]
+port = 18300
+
+[vllm]
+model = "Qwen/Qwen3-4B"
+dtype = "bfloat16"
+max_model_len = 2048
+max_num_seqs = 8
+gpu_memory_utilization = 0.4
+enforce_eager = true
+enable_prefix_caching = false
+
+[vllm.speculative_config]
+method = "extract_hidden_states"
+num_speculative_tokens = 1
+
+[vllm.speculative_config.draft_model_config.hf_config]
+eagle_aux_hidden_state_layer_ids = [1, 9, 17, 25, 33, 36]
+
+[vllm.kv_transfer_config]
+kv_connector = "ExampleHiddenStatesConnector"
+kv_role = "kv_producer"
+
+[vllm.kv_transfer_config.kv_connector_extra_config]
+shared_storage_path = "outputs/specdecode/hidden-states"

@@ -932,6 +932,8 @@ def setup_model(
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
     init_from_scratch: bool = False,
+    *,
+    freeze: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -998,6 +1000,8 @@ def setup_model(
     if config.compile is not None:
         apply_compile(model, config.compile)
 
+    if freeze:
+        model.requires_grad_(False)
     setup_fsdp(model, config, parallel_dims)
 
     if loading_from_checkpoint_later:

@@ -30,6 +30,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.specdecode import SpecDecodeConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -44,6 +45,7 @@ CONFIG_CLASSES = [
     InferenceConfig,
     EnvWorkerPoolConfig,
     EvalConfig,
+    SpecDecodeConfig,
 ]
 
 

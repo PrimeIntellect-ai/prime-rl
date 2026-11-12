@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 
@@ -40,6 +41,138 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    monkey_patch_deepseek_v4_final_hidden_capture()
+    monkey_patch_hidden_state_cache_packed_page()
+    monkey_patch_block_outermost_mla_stride()
+    monkey_patch_dspark_dp_compile_cache()
+
+
+def monkey_patch_block_outermost_mla_stride():
+    """Align the shared block stride of packed KV caches to DeepSeek V4's MLA pages.
+
+    Block-outermost groups share one block stride: the widest group's bytes per block, rounded to
+    each layer's `block_stride_alignment`. DeepSeek V4's MLA specs declare their 576 B FlashMLA
+    alignment only as page padding (`alignment`), so a wider group of another kind (a draft's KV
+    cache, extracted hidden states) leaves the stride unaligned and FlashMLA rejects it.
+    """
+    from vllm.utils.math_utils import round_up
+    from vllm.v1.core import kv_cache_planning
+
+    original = kv_cache_planning._get_kv_cache_bytes_per_block
+    if getattr(original, "_prime_rl_aligns_mla_stride", False):
+        return
+
+    def _get_kv_cache_bytes_per_block(kv_cache_groups, layout):
+        bytes_per_block = original(kv_cache_groups, layout)
+        if not layout.is_block_outermost:
+            return bytes_per_block
+        alignments = {
+            alignment
+            for group in kv_cache_groups
+            for name in group.layer_names
+            if (alignment := getattr(kv_cache_planning._get_per_layer_spec(group, name), "alignment", None))
+        }
+        return round_up(bytes_per_block, math.lcm(*alignments)) if alignments else bytes_per_block
+
+    _get_kv_cache_bytes_per_block._prime_rl_aligns_mla_stride = True
+    kv_cache_planning._get_kv_cache_bytes_per_block = _get_kv_cache_bytes_per_block
+
+
+def monkey_patch_hidden_state_cache_packed_page():
+    """Keep extracted hidden states from widening block-outermost KV pages.
+
+    The packed (block-outermost) layout strides every group's blocks by the widest page, but
+    appends hidden-state groups at the attention block size, so their page (e.g. 256 tokens x
+    5 layers x 4096 x 2 B = 10 MiB) becomes every layer's block stride. DeepSeek V4's FlashMLA
+    then rejects a stride that is not a multiple of 576 B, and the padding wastes most of the
+    cache. Like vLLM's non-packed path, this shrinks the hidden-state block to fit within the
+    widest attention page and pads it to that page.
+    """
+    from dataclasses import replace
+
+    from vllm.utils.torch_utils import get_dtype_size
+    from vllm.v1.core import kv_cache_planning
+    from vllm.v1.kv_cache_interface import HiddenStateCacheSpec, KVCacheGroupSpec
+
+    original = kv_cache_planning.get_kv_cache_groups
+    if getattr(original, "_prime_rl_aligns_hidden_state_pages", False):
+        return
+
+    def get_kv_cache_groups(vllm_config, kv_cache_spec):
+        groups = original(vllm_config, kv_cache_spec)
+        hidden = [g for g in groups if isinstance(g.kv_cache_spec, HiddenStateCacheSpec)]
+        others = [g.kv_cache_spec for g in groups if not isinstance(g.kv_cache_spec, HiddenStateCacheSpec)]
+        if not hidden or not others or not vllm_config.cache_config.get_resolved_kv_cache_layout().is_block_outermost:
+            return groups
+        widest = max(spec.page_size_bytes for spec in others)
+        block_size = math.gcd(*(spec.block_size for spec in others))
+        aligned = []
+        for group in groups:
+            spec = group.kv_cache_spec
+            if isinstance(spec, HiddenStateCacheSpec) and spec.page_size_bytes > widest:
+                per_token = spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+                if per_token <= widest:
+                    new_block_size = kv_cache_planning._largest_divisor_at_most(block_size, widest // per_token)
+                    spec = replace(spec, block_size=new_block_size, page_size_padded=widest)
+                    group = KVCacheGroupSpec(group.layer_names, spec)
+            aligned.append(group)
+        return aligned
+
+    get_kv_cache_groups._prime_rl_aligns_hidden_state_pages = True
+    kv_cache_planning.get_kv_cache_groups = get_kv_cache_groups
+
+
+def monkey_patch_dspark_dp_compile_cache():
+    """Keep independent DP replicas in distinct draft compilation caches."""
+    from functools import wraps
+
+    from vllm.v1.worker.gpu.spec_decode.dspark import utils
+
+    original = utils._get_dspark_parallel_config
+    if getattr(original, "_prime_rl_preserves_dp_cache_index", False):
+        return
+
+    @wraps(original)
+    def _get_dspark_parallel_config(parallel_config, tensor_parallel_size, draft_model_config):
+        draft = original(parallel_config, tensor_parallel_size, draft_model_config)
+        # Config replacement reconstructs this init=False field from the local rank.
+        draft.data_parallel_index = parallel_config.data_parallel_index
+        return draft
+
+    _get_dspark_parallel_config._prime_rl_preserves_dp_cache_index = True
+    utils._get_dspark_parallel_config = _get_dspark_parallel_config
+
+
+def monkey_patch_deepseek_v4_final_hidden_capture():
+    """Capture DeepSeek V4's last layer as its logits see it, for draft training targets.
+
+    Captured layers are the mean of the hyper-connection streams, but the logits are
+    ``head(norm(hc_head(streams)))``. Draft trainers rebuild the verifier's logits from the last
+    captured layer with its final norm and head, so that layer must be the ``hc_head`` output,
+    i.e. the final norm's input. Other captured layers keep the stream mean the draft reads at
+    serving time.
+    """
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_forward = dsv4_model.DeepseekV4Model.forward
+    if getattr(original_forward, "_prime_rl_captures_final_hidden", False):
+        return
+
+    def forward(self, *args, **kwargs):
+        if self.end_layer not in self.aux_hidden_state_layers:
+            return original_forward(self, *args, **kwargs)
+        final_hidden = []
+        handle = self.norm.register_forward_pre_hook(lambda module, inputs: final_hidden.append(inputs[0]))
+        try:
+            output = original_forward(self, *args, **kwargs)
+        finally:
+            handle.remove()
+        if isinstance(output, tuple):
+            output[1][-1] = final_hidden[0]
+        return output
+
+    forward._prime_rl_captures_final_hidden = True
+    dsv4_model.DeepseekV4Model.forward = forward
 
 
 @dataclass

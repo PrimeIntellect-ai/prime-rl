@@ -187,7 +187,17 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(
+        config.model,
+        parallel_dims,
+        loading_from_ckpt_later,
+        freeze=config.speculator is not None and config.speculator.freeze_backbone,
+    )
+    speculator = None
+    if config.speculator is not None:
+        from prime_rl.specdecode.training import SpeculatorTraining
+
+        speculator = SpeculatorTraining(model, config.speculator, config.model, parallel_dims)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     materialize_images = None
@@ -222,6 +232,11 @@ def train(config: TrainerConfig):
         offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
+        lr_overrides=(
+            {"speculator.": config.speculator.lr}
+            if config.speculator is not None and config.speculator.lr is not None
+            else None
+        ),
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 
@@ -246,6 +261,8 @@ def train(config: TrainerConfig):
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
+        if speculator is not None:
+            speculator.cp_context = model.cp_context
 
     is_moe_model = is_tt_moe_model(model)
     staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
@@ -341,6 +358,8 @@ def train(config: TrainerConfig):
                 prune_broadcasts_beyond(config.output_dir, startup_version)
             logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
             t0 = time.perf_counter()
+            if speculator is not None:
+                speculator.refresh_verifier_weights()
             weight_sender.broadcast(model, startup_version)
             logger.debug(
                 f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
@@ -436,6 +455,9 @@ def train(config: TrainerConfig):
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
+
+        if speculator is not None:
+            speculator.refresh_verifier_weights()
 
         routing_stats = []
         step_local_num_tokens = 0
@@ -556,7 +578,11 @@ def train(config: TrainerConfig):
                 )
 
             # Forward pass with per-token temperatures
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading, model):
+            with (
+                maybe_record_function("forward"),
+                maybe_activation_offloading(config.model.ac_offloading, model),
+                speculator.capture() if speculator is not None else nullcontext(),
+            ):
                 out = forward(
                     model,
                     input_ids,
@@ -624,6 +650,13 @@ def train(config: TrainerConfig):
                 support=support,
                 trainer_support_logprobs=trainer_support,
             )
+
+            if speculator is not None:
+                draft_loss, _ = speculator.loss(micro_batch)
+                # Backward losses carry max_scale, which grad_scale divides out after backward.
+                loss = loss + draft_loss * config.speculator.loss_weight * max_scale / (
+                    batch_size * parallel_dims.fsdp_gradient_divide_factor
+                )
 
             # Backward pass
             if parallel_dims.dp_replicate_enabled and gradient_manager is None:
@@ -695,6 +728,10 @@ def train(config: TrainerConfig):
         if gradient_manager is None:
             scale_gradients_(None, model, grad_scale)
 
+        draft_grad_norm = None
+        if speculator is not None and gradient_manager is None:
+            draft_grad_norm = clip_grad_norm_(None, model.speculator, float("inf"))
+
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -725,6 +762,8 @@ def train(config: TrainerConfig):
             # once its block is freed under it.
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
+            if speculator is not None:
+                speculator.refresh_verifier_weights(reset_metrics=False)
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
@@ -765,6 +804,8 @@ def train(config: TrainerConfig):
         tensor_metrics = tensor_stats.compute_stats()
         if is_moe_model:
             tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
+        if speculator is not None:
+            tensor_metrics.update(speculator.metrics())
 
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_flops, forward_backward_time)
@@ -816,6 +857,8 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if draft_grad_norm is not None:
+            optim_metrics["speculator/grad_norm"] = draft_grad_norm.item()
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics

@@ -55,6 +55,7 @@ def setup_optimizer(
     offload: OffloadMode = "none",
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
+    lr_overrides: dict[str, float] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
@@ -81,6 +82,19 @@ def setup_optimizer(
         fused_adamw=config.type == "adamw" and not cpu_offload,
         model=model,
     )
+
+    if lr_overrides:
+        for prefix, lr in lr_overrides.items():
+            parameter_ids = {id(param) for name, param in optimizer_named_params if name.startswith(prefix)}
+            for group in list(optimizer.param_groups):
+                selected = [param for param in group["params"] if id(param) in parameter_ids]
+                if not selected:
+                    continue
+                if len(selected) == len(group["params"]):
+                    group["lr"] = lr
+                    continue
+                group["params"] = [param for param in group["params"] if id(param) not in parameter_ids]
+                optimizer.add_param_group({**group, "params": selected, "lr": lr})
 
     if full_offload:
         assert master_weights is not None

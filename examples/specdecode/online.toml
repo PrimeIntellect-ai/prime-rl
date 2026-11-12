@@ -1,0 +1,3 @@
+[train.generation]
+on_missing = "generate"
+vllm_endpoint = "http://localhost:18300/v1"

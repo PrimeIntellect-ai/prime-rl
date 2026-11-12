@@ -1,0 +1,33 @@
+output_dir = "outputs/specdecode/qwen3-dspark"
+num_gpus = 1
+
+[train]
+speculator_type = "dspark"
+seed = 42
+
+[train.verifier]
+verifier_name_or_path = "Qwen/Qwen3-4B"
+
+[train.draft]
+from_pretrained = "RedHatAI/Qwen3-4B-speculator.dspark"
+draft_attn_impl = "sdpa"
+
+[train.data]
+data_path = "outputs/specdecode/data"
+total_seq_len = 1024
+max_anchors = 32
+num_workers = 2
+
+[train.generation]
+on_missing = "raise"
+
+[train.loss]
+loss_fn = '{"ce": 0.1, "tv": 0.9}'
+
+[train.optimizer]
+optimizer = "adamw"
+lr = 0.00001
+
+[train.trainer]
+epochs = 1
+max_steps = 4

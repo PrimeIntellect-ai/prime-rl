@@ -21,6 +21,7 @@ from prime_rl.configs.shared import (
     ZMQTransportConfig,
     validate_step_dir,
 )
+from prime_rl.configs.specdecode import SpeculatorConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
@@ -733,6 +734,20 @@ class TrainerConfig(BaseTrainerConfig):
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
+
+    speculator: SpeculatorConfig | None = None
+    """Optional draft model trained from detached policy hidden states."""
+
+    @model_validator(mode="after")
+    def validate_speculator_training(self):
+        if self.speculator is not None:
+            if self.weight_broadcast.type not in ("filesystem", "nccl"):
+                raise ValueError("Joint speculator training requires filesystem or NCCL draft weight routing")
+            if self.model.lora is not None:
+                raise ValueError("Joint speculator training requires full policy weights for verifier projections")
+            if self.model.vlm is not None:
+                raise ValueError("Joint speculator training currently consumes text token batches")
+        return self
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
