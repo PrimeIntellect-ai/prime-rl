@@ -39,6 +39,10 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_kernels::select_indexed_blocks",
         "prime_kernels::indexed_attention_plan",
         "prime_rl::record_moe_routing_statistics",
+        # The dispatch's pending copy of its counts to the host and the wait for it: a replayed wait would find no
+        # pending copy.
+        "prime_rl::host_copy_start",
+        "prime_rl::host_copy_wait",
         # The EP dispatch splits are a saved CUDA-to-CPU copy of these counts. Replayed under torch.compile, the
         # counts exchange would no longer feed the dispatch all-to-all, so inductor could order the two differently
         # on ranks with different sequence lengths, leaving the ranks in mismatched collectives.
