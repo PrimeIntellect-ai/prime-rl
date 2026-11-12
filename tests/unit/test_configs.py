@@ -1476,3 +1476,63 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+def _nvl72_rl(**deployment):
+    return RLConfig.model_validate(
+        {
+            "trainer": {"model": {"ep": 8, "moe": {"dispatch": {"type": "deepep"}}}},
+            "orchestrator": {},
+            "inference": {},
+            "deployment": {"type": "multi_node", "num_train_nodes": 2, "num_infer_nodes": 2, **deployment},
+            "slurm": {},
+        }
+    )
+
+
+def test_nvlink_domain_spanning_nodes_routes_ep_over_nvlink():
+    # GB300 NVL72: 4-GPU trays in one 72-GPU NVLink domain
+    nvl72 = _nvl72_rl(gpus_per_node=4, gpus_per_nvlink_domain=72)
+    assert nvl72.deployment.nvlink_spans_nodes
+    assert nvl72.inference.deployment.gpus_per_nvlink_domain == 72
+    assert nvl72.trainer.model.moe.dispatch.mnnvl
+    assert nvl72.inference.env_vars["VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL"] == "1"
+
+    # 8-GPU servers (the default): nothing changes
+    server = _nvl72_rl()
+    assert not server.deployment.nvlink_spans_nodes
+    assert not server.trainer.model.moe.dispatch.mnnvl
+    assert "VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL" not in server.inference.env_vars
+
+    # An explicit choice wins
+    explicit = RLConfig.model_validate(
+        {
+            "trainer": {"model": {"ep": 8, "moe": {"dispatch": {"type": "deepep", "mnnvl": False}}}},
+            "orchestrator": {},
+            "inference": {},
+            "deployment": {
+                "type": "multi_node",
+                "num_train_nodes": 2,
+                "num_infer_nodes": 2,
+                "gpus_per_node": 4,
+                "gpus_per_nvlink_domain": 72,
+            },
+            "slurm": {},
+        }
+    )
+    assert not explicit.trainer.model.moe.dispatch.mnnvl
+
+    with pytest.raises(ValidationError, match="must be a multiple of gpus_per_node"):
+        _nvl72_rl(gpus_per_node=4, gpus_per_nvlink_domain=70)
+
+
+def test_pd_role_overrides_replace_the_default_all2all_backend():
+    import json
+
+    from prime_rl.entrypoints.inference import vllm_overrides_fragment
+
+    # The template writes the role default first and the role's overrides after it; the config loader keeps the last
+    # value of a repeated key
+    fragment = vllm_overrides_fragment({"all2all_backend": "flashinfer_nvlink_two_sided"})
+    role_extra = '"all2all_backend": "deepep_low_latency"' + fragment.replace('\\"', '"')
+    assert json.loads("{" + role_extra + "}")["all2all_backend"] == "flashinfer_nvlink_two_sided"

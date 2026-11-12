@@ -110,6 +110,25 @@ class BaseDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
 
+    gpus_per_nvlink_domain: int | None = Field(None, ge=1)
+    """GPUs that share one NVLink domain, a multiple of ``gpus_per_node``. None: one node (8-GPU servers). Set it on
+    racks whose NVLink spans nodes, e.g. 72 on GB300 NVL72 (``gpus_per_node = 4``): expert-parallel traffic inside the
+    domain then takes multi-node NVLink instead of InfiniBand."""
+
+    @model_validator(mode="after")
+    def validate_nvlink_domain(self):
+        if self.gpus_per_nvlink_domain is not None and self.gpus_per_nvlink_domain % self.gpus_per_node:
+            raise ValueError(
+                f"gpus_per_nvlink_domain ({self.gpus_per_nvlink_domain}) must be a multiple of gpus_per_node "
+                f"({self.gpus_per_node}): an NVLink domain holds whole nodes."
+            )
+        return self
+
+    @property
+    def nvlink_spans_nodes(self) -> bool:
+        """NVLink reaches GPUs on other nodes (NVL72-style racks)."""
+        return (self.gpus_per_nvlink_domain or self.gpus_per_node) > self.gpus_per_node
+
 
 class BaseSingleNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["single_node"] = "single_node"
