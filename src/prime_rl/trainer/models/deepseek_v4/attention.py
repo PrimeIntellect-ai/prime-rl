@@ -546,7 +546,8 @@ class SparseAttnInputs:
         assert (compressed_kv is None) == (top_k_indices is None), (
             "compressed_kv and top_k_indices describe the same entries: pass both or neither"
         )
-        # The two counts differ under CP: the keys are global and the queries are this rank's.
+        # The two counts differ under CP: the queries are this rank's, while the keys are the whole
+        # row's, or under halo exchange this rank's tokens and the halo before them.
         batch, _, n_tokens, _ = kv.shape
         n_queries = window_indices.shape[0]
         assert top_k_indices is None or top_k_indices.shape[1] == n_queries, (
