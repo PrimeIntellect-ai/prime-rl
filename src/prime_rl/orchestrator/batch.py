@@ -620,8 +620,9 @@ class BatchPacker:
     def resize(self, num_train_workers: int, micro_batch_multiple: int) -> None:
         """Pack for a trainer with this many data ranks that needs micro batches in this multiple."""
         self.num_train_workers = num_train_workers
-        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
-        self.pad_to_multiple_of = self.seq_len if self.pad_to_seq_len else micro_batch_multiple
+        # Rows hold at most `seq_len` tokens, so padding to a multiple of `row_len` pads every row to exactly `row_len`
+        row_len = -(-self.seq_len // micro_batch_multiple) * micro_batch_multiple
+        self.pad_to_multiple_of = row_len if self.pad_to_seq_len else micro_batch_multiple
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(
