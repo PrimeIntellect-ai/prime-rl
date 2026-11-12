@@ -637,6 +637,11 @@ def train(config: TrainerConfig):
                 trainer_support_logprobs=trainer_support,
             )
 
+            if is_moe_model and engine_weights is not None:
+                # Taken before backward, so an activation-checkpoint recompute counts nothing twice
+                engine_load = take_engine_load(model)
+                set_engine_weights(model, None)
+
             # Backward pass
             if parallel_dims.dp_replicate_enabled and gradient_manager is None:
                 # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
@@ -684,11 +689,7 @@ def train(config: TrainerConfig):
             if is_moe_model:
                 routing_stats.append(take_moe_routing_stats(model))
                 if expert_load_interval is not None:
-                    engine_loads.append(
-                        take_engine_load(model) if engine_weights is not None else routing_stats[-1][:, :-1]
-                    )
-                    # None before backward, so an activation-checkpoint recompute counts nothing twice
-                    set_engine_weights(model, None)
+                    engine_loads.append(engine_load if engine_weights is not None else routing_stats[-1][:, :-1])
 
             for key, loss_tensor in loss_tensors.items():
                 tensor_stats.add(key, loss_tensor)
