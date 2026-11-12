@@ -224,6 +224,22 @@ def take_moe_routing_stats(model: nn.Module) -> Tensor:
     return stats
 
 
+def set_engine_weights(model: nn.Module, weights: Tensor | None) -> None:
+    """Weight each token of the next forward in the MoE layers' ``engine_load`` (None records none)."""
+    for block_mlp in iter_moe_blocks(model):
+        block_mlp.engine_weights = weights
+
+
+def take_engine_load(model: nn.Module) -> Tensor:
+    """This rank's engine-weighted expert counts since the last call, as ``[num_moe_layers, num_experts]``, and reset
+    them."""
+    blocks = list(iter_moe_blocks(model))
+    load = torch.stack([block_mlp.engine_load.clone() for block_mlp in blocks])
+    for block_mlp in blocks:
+        block_mlp.engine_load.zero_()
+    return load
+
+
 def get_global_moe_stats(
     model: nn.Module,
     routing_stats: list[Tensor],

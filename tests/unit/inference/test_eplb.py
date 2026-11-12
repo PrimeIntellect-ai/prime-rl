@@ -169,3 +169,42 @@ def test_trainer_placement_installs_maps_without_moving_weights(tmp_path, monkey
 
     with pytest.raises(ValueError, match="shape"):
         install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1)
+
+
+def test_engine_weights_count_what_the_engines_computed():
+    from types import SimpleNamespace as NS
+
+    import numpy as np
+
+    from prime_rl.orchestrator.trajectories import engine_weights
+
+    # prompt (4) -> reply (2) -> tool output (3) -> reply (1)
+    nodes = [NS(token_ids=[0] * n) for n in (4, 2, 3, 1)]
+
+    def call(node, cached):
+        return NS(node=node, usage=NS(cached_input_tokens=cached))
+
+    trace = NS(nodes=nodes)
+    # Turn 1 prefills the prompt and generates; turn 2 reads the first 6 tokens from the cache
+    branch = NS(nodes=nodes, calls=[call(1, 0), call(3, 6)])
+    weights = engine_weights(trace, branch, set())
+    np.testing.assert_array_equal(weights, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+    # Turn 2 found only the first 2 cached (an eviction): tokens 2-5 are prefilled a second time
+    branch.calls = [call(1, 0), call(3, 2)]
+    np.testing.assert_array_equal(engine_weights(trace, branch, set()), [1, 1, 2, 2, 2, 2, 1, 1, 1, 1])
+    # A call an earlier branch already counted counts there only
+    np.testing.assert_array_equal(engine_weights(trace, branch, {1}), [0, 0, 1, 1, 1, 1, 1, 1, 1, 1])
+    # No reported cache reads: unknown, so every token counts once (None)
+    branch.calls = [NS(node=1, usage=NS(cached_input_tokens=None))]
+    assert engine_weights(trace, branch, set()) is None
+
+
+def test_moe_engine_load_weighs_each_routed_token():
+    import torch
+
+    from prime_rl.trainer.models.layers.moe import record_moe_engine_load
+
+    load = torch.zeros(4)
+    # Three tokens, top-2: the second token was served from the cache (weight 0), the third prefilled twice
+    record_moe_engine_load(load, torch.tensor([[0, 1], [1, 2], [3, 1]]), torch.tensor([1.0, 0.0, 2.0]))
+    assert load.tolist() == [1.0, 3.0, 0.0, 2.0]

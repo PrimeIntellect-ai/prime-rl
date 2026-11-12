@@ -57,7 +57,9 @@ from prime_rl.trainer.model import (
     get_expert_load_stats,
     get_global_moe_stats,
     is_tt_moe_model,
+    set_engine_weights,
     setup_model,
+    take_engine_load,
     take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
@@ -436,6 +438,7 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         routing_stats = []
+        engine_loads = []  # Per micro step, expert counts weighted by the engines' work on each token (EPLB)
         step_local_num_tokens = 0
         step_local_flops = 0
         score_centering = config.loss.type == "icepop" and config.loss.score_centering
@@ -553,6 +556,17 @@ def train(config: TrainerConfig):
                     f"support rows {label_support.num_rows} are not aligned with labels shape {tuple(labels.shape)}"
                 )
 
+            # Expert counts for EPLB weigh each token by how often the engines computed it (prefix-cache reads
+            # excluded). A VLM shards its inputs inside the model, so its counts stay unweighted.
+            engine_weights = micro_batch.get("engine_weights") if expert_load_interval is not None else None
+            if engine_weights is not None and not (cp_enabled and defer_vlm_cp_to_model):
+                engine_weights = engine_weights.to("cuda")
+                if cp_enabled:
+                    engine_weights = shard_for_cp(engine_weights, cp_rank=cp_rank, cp_world_size=cp_size)
+                set_engine_weights(model, engine_weights.reshape(-1))
+            else:
+                engine_weights = None
+
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading, model):
                 out = forward(
@@ -669,6 +683,12 @@ def train(config: TrainerConfig):
 
             if is_moe_model:
                 routing_stats.append(take_moe_routing_stats(model))
+                if expert_load_interval is not None:
+                    engine_loads.append(
+                        take_engine_load(model) if engine_weights is not None else routing_stats[-1][:, :-1]
+                    )
+                    # None before backward, so an activation-checkpoint recompute counts nothing twice
+                    set_engine_weights(model, None)
 
             for key, loss_tensor in loss_tensors.items():
                 tensor_stats.add(key, loss_tensor)
@@ -724,8 +744,8 @@ def train(config: TrainerConfig):
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
             published_load = None
-            if expert_load_interval is not None and routing_stats:
-                step_load = torch.stack(routing_stats)[..., :-1].sum(dim=0).to(torch.int64)
+            if expert_load_interval is not None and engine_loads:
+                step_load = torch.stack(engine_loads).sum(dim=0).round().to(torch.int64)
                 dist.all_reduce(step_load, op=dist.ReduceOp.SUM, group=dp_cp_group)
                 expert_load = step_load if expert_load is None else expert_load + step_load
                 if progress.step % expert_load_interval == 0:
