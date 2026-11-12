@@ -90,6 +90,9 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
         )
 
     model = {key: value for key, value in run_config["model"].items() if key in EXPORT_FIELDS}
+    # A truncated debug run's shards hold only its layers.
+    if num_layers := run_config["model"].get("debug", {}).get("num_layers"):
+        model["debug"] = {"num_layers": num_layers}
     tokenizer = TokenizerConfig(**run_config["tokenizer"])
     return ModelConfig(**model, **CONVERSION_OVERRIDES), tokenizer
 
