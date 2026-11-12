@@ -170,39 +170,54 @@ def test_restarted_ranks_get_the_retained_steps_until_a_checkpoint_covers_them(
         transport.close()
 
 
-def _trained_tokens(receivers: list[BatchReceiver]) -> list[list[int]]:
-    """Per data rank, the tokens of the micro batches that train, after checking that every
-    rank holds the same number of micro batches."""
+def _trained_tokens(receivers: list[BatchReceiver], micro_batch_multiple: int = 1) -> list[list[int]]:
+    """Per data rank, the tokens that train, after checking that every rank holds the same
+    number of micro batches, each as long as its sequences and a multiple of the trainer's."""
     received = {receiver.data_rank: receiver.receive() for receiver in receivers}
     assert len({len(micro_batches) for micro_batches in received.values()}) == 1
+    for micro_batch in [mb for micro_batches in received.values() for mb in micro_batches]:
+        num_tokens = len(np.frombuffer(micro_batch.input_ids, np.int32))
+        assert sum(micro_batch.sequence_lengths) == sum(micro_batch.seq_lens) == num_tokens
+        assert num_tokens % micro_batch_multiple == 0
     return [
         [
             token
             for micro_batch in received[data_rank]
-            if np.frombuffer(micro_batch.loss_mask, np.bool_).any()
-            for token in np.frombuffer(micro_batch.input_ids, np.int32).tolist()
+            for token, trains in zip(
+                np.frombuffer(micro_batch.input_ids, np.int32).tolist(), np.frombuffer(micro_batch.loss_mask, np.bool_)
+            )
+            if trains
         ]
         for data_rank in sorted(received)
     ]
 
 
-@pytest.mark.parametrize("rank_to_data_rank", [[0], [0, 1, 2]], ids=["one-data-rank", "three-data-ranks"])
+@pytest.mark.parametrize(
+    "rank_to_data_rank, micro_batch_multiple",
+    [([0], 1), ([0, 1, 2], 1), ([0, 0, 1, 1, 2, 2], 2)],
+    ids=["one-data-rank", "three-data-ranks", "three-data-ranks-cp2"],
+)
 @pytest.mark.parametrize(
     "setup_transport, setup_receivers",
     [(_filesystem, _filesystem_receivers), (_zmq, _zmq_receivers)],
     ids=["filesystem", "zmq"],
 )
 def test_a_trainer_restarted_with_another_number_of_data_ranks_gets_every_micro_batch(
-    tmp_path: Path, setup_transport: Callable, setup_receivers: Callable, rank_to_data_rank: list[int]
+    tmp_path: Path,
+    setup_transport: Callable,
+    setup_receivers: Callable,
+    rank_to_data_rank: list[int],
+    micro_batch_multiple: int,
 ):
     sender, receivers, transport = setup_transport(tmp_path, retain=True)
     asyncio.run(_send(sender, receivers))
 
     # The retained step was published for two data ranks.
-    restarted = setup_receivers(tmp_path, transport, rank_to_data_rank)
+    restarted = setup_receivers(tmp_path, transport, rank_to_data_rank, micro_batch_multiple)
     for receiver in restarted:
         receiver.wait()
-    assert sorted(token for tokens in _trained_tokens(restarted) for token in tokens) == [_tokens(0, 0), _tokens(0, 1)]
+    trained = _trained_tokens(restarted, micro_batch_multiple)
+    assert sorted(token for tokens in trained for token in tokens) == [_tokens(0, 0), _tokens(0, 1)]
 
     # So was the step the sender is waiting on, which it deals again for the new trainer.
     async def send_live() -> None:
@@ -211,9 +226,10 @@ def test_a_trainer_restarted_with_another_number_of_data_ranks_gets_every_micro_
         await asyncio.wait_for(asyncio.gather(sender.send(grid), *waits), timeout=10)
 
     asyncio.run(send_live())
-    assert sorted(token for tokens in _trained_tokens(restarted) for token in tokens) == [_tokens(1, 0), _tokens(1, 1)]
-    assert sender.data_world_size == len(rank_to_data_rank)
-    assert sender.log.data_world_size(1) == len(rank_to_data_rank)
+    trained = _trained_tokens(restarted, micro_batch_multiple)
+    assert sorted(token for tokens in trained for token in tokens) == [_tokens(1, 0), _tokens(1, 1)]
+    assert sender.data_world_size == len(set(rank_to_data_rank))
+    assert sender.log.data_world_size(1) == len(set(rank_to_data_rank))
     for transport in [sender, *receivers, *restarted]:
         transport.close()
 
@@ -256,14 +272,23 @@ def test_a_trainer_restarted_with_more_context_parallel_ranks_gets_longer_micro_
 ):
     sender, receivers, transport = setup_transport(tmp_path, retain=True)
     asyncio.run(_send(sender, receivers))
+    # Ranks 0 and 1 of the old trainer asked for step 1 before it was killed.
+    if isinstance(sender, ZMQBatchSender):
+        for receiver in receivers[:2]:
+            receiver.socket.send(receiver.request_encoder.encode(receiver.request()))
+            receiver.close()
 
     # Two data ranks of two context-parallel ranks each become one data rank of four.
     restarted = setup_receivers(tmp_path, transport, rank_to_data_rank=[0, 0, 0, 0], micro_batch_multiple=4)
 
     async def send_live() -> None:
         grid = [[_micro_batch(_tokens(1, data_rank))] for data_rank in range(2)]
-        waits = [asyncio.to_thread(receiver.wait) for receiver in restarted]
-        await asyncio.wait_for(asyncio.gather(sender.send(grid), *waits), timeout=10)
+        send = asyncio.create_task(sender.send(grid))
+        # Ranks 2 and 3 of the new trainer ask first, which completes the old trainer's world size.
+        waits = [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in restarted[2:]]
+        await asyncio.sleep(0.5)
+        waits += [asyncio.create_task(asyncio.to_thread(receiver.wait)) for receiver in restarted[:2]]
+        await asyncio.wait_for(asyncio.gather(send, *waits), timeout=10)
 
     for step, send in ((0, None), (1, send_live)):
         if send is None:

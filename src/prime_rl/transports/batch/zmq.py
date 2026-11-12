@@ -98,14 +98,14 @@ class ZMQBatchSender(BatchSender):
 
     async def _wait_for_requests(self) -> dict[int, tuple[bytes, BatchRequest]]:
         """Collect one request per trainer rank for the current step. Each request carries the
-        trainer world size, which says how many to wait for. A rank that asks again (a restarted
-        trainer) replaces its earlier request, and a request with another world size (a trainer
-        restarted at another size) drops the ones collected so far."""
-        rank_to_request: dict[int, tuple[bytes, BatchRequest]] = {}
+        trainer's shape, whose world size says how many to wait for. Requests are collected per
+        shape: a trainer that died with requests still queued, and its successor of another
+        shape, can arrive interleaved. A rank that asks again (a restarted trainer of the same
+        shape) replaces its earlier request."""
+        shape_to_requests: dict[tuple[int, int, int], dict[int, tuple[bytes, BatchRequest]]] = {}
         while True:
             identity, request = await self._receive_request()
-            if any(other.world_size != request.world_size for _, other in rank_to_request.values()):
-                rank_to_request = {}
+            rank_to_request = shape_to_requests.setdefault(request.shape, {})
             rank_to_request[request.rank] = (identity, request)
             if len(rank_to_request) == request.world_size:
                 return rank_to_request

@@ -25,6 +25,11 @@ class BatchRequest(msgspec.Struct):
     committed: int
     """The newest step a trainer checkpoint covers; a retaining sender releases the steps up to it."""
 
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        """The trainer's shape as far as its batches depend on it. Ranks of one trainer agree on it."""
+        return self.world_size, self.data_world_size, self.micro_batch_multiple
+
 
 class BatchLog:
     """Shipped steps on disk, one file per data rank (``<batch_dir>/step_<N>/rank_<K>.bin``).
@@ -111,8 +116,9 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.advantages = np.pad(micro_batch.advantages, tail)
     micro_batch.loss_mask = np.pad(micro_batch.loss_mask, tail)
     micro_batch.position_ids = np.concatenate([micro_batch.position_ids, np.arange(padding_size, dtype=np.int32)])
-    micro_batch.sequence_lengths[-1] += padding_size
-    micro_batch.seq_lens[-1] += padding_size
+    # Replaced, not changed in place: a dummy shares these lists with the micro batch it copies.
+    micro_batch.sequence_lengths = [*micro_batch.sequence_lengths[:-1], micro_batch.sequence_lengths[-1] + padding_size]
+    micro_batch.seq_lens = [*micro_batch.seq_lens[:-1], micro_batch.seq_lens[-1] + padding_size]
     micro_batch.padding += padding_size
     micro_batch.inference_logprobs = np.pad(micro_batch.inference_logprobs, tail)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)

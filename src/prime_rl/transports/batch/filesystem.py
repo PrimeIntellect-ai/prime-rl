@@ -65,16 +65,16 @@ class FileSystemBatchSender(BatchSender):
     async def _wait_for_requests(self) -> tuple[int, BatchRequest]:
         """Block until every trainer rank requested the step; returns the step the trainer has
         committed and one of its requests. Each request holds the trainer world size. The
-        newest request says how many to wait for: requests a trainer of another size left behind
+        newest request says how many to wait for: requests a trainer of another shape left behind
         do not count."""
         step_path = get_step_path(self.log.dir, self.current_step)
         while True:
             paths = sorted(step_path.glob("rank_*.request"), key=lambda path: path.stat().st_mtime)
             requests = [msgspec.msgpack.decode(path.read_bytes(), type=BatchRequest) for path in paths]
             if requests:
-                world_size = requests[-1].world_size
-                requests = [r for r in requests if r.world_size == world_size and r.rank < world_size]
-                if len(requests) == world_size:
+                newest = requests[-1]
+                requests = [r for r in requests if r.shape == newest.shape and r.rank < newest.world_size]
+                if len(requests) == newest.world_size:
                     return max(request.committed for request in requests), requests[0]
             await asyncio.sleep(REQUEST_POLL_INTERVAL_S)
 
