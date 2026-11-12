@@ -439,7 +439,9 @@ class MyEncoder(SystemOneEncoder):
 ```toml
 [model]
 name = "my-org/my-decision-model"
-implementation.import_path = "my_pkg.model.MyDecisionModel"   # optional: a model class with an added head
+
+[model.implementation]            # optional: a model class with an added head
+import_path = "my_pkg.model.MyDecisionModel"
 
 [data]
 type = "system_one"
