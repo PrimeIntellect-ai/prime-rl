@@ -67,18 +67,21 @@ def pick_volume(depth_tokens):
     return None
 
 
-def val_interval_and_steps(steps):
+def val_interval_and_steps(steps, points=0):
     """A val interval dividing ``steps`` (so the last val sees ~final weights), between steps/16 and steps/5;
-    nudges steps by at most +-3 when needed."""
+    nudges steps by at most +-3 when needed. ``points`` > 0 (ladder runs) asks for ~points..1.6*points val evals
+    instead, for val-bpb-vs-FLOPs curves."""
+    if points:
+        ranges = (range(points, int(points * 1.6) + 1), range(max(5, points * 2 // 3), points))
+    else:
+        ranges = (range(8, 17), range(5, 8))
     for delta in (0, 1, -1, 2, -2, 3, -3):
         s = steps + delta
-        for k in range(8, 17):
-            if s % k == 0:
-                return s // k, s
-        for k in range(5, 8):
-            if s % k == 0:
-                return s // k, s
-    return max(1, steps // 8), steps
+        for rng in ranges:
+            for k in rng:
+                if s % k == 0:
+                    return s // k, s
+    return max(1, steps // (points or 8)), steps
 
 
 def main():
@@ -105,6 +108,10 @@ def main():
     ap.add_argument("--gpu", default="H200_141GB")
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--note", default="")
+    ap.add_argument("--val-points", type=int, default=0, help="target number of val evals (0: legacy 8-16)")
+    ap.add_argument("--ladder", default=None, help="ladder group id (full #420 ladder extension)")
+    ap.add_argument("--image-tag", default=os.environ.get("PRIME_IMAGE_TAG") or None,
+                    help="pin the prime-rl image (top-level image_tag); default: $PRIME_IMAGE_TAG or backend default")
     a = ap.parse_args()
 
     residual = json.loads(a.residual)
@@ -118,7 +125,7 @@ def main():
         steps = round(a.tokens / B)
     else:
         steps = a.steps
-    interval, steps = val_interval_and_steps(steps)
+    interval, steps = val_interval_and_steps(steps, a.val_points)
     tokens = steps * B
     wd = a.wd * D_REF / tokens
     dim = model.config.hidden_size
@@ -156,6 +163,10 @@ def main():
         f"max_steps = {steps}",
         f'gpu_type = "{a.gpu}"',
         f'volume = "{volume}"',
+    ]
+    if a.image_tag:
+        lines.append(f'image_tag = "{a.image_tag}"')
+    lines += [
         "",
         "# derived (launch.py): " + json.dumps(dict(depth=a.depth, flops_per_token=fpt, scaling_params=c["scaling"],
                                                      total_params=c["total"], tokens=tokens,
@@ -234,7 +245,8 @@ def main():
                params_total=c["total"], params_scaling=c["scaling"], flops_per_token=fpt,
                total_flops=fpt * tokens, tokens=tokens, steps=steps, weight_decay=wd, val_interval=interval,
                volume=volume, gpu=a.gpu, status="SUBMITTED", launched_at=time.time(),
-               eval_mode="code" if a.code_eval else "masked_loss", note=a.note)
+               eval_mode="code" if a.code_eval else "masked_loss", note=a.note,
+               micro_batch=a.micro_batch, ladder=a.ladder, optim_extra=a.optim, image_tag=a.image_tag)
     L.upsert(rec)
     print(f"LAUNCHED {run_id} {name} on {volume}")
 

@@ -24,3 +24,9 @@ Single-node 8×H200 pretraining configs for nanochat (karpathy/nanochat @ ff4630
 **Tools.**
 - `tools/launch.py` computes params and FLOPs on the meta device, derives the hyperparameters, writes the TOML and submits it.
 - `tools/test_variants.py` and `tools/test_core.py` are CPU unit tests: variant forward/backward and accounting, and the CORE port against nanochat's `core_eval`.
+
+**Full #420 ladder.** `ladder/` holds every run of the full ladder for plain and the best gated variant:
+- isoflop sweeps at 1e18, 3e18 and 6e18;
+- the miniseries d10–d20.
+
+See `ladder/README.md` for the configs and the result.
