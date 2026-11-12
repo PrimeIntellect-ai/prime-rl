@@ -28,7 +28,8 @@ class StepResult:
     """Sum over all ranks of the losses the micro-batches backpropagated, NaN micro-batches left out."""
 
     nan_count: int
-    """Micro-batches with a NaN loss over all ranks. They are left out of the backward pass."""
+    """Micro-batches with a NaN loss over all ranks. Their loss is left out of the logged loss; their gradients may
+    still be NaN."""
 
     num_tokens: int
     num_flops: float
