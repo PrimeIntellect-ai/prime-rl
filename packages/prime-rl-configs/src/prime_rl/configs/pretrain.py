@@ -37,9 +37,8 @@ class PretrainDataConfig(DatatroveDataConfig):
     """Training shards."""
 
     packing: Literal["windows", "best_fit"] = "windows"
-    """How documents become samples. ``windows``: the pool's ``seq_len`` windows; documents are cut at window edges.
-    ``best_fit``: whole documents packed into samples by best-fit decreasing (Ding et al., 2024); only documents longer
-    than ``seq_len`` are cut, and samples that are not full end in padding without loss."""
+    """``windows``: the pool's ``seq_len`` windows, cutting documents at window edges. ``best_fit``: whole documents
+    packed by best-fit decreasing (Ding et al., 2024); only documents longer than ``seq_len`` are cut."""
 
     eod_mask_loss: bool = True
     """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is

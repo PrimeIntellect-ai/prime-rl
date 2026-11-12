@@ -96,11 +96,10 @@ def test_document_masking(folders: list[Path], token_dataset):
         assert {k: v for k, v in on.items() if k not in ("seq_lens", "position_ids")} == {
             k: v for k, v in off.items() if k not in ("seq_lens", "position_ids")
         }
-        # Without document masking, a sample's tokens are one segment; padding stays a segment of its own.
+        # Unmasked, the tokens are one segment, plus a padding segment.
         padding = off["seq_lens"][1] if len(off["seq_lens"]) == 2 else 0
         assert off["seq_lens"] == [seq_len - padding] + ([padding] if padding else [])
-        # With it, a segment starts at every document start (the pool wraps around to one) and at every piece of
-        # a document that does not continue the token before.
+        # Masked, a segment starts at every document start and wherever the token does not continue the one before.
         ids = on["input_ids"]
         boundaries = [
             i
@@ -218,17 +217,16 @@ def test_best_fit_decreasing():
 
 def test_best_fit_samples_hold_whole_documents(tmp_path):
     seq_len = 8
-    # 552 tokens, a multiple of seq_len, so that an epoch drops no document. 20 and 12 are longer than a sample's
-    # seq_len + 1 tokens and are cut; 9 fills a sample.
+    # 552 tokens, a multiple of seq_len, so an epoch drops no document; 20 and 12 are cut, 9 fills a sample.
     lengths = [3, 7, 2, 20, 4, 1, 6, 9, 5, 12] * 8
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents(lengths))
-    # Seed 1 starts the epoch's windows at an offset that is not a multiple of seq_len, so one window wraps around.
+    # With seed 1, one window wraps around the end of the pool.
     shards = TokenShards([tmp_path / "a"], seed=1)
     document = np.repeat(np.arange(len(lengths)), lengths)
     document_start = np.cumsum([0, *lengths])[:-1]
 
     dataset = BestFitTokenDataset(shards, seq_len, group_windows=4)
-    # The rows are shuffled: best-fit decreasing opens them longest piece first.
+    # Shuffled: best-fit decreasing opens rows longest piece first.
     first_lengths = [row[0][2] for row in dataset.pack(0, 0)]
     assert first_lengths != sorted(first_lengths, reverse=True)
     samples = []
