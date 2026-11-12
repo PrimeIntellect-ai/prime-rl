@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Router Precision](#router-precision)
+  - [LM Head Precision](#lm-head-precision)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
@@ -51,7 +52,7 @@ Both skip `lm_head`, the router and a few gate/projection modules by default (`i
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
-- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90 or SM100)
+- `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
@@ -115,24 +116,27 @@ score functions, normalization and routing weights remain FP32.
 
 For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply
 by FP32 routing weights and sum the contributions in FP32, then cast once to the expert output dtype.
-This also covers MXFP8 expert compute with Torch dispatch. DeepEP and MegaMoE use their own combine
-kernels and do not share this accumulation guarantee.
+This also covers MXFP8 expert compute with Torch dispatch. With DeepEP, each rank sums its experts'
+outputs for a token in FP32 and casts once, then DeepEP's combine adds these per-rank BF16 sums in FP32
+(across nodes, after summing each node's ranks in FP32 and casting to BF16). MegaMoE uses its own combine
+kernels and does not share this accumulation guarantee.
+
+### LM head precision
+
+The LM head computes FP32 logits from its BF16 operands: one GEMM writes the logits in FP32 instead of rounding them to BF16 (fused and vanilla head). Gradients stay BF16. This matches inference, whose `enable_fp32_lm_head` defaults to `true` (vLLM's FP32 head), and lowers the trainer–inference mismatch.
 
 ### Expert Parallelism Backends
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
 - **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
-- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
+- **`deepep`**: DeepEP custom dispatch/combine kernels. `num_sms` (default 32) is the number of SMs its kernels take from compute. DeepEP runs one communication channel per two SMs, so more SMs move tokens faster. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "deepep"
-num_sms = 20
-token_chunk_size = 4096
+num_sms = 32
 ```
-
-With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
 
 ### Runtime Fusions
 
@@ -165,6 +169,8 @@ The built-in VLM registry covers:
 | Qwen3.8 Flash Next | `qwen4_exp` |
 
 The trainer finds the vision encoder at `model.visual` and the language model at `model.language_model`.
+
+Text-only checkpoints of these families set `language_model_only: true` in `config.json` and ship no `model.visual` weights. The trainer then builds no vision encoder. vLLM does not read this field, so for `rl` also set `inference.vllm.language_model_only = true`.
 
 ### Enabling VLM Mode
 

@@ -20,7 +20,7 @@ def get_trace_stream(output_dir: Path) -> Path:
 
 
 def get_annotations_dir(output_dir: Path) -> Path:
-    """One stream per producer of trace updates: orch ship-time facts, trainer streams."""
+    """One stream per producer of trace updates: orchestrator ship-time facts, trainer streams."""
     return get_trace_dir(output_dir) / "annotations"
 
 

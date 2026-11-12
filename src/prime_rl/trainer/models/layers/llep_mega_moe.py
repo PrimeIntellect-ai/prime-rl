@@ -22,7 +22,7 @@ from prime_rl.trainer.models.layers.mega_moe import (
     _dw_dtype,
     check_mega_moe_dims,
     mega_moe_available,
-    mxfp8_rounded_weights,
+    mxfp8_decoded_weights,
 )
 
 if TYPE_CHECKING:
@@ -97,7 +97,7 @@ def llep_mega_moe_backward_op(
     if state.precision == "bf16":
         return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
     # MXFP8 QAT: a bf16 backward on the weights the forward computed with (re-quantized, so bitwise the same)
-    gate_up, down = mxfp8_rounded_weights(MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False))
+    gate_up, down = mxfp8_decoded_weights(MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False))
     return state.backward(
         dy, x, vids, foreign, plan_id, topk_weights, gate_up, down, activation_clamp, _dw_dtype(gate_up_proj)
     )

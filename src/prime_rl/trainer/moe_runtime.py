@@ -57,8 +57,8 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             return SonicMoEExpertCompute()
         return BF16ExpertCompute()
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
-        if importlib.util.find_spec("deep_gemm") is None:
-            raise RuntimeError("DeepGEMM FP8 expert compute requires the deep-gemm package.")
+        if importlib.util.find_spec("vllm.third_party.deep_gemm") is None:
+            raise RuntimeError("DeepGEMM FP8 expert compute requires the DeepGEMM bundled with vLLM.")
         capability = torch.cuda.get_device_capability()
         if capability[0] not in (9, 10):
             raise RuntimeError(
@@ -177,7 +177,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 token_group_alignment=compute.token_group_alignment,
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
-                token_chunk_size=dispatch.token_chunk_size,
+                hidden_size=moe.experts.down_proj.shape[1],
             )
         elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
             token_dispatcher = FusedTokenDispatcher()

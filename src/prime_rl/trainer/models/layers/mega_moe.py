@@ -9,6 +9,7 @@ import torch
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.models.kernels.mega_moe_mxfp8 import (
+    MX_BLOCK,
     cast_weight_along_rows,
     mx_cast,
     mx_weight_sf,
@@ -56,12 +57,8 @@ def mega_moe_available(precision: MegaMoePrecision = "bf16") -> bool:
         return False
     if not all(hasattr(deep_gemm, name) for name in _REQUIRED_KERNELS[precision]):
         return False
-    if precision == "mxfp8_qat":
-        try:
-            from deep_gemm.llep import dequant_mxfp8  # noqa: F401
-        except ImportError:
-            return False
-    return True
+    # `mxfp8_qat` sizes the allocation its two staging layouts share
+    return precision != "mxfp8_qat" or hasattr(deep_gemm.SymmBuffer, "num_bytes")
 
 
 def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
@@ -152,13 +149,15 @@ def build_mega_moe_buffers(
     if forward_mma_type == backward_mma_type:
         buffer = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
         return MegaMoeBuffers(forward=buffer, backward=buffer)
-    # Both directions restage their inputs on every call, so the smaller layout views the larger one's allocation
-    # instead of allocating a second symmetric buffer
-    sizes = {
-        mma_type: deep_gemm.SymmBuffer.num_bytes(*args, mma_type=mma_type)
-        for mma_type in (forward_mma_type, backward_mma_type)
-    }
-    larger, smaller = sorted((forward_mma_type, backward_mma_type), key=sizes.get, reverse=True)
+    # Both directions restage their inputs on every call, so one layout views the other's allocation instead of
+    # allocating a second symmetric buffer: the smaller one, when the sizes are known
+    larger, smaller = backward_mma_type, forward_mma_type
+    if hasattr(deep_gemm.SymmBuffer, "num_bytes"):
+        sizes = {
+            mma_type: deep_gemm.SymmBuffer.num_bytes(*args, mma_type=mma_type)
+            for mma_type in (forward_mma_type, backward_mma_type)
+        }
+        larger, smaller = sorted((forward_mma_type, backward_mma_type), key=sizes.get, reverse=True)
     base = deep_gemm.SymmBuffer(*args, mma_type=larger)
     buffers = {larger: base, smaller: deep_gemm.SymmBuffer(*args, mma_type=smaller, base=base)}
     return MegaMoeBuffers(forward=buffers[forward_mma_type], backward=buffers[backward_mma_type])
@@ -288,9 +287,9 @@ def mega_moe_forward_mxfp8(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     return y
 
 
-def mxfp8_rounded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Tensor, torch.Tensor]:
-    """The bf16 weights an MXFP8 forward computes with (``[E, 2I, H]`` natural gate/up rows, ``[E, H, I]``), decoded
-    from its quantized operands."""
+def mxfp8_decoded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Tensor, torch.Tensor]:
+    """`mxfp8_rounded_weights` decoded from an MXFP8 forward's quantized operands (``[E, 2I, H]`` natural gate/up
+    rows, ``[E, H, I]``) by a kernel, without fp32 temporaries: LLEP decodes the copies it holds."""
     from deep_gemm.llep import dequant_mxfp8
 
     (l1, l1_sf), (l2, l2_sf) = weights.l1, weights.l2
@@ -300,15 +299,6 @@ def mxfp8_rounded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Ten
     dequant_mxfp8(l1, l1_sf.transpose(1, 2), gate_up, interleaved=True)
     dequant_mxfp8(l2, l2_sf.transpose(1, 2), down)
     return gate_up, down
-
-
-def mega_moe_backward_mxfp8_qat(
-    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp
-):
-    """BF16 backward on the weights the MXFP8 forward computed with (the straight-through estimator of QAT)."""
-    weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False)
-    gate_up, down = mxfp8_rounded_weights(weights)
-    return mega_moe_backward_bf16(dy, x, topk_idx, topk_weights, gate_up, down, buffer, dw_dtype, activation_clamp)
 
 
 def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp):
@@ -322,6 +312,27 @@ def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_pr
         dx, dw1, dw2, dtopk, dy, x, weights.l1, weights.l1_t, weights.l2_t, buffer, activation_clamp=activation_clamp
     )
     return dx, dw1, dw2, dtopk
+
+
+def mxfp8_rounded_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The bf16 weights the MXFP8 forward computes with: each expert weight cast along K as
+    `MegaMoeMXFP8ExpertWeights` casts it (the gate/up interleave only reorders rows), and decoded (exact)."""
+
+    def rounded(weight: torch.Tensor) -> torch.Tensor:
+        num_experts, n, k = weight.shape
+        fp8, sf = mx_cast(weight.contiguous().view(num_experts * n, k), along_rows=False)
+        return (fp8.float().view(-1, k // MX_BLOCK, MX_BLOCK) * sf.unsqueeze(-1)).view(weight.shape).bfloat16()
+
+    return rounded(gate_up_proj), rounded(down_proj)
+
+
+def mega_moe_backward_mxfp8_qat(
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp
+):
+    """MXFP8 quantization-aware training: the bf16 backward on the weights the MXFP8 forward computed with and the
+    bf16 tokens (the straight-through estimator), so the gradients carry no MXFP8 rounding."""
+    gate_up, down = mxfp8_rounded_weights(gate_up_proj, down_proj)
+    return mega_moe_backward_bf16(dy, x, topk_idx, topk_weights, gate_up, down, buffer, dw_dtype, activation_clamp)
 
 
 # FP8 (SM90): E4M3 with 128x128 fp32 block scales for weights, 1x128 for tokens
@@ -538,10 +549,11 @@ class MegaMoEExpertCompute:
         precision: MegaMoePrecision = "bf16",
     ) -> None:
         if not mega_moe_available(precision):
-            kernels = " and ".join(f"`{name}`" for name in _REQUIRED_KERNELS[precision])
+            names = [*_REQUIRED_KERNELS[precision], *(["SymmBuffer.num_bytes"] if precision == "mxfp8_qat" else [])]
+            kernels = " and ".join(f"`{name}`" for name in names)
             raise RuntimeError(
                 f"Mega MoE `{precision}` requires an SM{_MIN_CAPABILITY[precision][0]}0+ GPU and the "
-                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed over the public one; "
+                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed as the top-level `deep_gemm` package; "
                 f"this build does not expose {kernels}."
             )
         self.num_experts = num_experts

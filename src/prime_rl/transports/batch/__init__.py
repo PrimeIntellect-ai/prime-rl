@@ -11,7 +11,7 @@ from prime_rl.transports.batch.types import (
     MMImageRef,
     MMRefs,
     RoutedExperts,
-    SamplingMask,
+    SamplerSupport,
     TrainingSample,
 )
 from prime_rl.transports.batch.zmq import (
@@ -24,7 +24,7 @@ def setup_batch_sender(
     output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfig
 ) -> BatchSender:
     if transport.type == "filesystem":
-        return FileSystemBatchSender(output_dir, data_world_size, current_step)
+        return FileSystemBatchSender(output_dir, data_world_size, current_step, transport.retain)
     elif transport.type == "zmq":
         return ZMQBatchSender(output_dir, data_world_size, current_step, transport)
     else:
@@ -53,7 +53,7 @@ __all__ = [
     "MMRefs",
     "TrainingSample",
     "MicroBatch",
-    "SamplingMask",
+    "SamplerSupport",
     "RoutedExperts",
     "setup_batch_sender",
     "setup_batch_receiver",

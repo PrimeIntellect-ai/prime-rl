@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from pydantic import create_model
-from verifiers.v1.serve import EpisodeAssembly
+from verifiers.v1.delta import EpisodeAssembly
 
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.dashboard import server
