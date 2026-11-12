@@ -360,7 +360,7 @@ Pulled from the console log and mirrored to W&B.
 
 `uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init (`model.init.type = "scratch"`, see [Model Initialization](#model-initialization)): `model.name` only supplies the architecture and the tokenizer. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
-**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
+**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop; the trainer checks at startup that the documents end with one. If a document's text contains the separator string, the tokenizer may encode it as the separator token, and the loss at that position is then masked too.
 
 ```python
 # Run with datatrove installed. Tokenize held-out documents into another folder for validation.
@@ -404,7 +404,7 @@ paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
 Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
 
@@ -517,6 +517,13 @@ A `checkpoint` action takes the same two calls and saves step N without stopping
 ```bash
 curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint"}'
 curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint", "step": 12}'
+```
+
+The trainer also lists the checkpoints in its checkpoint dir, ascending by step. A step is `complete` once the trainer finished saving it; an incomplete one is still being written (or was interrupted):
+
+```bash
+curl localhost:8040/v1/checkpoints
+# {"checkpoints": [{"step": 10, "complete": true}, {"step": 12, "complete": false}]}
 ```
 
 ### Updating the Config Live
