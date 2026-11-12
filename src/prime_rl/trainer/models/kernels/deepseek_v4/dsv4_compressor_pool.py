@@ -10,7 +10,6 @@ reference on SM90 as well, so `_compressor_api` lowers cuDNN's capability floor 
 """
 
 import functools
-import importlib.util
 
 import torch
 from torch import Tensor
@@ -21,8 +20,6 @@ MIN_CAPABILITY_MAJOR = 9
 def cudnn_pooling_supported(compress_rate: int, head_dim: int) -> bool:
     """Whether the cuDNN kernels cover this compressor shape on the current GPU."""
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < MIN_CAPABILITY_MAJOR:
-        return False
-    if importlib.util.find_spec("cudnn") is None or importlib.util.find_spec("cudnn.csa") is None:
         return False
     return compress_rate in (2, 4) or (compress_rate == 128 and head_dim in (128, 512))
 
