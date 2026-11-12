@@ -582,6 +582,14 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 # Eight CP ranks of 24 tokens. Boundaries fall on a rank edge (48), one token either side of one (71,
 # 97), inside a halo (140) and nowhere near one, and a 1-token document compresses to nothing.
 HALO_CP_DOCS = (5, 30, 13, 1, 22, 26, 43, 3, 49)
+# Two CP ranks of 96 tokens. The rank edge falls 25 tokens into the 69-token document, inside an
+# entry at both rates, so rank 1 pools entries that start in rank 0's tokens and reads the window
+# before them from rank 0 too.
+HALO_CP2_DOCS = (5, 30, 13, 1, 22, 69, 3, 49)
+# Under CP a parameter gradient is the sum of the ranks' bf16 partial gradients, which rounds
+# differently from the one-GPU sum by a few bf16 steps of the tensor's scale. The all-gather
+# exchange's projection gradients show the same deviation.
+HALO_PARAM_GRAD_RTOL = 1e-2
 
 
 def test_halo_shards_give_every_entry_and_window_slot_exactly_once():
@@ -658,9 +666,13 @@ def cp_process_group():
 @pytest.mark.parametrize("layer_idx", [CSA_LAYER, HCA_LAYER])
 def test_halo_compress_returns_the_whole_rows_entries(cp_process_group, layer_idx):
     """Under halo exchange every CP rank pools a share of the entries, and `compress` must still
-    hand back every entry of the row, as one GPU computes them from the whole row. Plain pytest
-    skips it, run it with `torchrun --nproc-per-node=2 -m pytest tests/unit/train/models/test_deepseek_v4.py
-    -k test_halo_compress_returns_the_whole_rows_entries`.
+    hand back every entry of the row, as one GPU computes them from the whole row. The backward
+    must hand this rank's tokens and the compressor's parameters the one-GPU gradients too. Each
+    rank holds every entry and the entries' all-gather sums the ranks' gradients in its backward,
+    so each rank backpropagates `1 / cp_world_size` of the loss. The checks wait until every
+    collective has run, so a rank that fails one cannot leave the other hanging. Plain pytest
+    skips it, run it with `torchrun --nproc-per-node=2 -m pytest
+    tests/unit/train/models/test_deepseek_v4.py -k test_halo_compress_returns_the_whole_rows_entries`.
     """
     cp_rank, cp_world_size = dist.get_rank(), dist.get_world_size()
     halo_config = copy.deepcopy(MODEL_CONFIG)
@@ -669,9 +681,9 @@ def test_halo_compress_returns_the_whole_rows_entries(cp_process_group, layer_id
         rotary = DeepseekV4RotaryEmbedding(halo_config)
         compressor = DeepseekV4Attention(halo_config, layer_idx, rotary).compressor
     _randomize(compressor)
-    seq_lens = torch.tensor(HALO_CP_DOCS)
-    hidden_states = torch.randn(1, sum(HALO_CP_DOCS), MODEL["hidden_size"], device="cuda", dtype=torch.bfloat16)
-    n_queries = sum(HALO_CP_DOCS) // cp_world_size
+    seq_lens = torch.tensor(HALO_CP2_DOCS)
+    hidden_states = torch.randn(1, sum(HALO_CP2_DOCS), MODEL["hidden_size"], device="cuda", dtype=torch.bfloat16)
+    n_queries = sum(HALO_CP2_DOCS) // cp_world_size
 
     def packed(cp_rank: int, cp_world_size: int) -> PackedContext:
         return PackedContext.build(
@@ -682,11 +694,26 @@ def test_halo_compress_returns_the_whole_rows_entries(cp_process_group, layer_id
             cp_world_size=cp_world_size,
         )
 
-    expected = compressor.compress(hidden_states, packed(0, 1))
+    shard = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
+    whole_input = hidden_states.clone().requires_grad_(True)
+    shard_input = hidden_states[:, shard].clone().requires_grad_(True)
+
+    expected = compressor.compress(whole_input, packed(0, 1))
+    grad_output = torch.randn_like(expected)
+    (expected * grad_output).sum().backward()
+    expected_grads = _take_grads(compressor)
+
     actual = compressor.compress(
-        hidden_states[:, cp_rank * n_queries : (cp_rank + 1) * n_queries],
+        shard_input,
         packed(cp_rank, cp_world_size),
         cp_group=cp_process_group,
         cp_world_size=cp_world_size,
     )
+    ((actual * grad_output).sum() / cp_world_size).backward()
+    for param in compressor.parameters():
+        if param.grad is not None:
+            dist.all_reduce(param.grad, group=cp_process_group)
+
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(shard_input.grad, whole_input.grad[:, shard], rtol=0, atol=0)
+    _compare_accumulated_grads(compressor, expected_grads, rtol=HALO_PARAM_GRAD_RTOL)
