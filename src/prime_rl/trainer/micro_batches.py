@@ -28,7 +28,8 @@ class StepResult:
     """Mean loss per unmasked token over the global batch."""
 
     nan_count: int
-    """Micro-batches with a NaN loss over all ranks. They are left out of the loss and the backward pass."""
+    """Micro-batches with a NaN loss over all ranks. Their loss is left out of the logged loss; their gradients may
+    still be NaN."""
 
     num_tokens: int
     num_flops: float

@@ -488,7 +488,7 @@ def train(config: SFTConfig | PretrainConfig):
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
         if result.nan_count > 0:
-            logger.warning(f"{result.nan_count} micro-batches had a NaN loss and were excluded from the backward pass")
+            logger.warning(f"{result.nan_count} micro-batches had a NaN loss, left out of the logged loss")
 
         # Count the step before checkpointing it, so a resume continues the counters from here.
         progress.total_tokens += result.num_tokens
