@@ -883,6 +883,9 @@ class Orchestrator:
         busy = min(max(requested_at - previous, 0.0), period) if requested_at is not None else None
         self.balance.observe_step(TrainerStep(rollouts=rollouts, tokens=tokens, period=period, busy=busy))
         advice = self.balance.evaluate()
+        # The concurrency controller sizes the cap to what the trainer consumes
+        waited = 1 - busy / period if busy is not None and period > 0 else 0.0
+        self.concurrency.trainer_step(advice.demand if advice is not None else None, waited)
         if advice is not None and (notice := self.balance.notice(advice)) is not None:
             get_logger().warning(notice)
 

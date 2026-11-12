@@ -50,6 +50,8 @@ class InferencePoll:
     """Per role (``inference``, or ``prefill`` and ``decode``), its engines' busy share; None when not all report it."""
     paused: bool = False
     """The engines were paused for a weight update."""
+    generated: int = 0
+    """Tokens the decode (or colocated) engines generated since the previous poll."""
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,9 @@ class Advice:
     bottleneck: str
     """The pool with the least capacity, or ``environment``."""
     trained_per_rollout: float
+    demand: float | None
+    """Tokens per second the engines must generate to keep the trainer busy all the time; None when its busy time
+    is not reported."""
 
     @property
     def gain(self) -> float:
@@ -102,7 +107,8 @@ def inference_poll(
     # The orchestrator's pause spans a whole weight update, transfer included, while the engines stop only for the
     # swap itself: a poll in which an engine worked saw the engines running
     worked = any(s.busy_delta for s in samples)
-    return InferencePoll(seconds, finished, env_bound, busy, paused=paused and not worked)
+    generated = sum(s.generation_tokens_delta for s in samples if s.role != "prefill")
+    return InferencePoll(seconds, finished, env_bound, busy, paused=paused and not worked, generated=generated)
 
 
 def best_split(pools: list[BalancePoolConfig], capacities: dict[str, Capacity]) -> tuple[float, dict[str, int], float]:
@@ -193,7 +199,10 @@ class BalanceAdvisor:
             close = {name: c for name, c in capacities.items() if c.rate <= 1.1 * slowest}
             bottleneck = min(close, key=lambda name: (close[name].lower_bound, close[name].rate))
         trained = sum(s.tokens for s in steps) / rollouts
-        self.advice = Advice(capacities, current, best, speed, best_speed, bottleneck, trained)
+        trainer = capacities["trainer"]
+        generated = sum(p.generated for _, p in self.polls) / (finished * poll_seconds)
+        demand = None if trainer.lower_bound else trainer.rate * generated
+        self.advice = Advice(capacities, current, best, speed, best_speed, bottleneck, trained, demand)
         return self.advice
 
     def notice(self, advice: Advice) -> str | None:
