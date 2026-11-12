@@ -185,6 +185,15 @@ class VllmConfig(BaseConfig):
         return self
 
 
+def setup_dummy_load(vllm: VllmConfig, lora_enabled: bool) -> None:
+    """A server that the trainer feeds gets its weights from the trainer's startup broadcast, so it loads none. LoRA
+    broadcasts only the adapter and a speculative drafter never gets updates, so those load from disk; an explicit
+    ``load_format`` wins."""
+    extra = vllm.model_extra or {}
+    if not lora_enabled and "speculative_config" not in extra and "load_format" not in extra:
+        vllm.load_format = "dummy"
+
+
 class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "nixl", "modelexpress"] = "filesystem"
     """Weight broadcast transport."""

@@ -19,8 +19,24 @@ def load_weights_checkpoint_layerwise(
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
-        model.load_weights(state_iter)  # type: ignore
+        loaded = model.load_weights(state_iter)  # type: ignore
+        check_update_covers_dummy_weights(model, loaded, model_config, vllm_config)
         finalize_layerwise_reload(model, model_config)
+
+
+def check_update_covers_dummy_weights(model: Module, loaded: set[str] | None, model_config, vllm_config) -> None:
+    """A dummy-loaded engine keeps random values in every parameter an update does not write. As in vLLM's own load,
+    quantized models (whose scales are not in the update) and models that do not report what they loaded are not
+    checked."""
+    if vllm_config.load_config.load_format != "dummy" or model_config.quantization is not None or loaded is None:
+        return
+    missing = sorted({name for name, _ in model.named_parameters()} - loaded)
+    if missing:
+        more = f", +{len(missing) - 5} more" if len(missing) > 5 else ""
+        raise ValueError(
+            f"The weight update does not cover {len(missing)} parameters of the dummy-loaded model: "
+            f'{", ".join(missing[:5])}{more}. Set inference.vllm.load_format = "auto" to load them from model.name'
+        )
 
 
 @torch.no_grad()

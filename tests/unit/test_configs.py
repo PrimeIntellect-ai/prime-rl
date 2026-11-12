@@ -15,7 +15,7 @@ from renderers import custom_renderer_config
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, VllmConfig, setup_dummy_load
 from prime_rl.configs.orchestrator import (
     EvalSourcesConfig,
     OrchestratorConfig,
@@ -1472,8 +1472,8 @@ def test_model_init_checkpoint_requires_a_step_dir():
         TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
 
 
-@pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("ckpt", "dummy")])
-def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_type: str, load_format: str | None):
+@pytest.mark.parametrize("init_type", ["hf", "scratch", "ckpt"])
+def test_trainer_fed_inference_loads_dummy_weights(init_type: str):
     name = "runs/sft/checkpoints/step_500" if init_type == "ckpt" else "Qwen/Qwen3-0.6B"
     config = RLConfig.model_validate(
         {
@@ -1487,8 +1487,22 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_ty
         }
     )
     assert config.trainer.model.init.type == init_type
-    assert getattr(config.inference.to_namespace(), "load_format", None) == load_format
+    assert config.inference.to_namespace().load_format == "dummy"
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("vllm", "lora_enabled", "load_format"),
+    [
+        ({"speculative_config": {"method": "mtp"}}, False, None),
+        ({}, True, None),
+        ({"load_format": "auto"}, False, "auto"),
+    ],
+)
+def test_inference_loads_from_disk_what_the_broadcast_does_not_cover(vllm: dict, lora_enabled: bool, load_format):
+    config = VllmConfig(**vllm)
+    setup_dummy_load(config, lora_enabled=lora_enabled)
+    assert getattr(config, "load_format", None) == load_format
 
 
 def test_lora_requires_the_hf_init():

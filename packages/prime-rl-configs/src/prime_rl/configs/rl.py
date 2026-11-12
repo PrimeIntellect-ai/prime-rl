@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
@@ -414,15 +414,13 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_dummy_load(self):
-        """Weights other than the HF model's reach inference with the trainer's startup broadcast, so vLLM loads
-        none."""
         if self.trainer.model.init.type != "hf" and self.trainer.model.lora is not None:
             raise ValueError(
                 'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
             )
-        if self.inference is not None and self.trainer.model.init.type != "hf":
-            check_derived(self.inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
-            self.inference.vllm.load_format = "dummy"
+        # A fake-data trainer broadcasts nothing.
+        if self.inference is not None and self.trainer.data.fake is None:
+            setup_dummy_load(self.inference.vllm, lora_enabled=self.trainer.model.lora is not None)
         return self
 
     @model_validator(mode="after")

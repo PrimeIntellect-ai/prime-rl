@@ -489,7 +489,7 @@ A resume can add, remove or change train and eval sources.
 
 Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `ckpt` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `ckpt` run sets it explicitly.
 
-With a type other than `hf`, the inference server (RL, SFT online evals) starts without weights and receives the trainer's at startup, so LoRA requires `hf`. In RL, set `name` and `init` in the shared `[model]`.
+The inference server of an RL run or of SFT online evals starts without weights (vLLM's `load_format = "dummy"`) and receives the trainer's at startup, and fails if an update leaves out a parameter of an unquantized model. With LoRA or a speculative drafter (`speculative_config`), it loads from `model.name` instead, so LoRA requires `hf`; an explicit `inference.vllm.load_format` wins. In RL, set `name` and `init` in the shared `[model]`.
 
 ```bash
 # SFT from a pretraining checkpoint
