@@ -2,10 +2,14 @@ import pytest
 import torch
 
 import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
-from prime_rl.trainer.models.kernels.fp8_indexer import (
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
     VLLM_INDEXER_FP8_AMAX_FLOOR,
+    dsv4_indexer_q_rope_quant,
+    dsv4_rope,
+)
+from prime_rl.trainer.models.kernels.fp8_indexer import (
     fp8_indexer,
+    fp8_indexer_prequantized,
     per_token_group_quant_fp8,
     select_topk,
 )
@@ -185,11 +189,12 @@ def test_deep_select_matches_torch_topk(topk, monkeypatch):
     assert torch.equal(picked_set(deep_select_picks)[unique_boundary], picked_set(torch_picks)[unique_boundary])
 
 
-def test_fused_rope_quant_is_bit_for_bit_with_the_unfused_pair(monkeypatch):
-    """The one-kernel q RoPE + quant writes exactly what the unfused pair writes, vLLM's kernel or the fallback.
+def test_fused_rope_quant_is_bit_for_bit_with_the_unfused_pair():
+    """DSv4's one-kernel q RoPE + quant writes exactly what the unfused pair writes, vLLM's kernel or the fallback.
 
     A quantized value or folded scale that moved by a bit could move a pick at a top-k boundary, so both
-    branches of `_indexer_q_rope_quant` are checked bit for bit, then their picks through `fp8_indexer`.
+    branches of `dsv4_indexer_q_rope_quant` are checked bit for bit, then the picks `fp8_indexer_prequantized`
+    makes from them against `fp8_indexer`'s on the rotated query.
     """
     ks, ke = ranges(SEGMENTS[0])
     k = torch.randn(NUM_K, DIM, device="cuda").bfloat16()
@@ -206,31 +211,20 @@ def test_fused_rope_quant_is_bit_for_bit_with_the_unfused_pair(monkeypatch):
         return q_fp8.view(NUM_Q, HEADS, DIM), w * q_scales.view(NUM_Q, HEADS)
 
     expected_q, expected_w = unfused()
-    fused_q, fused_w = fp8_indexer_module._indexer_q_rope_quant(q, cos_sin, positions, w, VLLM_INDEXER_FP8_AMAX_FLOOR)
+    fused_q, fused_w = dsv4_indexer_q_rope_quant(q, cos_sin, positions, w)
     assert torch.equal(fused_q.view(torch.uint8), expected_q.view(torch.uint8))
     assert torch.equal(fused_w, expected_w)
 
-    monkeypatch.setattr(fp8_indexer_module, "_vllm_fused_indexer_q_rope_quant", lambda: None)
-    fallback_q, fallback_w = fp8_indexer_module._indexer_q_rope_quant(
-        q, cos_sin, positions, w, VLLM_INDEXER_FP8_AMAX_FLOOR
-    )
+    q_outside_vllm_contract = q.transpose(1, 2).contiguous().transpose(1, 2)
+    fallback_q, fallback_w = dsv4_indexer_q_rope_quant(q_outside_vllm_contract, cos_sin, positions, w)
     assert torch.equal(fallback_q.view(torch.uint8), expected_q.view(torch.uint8))
     assert torch.equal(fallback_w, expected_w)
 
-    monkeypatch.undo()
     expected_picks = fp8_indexer(
         dsv4_rope(q, cos_sin, positions), k, w, ks.int(), ke.int(), TOPK, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR
     )
-    fused_picks = fp8_indexer(
-        q,
-        k,
-        w,
-        ks.int(),
-        ke.int(),
-        TOPK,
-        amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
-        cos_sin_cache=cos_sin,
-        position_ids=positions,
+    fused_picks = fp8_indexer_prequantized(
+        fused_q, k, fused_w, ks.int(), ke.int(), TOPK, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR
     )
     assert torch.equal(fused_picks, expected_picks)
 
