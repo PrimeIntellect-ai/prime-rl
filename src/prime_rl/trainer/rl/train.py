@@ -59,6 +59,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
+    check_ckpt_weights_dir,
     setup_tokenizer,
     take_moe_routing_stats,
 )
@@ -172,7 +173,8 @@ def train(config: TrainerConfig):
     # Check for checkpoint to resume from
     checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    tokenizer = setup_tokenizer(config.tokenizer)
+    check_ckpt_weights_dir(config.model)
+    tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
     processor = None
     if config.model.vlm is not None:
         processor = setup_processor(config.model)

@@ -431,8 +431,22 @@ def get_model(
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
+def check_ckpt_weights_dir(config: ModelConfig) -> None:
+    """A ``ckpt_weights`` step directory supplies the architecture with its config.json."""
+    if config.init.type == "ckpt_weights" and not (Path(config.name) / "config.json").exists():
+        raise FileNotFoundError(
+            f"model.name {config.name} has no config.json, so the architecture is unknown; copy the model's "
+            "config.json into it"
+        )
+
+
+def setup_tokenizer(config: TokenizerConfig, model_name: str) -> PreTrainedTokenizer:
     logger = get_logger()
+    # The tokenizer name defaults to the model name, a folder of which may hold only a config.json (transformers then
+    # loads an empty tokenizer).
+    model_dir = Path(model_name)
+    if config.name == model_name and model_dir.is_dir() and not (model_dir / "tokenizer_config.json").exists():
+        raise FileNotFoundError(f"No tokenizer at model.name {model_name}; set tokenizer.name")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)

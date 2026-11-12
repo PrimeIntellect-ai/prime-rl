@@ -32,6 +32,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     reshard_module,
+    check_ckpt_weights_dir,
     setup_tokenizer,
     setup_model,
     take_moe_routing_stats,
@@ -132,7 +133,8 @@ def train(config: SFTConfig | PretrainConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
-    tokenizer = setup_tokenizer(config.tokenizer)
+    check_ckpt_weights_dir(config.model)
+    tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
     processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")

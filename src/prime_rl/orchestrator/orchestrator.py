@@ -217,7 +217,7 @@ class Orchestrator:
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         t0 = time.perf_counter()
-        self.tokenizer = setup_tokenizer(config.tokenizer)
+        self.tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
         get_logger().debug(f"Initialized tokenizer in {format_time(time.perf_counter() - t0)}")
 
         # The one model prime-rl hosts: the live policy. Frozen model

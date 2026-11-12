@@ -369,11 +369,6 @@ class ModelConfig(BaseModelConfig):
     def validate_checkpoint_name(self):
         if self.init.type == "ckpt_weights":
             validate_step_dir(Path(self.name), field='model.name with model.init.type = "ckpt_weights"')
-            if not (Path(self.name) / "config.json").exists():
-                raise ValueError(
-                    f"model.name {self.name} has no config.json, so its architecture is unknown; copy the model's "
-                    "config.json and tokenizer files into it"
-                )
         return self
 
     @model_validator(mode="after")
