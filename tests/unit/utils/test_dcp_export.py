@@ -255,6 +255,26 @@ def test_failed_publish_preserves_previous_export(tmp_path, exporter, monkeypatc
         assert list(tmp_path.iterdir()) == [output]
 
 
+def test_interrupt_after_moving_the_previous_export_restores_it(tmp_path, exporter, monkeypatch):
+    output = tmp_path / "weights"
+    output.mkdir()
+    (output / "model.safetensors").write_bytes(b"old")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    rename = Path.rename
+
+    def interrupt_after_move(path, target):
+        rename(path, target)
+        if path == output:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(Path, "rename", interrupt_after_move)
+    with pytest.raises(KeyboardInterrupt):
+        exporter.publish_export(staging, output)
+    assert (output / "model.safetensors").read_bytes() == b"old"
+    assert sorted(tmp_path.iterdir()) == [staging, output]
+
+
 def test_publish_succeeds_when_the_previous_export_cannot_be_removed(tmp_path, exporter, monkeypatch):
     output = tmp_path / "weights"
     output.mkdir()

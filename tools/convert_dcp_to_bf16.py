@@ -293,14 +293,14 @@ def publish_export(staging_dir: Path, output_dir: Path) -> None:
     backup_dir = backup_parent / "export"
     try:
         output_dir.rename(backup_dir)
-    except BaseException:
-        backup_parent.rmdir()
-        raise
-    try:
         staging_dir.rename(output_dir)
     except BaseException:
-        backup_dir.rename(output_dir)
-        backup_parent.rmdir()
+        # An interrupt can land after either rename: put the previous export
+        # back unless the new one is already in place.
+        if backup_dir.exists() and not output_dir.exists():
+            backup_dir.rename(output_dir)
+        if not backup_dir.exists():
+            backup_parent.rmdir()
         raise
     try:
         shutil.rmtree(backup_parent)
