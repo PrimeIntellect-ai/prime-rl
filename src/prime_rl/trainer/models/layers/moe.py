@@ -389,8 +389,8 @@ class MoE(nn.Module):
                 routing_confidence_sum,
             )
 
-        # Starts the dispatch's copy of its counts to the host; the work queued before `run` waits for it (the experts'
-        # input projection, the shared expert) keeps the GPU busy while the host waits.
+        # Start the counts' copy to the host now; the expert input projection and shared expert queued below keep the
+        # GPU busy while `run` waits for it.
         plan = self.token_dispatcher.plan(selected_experts_indices)
         expert_input = self.prepare_expert_input(x)
         shared_output = None
