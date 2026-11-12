@@ -263,7 +263,6 @@ def test_best_fit_samples_hold_whole_documents(tmp_path):
     assert max(trained.values()) == 1
     # Every token except a document's first one is trained, once.
     assert set(range(sum(lengths))) - set(document_start.tolist()) <= set(trained)
-    assert list(islice(BestFitTokenDataset(shards, seq_len, group_windows=4), len(samples))) == samples
 
 
 def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):

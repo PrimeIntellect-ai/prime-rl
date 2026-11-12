@@ -361,7 +361,6 @@ class BestFitTokenDataset(TokenDataset):
             seq_lens.append(min(length, len(input_ids) - end))
             end += length
         if len(target_ids) < len(input_ids):
-            # A row that is not full has no target for its last token.
             target_ids.append(0)
             loss_mask.append(False)
         seq_lens = [length for length in seq_lens if length > 0] if self.document_masking else [len(input_ids)]
