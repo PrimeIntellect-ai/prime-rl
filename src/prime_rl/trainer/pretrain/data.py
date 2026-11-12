@@ -134,13 +134,21 @@ class TokenDataset(StatefulIterableDataset):
     document; without, it is one segment. Every data rank walks the whole window sequence but reads only its own
     windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read."""
 
-    def __init__(self, shards: TokenShards, seq_len: int, document_masking: bool = True, non_dp_size: int = 1):
+    def __init__(
+        self,
+        shards: TokenShards,
+        seq_len: int,
+        document_masking: bool = True,
+        non_dp_size: int = 1,
+        eod_mask_token: int | None = None,
+    ):
         super().__init__(non_dp_size)
         if shards.num_tokens < seq_len:
             raise ValueError(f"The token pool has {shards.num_tokens} tokens, fewer than seq_len ({seq_len})")
         self.shards = shards
         self.seq_len = seq_len
         self.document_masking = document_masking
+        self.eod_mask_token = eod_mask_token
 
     def state_dict(self) -> dict:
         # A checkpoint follows a whole optimizer step, after which every data rank has read the same number of
@@ -167,11 +175,18 @@ class TokenDataset(StatefulIterableDataset):
                 "input_ids": ids[:-1],
                 "target_ids": ids[1:],
                 "position_ids": [position for length in seq_lens for position in range(length)],
-                "loss_mask": [True] * self.seq_len,
+                "loss_mask": eod_loss_mask(ids[:-1], [True] * self.seq_len, self.eod_mask_token),
                 "seq_lens": seq_lens,
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
+
+
+def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | None) -> list[bool]:
+    """``loss_mask`` with every position whose input is ``eod_token`` off; unchanged when ``eod_token`` is None."""
+    if eod_token is None:
+        return loss_mask
+    return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
 
 
 Window = tuple[int, int, int]
@@ -264,28 +279,65 @@ class DocumentDataset(StatefulIterableDataset):
             yield self.sample(mine[i], scored=True) if i < len(mine) else self.sample(self.rows[0], scored=False)
 
 
+# Enough documents per folder to catch shards whose documents end differently, at two token reads each.
+SEPARATOR_CHECK_DOCUMENTS = 16
+
+
+def document_edges(shards: TokenShards, n: int) -> dict[Path, tuple[list[int], list[int]]]:
+    """The first and the last tokens of the first ``n`` non-empty documents of each folder, read through the index."""
+    edges: dict[Path, tuple[list[int], list[int]]] = {}
+    for index, file in enumerate(shards.files):
+        firsts, lasts = edges.setdefault(file.parent, ([], []))
+        # Empty files have no documents.
+        if len(lasts) >= n or shards.starts[index + 1] == shards.starts[index]:
+            continue
+        tokens, doc_ends = shards.open(index)
+        lengths = np.diff(doc_ends, prepend=0)
+        # Without empty documents: an empty first document ends at 0, and 0 - 1 would wrap around to the last token.
+        ends = doc_ends[lengths > 0][: n - len(lasts)].astype(np.int64)
+        firsts += tokens[ends - lengths[lengths > 0][: len(ends)].astype(np.int64)].tolist()
+        lasts += tokens[ends - 1].tolist()
+    return {folder: (firsts, lasts) for folder, (firsts, lasts) in edges.items() if lasts}
+
+
+def special_token_ids(tokenizer: PreTrainedTokenizer) -> set[int]:
+    """The tokenizer's special tokens, added ones included: the trainer sets pad to EOS, which drops Qwen's
+    ``<|endoftext|>`` from ``all_special_ids``."""
+    added = {token for token, added_token in tokenizer.added_tokens_decoder.items() if added_token.special}
+    return set(tokenizer.all_special_ids) | added
+
+
+def detect_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> int | None:
+    """The special token all checked documents end with, the separator to mask. None when they start with BOS
+    instead: the position that predicts a document's first token then has BOS as input, so there is nothing to mask.
+    Anything else fails."""
+    edges = document_edges(shards, SEPARATOR_CHECK_DOCUMENTS)
+    ends = {token for _, lasts in edges.values() for token in lasts}
+    if len(ends) == 1 and ends <= special_token_ids(tokenizer):
+        return ends.pop()
+    if all(set(firsts) == {tokenizer.bos_token_id} for firsts, _ in edges.values()):
+        get_logger().info("The documents start with BOS and end without a separator: eod_mask_loss masks nothing")
+        return None
+    found = "; ".join(
+        f"{folder}: " + ", ".join(f"{tokenizer.decode([token])!r} ({token})" for token in dict.fromkeys(lasts))
+        for folder, (_, lasts) in edges.items()
+    )
+    raise ValueError(
+        f"eod_mask_loss: the documents must end with one special token, the separator, but they end with {found}; "
+        "tokenize with a separator or set data.eod_mask_loss = false"
+    )
+
+
 def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedTokenizer) -> None:
     """Warn when the first non-empty document of a folder neither ends with a special token nor starts with BOS:
     prime-rl reads documents as they are, so shards tokenized without a separator run their documents together."""
-    first_documents = {}
-    for index, file in enumerate(shards.files):
-        # Empty files and empty documents carry no separator to check.
-        if file.parent in first_documents or shards.starts[index + 1] == shards.starts[index]:
-            continue
-        tokens, doc_ends = shards.open(index)
-        begin = 0
-        for end in doc_ends:
-            if end > begin:
-                break
-            begin = end
-        first_documents[file.parent] = tokens[int(begin) : int(end)]
-    special_ids = set(tokenizer.all_special_ids)
-    for folder, document in first_documents.items():
-        if int(document[-1]) in special_ids or int(document[0]) == tokenizer.bos_token_id:
+    special = special_token_ids(tokenizer)
+    for folder, ([first], [last]) in document_edges(shards, 1).items():
+        if last in special or first == tokenizer.bos_token_id:
             continue
         get_logger().warning(
-            f"The documents in {folder} have no separator: the first one ends with token {int(document[-1])} "
-            f"({tokenizer.decode([int(document[-1])])!r}), not a special token, and does not start with BOS.\n"
+            f"The documents in {folder} have no separator: the first one ends with token {last} "
+            f"({tokenizer.decode([last])!r}), not a special token, and does not start with BOS.\n"
             "The documents run together, so the model will not learn where a document ends and will not learn to "
             "stop.\n"
             "Tokenize again with datatrove's DocumentTokenizer and set eos_token to the tokenizer's end-of-text "
@@ -293,12 +345,15 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
         )
 
 
-def setup_token_dataset(config: DatatroveDataConfig, non_dp_size: int = 1) -> TokenDataset:
+def setup_token_dataset(
+    config: DatatroveDataConfig, non_dp_size: int = 1, eod_mask_token: int | None = None
+) -> TokenDataset:
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
         document_masking=config.document_masking,
         non_dp_size=non_dp_size,
+        eod_mask_token=eod_mask_token,
     )
 
 
