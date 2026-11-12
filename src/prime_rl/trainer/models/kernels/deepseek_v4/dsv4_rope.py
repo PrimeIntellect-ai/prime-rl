@@ -313,10 +313,24 @@ def dsv4_indexer_q_rope_quant(
     Returns:
         The float8_e4m3fn query, shaped like `q`, and the fp32 weights times each head's query scale.
     """
-    if q.is_cuda and q.dtype == torch.bfloat16 and q.ndim == 3 and q.stride(-1) == 1:
+    if q.is_cuda and q.dtype == torch.bfloat16:
         from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
 
-        return fused_indexer_q_rope_quant(position_ids.reshape(-1).long(), q, cos_sin_cache, w, 1.0, 1.0)
+        return fused_indexer_q_rope_quant(
+            position_ids.reshape(-1).long(),
+            q.contiguous(),
+            cos_sin_cache,
+            w,
+            index_weights_softmax_scale=1.0,
+            index_weights_head_scale=1.0,
+        )
+    return _unfused_indexer_q_rope_quant(q, cos_sin_cache, position_ids, w)
+
+
+def _unfused_indexer_q_rope_quant(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, w: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`dsv4_indexer_q_rope_quant` as the `dsv4_rope` kernel, `per_token_group_quant_fp8` and the fold into `w`."""
     rotated = _triton_rope(q, cos_sin_cache, position_ids, False)
     q_fp8, q_scales = per_token_group_quant_fp8(
         rotated.reshape(-1, q.shape[-1]), group_size=q.shape[-1], use_ue8m0=True, eps=VLLM_INDEXER_FP8_AMAX_FLOOR

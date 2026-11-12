@@ -21,7 +21,18 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_compressor_pool import (
     dsv4_compressor_pool,
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
+    VLLM_INDEXER_FP8_AMAX_FLOOR,
+    _unfused_indexer_q_rope_quant,
+    dsv4_indexer_q_rope_quant,
+    dsv4_q_norm_rope,
+    dsv4_rope,
+)
+from prime_rl.trainer.models.kernels.fp8_indexer import (
+    fp8_indexer,
+    fp8_indexer_prequantized,
+    per_token_group_quant_fp8,
+)
 from prime_rl.trainer.models.layers.fp8_linear import (
     Float8BlockwiseGroupedLinear,
     replace_linear_with_fp8_blockwise_linear,
@@ -757,6 +768,47 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
     rounding_floor = (reference_grad.to(torch.bfloat16).double() - reference_grad).square().mean().sqrt()
     fused_error = (fused_leaf.grad.double() - reference_grad).square().mean().sqrt()
     assert fused_error <= 1.01 * rounding_floor, f"gradient rms error {fused_error} vs rounding {rounding_floor}"
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="the indexer quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
+)
+def test_indexer_q_rope_quant_is_bit_for_bit_with_the_unfused_pair():
+    """vLLM's fused indexer q RoPE + quant and the fallback both write exactly what the unfused pair writes.
+
+    A quantized value or folded scale that moved by a bit could move a pick at a top-k boundary, so both
+    are checked bit for bit, then the picks `fp8_indexer_prequantized` makes from them against
+    `fp8_indexer`'s on the rotated query. Token `t` reads the first `(t + 1) // compress_rate` keys, more
+    than `index_topk` in the later half, so the selection has to discard some.
+    """
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    n_tokens, heads, head_dim = positions.numel(), V4FLASH_MODEL["index_n_heads"], V4FLASH_MODEL["index_head_dim"]
+    topk, compress_rate = V4FLASH_MODEL["index_topk"], V4FLASH_MODEL["compress_rates"]["compressed_sparse_attention"]
+    q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    w = torch.randn(n_tokens, heads, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(n_tokens // compress_rate, head_dim, device="cuda", dtype=torch.bfloat16)
+    ks = torch.zeros(n_tokens, device="cuda", dtype=torch.int32)
+    ke = ((torch.arange(n_tokens, device="cuda") + 1) // compress_rate).int()
+
+    rotated = dsv4_rope(q, cos_sin, positions)
+    expected_q, q_scales = per_token_group_quant_fp8(
+        rotated.reshape(-1, head_dim), group_size=head_dim, eps=VLLM_INDEXER_FP8_AMAX_FLOOR
+    )
+    expected_q, expected_w = expected_q.view(q.shape), w * q_scales.view(n_tokens, heads)
+
+    fused_q, fused_w = dsv4_indexer_q_rope_quant(q, cos_sin, positions, w)
+    assert torch.equal(fused_q.view(torch.uint8), expected_q.view(torch.uint8))
+    assert torch.equal(fused_w, expected_w)
+
+    fallback_q, fallback_w = _unfused_indexer_q_rope_quant(q, cos_sin, positions, w)
+    assert torch.equal(fallback_q.view(torch.uint8), expected_q.view(torch.uint8))
+    assert torch.equal(fallback_w, expected_w)
+
+    expected_picks = fp8_indexer(rotated, k, w, ks, ke, topk, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR)
+    fused_picks = fp8_indexer_prequantized(fused_q, k, fused_w, ks, ke, topk, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR)
+    assert torch.equal(fused_picks, expected_picks)
 
 
 O_GROUPS = V4FLASH_MODEL["o_groups"]
