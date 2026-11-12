@@ -86,14 +86,6 @@ type = "torch"
 transport = "mxfp8"
 ```
 
-With `type = "deepgemm_fp8"`, `fp8_all_gather = true` has FSDP all-gather the routed experts' weights as their FP8 blocks instead of BF16, which halves the all-gather traffic with the same numerics. It pays off when FSDP shards the experts across nodes; within a node, where the all-gather is cheap, it is slightly slower:
-
-```toml
-[trainer.model.moe.compute]
-type = "deepgemm_fp8"
-fp8_all_gather = true
-```
-
 All MoE compute backends accept `apply_to`:
 
 - `"all"` (default) applies the backend to all expert groups.

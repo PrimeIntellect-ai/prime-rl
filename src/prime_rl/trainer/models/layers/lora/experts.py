@@ -63,12 +63,7 @@ class LoRAGroupedExperts(LoRAModule):
         )
         return base + self.scaling * lora
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        host_num_tokens_per_expert: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         lora_x = self.lora_dropout(x)
         gate = self._project("gate_proj", x, lora_x, offsets) if "gate_proj" in self.projections else None
@@ -118,12 +113,7 @@ class LoRAGptOssGroupedExperts(LoRAModule):
             "lora_B.weight": flat_b(_full(self.down_lora_B)),
         }
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        host_num_tokens_per_expert: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         base = self.base_layer
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
