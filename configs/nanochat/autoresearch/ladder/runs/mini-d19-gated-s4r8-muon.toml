@@ -1,0 +1,54 @@
+mode = "pretrain"
+max_steps = 7046
+gpu_type = "H200_141GB"
+volume = "<your-volume>"  # needs datasets/, models/tokenizer-rustbpe32k, eval_bundle/ and models/cfg/<name>/ (copy from ../models)
+image_tag = "v0.10.1.dev176"  # added on export: this run used the backend default image of 2026-11-11, which had the same heavy deps
+
+# derived (launch.py): {"depth": 19, "flops_per_token": 2897928960, "scaling_params": 419674240, "total_params": 881047718, "tokens": 3694133248, "total_flops": 10705335721478062080, "weight_decay": 0.06258935768632026, "adamw_lr_scale": 0.7745966692414834}
+[model]
+name = "/volume/models/cfg/d19-gated-5e35f30d"
+offload = "none"
+ac = "None"
+ac_offloading = "None"
+dp_replicate = 8
+
+[tokenizer]
+name = "/volume/models/tokenizer-rustbpe32k"
+
+[data]
+paths = ["datasets/fineweb100b-packed/train"]
+seq_len = 2048
+batch_size = 256
+micro_batch_size = 16
+packed_rows = true
+
+[val]
+interval = 271
+num_samples = 10240
+bpb = true
+final_bpb = true
+core = true
+core_max_per_task = -1
+eval_bundle = "/volume/eval_bundle"
+
+[val.data]
+paths = ["datasets/fineweb100b-packed/val"]
+seq_len = 2048
+packed_rows = true
+micro_batch_size = 16
+
+[optim]
+type = "nanochat_muon"
+total_steps = 7046
+weight_decay = 0.0625894
+embedding_lr = 0.232379
+unembedding_lr = 0.00309839
+connection_matrix_optimizer = "muon"
+
+[scheduler]
+type = "warmdown"
+warmdown_ratio = 0.5
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8

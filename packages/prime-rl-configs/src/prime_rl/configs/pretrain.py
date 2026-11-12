@@ -36,7 +36,9 @@ class DatatroveDataConfig(BaseDataConfig):
 
     packed_rows: bool = False
     """Every document of the shards is one pre-packed row of ``seq_len + 1`` tokens. Rows are read consecutively in
-    shard order without shuffling, row ``r`` by data rank ``r % data_world_size``, one input/target pair per row."""
+    shard order without shuffling, row ``r`` by data rank ``r % data_world_size``, one input/target pair per row.
+    With ``seed`` other than 0, rows are read in a pseudo-random order drawn from the seed instead, shuffled
+    within blocks of 2^20 rows."""
 
     mask_target_id: int | None = None
     """Exclude targets equal to this token id from the loss. For metrics that count every token but this one."""
@@ -48,6 +50,26 @@ class PretrainValConfig(BaseValConfig):
 
     num_samples: int | None = Field(None, ge=1)
     """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
+
+    bpb: bool = False
+    """Also log ``val/bpb``, nanochat's bits per byte: summed nats over targets whose token has more than 0 bytes,
+    divided by the summed bytes and ln 2 (``nanochat/loss_eval.py:evaluate_bpb``)."""
+
+    final_bpb: bool = False
+    """Validate once more after the last optimizer step and log it as ``eval/final_bpb`` (and ``val/*``)."""
+
+    core: bool = False
+    """Run nanochat's CORE metric (``nanochat/core_eval.py``) on the final weights, logged as ``eval/core`` and
+    per-task ``core/<task>`` (centered) and ``core_acc/<task>``."""
+
+    core_max_per_task: int = -1
+    """Examples per CORE task (nanochat's ``--core-metric-max-per-task``); -1 uses every example."""
+
+    eval_bundle: str = "/volume/eval_bundle"
+    """Folder of the extracted CORE eval bundle (``core.yaml``, ``eval_meta_data.csv``, ``eval_data/``)."""
+
+    core_pack_tokens: int = Field(16384, ge=2048)
+    """Tokens per packed CORE forward."""
 
 
 class PretrainAdamWConfig(AdamWConfig):

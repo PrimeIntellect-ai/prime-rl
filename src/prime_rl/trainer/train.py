@@ -290,10 +290,18 @@ def train(config: SFTConfig | PretrainConfig):
 
     maybe_record_function = nullcontext
 
+    token_bytes = None
+    if isinstance(config, PretrainConfig) and config.val is not None and config.val.bpb:
+        from prime_rl.trainer.pretrain.nanochat_eval import build_token_bytes
+
+        token_bytes = build_token_bytes(tokenizer, model.config.vocab_size).to("cuda")
+        logger.info(f"Built token bytes for bpb: {int((token_bytes > 0).sum())} counted ids")
+
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
+        """Validation forward loop. Returns token-weighted global mean loss (and nats, bytes for bpb)."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        total_bytes = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
@@ -309,19 +317,32 @@ def train(config: SFTConfig | PretrainConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
+                batch_bytes = None
+                if token_bytes is not None:
+                    # nanochat evaluate_bpb: nats over targets with > 0 bytes, divided by their bytes.
+                    num_bytes = token_bytes[micro_batch["target_ids"].to("cuda")]
+                    mask = micro_batch["loss_mask"].to("cuda") & (num_bytes > 0)
+                    batch_bytes = (num_bytes * mask).sum()
+                    micro_batch = {**micro_batch, "loss_mask": mask}
                 loss_sum, token_count = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_token_count += token_count
+                    if batch_bytes is not None:
+                        total_bytes += batch_bytes
                 else:
                     nan_count += 1
 
         dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(total_bytes, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        bpb = None
+        if token_bytes is not None and total_bytes.item() > 0:
+            bpb = total_loss_sum.item() / (math.log(2) * total_bytes.item())
+        return mean_loss, nan_count.item(), bpb
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
@@ -342,7 +363,7 @@ def train(config: SFTConfig | PretrainConfig):
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, bpb = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             take_moe_routing_stats(model)
@@ -352,11 +373,12 @@ def train(config: SFTConfig | PretrainConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
+        val_metrics = {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}
+        if bpb is not None:
+            val_metrics["val/bpb"] = bpb
+            logger.success(f"Validation | Step {step} | bpb {bpb:.6f}")
+        asyncio.run(monitors.log(val_metrics, step=step))
+        return bpb
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -677,6 +699,10 @@ def train(config: SFTConfig | PretrainConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
+    # Final evaluation of the trained weights (nanochat base_train's last step: val bpb, then CORE)
+    if isinstance(config, PretrainConfig) and config.val is not None and (config.val.final_bpb or config.val.core):
+        run_final_eval(config, model, tokenizer, progress.step, run_validation, monitors, logger)
+
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
@@ -702,3 +728,52 @@ def train(config: SFTConfig | PretrainConfig):
         # The run's owner reads the committed pause from the control API, then stops the run.
         logger.info("Paused, serving the control API until the run is stopped")
         control_server.wait()
+
+
+def run_final_eval(config, model, tokenizer, step, run_validation, monitors, logger) -> None:
+    """Val bpb and CORE on the final weights, logged at ``step`` (``max_steps``)."""
+    from prime_rl.trainer.pretrain.nanochat_eval import local_tensor, run_core
+
+    metrics = {"step": step}
+    if config.val.final_bpb:
+        start = time.perf_counter()
+        bpb = run_validation(step)
+        if bpb is not None:
+            metrics["eval/final_bpb"] = bpb
+        logger.info(f"Final validation took {time.perf_counter() - start:.1f}s")
+    if config.val.core:
+        inner = model.model
+        captured = {}
+        handle = inner.norm.register_forward_hook(lambda module, args, output: captured.__setitem__("hidden", output))
+        weight = local_tensor(model.lm_head.weight).detach().float()
+        softcap = getattr(model.lm_head, "softcap", None) or getattr(model.config, "logit_softcap", None)
+
+        def forward_logits(input_ids, position_ids, seq_lens):
+            labels = torch.full_like(input_ids, IGNORE_INDEX)
+            labels[:, :-1] = input_ids[:, 1:]
+            model(input_ids=input_ids, position_ids=position_ids, labels=labels, seq_lens=seq_lens)
+            hidden = captured.pop("hidden")[0].float()
+            logits = hidden @ weight.t()
+            if softcap:
+                logits = softcap * torch.tanh(logits / softcap)
+            return logits
+
+        try:
+            with torch.no_grad():
+                out = run_core(
+                    forward_logits,
+                    tokenizer,
+                    config.val.eval_bundle,
+                    config.val.core_max_per_task,
+                    torch.device("cuda"),
+                    pack_tokens=config.val.core_pack_tokens,
+                    log=logger.info,
+                )
+            metrics["eval/core"] = out["core_metric"]
+            for label, value in out["centered_results"].items():
+                metrics[f"core/{label}"] = value
+            for label, value in out["results"].items():
+                metrics[f"core_acc/{label}"] = value
+        finally:
+            handle.remove()
+    asyncio.run(monitors.log(metrics, step=step))

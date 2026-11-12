@@ -65,11 +65,30 @@ class GatedConnection(Connection):
     scaled by a stream-wise gate in (0, 2). Without injection this is the mixer that collapses the streams."""
 
     def __init__(
-        self, hidden_size: int, streams: int, low_rank: int, injection: bool = True, read_scale: float = 1.0
+        self,
+        hidden_size: int,
+        streams: int,
+        low_rank: int,
+        injection: bool = True,
+        read_scale: float = 1.0,
+        gate_act: str = "sigmoid",
+        init_std: float = 0.02,
+        fixed_injection: bool = False,
+        rho: list[float] | None = None,
+        sublayer: int = 1,
     ) -> None:
         super().__init__(hidden_size)
         self.streams = streams
         self.read_scale = read_scale
+        # per-stream forget factors applied once per block (on the MLP write), as in static_streams
+        self.rho = rho
+        self.sublayer = sublayer
+        # "sigmoid": gates in (0, 1), ~0.5 at init; "2sigmoid": gates in (0, 2), ~1 at init (starts near plain).
+        self.gate_scale = {"sigmoid": 1.0, "2sigmoid": 2.0}[gate_act]
+        self.init_std = init_std
+        # fixed_injection: every stream gets the output with weight 1 (no injection matmul)
+        self.fixed_injection = fixed_injection
+        injection = injection and not fixed_injection
         expanded = streams * hidden_size
         self.norm_weight = nn.Parameter(torch.zeros(expanded))
         self.down = nn.Linear(expanded, low_rank, bias=False)
@@ -81,7 +100,7 @@ class GatedConnection(Connection):
         local(self.norm_weight).zero_()
         for module in (self.down, self.up, self.inject):
             if module is not None:
-                local(module.weight).normal_(0.0, 0.02, generator=generator)
+                local(module.weight).normal_(0.0, self.init_std, generator=generator)
 
     def _normalized(self, state: torch.Tensor) -> torch.Tensor:
         streams = split_streams(state.float(), self.streams, self.hidden_size)
@@ -91,6 +110,8 @@ class GatedConnection(Connection):
     def read(self, state: torch.Tensor, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         normalized = self._normalized(state)
         gates = torch.sigmoid(self.up(F.silu(self.down(normalized) / self.streams)))
+        if self.gate_scale != 1.0:
+            gates = gates * self.gate_scale
         gates = split_streams(gates, self.streams, self.hidden_size)
         block_input = (gates * split_streams(normalized, self.streams, self.hidden_size)).mean(dim=-2)
         injection = 2.0 * torch.sigmoid(self.inject(normalized) / self.streams) if self.inject is not None else None
@@ -98,6 +119,10 @@ class GatedConnection(Connection):
 
     def write(self, state, output, context, hidden=None) -> torch.Tensor:
         streams = split_streams(state, self.streams, self.hidden_size)
+        if self.rho is not None and self.sublayer == 1:
+            streams = streams * torch.tensor(self.rho, dtype=state.dtype, device=state.device).unsqueeze(-1)
+        if context is None:  # fixed injection
+            return (streams + output.unsqueeze(-2)).flatten(-2)
         return (streams + output.unsqueeze(-2) * context.unsqueeze(-1)).flatten(-2)
 
     def extra_flops_per_token(self) -> int:
@@ -400,6 +425,136 @@ class CausalFirConnection(Connection):
         return rms_norm(filtered), None
 
 
+def sinkhorn(logits: torch.Tensor, iters: int) -> torch.Tensor:
+    """Doubly stochastic matrix from ``exp(logits)`` by alternate row/column normalization (in log space)."""
+    log_p = logits.float()
+    for _ in range(iters):
+        log_p = log_p - torch.logsumexp(log_p, dim=-1, keepdim=True)
+        log_p = log_p - torch.logsumexp(log_p, dim=-2, keepdim=True)
+    return log_p.exp()
+
+
+class HyperConnection(Connection):
+    """Hyper-connections (Zhu et al., 2024, arXiv:2409.19606): ``streams`` residual streams H [n, d]. The sublayer
+    reads ``rms_norm(sum_s a_s H_s)`` and the streams become ``A^T H + b (x) output`` with a learned read vector a,
+    stream-mixing matrix A [n, n] and write vector b. Static values start exactly plain (a = one-hot of the
+    sublayer's index mod n, A = I, b = 1); ``dynamic`` adds ``scale * tanh(rms_norm(H_s) W)`` token-wise
+    corrections with zero-initialized W (the paper's DHC).
+
+    ``mix``: "free" (the paper), "sinkhorn" (mHC-style: A is the doubly stochastic Sinkhorn projection of
+    exp(logits), a and b are positive via 2*sigmoid), or "none" (A = I fixed: static read/write only).
+    ``read_streams`` "onehot" (paper init) or "mean" (a = 1/n)."""
+
+    def __init__(
+        self,
+        hidden_size: int,
+        layer_idx: int,
+        sublayer: int,
+        streams: int,
+        dynamic: bool = False,
+        mix: str = "free",
+        dynamic_scale: float = 0.01,
+        read_init: str = "onehot",
+        sinkhorn_iters: int = 10,
+        sinkhorn_temp: float = 4.0,
+    ) -> None:
+        super().__init__(hidden_size)
+        self.streams = streams
+        self.index = (2 * layer_idx + sublayer) % streams
+        self.dynamic = dynamic
+        self.mix = mix
+        self.dynamic_scale = dynamic_scale
+        self.read_init = read_init
+        self.sinkhorn_iters = sinkhorn_iters
+        self.sinkhorn_temp = sinkhorn_temp
+        # 1-D parameters (the extra-scalar optimizer group): read vector, flattened mixing matrix, write vector.
+        self.read_weight = nn.Parameter(torch.zeros(streams))
+        self.mix_weight = nn.Parameter(torch.zeros(streams * streams))
+        self.write_weight = nn.Parameter(torch.zeros(streams))
+        if dynamic:
+            # token-wise corrections from each normalized stream: [read, write, mix row (n)]
+            self.dynamic_proj = nn.Linear(hidden_size, streams + 2, bias=False)
+        if mix == "none":
+            self.mix_weight.requires_grad_(False)
+
+    def reset_parameters(self, generator: torch.Generator) -> None:
+        n = self.streams
+        read = torch.zeros(n)
+        if self.read_init == "mean":
+            read.fill_(1.0 / n)
+        else:
+            read[self.index] = 1.0
+        eye = torch.eye(n)
+        if self.mix == "sinkhorn":
+            # 2*sigmoid(0) = 1 for the write; read logits so that 2*sigmoid gives the one-hot-ish start
+            local(self.read_weight).copy_(torch.where(read > 0, torch.zeros(n), torch.full((n,), -12.0)))
+            local(self.mix_weight).copy_((eye * self.sinkhorn_temp).flatten())
+            local(self.write_weight).zero_()
+        else:
+            local(self.read_weight).copy_(read)
+            local(self.mix_weight).copy_(eye.flatten())
+            local(self.write_weight).fill_(1.0)
+        if self.dynamic:
+            local(self.dynamic_proj.weight).zero_()
+
+    def _coefficients(self, state: torch.Tensor):
+        n = self.streams
+        read = self.read_weight.float()
+        write = self.write_weight.float()
+        mix = self.mix_weight.float().view(n, n)
+        if self.mix == "sinkhorn":
+            read = 2 * torch.sigmoid(read)
+            write = 2 * torch.sigmoid(write)
+            mix = sinkhorn(mix, self.sinkhorn_iters)
+        elif self.mix == "none":
+            mix = torch.eye(n, device=state.device, dtype=torch.float32)
+        read = read.to(state.dtype)
+        write = write.to(state.dtype)
+        mix = mix.to(state.dtype)
+        if not self.dynamic:
+            return read, mix, write
+        streams = split_streams(state, n, self.hidden_size)
+        delta = torch.tanh(self.dynamic_proj(rms_norm(streams))) * self.dynamic_scale  # [..., n, n + 2]
+        read = read + delta[..., 0]  # [..., n]
+        write = write + delta[..., 1]
+        mix = mix + delta[..., 2:]  # [..., n (from), n (to)]
+        return read, mix, write
+
+    def read(self, state: torch.Tensor, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        read, mix, write = self._coefficients(state)
+        streams = split_streams(state, self.streams, self.hidden_size)
+        inputs = (read.unsqueeze(-1) * streams).sum(dim=-2)
+        return rms_norm(inputs), (mix, write)
+
+    def write(self, state, output, context, hidden=None) -> torch.Tensor:
+        mix, write = context
+        streams = split_streams(state, self.streams, self.hidden_size)
+        if mix.dim() == 2:
+            mixed = torch.einsum("st,...sd->...td", mix, streams)
+        else:
+            mixed = torch.einsum("...st,...sd->...td", mix, streams)
+        return (mixed + write.unsqueeze(-1) * output.unsqueeze(-2)).flatten(-2)
+
+    def extra_flops_per_token(self) -> int:
+        n, d = self.streams, self.hidden_size
+        flops = 6 * (n * n + 2 * n) * d  # read sum, stream mixing, write
+        if self.dynamic:
+            flops += 6 * (n - 1) * d * (n + 2) + 12 * n * d  # projection applied to every stream, stream norms
+        return flops
+
+
+class HyperFinal(nn.Module):
+    """Sum of the streams, RMS-normalized (Zhu et al.)."""
+
+    def __init__(self, hidden_size: int, streams: int) -> None:
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.streams = streams
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        return rms_norm(split_streams(state, self.streams, self.hidden_size).sum(dim=-2))
+
+
 class RMSNormFinal(nn.Module):
     """Normalizes the first stream."""
 
@@ -414,8 +569,10 @@ class RMSNormFinal(nn.Module):
 class GatedFinal(GatedConnection):
     """The gated residual mixer collapsing the streams before the LM head, without injection."""
 
-    def __init__(self, hidden_size: int, streams: int, low_rank: int, read_scale: float = 1.0) -> None:
-        super().__init__(hidden_size, streams, low_rank, injection=False, read_scale=read_scale)
+    def __init__(self, hidden_size: int, streams: int, low_rank: int, read_scale: float = 1.0, **kwargs) -> None:
+        kwargs.pop("fixed_injection", None)
+        kwargs.pop("rho", None)
+        super().__init__(hidden_size, streams, low_rank, injection=False, read_scale=read_scale, **kwargs)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         return self.read(state, positions=None)[0]
@@ -430,7 +587,15 @@ def make_connection(config, layer_idx: int, sublayer: int) -> Connection:
             return PlainConnection(hidden_size)
         case "gated":
             return GatedConnection(
-                hidden_size, residual["streams"], residual["low_rank"], read_scale=residual.get("read_scale", 1.0)
+                hidden_size,
+                residual["streams"],
+                residual["low_rank"],
+                read_scale=residual.get("read_scale", 1.0),
+                gate_act=residual.get("gate_act", "sigmoid"),
+                init_std=residual.get("init_std", 0.02),
+                fixed_injection=not residual.get("injection", True),
+                rho=residual.get("rho"),
+                sublayer=sublayer,
             )
         case "static_streams":
             return StaticStreamsConnection(hidden_size, sublayer, residual["streams"], residual.get("rho"))
@@ -448,6 +613,19 @@ def make_connection(config, layer_idx: int, sublayer: int) -> Connection:
             return RenormConnection(hidden_size)
         case "depth_attention":
             return DepthAttentionConnection(hidden_size, sublayer, residual["depth"], residual["dim"])
+        case "hyper":
+            return HyperConnection(
+                hidden_size,
+                layer_idx,
+                sublayer,
+                residual["streams"],
+                dynamic=residual.get("dynamic", False),
+                mix=residual.get("mix", "free"),
+                dynamic_scale=residual.get("dynamic_scale", 0.01),
+                read_init=residual.get("read_init", "onehot"),
+                sinkhorn_iters=residual.get("sinkhorn_iters", 10),
+                sinkhorn_temp=residual.get("sinkhorn_temp", 4.0),
+            )
         case _:
             raise ValueError(f"Unknown residual connection {kind!r}")
 
@@ -461,10 +639,14 @@ def make_final_norm(config) -> nn.Module:
                 residual["streams"],
                 residual["low_rank"],
                 read_scale=residual.get("read_scale", 1.0),
+                gate_act=residual.get("gate_act", "sigmoid"),
+                init_std=residual.get("init_std", 0.02),
             )
         case "static_streams":
             return StaticStreamsFinal(config.hidden_size, residual["streams"], residual.get("rho"))
         case "recycled_gate":
             return RecycledGateFinal(config.hidden_size, residual["streams"])
+        case "hyper":
+            return HyperFinal(config.hidden_size, residual["streams"])
         case _:
             return RMSNormFinal(config.hidden_size)
