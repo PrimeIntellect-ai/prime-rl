@@ -1,8 +1,10 @@
 import copy
+import os
 import re
 
 import pytest
 import torch
+import torch.distributed as dist
 from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
@@ -638,3 +640,50 @@ def test_halo_shards_give_every_entry_and_window_slot_exactly_once():
         assert torch.equal(pooled_local_idx[gathered_row], layout.entry_local_idx)
         owner = gathered_row // capacity
         assert torch.equal(owner, layout.entry_tok_idx[:, -1] // n_queries), "an entry is pooled off its owner"
+
+
+@pytest.fixture(scope="module")
+def cp_process_group():
+    if int(os.environ.get("WORLD_SIZE", 1)) != 2:
+        pytest.skip("run with torchrun --nproc-per-node=2")
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    dist.init_process_group("nccl")
+    yield dist.group.WORLD
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("layer_idx", [CSA_LAYER, HCA_LAYER])
+def test_halo_compress_returns_the_whole_rows_entries(cp_process_group, layer_idx):
+    """Under halo exchange every CP rank pools a share of the entries, and `compress` must still
+    hand back every entry of the row, as one GPU computes them from the whole row. Plain pytest
+    skips it, run it with `torchrun --nproc-per-node=2 -m pytest tests/unit/train/models/test_deepseek_v4.py
+    -k test_halo_compress_returns_the_whole_rows_entries`.
+    """
+    cp_rank, cp_world_size = dist.get_rank(), dist.get_world_size()
+    halo_config = copy.deepcopy(MODEL_CONFIG)
+    halo_config.cp_kv_exchange = "halo"
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        rotary = DeepseekV4RotaryEmbedding(halo_config)
+        compressor = DeepseekV4Attention(halo_config, layer_idx, rotary).compressor
+    _randomize(compressor)
+    seq_lens = torch.tensor(HALO_CP_DOCS)
+    hidden_states = torch.randn(1, sum(HALO_CP_DOCS), MODEL["hidden_size"], device="cuda", dtype=torch.bfloat16)
+    n_queries = sum(HALO_CP_DOCS) // cp_world_size
+
+    def packed(cp_rank: int, cp_world_size: int) -> PackedContext:
+        return PackedContext.build(
+            rotary_emb=rotary,
+            seq_lens=seq_lens,
+            device=torch.device("cuda"),
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
+        )
+
+    expected = compressor.compress(hidden_states, packed(0, 1))
+    actual = compressor.compress(
+        hidden_states[:, cp_rank * n_queries : (cp_rank + 1) * n_queries],
+        packed(cp_rank, cp_world_size),
+        cp_group=cp_process_group,
+        cp_world_size=cp_world_size,
+    )
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
