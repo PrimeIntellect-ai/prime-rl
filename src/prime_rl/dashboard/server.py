@@ -907,8 +907,8 @@ def resolve_stream_refs(stream: Path, update: dict) -> None:
             except (KeyError, TypeError, ValueError, OSError):
                 branch[field] = None
                 continue
-            values = np.frombuffer(data, dtype=np.float32).astype(np.float32)
-            branch[field] = [None if math.isnan(value) else value for value in values.tolist()]
+            values = np.frombuffer(data, dtype=np.float32)
+            branch[field] = orjson.loads(orjson.dumps(values, option=orjson.OPT_SERIALIZE_NUMPY))
 
 
 def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
