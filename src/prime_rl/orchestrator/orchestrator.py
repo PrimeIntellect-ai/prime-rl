@@ -43,7 +43,7 @@ from prime_rl.configs.diff import ConfigChange, diff_config, merge_resumed_confi
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
-from prime_rl.control.types import ConfigUpdate, Reconfigurable
+from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
@@ -51,6 +51,7 @@ from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
+from prime_rl.orchestrator.draft import DraftLoader
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -60,6 +61,7 @@ from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metric
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
     EvalBatch,
@@ -91,6 +93,7 @@ from prime_rl.utils.pathing import (
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -161,6 +164,8 @@ class Orchestrator:
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         # The launch config, before live updates, which checkpoints record as the merge base.
         self.launch_config = dump_resolved_config(config)
+        # The draft the engines launch with, before live updates are restored.
+        self.launch_draft = config.speculative_decoding.draft if config.speculative_decoding is not None else None
         self.config_revision = 0
         self.resume_step = resolve_resume_step(config, self.ckpt_manager)
         # Components read the config when built, so a resumed run restores live updates first.
@@ -192,11 +197,13 @@ class Orchestrator:
         self.ships = 0
         self.shipped_at: float | None = None
         self.trainer_rate: float | None = None
+        self.trainer_capacity = TrainerCapacity()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
         self.clients = None
         self.admin_plane = None
+        self.draft_loader = None
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -234,6 +241,10 @@ class Orchestrator:
         self.admin_plane = setup_admin_plane(
             config.model.client, config.model.name, roles=config.inference_metrics_roles
         )
+        if config.speculative_decoding is not None:
+            # A draft restored from live updates loads with the startup policy.
+            self.draft_loader = DraftLoader(self.admin_plane, self.launch_draft, config.speculative_decoding.draft)
+            self.admin_plane.after_transfer = self.draft_loader.sync
 
         await monitors.setup(
             producer="orchestrator",
@@ -422,6 +433,8 @@ class Orchestrator:
         self.reconfigurables = [self.concurrency, self.train_envs, self.train_source, self.train_sink]
         if self.eval_source is not None:
             self.reconfigurables.append(self.eval_source)
+        if self.draft_loader is not None:
+            self.reconfigurables.append(self.draft_loader)
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
@@ -454,7 +467,7 @@ class Orchestrator:
                 requires_step=True,
                 on_submit=lambda: loop.call_soon_threadsafe(self.control_requested.set),
                 read_config=lambda: (self.config_revision, self.config),
-                check_config=lambda raw: validate_update(self.config, raw),
+                check_config=self.check_config,
             )
             ControlServer(self.controller, config.control).start()
             self.component_tasks.append(asyncio.create_task(self.serve_control(), name="control"))
@@ -743,10 +756,12 @@ class Orchestrator:
         trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
+        self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()
+        self.revert_rejected_draft()
         if self.controller is not None:
             self.apply_config_update()
             self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
@@ -923,8 +938,11 @@ class Orchestrator:
             **disp_drain,
             **watcher_gauges,
             **self.concurrency.gauges(),
+            **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
         }
+        if self.draft_loader is not None:
+            payload |= self.draft_loader.gauges()
         if self.gc is not None:
             payload |= self.gc.gauges()
         if lag_stats.n > 0:
@@ -1069,6 +1087,36 @@ class Orchestrator:
         shipping, before anything is dispatched for that step; running episodes keep their
         settings and nothing is cancelled."""
         self.controller.apply_update(self.progress.step, self.apply_config)
+
+    def check_config(self, raw: dict) -> tuple[OrchestratorConfig, list[ConfigChange]]:
+        """Validate a submitted config; a new draft must be able to replace the served one in place."""
+        config, changes = validate_update(self.config, raw)
+        if (
+            self.draft_loader is not None
+            and config.speculative_decoding.draft != self.config.speculative_decoding.draft
+        ):
+            try:
+                check_draft_swap(
+                    local_draft_dir(str(self.launch_draft)), local_draft_dir(str(config.speculative_decoding.draft))
+                )
+            except (OSError, ValueError) as error:
+                raise InvalidConfigError(f"The draft cannot replace the served draft: {error}") from error
+        return config, changes
+
+    def revert_rejected_draft(self) -> None:
+        """Revert a draft that failed to load as a new config revision, so the live config, its records
+        and checkpoints name the draft the engines serve."""
+        rejected = self.draft_loader.take_rejected() if self.draft_loader is not None else None
+        if rejected is None or self.config.speculative_decoding.draft != rejected:
+            return
+        config = self.config.model_copy(deep=True)
+        config.speculative_decoding.draft = self.draft_loader.good
+        change = ConfigChange(path="speculative_decoding.draft", old=str(rejected), new=str(self.draft_loader.good))
+        if self.controller is None:
+            self.apply_config(config, [change])
+            return
+        with self.controller.lock:
+            self.apply_config(config, [change])
 
     def apply_config(self, config: OrchestratorConfig, changes: list[ConfigChange]) -> None:
         self.config_revision += 1

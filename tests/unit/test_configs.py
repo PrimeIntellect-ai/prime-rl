@@ -465,6 +465,7 @@ def test_mega_moe_buffer_covers_mxfp8_padding():
         ({}, "bf16"),
         ({"type": "mxfp8"}, "mxfp8"),
         ({"type": "mxfp8", "apply_to": "100%"}, "mxfp8"),
+        ({"type": "mxfp8", "backward": "dequant_bf16"}, "mxfp8_qat"),
         ({"type": "deepgemm_fp8"}, "fp8"),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, "fp8_bwd"),
         ({"type": "bf16", "backend": "sonicmoe"}, "cannot run"),
@@ -476,13 +477,15 @@ def test_mega_moe_runs_the_expert_precision_of_moe_compute(compute, expected):
     from prime_rl.configs.trainer import mega_moe_precision
 
     model = {"moe": {"dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}, "compute": compute}}
-    if expected in ("bf16", "mxfp8", "fp8", "fp8_bwd"):
+    if expected in ("bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"):
         assert mega_moe_precision(TrainerModelConfig.model_validate(model).moe.compute) == expected
     else:
         with pytest.raises(ValidationError, match=expected):
             TrainerModelConfig.model_validate(model)
     with pytest.raises(ValidationError, match="needs model.moe.dispatch.type = 'mega_moe'"):
         TrainerModelConfig.model_validate({"moe": {"compute": {"type": "deepgemm_fp8", "forward": "bf16"}}})
+    with pytest.raises(ValidationError, match="needs model.moe.dispatch.type = 'mega_moe'"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "backward": "dequant_bf16"}}})
 
 
 def test_mega_moe_buffer_smaller_than_a_cp_shard_fails():
