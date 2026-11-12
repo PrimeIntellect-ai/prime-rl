@@ -934,7 +934,7 @@ def _compressor_pool_reference(kv, gate, position_bias, layout, n_series):
 def test_cudnn_compressor_pool_matches_fp64_reference(compress_rate, n_series, head_dim):
     """Entries and every gradient within one bf16 rounding of an fp64 pooling, eager and compiled alike.
 
-    The documents cover a row with no entries, tails that end mid-window and a document of exactly two
+    The documents cover one with no entries, tails that end mid-window and a document of exactly two
     windows. The position bias is bf16, as FSDP hands parameters to the compressor.
     """
     doc_lens = torch.tensor([3, 517, 1000, 2 * compress_rate, 4101])
