@@ -1,7 +1,8 @@
 """Mocked trainer-bound step: GPU work, AnnotationWriter.flush(), then a grad-norm-style all_reduce.
 
-Run from a prime-rl checkout (the v2 worktree for the format-v2 arm, prime-rl-annot-base for the format-v1
-arm); the arm is detected from UPDATE_VERSION:
+Run from the prime-rl checkout under test, so each arm imports its own prime_rl. The arm is detected from
+the imported code: the gather (one gather_object over the world, or tensors over the CP leaders) and the
+on-disk format (UPDATE_VERSION):
 
     uv run torchrun --nproc-per-node 8 <path>/bench.py --out-dir /local/nvme/annot-bench/<arm>
 
@@ -24,7 +25,10 @@ import torch.distributed as dist
 from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.file.traces.update import UPDATE_VERSION, make_update
+from prime_rl.trainer.rl import annotations
 from prime_rl.trainer.rl.annotations import AnnotationWriter
+
+GATHERS_TENSORS = hasattr(annotations, "gather_streams")
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4096,
         help="Side of the square bf16 matmuls that make up the GPU work; small sizes make the loop launch-bound.",
+    )
+    parser.add_argument(
+        "--cp",
+        type=int,
+        default=1,
+        help="Context-parallel degree: only every cp-th rank (a CP leader) holds annotation streams.",
     )
     parser.add_argument("--min-seq-len", type=int, default=50_000)
     parser.add_argument("--max-seq-len", type=int, default=250_000)
@@ -74,8 +84,10 @@ def make_streams(rng: np.random.Generator, length: int) -> tuple[np.ndarray, np.
 
 
 def make_rank_streams(args: argparse.Namespace, rank: int, world_size: int) -> list[tuple[np.ndarray, np.ndarray]]:
+    if rank % args.cp:
+        return []
     rng = np.random.default_rng(args.seed * 1_000 + rank)
-    budget = int(args.tokens_per_step) // world_size
+    budget = int(args.tokens_per_step) // (world_size // args.cp)
     streams = []
     while budget > 0:
         length = min(budget, int(rng.integers(args.min_seq_len, args.max_seq_len + 1)))
@@ -106,23 +118,36 @@ def main() -> None:
     dist.init_process_group("nccl")
     rank, world_size = dist.get_rank(), dist.get_world_size()
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    arm = "format-v1" if UPDATE_VERSION == 1 else "format-v2"
+    assert world_size % args.cp == 0
+    arm = f"{'gather-tensors' if GATHERS_TENSORS else 'gather-object'}+format-v{UPDATE_VERSION}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     asyncio.run(monitors.setup(file=FileMonitorConfig(), output_dir=args.out_dir, producer="trainer"))
-    writer = AnnotationWriter(SimpleNamespace(cp_enabled=False), SimpleNamespace(world_size=world_size, rank=rank), 4)
+    leaders = dist.new_group([member for member in range(world_size) if member % args.cp == 0])
+    parallel_dims = SimpleNamespace(
+        cp_enabled=args.cp > 1,
+        pp_enabled=False,
+        world_mesh={"cp": SimpleNamespace(get_local_rank=lambda: rank % args.cp)},
+        get_mesh=lambda name: SimpleNamespace(get_group=lambda: leaders),
+    )
+    writer = AnnotationWriter(parallel_dims, SimpleNamespace(world_size=world_size, rank=rank), 4)
     streams = make_rank_streams(args, rank, world_size)
     matrix, matmul_count = calibrate_matmuls(args.gpu_seconds, args.matrix_size)
     scalar = torch.ones((), device="cuda")
 
     steps = []
     for step in range(args.steps):
-        writer._pending = [
-            make_update(
-                f"r{rank}-s{step}-{index}", branches={0: {"trainer_logprobs": logprobs, "entropies": entropies}}
-            )
-            for index, (logprobs, entropies) in enumerate(streams)
-        ]
+        if GATHERS_TENSORS:
+            writer._pending = [
+                (f"r{rank}-s{step}-{index}", 0, logprobs, entropies) for index, (logprobs, entropies) in enumerate(streams)
+            ]
+        else:
+            writer._pending = [
+                make_update(
+                    f"r{rank}-s{step}-{index}", branches={0: {"trainer_logprobs": logprobs, "entropies": entropies}}
+                )
+                for index, (logprobs, entropies) in enumerate(streams)
+            ]
         dist.barrier()
         torch.cuda.synchronize()
         step_start = time.perf_counter()
@@ -172,7 +197,7 @@ def report(args: argparse.Namespace, arm: str, gathered: list) -> None:
     (args.out_dir / "results.json").write_text(json.dumps(result, indent=2))
     print(
         f"arm={result['arm']} tokens_per_step={args.tokens_per_step:.3g} gpu_seconds={args.gpu_seconds}"
-        f" matrix_size={args.matrix_size}"
+        f" matrix_size={args.matrix_size} cp={args.cp}"
     )
     header = ["step", "rank0_gpu_work_s", "others_gpu_work_s", "rank0_flush_return_s", "others_stall_s", "step_s"]
     print(" ".join(f"{name:>22}" for name in header))
