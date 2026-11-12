@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import torch
 from jaxtyping import Bool, Int
@@ -22,6 +22,8 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
+    sample_data: NotRequired[Any]
+    """Plain values a dataset attaches to a sample. Packing collects them into a list, in pack order."""
 
 
 class Batch(TypedDict):
@@ -37,6 +39,7 @@ class Batch(TypedDict):
     """Whether packing cut the sample's tail: only a sample longer than a whole row, which is then alone in it."""
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    sample_data: NotRequired[list[Any]]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -129,6 +132,10 @@ class CatDataset(StatefulIterableDataset):
                 seq_len = 0
 
             existing_len = len(packed_samples["input_ids"])
+            if existing_len > 0 and ("sample_data" in sample) != ("sample_data" in packed_samples):
+                raise ValueError("Cannot pack samples with and without sample_data")
+            if "sample_data" in sample:
+                packed_samples["sample_data"].append(sample["sample_data"])
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                 value = sample[key]
                 assert isinstance(value, list)
@@ -173,6 +180,11 @@ class CatDataset(StatefulIterableDataset):
             yield self._finalize_pack(packed_samples, self.seq_len)
 
     def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
+        if "sample_data" in packed and len(packed["input_ids"]) > seq_len:
+            raise ValueError(
+                f"Cannot truncate a sample that carries sample_data: it has {len(packed['input_ids'])} tokens "
+                f"and a row holds {seq_len}"
+            )
         result: dict[str, Any] = {
             k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
@@ -201,6 +213,8 @@ class CatDataset(StatefulIterableDataset):
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
         else:
             result["mm_token_type_ids"] = None
+        if "sample_data" in packed:
+            result["sample_data"] = packed["sample_data"]
         return result
 
 
@@ -222,7 +236,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
     (sample,) = samples
     mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
-    return {
+    batch: Batch = {
         "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
         "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
@@ -235,6 +249,9 @@ def cat_collate(samples: list[Sample]) -> Batch:
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
     }
+    if "sample_data" in sample:
+        batch["sample_data"] = sample["sample_data"]
+    return batch
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, cp: int) -> StatefulDataLoader:

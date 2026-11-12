@@ -580,5 +580,12 @@ def setup_sft_dataset(
             multimodal=multimodal,
             columns=config.columns,
         )
+    elif config.type == "system_one":
+        # Delayed import: system_one.data subclasses HFDataset, so it imports this module.
+        from prime_rl.trainer.sft.system_one.data import setup_system_one_dataset
+
+        if raw_dataset is None:
+            raw_dataset = load_sft_dataset(config)
+        return setup_system_one_dataset(tokenizer, config, raw_dataset, non_dp_size=non_dp_size, max_epochs=max_epochs)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
