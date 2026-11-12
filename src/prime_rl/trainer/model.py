@@ -260,54 +260,6 @@ def add_routing_stats(
         maxes["ep_imbalance/rank"] = sums["ep_imbalance/rank_dp_mean"] = rank_imbalance
 
 
-def get_global_moe_stats(
-    model: nn.Module,
-    routing_stats: list[Tensor],
-    ep_group: dist.ProcessGroup | None,
-    dp_cp_group: dist.ProcessGroup,
-) -> tuple[dict[str, Tensor], Tensor]:
-    """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step,
-    or with EP, also one EP imbalance per micro step and layer.
-
-    Also returns this rank's unreduced per-layer expert counts summed over the micro steps, for `get_expert_load_stats`.
-    """
-    stats = torch.stack(routing_stats)
-    tokens_per_expert = stats[..., :-1].sum(dim=0)
-    if stats.numel() == 0:
-        return {}, tokens_per_expert
-    if ep_group is not None:
-        dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=ep_group)
-
-    per_layer_max_vio = []
-    per_layer_routing_confidence = []
-    for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
-        max_vio, routing_confidence = compute_max_vio_and_routing_confidence(
-            layer_stats[:, :-1], layer_stats[:, -1], block_mlp.router.top_k
-        )
-        per_layer_max_vio.append(max_vio)
-        per_layer_routing_confidence.append(routing_confidence)
-
-    max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
-    mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
-    if ep_group is not None:
-        # Every rank of an EP group holds the same `[micro_steps, layers]` imbalances. A layer waits for the busiest
-        # rank of its EP group and, through its FSDP collectives, for the slowest group: take the max over DP groups,
-        # with the DP mean beside it.
-        rank_imbalance = compute_ep_imbalance(stats[..., :-1], dist.get_world_size(ep_group))
-        max_stats.append(rank_imbalance)
-        mean_stats.append(rank_imbalance)
-    max_stats, mean_stats = torch.cat(max_stats, dim=1), torch.cat(mean_stats, dim=1)
-    dist.all_reduce(max_stats, op=dist.ReduceOp.MAX, group=dp_cp_group)
-    dist.all_reduce(mean_stats, op=dist.ReduceOp.SUM, group=dp_cp_group)
-    mean_stats /= dist.get_world_size(dp_cp_group)
-
-    moe_stats = {"max_vio": max_stats[:, 0], "routing_confidence": mean_stats[:, 0]}
-    if ep_group is not None:
-        moe_stats["ep_imbalance/rank"] = max_stats[:, 1:]
-        moe_stats["ep_imbalance/rank_dp_mean"] = mean_stats[:, 1:]
-    return moe_stats, tokens_per_expert
-
-
 def compute_ep_imbalance(tokens_per_expert: Tensor, ep: int) -> Tensor:
     """The busiest EP rank's load over the mean rank load, from `[..., num_experts]` counts summed over the EP group.
 
@@ -335,14 +287,6 @@ def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
         stats[f"expert_load/{name}/mean"] = values.mean()
         stats[f"expert_load/{name}/max"] = values.max()
     return stats
-
-
-def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -> dict[str, float]:
-    """Sum a step's per-layer expert counts across the group (every rank routes distinct tokens) and compute load stats."""
-    if tokens_per_expert.numel() == 0:
-        return {}
-    dist.all_reduce(tokens_per_expert, op=dist.ReduceOp.SUM, group=group)
-    return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
 def get_model(

@@ -52,6 +52,7 @@ from prime_rl.trainer.utils import (
     get_peak_memory_across_ranks,
     prepare_gradient_offload,
     print_sample,
+    scale_gradients_,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
@@ -421,9 +422,6 @@ def train(config: SFTConfig | PretrainConfig):
         )
 
         step_start_time = time.perf_counter()
-        # GPU time: the micro-batch loop only queues work.
-        forward_backward_start, forward_backward_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
-        forward_backward_start.record()
 
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
@@ -450,16 +448,25 @@ def train(config: SFTConfig | PretrainConfig):
         if config.log.log_data:
             micro_batches = logged_micro_batches(micro_batches)
 
+        loss_tokens = torch.zeros((), dtype=torch.float64, device="cuda")
+
+        def summed_loss(micro_batch: dict) -> torch.Tensor:
+            loss_sum, token_count = compute_loss(micro_batch)
+            loss_tokens.add_(token_count)
+            return loss_sum
+
+        # GPU time: the micro-batch loop only queues work.
+        forward_backward_start, forward_backward_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        forward_backward_start.record()
         perf_counter = get_perf_counter(model)
         step_stats = run_micro_batches(
-            model,
-            iter(micro_batches),
-            compute_loss,
-            grad_accum_steps,
-            parallel_dims,
-            perf_counter,
-            gradient_manager=gradient_manager,
+            model, micro_batches, summed_loss, grad_accum_steps, parallel_dims, perf_counter, gradient_manager
         )
+        dist.all_reduce(loss_tokens, group=dp_cp_group)
+        if gradient_manager is None:
+            # The gradients of the summed loss are divided by the step's loss tokens once, after the last backward.
+            factor = parallel_dims.fsdp_gradient_divide_factor / loss_tokens.clamp(min=1)
+            scale_gradients_(None, model, torch.where(loss_tokens > 0, factor, 1.0).float())
         forward_backward_end.record()
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
@@ -483,8 +490,12 @@ def train(config: SFTConfig | PretrainConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
+        step_stats, norms = to_host(
+            step_stats | {"loss_tokens": loss_tokens}, {"grad_norm": grad_norm} if grad_norm is not None else {}
+        )
         result = step_result(step_stats, parallel_dims)
+        loss_tokens = int(step_stats["loss_tokens"])
+        loss = result.loss_sum / loss_tokens if loss_tokens > 0 else 0.0
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
         if result.nan_count > 0:
@@ -534,7 +545,7 @@ def train(config: SFTConfig | PretrainConfig):
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
-        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {result.loss:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {loss:.4f}"
         if grad_norm_value is not None:
             step_message += f" | Grad. Norm {grad_norm_value:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
@@ -594,8 +605,8 @@ def train(config: SFTConfig | PretrainConfig):
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
-            "loss/mean": result.loss,
-            "loss/perplexity": math.exp(min(result.loss, 20)),
+            "loss/mean": loss,
+            "loss/perplexity": math.exp(min(loss, 20)),
             "loss/nan_count": result.nan_count,
             "step": progress.step,
         }

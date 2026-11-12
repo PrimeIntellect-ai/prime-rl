@@ -2,7 +2,7 @@
 the last micro-batch they are reduced with one SUM and one MAX all-reduce, and the step copies them to the host once,
 with its other statistics (`to_host`, `step_result`)."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import torch
@@ -19,16 +19,16 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.optim.offload import GradientOffloadManager
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.perf import PerfCounter
-from prime_rl.trainer.utils import begin_backward, finish_backward, scale_gradients_
+from prime_rl.trainer.utils import begin_backward, finish_backward
 
 
 @dataclass
 class StepResult:
-    loss: float
-    """Mean loss per unmasked token over the global batch."""
+    loss_sum: float
+    """Sum over all ranks of the losses the micro-batches backpropagated, NaN micro-batches left out."""
 
     nan_count: int
-    """Micro-batches with a NaN loss over all ranks. They are left out of the loss and the backward pass."""
+    """Micro-batches with a NaN loss over all ranks. They are left out of the backward pass."""
 
     num_tokens: int
     num_flops: float
@@ -39,69 +39,54 @@ class StepResult:
 
 def run_micro_batches(
     model: nn.Module,
-    micro_batches: Iterator[dict],
-    compute_loss: Callable[[dict], tuple[Tensor, Tensor]],
-    grad_accum_steps: int,
+    micro_batches: Iterable[dict],
+    compute_loss: Callable[[dict], Tensor],
+    num_micro_batches: int,
     parallel_dims: ParallelDims,
     perf_counter: PerfCounter,
     gradient_manager: GradientOffloadManager | None = None,
 ) -> dict[str, Tensor]:
-    """Forward and backward passes over the ``grad_accum_steps`` micro-batches of one step, leaving the gradients of
-    the summed token loss divided by the global token count. ``compute_loss`` returns the summed loss and the number
-    of unmasked tokens of a micro-batch. With a ``gradient_manager``, the caller has set the gradient scale up front.
-    Returns the step's statistics reduced over the ranks, still on the device."""
+    """Forward and backward passes over the ``num_micro_batches`` micro-batches of one step. ``compute_loss`` returns
+    the scalar loss to backpropagate for a micro-batch; a NaN loss is left out of the backward pass. The caller
+    normalizes the accumulated gradients. Returns the step's statistics reduced over the ranks, still on the device."""
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     moes = list(iter_moe_blocks(model))
 
     zero = torch.zeros((), device="cuda", dtype=torch.float64)
-    loss_sum, loss_tokens, nan_count = zero.clone(), zero.clone(), zero.clone()
+    loss_sum, nan_count = zero.clone(), zero.clone()
     num_tokens, num_flops = 0, 0
     routing_stats = []
-    for micro_step in range(grad_accum_steps):
-        micro_batch = next(micro_batches)
+    for micro_step, micro_batch in enumerate(micro_batches):
         num_tokens += micro_batch["input_ids"].shape[1]
         num_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
 
         with record_function("forward"):
-            micro_loss_sum, micro_token_count = compute_loss(micro_batch)
-        loss_tokens += micro_token_count
-        is_nan = torch.isnan(micro_loss_sum.detach())
+            loss = compute_loss(micro_batch)
+        is_nan = torch.isnan(loss.detach())
         nan_count += is_nan
-        loss_sum += torch.where(is_nan, 0.0, micro_loss_sum.detach())
-        # The summed loss: the gradients are divided by the step's loss tokens once, after the last backward.
-        scaled_loss = torch.where(is_nan, torch.nan_to_num(micro_loss_sum, nan=0.0), micro_loss_sum)
+        loss_sum += torch.where(is_nan, 0.0, loss.detach())
+        loss = torch.where(is_nan, torch.nan_to_num(loss, nan=0.0), loss)
 
-        is_last_micro_step = micro_step == grad_accum_steps - 1
+        is_last_micro_step = micro_step == num_micro_batches - 1
         if parallel_dims.dp_replicate_enabled and gradient_manager is None:
             # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the replicas
             # once, after the last backward
             model.set_requires_all_reduce(is_last_micro_step)
         with record_function("backward"):
             begin_backward(gradient_manager, final_backward=is_last_micro_step)
-            scaled_loss.backward()
+            loss.backward()
             finish_backward(gradient_manager)
 
         if moes:
             routing_stats.append(take_moe_routing_stats(model))
 
     # Every CP rank holds the same rows: `step_result` divides the token and FLOP counts by the CP degree.
-    sums = {
-        "loss": loss_sum,
-        "loss_tokens": loss_tokens,
-        "nan_count": nan_count,
-        "tokens": zero + num_tokens,
-        "flops": zero + num_flops,
-    }
+    sums = {"loss": loss_sum, "nan_count": nan_count, "tokens": zero + num_tokens, "flops": zero + num_flops}
     maxes = {}
     if moes:
         add_routing_stats(sums, maxes, routing_stats, moes[0].router.top_k, ep_group)
-    stats = reduce_stats(sums, maxes, dp_cp_group)
-    if gradient_manager is None:
-        tokens = stats["loss_tokens"]
-        factor = parallel_dims.fsdp_gradient_divide_factor / tokens.clamp(min=1)
-        scale_gradients_(None, model, torch.where(tokens > 0, factor, 1.0).float())
-    return stats
+    return reduce_stats(sums, maxes, dp_cp_group)
 
 
 def reduce_stats(sums: dict[str, Tensor], maxes: dict[str, Tensor], group: dist.ProcessGroup) -> dict[str, Tensor]:
@@ -131,7 +116,6 @@ def to_host(*tensor_dicts: dict[str, Tensor]) -> list[dict[str, Tensor]]:
 
 def step_result(stats: dict[str, Tensor], parallel_dims: ParallelDims) -> StepResult:
     """The step's values from the host copy of the statistics of `run_micro_batches`."""
-    global_token_count = int(stats["loss_tokens"])
     metrics = {}
     if "expert_counts" in stats:
         num_ranks = dist.get_world_size(parallel_dims.get_mesh("dp_cp").get_group())
@@ -150,7 +134,7 @@ def step_result(stats: dict[str, Tensor], parallel_dims: ParallelDims) -> StepRe
                 "ep_imbalance/rank_dp_mean/max": dp_mean.max().item(),
             }
     return StepResult(
-        loss=stats["loss"].item() / global_token_count if global_token_count > 0 else 0.0,
+        loss_sum=stats["loss"].item(),
         nan_count=int(stats["nan_count"]),
         num_tokens=round(stats["tokens"].item() / parallel_dims.cp),
         num_flops=stats["flops"].item() / parallel_dims.cp,
