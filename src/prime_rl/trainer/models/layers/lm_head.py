@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import TypedDict
 
 import torch
@@ -498,13 +499,25 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 _QUACK_CROSS_ENTROPY_CAPABILITIES = ((9, 0),)
 
 
+@lru_cache(maxsize=1)
+def _quack_cross_entropy_fwd_out():
+    """quack's fused cross-entropy kernel, or None without the ``quack`` extra."""
+    try:
+        from quack.cross_entropy import cross_entropy_fwd_out
+
+        return cross_entropy_fwd_out
+    except ImportError:
+        return None
+
+
 def _quack_cross_entropy_supported(logits: Tensor) -> bool:
     """Whether quack's fused cross-entropy kernel takes ``logits``: FP32 rows (the head's GEMM output) on a GPU the
-    kernel was tested on."""
+    kernel was tested on, with quack installed."""
     return (
         logits.is_cuda
         and logits.dtype == torch.float32
         and torch.cuda.get_device_capability(logits.device) in _QUACK_CROSS_ENTROPY_CAPABILITIES
+        and _quack_cross_entropy_fwd_out() is not None
     )
 
 
@@ -513,14 +526,12 @@ def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool
     ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. Where
     quack supports it, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
     if _quack_cross_entropy_supported(logits):
-        from quack.cross_entropy import cross_entropy_fwd_out
-
         # The kernel reads the label's logit unchecked: check the labels on the device, without a host sync.
         in_vocab = (labels >= 0) & (labels < logits.shape[1])
         torch._assert_async((in_vocab | (labels == IGNORE_INDEX)).all())
         # dx=None selects quack's online-softmax variant, which returns NaN when a warp's columns all lie past the
         # vocab (Dao-AILab/quack#64). Always writing the gradient keeps the two-pass variant.
-        cross_entropy_fwd_out(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
+        _quack_cross_entropy_fwd_out()(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
         return logits if with_grad else None
 
     valid = labels != IGNORE_INDEX
