@@ -47,16 +47,14 @@ class HeldOutDataConfig(DatatroveDataConfig):
     name: str
     """Names the metrics: ``val/<name>/loss@<length>`` and ``val/<name>/bpb@<length>``."""
 
-    seq_lens: list[Annotated[int, Field(ge=1)]] | None = None
+    seq_lens: list[Annotated[int, Field(ge=1)]] | None = Field(None, min_length=1)
     """Context lengths to score the set at, each at most a row (``seq_len * micro_batch_size`` tokens). Defaults to
-    ``[seq_len]``."""
+    the training ``data.seq_len``."""
 
     @model_validator(mode="after")
     def validate_seq_lens(self):
-        if self.seq_lens is None:
-            self.seq_lens = [self.seq_len]
-        if max(self.seq_lens) > self.seq_len * self.micro_batch_size:
-            raise ValueError(f"val.data {self.name}: seq_lens must fit in a row of seq_len * micro_batch_size tokens")
+        if self.seq_lens is not None and len(set(self.seq_lens)) < len(self.seq_lens):
+            raise ValueError(f"val.data {self.name}: seq_lens must be unique")
         return self
 
 
@@ -129,3 +127,14 @@ class PretrainConfig(SupervisedTrainerConfig):
     scheduler: PretrainSchedulerConfig = PretrainLinearSchedulerConfig()
     """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
     first updates at the full learning rate are unstable."""
+
+    @model_validator(mode="after")
+    def auto_setup_val_seq_lens(self):
+        for data in self.val.data if self.val is not None else []:
+            if data.seq_lens is None:
+                data.seq_lens = [self.data.seq_len]
+            if max(data.seq_lens) > data.seq_len * data.micro_batch_size:
+                raise ValueError(
+                    f"val.data {data.name}: seq_lens must fit in a row of seq_len * micro_batch_size tokens"
+                )
+        return self

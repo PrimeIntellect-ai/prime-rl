@@ -377,15 +377,22 @@ def length_label(seq_len: int) -> str:
 BYTE_CHARS = {chr(c) for c in [*range(33, 127), *range(161, 173), *range(174, 256), *range(256, 324)]}
 
 
-def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray:
-    """The UTF-8 bytes of every token id; special and added tokens count 0. Exact for byte-level BPE tokenizers."""
-    special = set(tokenizer.all_special_ids) | set(tokenizer.added_tokens_decoder)
+def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray | None:
+    """The UTF-8 bytes of every token id, special tokens 0. None if the tokenizer is not byte-level BPE."""
+    special = special_token_ids(tokenizer)
     lengths = np.zeros(len(tokenizer), dtype=np.int64)
     for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
-        if token is None or token_id in special:
+        if token_id in special:
             continue
-        if set(token) <= BYTE_CHARS:
-            lengths[token_id] = len(token)
-        else:
-            lengths[token_id] = len(tokenizer.convert_tokens_to_string([token]).encode())
+        if not set(token) <= BYTE_CHARS:
+            return None
+        lengths[token_id] = len(token)
     return lengths
+
+
+def scored_bytes(dataset: DocumentDataset, byte_lengths: np.ndarray) -> int:
+    """The UTF-8 bytes of the tokens ``dataset`` scores: every window's tokens after its first."""
+    return sum(
+        int(byte_lengths[dataset.shards.open(file_index)[0][start + 1 : end]].sum())
+        for file_index, start, end in dataset.windows
+    )

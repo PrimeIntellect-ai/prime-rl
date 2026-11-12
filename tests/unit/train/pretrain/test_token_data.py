@@ -278,8 +278,8 @@ def test_eod_mask_loss_masks_nothing_on_bos_separated_shards(tmp_path, monkeypat
 
 def test_token_byte_lengths_add_up_to_the_text_bytes():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    # Tokens that hold part of a multi-byte character (CJK, emoji) count only their own bytes.
-    text = "Grüße aus Zürich! 東京で会いましょう 🙂👍🏽 naïve façade"
+    # Tokens holding part of a multi-byte character count their own bytes; <think> is added but not special.
+    text = "<think>Grüße aus Zürich!</think> 東京で会いましょう 🙂👍🏽 naïve façade"
     byte_lengths = token_byte_lengths(tokenizer)
     assert byte_lengths[tokenizer.encode(text)].sum() == len(text.encode())
     assert byte_lengths[tokenizer.eos_token_id] == 0

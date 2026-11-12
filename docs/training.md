@@ -331,7 +331,7 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps; pretraining logs `val/<name>/loss@<length>` and `val/<name>/bpb@<length>` per held-out set.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
@@ -402,7 +402,7 @@ num_samples = 512          # documents per set and validation; leave out to scor
 name = "fineweb-edu"
 paths = ["data/fineweb-edu-val"]
 seq_len = 2048
-seq_lens = [2048, 512]     # optional: the context lengths to score at; default [seq_len]
+seq_lens = [2048, 512]     # optional: the context lengths to score at; default: the training data.seq_len
 ```
 
 All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
