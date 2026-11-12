@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from prime_rl.configs.trainer import InitConfig, ModelConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
@@ -315,7 +315,7 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
 
-    load_dcp_from_hf(meta_model, ModelConfig(name=str(tmp_path), init=InitConfig(type="hf")))
+    load_dcp_from_hf(meta_model, ModelConfig(name=str(tmp_path)))
 
     torch.testing.assert_close(meta_model.model.layers[0].mlp.router.tid2eid, expected)
 

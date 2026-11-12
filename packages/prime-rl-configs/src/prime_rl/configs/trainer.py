@@ -273,7 +273,7 @@ class MoERuntimeConfig(BaseConfig):
 class InitConfig(BaseConfig):
     """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
 
-    type: Literal["scratch", "hf", "checkpoint"]
+    type: Literal["scratch", "hf", "checkpoint"] = "hf"
     """``scratch``: the model's own random init; ``model.name`` supplies the architecture and the tokenizer. ``hf``: the
     weights of ``model.name``. ``checkpoint``: ``model.name`` is a checkpoint step directory (``.../step_<N>``) of
     another run, whose ``config.json`` and tokenizer files supply the architecture and the tokenizer; only its weights
@@ -297,8 +297,8 @@ class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
-    init: InitConfig
-    """Where the weights start. Each entrypoint sets its own default type."""
+    init: InitConfig = InitConfig()
+    """Where the weights start."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -622,7 +622,7 @@ class BaseTrainerConfig(BaseConfig):
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
 
-    model: ModelConfig
+    model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
@@ -721,21 +721,11 @@ class BaseTrainerConfig(BaseConfig):
         return self
 
 
-class RLInitConfig(InitConfig):
-    type: Literal["scratch", "hf", "checkpoint"] = "hf"
-
-
-class RLModelConfig(ModelConfig):
-    init: RLInitConfig = RLInitConfig()
-
-
 class TrainerConfig(BaseTrainerConfig):
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.
     auto_weight_decay = 0.0
-
-    model: RLModelConfig = RLModelConfig()
 
     data: DataLoaderConfig = DataLoaderConfig()
 

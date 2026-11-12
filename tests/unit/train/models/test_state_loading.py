@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import InitConfig, ModelConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaForCausalLM
@@ -43,7 +43,7 @@ def test_load_dcp_from_hf_keeps_checkpoint_selection_bias(model, tmp_path, monke
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
 
-    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path), init=InitConfig(type="hf")))
+    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)))
 
     selection_bias = model.model.layers[1].mlp.router.selection_bias
     torch.testing.assert_close(selection_bias.cpu(), expected.to(selection_bias.dtype))
