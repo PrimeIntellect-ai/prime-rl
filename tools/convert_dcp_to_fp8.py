@@ -18,14 +18,20 @@ from prime_rl.utils.logger import get_logger, setup_logger
 
 
 def convert(
-    ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, workers: int = 1, device: str = "cpu"
+    ckpt_dir: Path,
+    output_dir: Path | None = None,
+    block_size: int = 128,
+    *,
+    workers: int = 1,
+    device: str = "cpu",
+    overwrite: bool = False,
 ) -> Path:
     """Stream weights on CPU and quantize them on the selected device."""
     logger = get_logger()
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     checkpoint = open_checkpoint(ckpt_dir)
-    output_dir = resolve_output_dir(checkpoint, output_dir, "weights-FP8")
+    output_dir = resolve_output_dir(checkpoint, output_dir, "weights-FP8", overwrite)
     modules_to_not_convert: list[str] = []
 
     def quantize(shard):
@@ -63,9 +69,19 @@ def main() -> None:
     parser.add_argument(
         "--device", choices=("cpu", "cuda"), default="cpu", help="FP8 quantization device (default: cpu)"
     )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="replace an existing non-default output_dir and everything in it"
+    )
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, args.block_size, workers=args.workers, device=args.device)
+    convert(
+        args.ckpt_dir,
+        args.output_dir,
+        args.block_size,
+        workers=args.workers,
+        device=args.device,
+        overwrite=args.overwrite,
+    )
 
 
 if __name__ == "__main__":

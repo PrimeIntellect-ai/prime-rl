@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import pickle
 import tempfile
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import torch
 import torch.distributed.checkpoint as dcp
 from safetensors.torch import load_file
 from torch.distributed.checkpoint import FileSystemReader
+from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex, TensorStorageMetadata
 from transformers import PretrainedConfig
 
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
@@ -22,10 +24,41 @@ def exporter(monkeypatch):
     return importlib.import_module("convert_dcp_to_bf16")
 
 
+def save_checkpoint(path: Path, state: dict[str, torch.Tensor], row_chunks: int) -> int:
+    """Save a DCP checkpoint whose n-gram tables are stored as several row chunks, like a multi-rank run."""
+    tables = [name for name in state if name.startswith("model.ngram.tables.") and name.endswith(".weight")]
+    saved = dict(state)
+    bounds = {}
+    for name in tables:
+        table = saved.pop(name)
+        # Uneven chunks, so HF shards straddle chunk boundaries.
+        rows = table.shape[0]
+        bounds[name] = [0, *sorted({rows * index // (2 * row_chunks) for index in range(1, row_chunks)}), rows]
+        for index, (start, stop) in enumerate(zip(bounds[name], bounds[name][1:])):
+            saved[f"{name}@{index}"] = table[start:stop].clone()
+    dcp.save({"app": {"model": saved, "optimizer": {"unused": torch.ones(1)}}}, checkpoint_id=path, no_dist=True)
+    metadata = FileSystemReader(path).read_metadata()
+    for name in tables:
+        key = f"app.model.{name}"
+        chunks = []
+        for index, start in enumerate(bounds[name][:-1]):
+            piece = f"{key}@{index}"
+            piece_metadata = metadata.state_dict_metadata.pop(piece)
+            chunks.append(ChunkStorageMetadata(torch.Size([start, 0]), piece_metadata.size))
+            stored = metadata.storage_data.pop(next(item for item in metadata.storage_data if item.fqn == piece))
+            metadata.storage_data[MetadataIndex(key, chunks[-1].offsets, index)] = stored
+        metadata.state_dict_metadata[key] = TensorStorageMetadata(
+            piece_metadata.properties, state[name].shape, chunks
+        )
+    with (path / ".metadata").open("wb") as file:
+        pickle.dump(metadata, file)
+    return sum(len(table_bounds) - 1 for table_bounds in bounds.values())
+
+
 @pytest.mark.parametrize("tied", [False, True])
 @pytest.mark.parametrize("fp8", [False, True])
 @pytest.mark.parametrize("ngram_parts", [None, 3, 128])
-def test_layer_export_matches_original_hf_weights(tmp_path, exporter, tied, fp8, ngram_parts):
+def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatch, tied, fp8, ngram_parts):
     config_kwargs = dict(
         hidden_size=16,
         intermediate_size=16,
@@ -94,7 +127,10 @@ def test_layer_export_matches_original_hf_weights(tmp_path, exporter, tied, fp8,
 
     state = model.convert_to_prime({name: tensor.clone() for name, tensor in original.items()})
     assert all(tensor.dtype == torch.float32 for tensor in state.values() if tensor.is_floating_point())
-    dcp.save({"app": {"model": state, "optimizer": {"unused": torch.ones(1)}}}, checkpoint_id=tmp_path, no_dist=True)
+    stored_table_chunks = save_checkpoint(tmp_path, state, row_chunks=3)
+    table_reads = []
+    load_rows = exporter.load_rows
+    monkeypatch.setattr(exporter, "load_rows", lambda *args: table_reads.append(args[1:]) or load_rows(*args))
     checkpoint = exporter.Checkpoint(tmp_path, FileSystemReader(tmp_path).read_metadata(), model.to("meta"), None, None)
     expected = {
         name: tensor.bfloat16() if tensor.is_floating_point() else tensor.clone()
@@ -109,7 +145,10 @@ def test_layer_export_matches_original_hf_weights(tmp_path, exporter, tied, fp8,
     expected = transform(expected)
     for workers in (1, 2):
         output = tmp_path / f"export-{workers}"
+        table_reads.clear()
         written = exporter.write_weights(checkpoint, output, workers, transform)
+        # Each stored table chunk is read once, however many HF shards it feeds.
+        assert len(table_reads) == len(set(table_reads)) == stored_table_chunks
         index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
         actual = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
         assert written == index
@@ -129,6 +168,30 @@ def test_export_config_drops_source_quantization(exporter):
     exporter._export_config(config)
     assert config.dtype == config.text_config.dtype == "bfloat16"
     assert not hasattr(config.text_config, "quantization_config")
+
+
+def test_only_the_default_output_dir_is_replaced_without_overwrite(tmp_path, exporter):
+    step = tmp_path / "step_10"
+    checkpoint = exporter.Checkpoint(step / "trainer", None, None, None, None)
+    checkpoint.dcp_dir.mkdir(parents=True)
+    old_export = step / "weights"
+    other_step = tmp_path / "step_20"
+    empty = tmp_path / "empty"
+    file = tmp_path / "file"
+    for directory in (old_export, other_step / "trainer", empty):
+        directory.mkdir(parents=True)
+    (old_export / "model.safetensors").write_bytes(b"old")
+    file.write_bytes(b"data")
+
+    assert exporter.resolve_output_dir(checkpoint, None, "weights") == old_export
+    assert exporter.resolve_output_dir(checkpoint, old_export, "weights") == old_export
+    assert exporter.resolve_output_dir(checkpoint, empty, "weights") == empty
+    assert exporter.resolve_output_dir(checkpoint, tmp_path / "new", "weights") == tmp_path / "new"
+    for path in (other_step, file):
+        with pytest.raises(ValueError, match="pass --overwrite"):
+            exporter.resolve_output_dir(checkpoint, path, "weights")
+        assert exporter.resolve_output_dir(checkpoint, path, "weights", overwrite=True) == path
+    assert (other_step / "trainer").is_dir() and file.read_bytes() == b"data"
 
 
 @pytest.mark.parametrize("existing", [False, True])

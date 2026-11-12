@@ -473,7 +473,7 @@ uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10 --workers 4
 ```
 
-N-gram tables stream one HF table shard at a time. Peak host memory includes each in-flight decoder layer or table shard, conversion buffers, and the largest DCP storage chunk. Completed exports replace the output directory as a whole; a failed publish restores the previous export.
+N-gram tables are read one stored DCP chunk at a time (one per training rank) and written as their HF table shards. Peak host memory includes each in-flight decoder layer, conversion buffers, and the largest DCP storage chunk in both its stored and exported dtype. Completed exports replace the output directory as a whole; a failed publish restores the previous export. An existing non-empty directory other than the default export dir is only replaced with `--overwrite`.
 
 The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (streams decoder layers on CPU and writes only `<ckpt_dir>/weights-FP8`, with no intermediate BF16 export; `--workers` controls concurrency, and `--device cuda` enables GPU quantization instead of the default CPU); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 

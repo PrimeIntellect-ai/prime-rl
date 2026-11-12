@@ -157,6 +157,13 @@ def load_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
     return convert_state_dict_to_hf(model, state_dict)
 
 
+def stored_row_ranges(checkpoint: Checkpoint, key: str) -> list[tuple[int, int]]:
+    """Split a tensor's rows at every stored chunk boundary, so each range reads whole chunks."""
+    chunks = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"].chunks
+    bounds = sorted({bound for chunk in chunks for bound in (chunk.offsets[0], chunk.offsets[0] + chunk.sizes[0])})
+    return list(zip(bounds, bounds[1:]))
+
+
 def load_rows(checkpoint: Checkpoint, key: str, start: int, stop: int) -> Tensor:
     metadata = checkpoint.metadata.state_dict_metadata[f"app.model.{key}"]
     tensor = torch.empty((stop - start, *metadata.size[1:]), dtype=export_dtype(checkpoint, key))
@@ -194,8 +201,24 @@ def write_weights(
         return write_shard(index, load_layer(checkpoint, keys))
 
     def write_table(key: str, op: ChunkedConvOp, index: int) -> list[tuple[str, dict[str, int]]]:
+        # DCP reads a stored chunk in full to serve any of its rows, so read each
+        # chunk once and slice the HF shards, which arrive in row order, from it.
+        row_ranges = stored_row_ranges(checkpoint, key)
+        loaded: dict[tuple[int, int], Tensor] = {}
+
         def resolve_rows(weight: Tensor, start: int, stop: int) -> Tensor:
-            return load_rows(checkpoint, key, start, stop)
+            parts = []
+            for row_range in row_ranges:
+                first, last = row_range
+                if last <= start:
+                    loaded.pop(row_range, None)
+                elif first < stop:
+                    if row_range not in loaded:
+                        loaded[row_range] = load_rows(checkpoint, key, first, last)
+                    parts.append(loaded[row_range][max(start, first) - first : min(stop, last) - first])
+            if not parts:
+                return torch.empty((0, *weight.shape[1:]), dtype=export_dtype(checkpoint, key))
+            return parts[0] if len(parts) == 1 else torch.cat(parts)
 
         return [
             write_shard(index + offset, packet)
@@ -271,20 +294,27 @@ def publish_export(staging_dir: Path, output_dir: Path) -> None:
     shutil.rmtree(backup_parent)
 
 
-def resolve_output_dir(checkpoint: Checkpoint, output_dir: Path | None, name: str) -> Path:
-    output_dir = Path(output_dir) if output_dir is not None else checkpoint.dcp_dir.parent / name
+def resolve_output_dir(checkpoint: Checkpoint, output_dir: Path | None, name: str, overwrite: bool = False) -> Path:
+    """Pick the export directory; only the default one may replace existing content without ``overwrite``."""
+    default_dir = checkpoint.dcp_dir.parent / name
+    output_dir = Path(output_dir) if output_dir is not None else default_dir
     source = checkpoint.dcp_dir.resolve()
     if output_dir.resolve() == source or output_dir.resolve() in source.parents:
         raise ValueError("The export directory must not contain the source checkpoint")
+    is_empty_dir = output_dir.is_dir() and not any(output_dir.iterdir())
+    if output_dir.exists() and not is_empty_dir and output_dir.resolve() != default_dir.resolve() and not overwrite:
+        raise ValueError(f"{output_dir} exists and is not the default export dir; pass --overwrite to replace it")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     return output_dir
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None, *, workers: int = 1) -> Path:
+def convert(
+    ckpt_dir: Path, output_dir: Path | None = None, *, workers: int = 1, overwrite: bool = False
+) -> Path:
     """Export a full trainer checkpoint with CPU streaming only."""
     logger = get_logger()
     checkpoint = open_checkpoint(ckpt_dir)
-    output_dir = resolve_output_dir(checkpoint, output_dir, "weights")
+    output_dir = resolve_output_dir(checkpoint, output_dir, "weights", overwrite)
     with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as directory:
         staging_dir = Path(directory)
         logger.info(f"Saving model assets to {staging_dir}")
@@ -303,9 +333,12 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights")
     parser.add_argument("--workers", type=int, default=1, help="decoder layers loaded and written at once (default: 1)")
+    parser.add_argument(
+        "--overwrite", action="store_true", help="replace an existing non-default output_dir and everything in it"
+    )
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, workers=args.workers)
+    convert(args.ckpt_dir, args.output_dir, workers=args.workers, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":
