@@ -46,10 +46,13 @@ def run_micro_batches(
     parallel_dims: ParallelDims,
     perf_counter: PerfCounter,
     gradient_manager: GradientOffloadManager | None = None,
+    sums: dict[str, Tensor] | None = None,
 ) -> dict[str, Tensor]:
     """Forward and backward passes over the ``num_micro_batches`` micro-batches of one step. ``compute_loss`` returns
-    the scalar loss to backpropagate for a micro-batch; a NaN loss is left out of the backward pass. The caller
-    normalizes the accumulated gradients. Returns the step's statistics reduced over the ranks, still on the device."""
+    the scalar loss to backpropagate for a micro-batch. A NaN loss is counted and left out of the summed loss; it goes
+    into the backward pass through `torch.nan_to_num`, which does not keep NaN out of the gradients. The caller
+    normalizes the accumulated gradients. Returns the step's statistics, with the caller's device ``sums``, reduced
+    over the ranks and still on the device."""
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     moes = list(iter_moe_blocks(model))
@@ -83,7 +86,12 @@ def run_micro_batches(
             routing_stats.append(take_moe_routing_stats(model))
 
     # Every CP rank holds the same rows: `step_result` divides the token and FLOP counts by the CP degree.
-    sums = {"loss": loss_sum, "nan_count": nan_count, "tokens": zero + num_tokens, "flops": zero + num_flops}
+    sums = (sums or {}) | {
+        "loss": loss_sum,
+        "nan_count": nan_count,
+        "tokens": zero + num_tokens,
+        "flops": zero + num_flops,
+    }
     maxes = {}
     if moes:
         add_routing_stats(sums, maxes, routing_stats, moes[0].router.top_k, ep_group)

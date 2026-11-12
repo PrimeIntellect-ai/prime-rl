@@ -690,8 +690,10 @@ def train(config: TrainerConfig):
         result = step_result(step_stats, parallel_dims)
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
-        if result.nan_count > 0:
-            logger.warning(f"{result.nan_count} micro-batches had a NaN loss and were excluded from the backward pass")
+        # Every CP rank computes the whole sequence's loss, so each counts the same NaN micro-batches.
+        nan_count = result.nan_count // parallel_dims.cp
+        if nan_count > 0:
+            logger.warning(f"{nan_count} micro-batches had a NaN loss")
 
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.
@@ -737,7 +739,7 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats() | result.metrics
-        tensor_metrics["loss/nan_count"] = result.nan_count
+        tensor_metrics["loss/nan_count"] = nan_count
 
         throughput = perf_counter.get_step_tokens_per_second(result.num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(result.num_flops, forward_backward_time)

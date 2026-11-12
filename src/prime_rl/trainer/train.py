@@ -460,13 +460,20 @@ def train(config: SFTConfig | PretrainConfig):
         forward_backward_start.record()
         perf_counter = get_perf_counter(model)
         step_stats = run_micro_batches(
-            model, micro_batches, summed_loss, grad_accum_steps, parallel_dims, perf_counter, gradient_manager
+            model,
+            micro_batches,
+            summed_loss,
+            grad_accum_steps,
+            parallel_dims,
+            perf_counter,
+            gradient_manager,
+            sums={"loss_tokens": loss_tokens},
         )
-        dist.all_reduce(loss_tokens, group=dp_cp_group)
         if gradient_manager is None:
             # The gradients of the summed loss are divided by the step's loss tokens once, after the last backward.
-            factor = parallel_dims.fsdp_gradient_divide_factor / loss_tokens.clamp(min=1)
-            scale_gradients_(None, model, torch.where(loss_tokens > 0, factor, 1.0).float())
+            tokens = step_stats["loss_tokens"]
+            factor = parallel_dims.fsdp_gradient_divide_factor / tokens.clamp(min=1)
+            scale_gradients_(None, model, torch.where(tokens > 0, factor, 1.0).float())
         forward_backward_end.record()
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
@@ -490,12 +497,9 @@ def train(config: SFTConfig | PretrainConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        step_stats, norms = to_host(
-            step_stats | {"loss_tokens": loss_tokens}, {"grad_norm": grad_norm} if grad_norm is not None else {}
-        )
+        step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
         result = step_result(step_stats, parallel_dims)
-        loss_tokens = int(step_stats["loss_tokens"])
-        loss = result.loss_sum / loss_tokens if loss_tokens > 0 else 0.0
+        loss = result.loss_sum / step_stats["loss_tokens"].item() if step_stats["loss_tokens"] > 0 else 0.0
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
         if result.nan_count > 0:
