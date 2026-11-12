@@ -99,6 +99,21 @@ def describe_change(key: str, old: Any, new: Any) -> str:
     return f"{key} {old} -> {new}"
 
 
+def architecture_changes(saved: dict, current: dict, config: PretrainedConfig, prefix: str = "") -> list[str]:
+    """The fields in which two dumps of ``config`` differ, recursing into sub-configs (e.g. a VLM's ``text_config``)."""
+    # A field only one dump has (e.g. from another transformers version) has the class default in the other.
+    defaults = json.loads(type(config)().to_json_string(use_diff=False))
+    changes = []
+    for key in sorted((saved.keys() | current.keys()) - NOT_ARCHITECTURE):
+        old, new = saved.get(key, defaults.get(key)), current.get(key, defaults.get(key))
+        sub_config = getattr(config, key, None)
+        if isinstance(sub_config, PretrainedConfig) and isinstance(old, dict) and isinstance(new, dict):
+            changes += architecture_changes(old, new, sub_config, f"{prefix}{key}.")
+        elif old != new:
+            changes.append(describe_change(prefix + key, saved.get(key, MISSING), current.get(key, MISSING)))
+    return changes
+
+
 def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
     """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``. A
     checkpoint without a config.json loads after a warning."""
@@ -112,13 +127,7 @@ def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
         return
     saved = json.loads(path.read_text())
     current = json.loads(model_config.to_json_string(use_diff=False))
-    # A field only one config has (e.g. from another transformers version) has the class default in the other.
-    defaults = json.loads(type(model_config)().to_json_string(use_diff=False))
-    changes = []
-    for key in sorted((saved.keys() | current.keys()) - NOT_ARCHITECTURE):
-        old, new = saved.get(key, MISSING), current.get(key, MISSING)
-        if (defaults.get(key) if old == MISSING else old) != (defaults.get(key) if new == MISSING else new):
-            changes.append(describe_change(key, old, new))
+    changes = architecture_changes(saved, current, model_config)
     if changes:
         more = f", +{len(changes) - 5} more" if len(changes) > 5 else ""
         raise ValueError(f"Checkpoint at {directory} has another architecture: {', '.join(changes[:5])}{more}")
