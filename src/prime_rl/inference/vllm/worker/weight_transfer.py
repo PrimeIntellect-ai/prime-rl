@@ -17,20 +17,22 @@ def load_weights_checkpoint_layerwise(
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
+    # Before the layerwise reload, which turns a tied parameter into a separate one.
+    expected = {name for name, _ in model.named_parameters()}
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
         loaded = model.load_weights(state_iter)  # type: ignore
-        check_update_covers_dummy_weights(model, loaded, model_config, vllm_config)
+        check_update_covers_dummy_weights(expected, loaded, model_config, vllm_config)
         finalize_layerwise_reload(model, model_config)
 
 
-def check_update_covers_dummy_weights(model: Module, loaded: set[str] | None, model_config, vllm_config) -> None:
+def check_update_covers_dummy_weights(expected: set[str], loaded: set[str] | None, model_config, vllm_config) -> None:
     """A dummy-loaded engine keeps random values in every parameter an update does not write. As in vLLM's own load,
     quantized models (whose scales are not in the update) and models that do not report what they loaded are not
     checked."""
     if vllm_config.load_config.load_format != "dummy" or model_config.quantization is not None or loaded is None:
         return
-    missing = sorted({name for name, _ in model.named_parameters()} - loaded)
+    missing = sorted(expected - loaded)
     if missing:
         more = f", +{len(missing) - 5} more" if len(missing) > 5 else ""
         raise ValueError(

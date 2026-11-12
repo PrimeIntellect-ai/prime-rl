@@ -15,7 +15,7 @@ from renderers import custom_renderer_config
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig, VllmConfig, setup_dummy_load
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.orchestrator import (
     EvalSourcesConfig,
     OrchestratorConfig,
@@ -1472,12 +1472,10 @@ def test_model_init_checkpoint_requires_a_step_dir():
         TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
 
 
-@pytest.mark.parametrize("init_type", ["hf", "scratch", "ckpt"])
-def test_trainer_fed_inference_loads_dummy_weights(init_type: str):
-    name = "runs/sft/checkpoints/step_500" if init_type == "ckpt" else "Qwen/Qwen3-0.6B"
+def test_trainer_fed_inference_loads_dummy_weights():
     config = RLConfig.model_validate(
         {
-            "model": {"name": name, "init": {"type": init_type}},
+            "model": {"name": "runs/sft/checkpoints/step_500", "init": {"type": "ckpt"}},
             "trainer": {},
             "orchestrator": {
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
@@ -1486,28 +1484,38 @@ def test_trainer_fed_inference_loads_dummy_weights(init_type: str):
             "inference": {},
         }
     )
-    assert config.trainer.model.init.type == init_type
+    assert config.trainer.model.init.type == "ckpt"
     assert config.inference.to_namespace().load_format == "dummy"
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
 @pytest.mark.parametrize(
-    ("vllm", "lora_enabled", "transport", "load_format"),
+    ("inference", "lora_enabled", "transport", "load_format"),
     [
-        ({"speculative_config": {"method": "mtp"}}, False, "nccl", None),
+        ({}, False, "nccl", "dummy"),
+        ({"vllm": {"speculative_config": {"method": "mtp"}}}, False, "nccl", None),
+        (
+            {"deployment": {"type": "disaggregated", "decode_vllm_overrides": {"speculative_config": {}}}, "slurm": {}},
+            False,
+            "nccl",
+            None,
+        ),
         ({}, True, "filesystem", None),
         ({}, False, "modelexpress", None),
-        ({"load_format": "auto"}, False, "nccl", "auto"),
+        ({"vllm": {"quantization": "fp8_per_block"}}, False, "nccl", None),
+        ({"vllm": {"load_format": "auto"}}, False, "nccl", "auto"),
     ],
 )
-def test_inference_loads_from_disk_what_the_broadcast_does_not_cover(vllm, lora_enabled, transport, load_format):
-    config = VllmConfig(**vllm)
+def test_an_hf_model_loads_from_disk_what_the_broadcast_does_not_cover_or_check(
+    inference, lora_enabled, transport, load_format
+):
+    config = InferenceConfig(**inference)
     setup_dummy_load(config, init_type="hf", lora_enabled=lora_enabled, transport=transport)
-    assert getattr(config, "load_format", None) == load_format
+    assert getattr(config.vllm, "load_format", None) == load_format
 
 
 def test_a_speculative_drafter_requires_the_hf_init():
-    config = VllmConfig(speculative_config={"method": "mtp"})
+    config = InferenceConfig(vllm={"speculative_config": {"method": "mtp"}})
     with pytest.raises(ValueError, match="loads its drafter from model.name"):
         setup_dummy_load(config, init_type="ckpt", lora_enabled=False, transport="nccl")
 

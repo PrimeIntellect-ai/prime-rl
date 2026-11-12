@@ -219,7 +219,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
         if self.inference is not None:
             setup_dummy_load(
-                self.inference.vllm,
+                self.inference,
                 init_type=self.model.init.type,
                 lora_enabled=self.model.lora is not None,
                 transport=self.weight_broadcast.type,

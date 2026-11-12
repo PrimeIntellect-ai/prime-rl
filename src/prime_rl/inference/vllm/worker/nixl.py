@@ -164,6 +164,8 @@ class NIXLWeightUpdateWorker(Worker):
         regular_by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
         persistent: list[RecordedCopy] = []
         original_loaders: list[tuple[torch.Tensor, Any]] = []
+        # Before the layerwise reload, which turns a tied parameter into a separate one.
+        expected = {name for name, _ in model.named_parameters()}
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             try:
@@ -188,7 +190,7 @@ class NIXLWeightUpdateWorker(Worker):
                         hf_config=self.model_runner.model_config.hf_text_config,
                     )
                 )
-                check_update_covers_dummy_weights(model, loaded, self.model_runner.model_config, self.vllm_config)
+                check_update_covers_dummy_weights(expected, loaded, self.model_runner.model_config, self.vllm_config)
 
                 for copy in recorder.copies:
                     if copy.is_persistent or copy.destination_name in SKIP_TENSORS:

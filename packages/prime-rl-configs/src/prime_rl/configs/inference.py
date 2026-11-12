@@ -185,25 +185,6 @@ class VllmConfig(BaseConfig):
         return self
 
 
-def setup_dummy_load(vllm: VllmConfig, *, init_type: str, lora_enabled: bool, transport: str) -> None:
-    """A server that the trainer feeds gets its weights from the trainer's startup broadcast, so it loads none. LoRA
-    broadcasts only the adapter and a speculative drafter never gets updates, so those load from disk. An HF model
-    also loads from disk with ModelExpress, which does not check that an update covers every parameter. An explicit
-    ``load_format`` wins."""
-    extra = vllm.model_extra or {}
-    if "load_format" in extra or lora_enabled:
-        return
-    if "speculative_config" in extra:
-        if init_type != "hf":
-            raise ValueError(
-                f'inference.vllm.speculative_config loads its drafter from model.name, which init type "{init_type}" '
-                'does not provide: use model.init.type = "hf"'
-            )
-        return
-    if init_type != "hf" or transport != "modelexpress":
-        vllm.load_format = "dummy"
-
-
 class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "nixl", "modelexpress"] = "filesystem"
     """Weight broadcast transport."""
@@ -730,3 +711,26 @@ class InferenceConfig(BaseConfig):
             namespace.kv_transfer_config = kv_transfer_config
 
         return namespace
+
+
+def setup_dummy_load(inference: InferenceConfig, *, init_type: str, lora_enabled: bool, transport: str) -> None:
+    """A server that the trainer feeds gets its weights from the trainer's startup broadcast, so it loads none. LoRA
+    broadcasts only the adapter and a speculative drafter never gets updates, so those load from disk. ModelExpress and
+    online quantization skip the check that an update covers every parameter, so an HF model loads from disk with them.
+    An explicit ``load_format`` wins."""
+    vllm = inference.vllm
+    extra = vllm.model_extra or {}
+    if "load_format" in extra or lora_enabled:
+        return
+    overrides = [extra]
+    if isinstance(inference.deployment, DisaggregatedInferenceDeploymentConfig):
+        overrides += [inference.deployment.prefill_vllm_overrides, inference.deployment.decode_vllm_overrides]
+    if any(key.replace("-", "_") == "speculative_config" for override in overrides for key in override):
+        if init_type != "hf":
+            raise ValueError(
+                f'inference.vllm.speculative_config loads its drafter from model.name, which init type "{init_type}" '
+                'does not provide: use model.init.type = "hf"'
+            )
+        return
+    if init_type != "hf" or (transport != "modelexpress" and vllm.quantization is None):
+        vllm.load_format = "dummy"

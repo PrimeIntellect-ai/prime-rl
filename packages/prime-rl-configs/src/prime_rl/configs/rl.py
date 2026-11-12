@@ -477,7 +477,7 @@ class RLConfig(BaseConfig):
         # A fake-data trainer broadcasts nothing.
         if self.inference is not None and self.trainer.data.fake is None:
             setup_dummy_load(
-                self.inference.vllm,
+                self.inference,
                 init_type=model.init.type,
                 lora_enabled=model.lora is not None,
                 transport=self.trainer.weight_broadcast.type,
