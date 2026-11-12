@@ -1098,7 +1098,9 @@ class Orchestrator:
             and config.speculative_decoding.draft != self.config.speculative_decoding.draft
         ):
             try:
-                check_draft_swap(local_draft_dir(str(self.launch_draft)), config.speculative_decoding.draft)
+                check_draft_swap(
+                    local_draft_dir(str(self.launch_draft)), local_draft_dir(str(config.speculative_decoding.draft))
+                )
             except (OSError, ValueError) as error:
                 raise InvalidConfigError(f"The draft cannot replace the served draft: {error}") from error
         return config, changes
@@ -1111,7 +1113,7 @@ class Orchestrator:
             return
         config = self.config.model_copy(deep=True)
         config.speculative_decoding.draft = self.draft_loader.good
-        change = ConfigChange(path="speculative_decoding.draft", old=rejected, new=self.draft_loader.good)
+        change = ConfigChange(path="speculative_decoding.draft", old=str(rejected), new=str(self.draft_loader.good))
         if self.controller is None:
             self.apply_config(config, [change])
             return
