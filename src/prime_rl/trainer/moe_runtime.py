@@ -16,6 +16,7 @@ from prime_rl.configs.trainer import (
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
+from prime_rl.trainer.distributed.per_rank.dispatcher import PerRankTokenDispatcher
 from prime_rl.trainer.distributed.token_dispatcher import (
     FusedTokenDispatcher,
     LocalTokenDispatcher,
@@ -154,6 +155,12 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 token_dispatcher = MXFP8TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
+                    token_group_alignment=compute.token_group_alignment,
+                    group=ep_mesh.get_group(),
+                )
+            elif dispatch.token_copies == "per_rank":
+                token_dispatcher = PerRankTokenDispatcher(
+                    num_experts=moe.experts.num_experts,
                     token_group_alignment=compute.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )

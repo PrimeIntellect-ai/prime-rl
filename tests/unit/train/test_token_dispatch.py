@@ -1,45 +1,126 @@
-"""Expert-parallel token dispatch on CPU (gloo)."""
+"""Expert-parallel token dispatch on CPU (gloo): one token copy per rank vs one per selected expert."""
 
 import os
 import tempfile
 
+import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from prime_rl.trainer.distributed.per_rank.dispatcher import PerRankTokenDispatcher
+from prime_rl.trainer.distributed.per_rank.ops import SlotMap, scatter_slots, sum_slots
 from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 
-NUM_EXPERTS, TOP_K, DIM = 8, 3, 4
+NUM_EXPERTS, TOP_K, DIM = 16, 3, 6
+
+
+def _scaled_square_experts(first_expert: int):
+    """Expert e squares its input and scales it by its global number + 1 (rows after the last group give 0). The
+    dispatch's host copy of the counts must equal the counts."""
+
+    def experts(x: torch.Tensor, counts: torch.Tensor, host_counts: torch.Tensor) -> torch.Tensor:
+        if not torch.compiler.is_compiling():
+            assert host_counts.device.type == "cpu" and host_counts.tolist() == counts.tolist()
+        expert = torch.searchsorted(torch.cumsum(counts.long(), dim=0), torch.arange(x.shape[0]), right=True)
+        scale = torch.where(expert < len(counts), first_expert + 1 + expert, 0).to(x.dtype)
+        return x.square() * scale.unsqueeze(1)
+
+    return experts
+
+
+def _routing(rank: int, num_tokens: int, local_experts_only: bool):
+    """Random tokens, scores and distinct experts; with local_experts_only every token stays on its rank's experts."""
+    generator = torch.Generator().manual_seed(rank)
+    x = torch.randn(num_tokens, DIM, generator=generator)
+    scores = torch.rand(num_tokens, TOP_K, generator=generator)
+    choices, offset = NUM_EXPERTS, 0
+    if local_experts_only:
+        choices = NUM_EXPERTS // dist.get_world_size()
+        offset = rank * choices
+    selected = [torch.randperm(choices, generator=generator)[:TOP_K] + offset for _ in range(num_tokens)]
+    selected = torch.stack(selected) if selected else torch.zeros(0, TOP_K, dtype=torch.int64)
+    return x, scores, selected
+
+
+def _run(dispatcher, x, scores, selected, score_before_experts, first_expert, grad_seed, compiled=False):
+    x = x.clone().requires_grad_()
+    scores = scores.clone().requires_grad_()
+    experts = _scaled_square_experts(first_expert)
+
+    def forward(x: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        return dispatcher.run(x, scores, selected, experts, score_before_experts=score_before_experts)
+
+    if compiled:  # pretraining compiles MoE blocks with fullgraph=True: the dispatch must not break the graph
+        torch._dynamo.reset()
+        forward = torch.compile(forward, fullgraph=True, backend="aot_eager")
+    output = forward(x, scores)
+    weight = torch.randn(output.shape, generator=torch.Generator().manual_seed(grad_seed))
+    (output * weight).sum().backward()
+    return output.detach(), x.grad, scores.grad
 
 
 def _worker(rank: int, world_size: int, store_path: str, result_path: str) -> None:
     dist.init_process_group("gloo", store=dist.FileStore(store_path, world_size), rank=rank, world_size=world_size)
+    torch._dynamo.config.capture_scalar_outputs = True  # as apply_compile sets it
+    group = dist.group.WORLD
+    first_expert = rank * (NUM_EXPERTS // world_size)
     results = []
-    # Spread routing, then an empty rank 1, so that some experts get no tokens.
-    for num_tokens in (5 + 3 * rank, 0 if rank == 1 else 2):
-        for alignment in (1, 4):
-            generator = torch.Generator().manual_seed(rank)
-            x = torch.randn(num_tokens, DIM, generator=generator)
-            scores = torch.rand(num_tokens, TOP_K, generator=generator)
-            selected = torch.rand(num_tokens, NUM_EXPERTS, generator=generator).argsort(dim=1)[:, :TOP_K]
-
-            def experts(routed: torch.Tensor, counts: torch.Tensor, *host_counts: torch.Tensor) -> torch.Tensor:
-                results.append((host_counts, counts))
-                return routed
-
-            dispatcher = TorchTokenDispatcher(NUM_EXPERTS, TOP_K, alignment, dist.group.WORLD)
-            dispatcher.run(x, scores, selected, experts, score_before_experts=False)
+    for score_before_experts in (False, True):
+        for alignment in (1, 8, 128):
+            # Spread routing, an empty rank 1, then tokens whose experts are all on their own rank.
+            routings = ((5 + 3 * rank, False), (0 if rank == 1 else 4, False), (6, True))
+            for index, (num_tokens, local_only) in enumerate(routings):
+                x, scores, selected = _routing(rank, num_tokens, local_only)
+                args = (x, scores, selected, score_before_experts, first_expert, rank + 10)
+                expected = _run(TorchTokenDispatcher(NUM_EXPERTS, TOP_K, alignment, group), *args)
+                per_rank = PerRankTokenDispatcher(NUM_EXPERTS, alignment, group)
+                # Compiling takes most of the time: on two ranks, the compiled dispatch runs every routing once, and
+                # both scoring orders, with one alignment.
+                compile_too = world_size == 2 and alignment == 8 and (not score_before_experts or index == 0)
+                for compiled in (False, True) if compile_too else (False,):
+                    results.append((_run(per_rank, *args, compiled), expected))
     torch.save(results, f"{result_path}.{rank}")
     dist.destroy_process_group()
 
 
-def test_dispatch_passes_the_counts_per_expert_on_the_host():
-    """The experts get the counts per local expert, as laid out in their input, from the dispatch's one host copy."""
-    world_size = 2
+@pytest.mark.parametrize("world_size", [2, 4])
+def test_per_rank_dispatch_matches_per_expert_dispatch(world_size):
     with tempfile.TemporaryDirectory() as tmp:
         store_path, result_path = os.path.join(tmp, "store"), os.path.join(tmp, "result")
         mp.spawn(_worker, args=(world_size, store_path, result_path), nprocs=world_size)
         for rank in range(world_size):
-            for host_counts, counts in torch.load(f"{result_path}.{rank}"):
-                assert len(host_counts) == 1 and host_counts[0].device.type == "cpu"
-                assert host_counts[0].tolist() == counts.tolist()
+            for actual, expected in torch.load(f"{result_path}.{rank}"):
+                for a, e in zip(actual, expected, strict=True):
+                    torch.testing.assert_close(a, e, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_slot_kernels_match_reference(dtype):
+    """The CUDA kernels of the slot-map ops match their PyTorch reference, values and gradients, with routing weights
+    and padding rows."""
+    generator = torch.Generator().manual_seed(0)
+    segments, slots, num_rows, cols = 300, 8, 700, 200
+    # 650 slots own a row each; the other 50 rows are padding.
+    rows = torch.randperm(num_rows, generator=generator)
+    index = torch.full((segments * slots,), -1, dtype=torch.int32)
+    index[torch.randperm(segments * slots, generator=generator)[:650]] = rows[:650].int()
+    padding_rows = torch.cat((rows[650:], torch.full((6,), -1))).int()
+    tensors = {
+        "rows": torch.randn(num_rows, cols, generator=generator).to(dtype),
+        "segments": torch.randn(segments, cols, generator=generator).to(dtype),
+        "weights": torch.rand(segments, slots, generator=generator),
+        "grad_rows": torch.randn(num_rows, cols, generator=generator).to(dtype),
+        "grad_segments": torch.randn(segments, cols, generator=generator).to(dtype),
+    }
+    results = []
+    for device in ("cpu", "cuda"):
+        slot_map = SlotMap(index.view(segments, slots).to(device), num_rows, padding_rows.to(device))
+        t = {name: v.detach().to(device).requires_grad_(not name.startswith("grad")) for name, v in tensors.items()}
+        summed = sum_slots(t["rows"], slot_map, t["weights"])
+        scattered = scatter_slots(t["segments"], slot_map, t["weights"])
+        ((summed * t["grad_segments"]).sum() + (scattered * t["grad_rows"]).sum()).float().backward()
+        results.append([summed, scattered, t["rows"].grad, t["segments"].grad, t["weights"].grad])
+    for expected, actual in zip(*results, strict=True):
+        torch.testing.assert_close(actual.cpu(), expected)

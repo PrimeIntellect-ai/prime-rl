@@ -127,6 +127,8 @@ This also covers MXFP8 expert compute with Torch dispatch. With DeepEP, each ran
 outputs for a token in FP32 and casts once, then DeepEP's combine adds these per-rank BF16 sums in FP32
 (across nodes, after summing each node's ranks in FP32 and casting to BF16). MegaMoE uses its own combine
 kernels and does not share this accumulation guarantee.
+With `token_copies = "per_rank"`, each rank sums its experts' outputs for a token in FP32 and casts once, then the
+token's rank adds these per-rank BF16 sums in FP32.
 
 ### Expert Parallelism Backends
 
@@ -139,6 +141,14 @@ kernels and does not share this accumulation guarantee.
 [trainer.model.moe.dispatch]
 type = "deepep"
 num_sms = 32
+```
+
+With the `torch` dispatch and the BF16 transport, `token_copies = "per_rank"` sends each token once to every EP rank that holds one of its experts, instead of once per selected expert. That rank applies the routing weights and sums the token's expert outputs, so the combine also returns one row per token and rank. With 128 experts, top-8 and EP 8 (Qwen3-30B-A3B, GLM-4.5-Air), a token reaches 5.3 ranks on average under uniform routing, so both all-to-alls move a third fewer bytes. Full activation checkpointing does not replay the combine. It is opt-in because the per-rank sums travel in BF16 (see [Router precision](#router-precision)).
+
+```toml
+[trainer.model.moe.dispatch]
+type = "torch"
+token_copies = "per_rank"   # default "per_expert"
 ```
 
 ### Runtime Fusions
