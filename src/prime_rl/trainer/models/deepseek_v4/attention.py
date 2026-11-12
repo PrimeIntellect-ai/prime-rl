@@ -444,10 +444,10 @@ class DeepseekV4Compressor(nn.Module):
         self.cudnn_pooling = config.compressor_backend == "cudnn" and cudnn_pooling_supported(compress_rate, head_dim)
 
     def _overlap_with_previous_window(
-        self, kv: torch.Tensor, gate: torch.Tensor, layout: CompressionLayout
+        self, kv: torch.Tensor, gate: torch.Tensor, entry_local_idx: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Widen each entry from `compress_rate` slots to `2 * compress_rate`, the `n_series == 2` case."""
-        n_entries = layout.entry_tok_idx.shape[0]
+        n_entries = kv.shape[1]
 
         # Shift the `Ca` series one entry later so entry `e` sees entry `e - 1`'s. The first
         # entry of every document has no predecessor, and the entry sitting before it in the
@@ -455,7 +455,7 @@ class DeepseekV4Compressor(nn.Module):
         # `-inf` and the values to zero. Zeroing is not redundant with the gate, because a
         # zero softmax weight against a non-finite value would still yield NaN.
         previous = (torch.arange(n_entries, device=kv.device) - 1).clamp(min=0)
-        is_first_entry_in_doc = (layout.entry_local_idx == 0)[None, :, None, None]
+        is_first_entry_in_doc = (entry_local_idx == 0)[None, :, None, None]
         previous_kv = kv[:, previous, :, : self.head_dim].masked_fill(is_first_entry_in_doc, 0.0)
         previous_gate = gate[:, previous, :, : self.head_dim].masked_fill(is_first_entry_in_doc, float("-inf"))
         return (
@@ -463,23 +463,21 @@ class DeepseekV4Compressor(nn.Module):
             torch.cat([previous_gate, gate[..., self.head_dim :]], dim=2),
         )
 
-    def _pool_torch(
-        self,
-        hidden_states: torch.Tensor,
-        layout: CompressionLayout,
-        cp_group: dist.ProcessGroup | None,
-        cp_world_size: int,
-    ) -> torch.Tensor:
-        width = self.n_series * self.head_dim
-        proj = torch.cat([self.kv_proj(hidden_states), self.gate_proj(hidden_states)], dim=-1)
+    def _fetch(self, proj: torch.Tensor, cp_group: dist.ProcessGroup | None, cp_world_size: int) -> torch.Tensor:
+        """`proj` at every token the pooling reads: the whole row, gathered over the ranks when CP shards it."""
         if cp_world_size > 1:
-            proj = gather_for_cp(proj, cp_group)
-        kv, gate = proj.split(width, dim=-1)
+            return gather_for_cp(proj, cp_group)
+        return proj
 
-        kv = kv[:, layout.entry_tok_idx]
-        gate = gate[:, layout.entry_tok_idx] + self.position_bias
+    def _pool(self, proj: torch.Tensor, entry_tok_idx: torch.Tensor, entry_local_idx: torch.Tensor) -> torch.Tensor:
+        """Pool `proj` `(batch, tokens, 2 * n_series * head_dim)`, its kv and gate projections side by
+        side, into one entry per row of `entry_tok_idx`, which indexes its token axis.
+        """
+        kv, gate = proj.split(self.n_series * self.head_dim, dim=-1)
+        kv = kv[:, entry_tok_idx]
+        gate = gate[:, entry_tok_idx] + self.position_bias
         if self.n_series == 2:
-            kv, gate = self._overlap_with_previous_window(kv, gate, layout)
+            kv, gate = self._overlap_with_previous_window(kv, gate, entry_local_idx)
 
         # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
         weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
@@ -487,27 +485,26 @@ class DeepseekV4Compressor(nn.Module):
 
     def _pool_cudnn(
         self,
-        hidden_states: torch.Tensor,
-        layout: CompressionLayout,
-        cp_group: dist.ProcessGroup | None,
-        cp_world_size: int,
+        kv: torch.Tensor,
+        gate: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        cu_entries: torch.Tensor,
+        out_rows: int,
     ) -> torch.Tensor:
-        # Gathered apart, kv and gate each arrive contiguous, as the kernels read them.
-        kv, gate = self.kv_proj(hidden_states), self.gate_proj(hidden_states)
-        if cp_world_size > 1:
-            kv, gate = gather_for_cp(kv, cp_group), gather_for_cp(gate, cp_group)
-        n_entries = layout.entry_tok_idx.shape[0]
+        """Pool `kv` and `gate` `(batch, tokens, n_series * head_dim)` with the cuDNN kernels into
+        `(batch, out_rows, head_dim)`.
+        """
         return torch.stack(
             [
                 dsv4_compressor_pool(
                     kv[b],
                     gate[b],
                     self.position_bias,
-                    layout.cu_seqlens,
-                    layout.cu_entries,
+                    cu_seqlens,
+                    cu_entries,
                     self.compress_rate,
                     self.n_series,
-                    n_entries,
+                    out_rows,
                 )
                 for b in range(kv.shape[0])
             ]
@@ -522,8 +519,20 @@ class DeepseekV4Compressor(nn.Module):
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         layout = packed.compression_layouts[self.compress_rate]
-        pool = self._pool_cudnn if self.cudnn_pooling and hidden_states.dtype == torch.bfloat16 else self._pool_torch
-        compressed = self.kv_norm(pool(hidden_states, layout, cp_group, cp_world_size))
+        kv, gate = self.kv_proj(hidden_states), self.gate_proj(hidden_states)
+        if self.cudnn_pooling and hidden_states.dtype == torch.bfloat16:
+            # Fetched apart, kv and gate each arrive contiguous, as the kernels read them.
+            pooled = self._pool_cudnn(
+                self._fetch(kv, cp_group, cp_world_size),
+                self._fetch(gate, cp_group, cp_world_size),
+                layout.cu_seqlens,
+                layout.cu_entries,
+                layout.entry_tok_idx.shape[0],
+            )
+        else:
+            proj = self._fetch(torch.cat([kv, gate], dim=-1), cp_group, cp_world_size)
+            pooled = self._pool(proj, layout.entry_tok_idx, layout.entry_local_idx)
+        compressed = self.kv_norm(pooled)
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
