@@ -250,12 +250,25 @@ def get_activation_checkpoint_wrapper(
         targets, module_targets = _split_targets(
             DEFAULT_SELECTIVE_TARGETS if config.targets is None else config.targets
         )
-        policy = partial(
-            _selective_checkpoint_policy,
-            targets=targets,
-            module_targets=module_targets,
-            matched_module_targets=set() if matched_module_targets is None else matched_module_targets,
-        )
+        if matched_module_targets is None:
+            matched_module_targets = set()
+
+        def policy(
+            context: SelectiveCheckpointContext,
+            operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
+            *args,
+            **kwargs,
+        ) -> CheckpointPolicy:
+            return _selective_checkpoint_policy(
+                context,
+                operation,
+                *args,
+                targets=targets,
+                module_targets=module_targets,
+                matched_module_targets=matched_module_targets,
+                **kwargs,
+            )
+
     checkpoint_kwargs = {
         "checkpoint_impl": CheckpointImpl.NO_REENTRANT,
         "context_fn": partial(create_selective_checkpoint_contexts, policy),
