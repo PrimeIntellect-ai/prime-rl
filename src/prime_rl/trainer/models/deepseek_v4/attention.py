@@ -794,7 +794,6 @@ class DeepseekV4Indexer(nn.Module):
         entry_start = layout.first_entry_of_doc[packed.tok_doc_idx].int()
         entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
-        # fp8_indexer has no batch axis
         q_fp8, scaled_w = dsv4_indexer_q_rope_quant(q[0], cos_sin_cache, packed.position_ids, w[0])
         top_k_indices = fp8_indexer_prequantized(
             q_fp8,
