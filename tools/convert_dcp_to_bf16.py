@@ -139,7 +139,7 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
         processor.save_pretrained(output_dir)
     if tokenizer_config.name is None:
         tokenizer_config = tokenizer_config.model_copy(update={"name": model_config.name})
-    setup_tokenizer(tokenizer_config).save_pretrained(output_dir)
+    setup_tokenizer(tokenizer_config, model_config.name).save_pretrained(output_dir)
     # Local trust_remote_code models localize auto_map to plain module names, so the
     # custom code files must travel with the weights.
     source_dir = Path(model_config.name)

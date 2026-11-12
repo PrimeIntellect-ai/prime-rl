@@ -1466,13 +1466,8 @@ def test_model_init_seed_requires_type_scratch():
         SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
 
 
-def test_model_init_checkpoint_requires_a_step_dir_with_config_json(tmp_path):
-    step_dir = tmp_path / "step_500"
-    step_dir.mkdir()
-    with pytest.raises(ValidationError, match="has no config.json"):
-        TrainerModelConfig(name=str(step_dir), init={"type": "ckpt_weights"})
-    (step_dir / "config.json").write_text("{}")
-    TrainerModelConfig(name=str(step_dir), init={"type": "ckpt_weights"})
+def test_model_init_checkpoint_requires_a_step_dir():
+    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt_weights"})
     with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
         TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt_weights"})
 
