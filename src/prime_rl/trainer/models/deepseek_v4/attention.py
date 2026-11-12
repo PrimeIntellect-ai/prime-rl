@@ -444,23 +444,28 @@ class DeepseekV4Compressor(nn.Module):
         self.cudnn_pooling = config.compressor_backend == "cudnn" and cudnn_pooling_supported(compress_rate, head_dim)
 
     def _overlap_with_previous_window(
-        self, kv: torch.Tensor, gate: torch.Tensor, entry_local_idx: torch.Tensor
+        self,
+        kv: torch.Tensor,
+        gate: torch.Tensor,
+        window_kv: torch.Tensor,
+        window_gate: torch.Tensor,
+        entry_tok_idx: torch.Tensor,
+        entry_local_idx: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Widen each entry from `compress_rate` slots to `2 * compress_rate`, the `n_series == 2` case."""
-        n_entries = kv.shape[1]
-
-        # Shift the `Ca` series one entry later so entry `e` sees entry `e - 1`'s. The first
-        # entry of every document has no predecessor, and the entry sitting before it in the
-        # packed sequence belongs to another document, so both halves are cleared: the gate to
-        # `-inf` and the values to zero. Zeroing is not redundant with the gate, because a
-        # zero softmax weight against a non-finite value would still yield NaN.
-        previous = (torch.arange(n_entries, device=kv.device) - 1).clamp(min=0)
+        # Entry `e` reads the `Ca` series of the `compress_rate` tokens before its own, which are
+        # entry `e - 1`'s. The first entry of every document has no predecessor, and the tokens
+        # before it belong to another document, so both halves are cleared: the gate to `-inf`
+        # and the values to zero. Zeroing is not redundant with the gate, because a zero softmax
+        # weight against a non-finite value would still yield NaN.
+        previous_tok_idx = (entry_tok_idx - self.compress_rate).clamp(min=0)
         is_first_entry_in_doc = (entry_local_idx == 0)[None, :, None, None]
-        previous_kv = kv[:, previous, :, : self.head_dim].masked_fill(is_first_entry_in_doc, 0.0)
-        previous_gate = gate[:, previous, :, : self.head_dim].masked_fill(is_first_entry_in_doc, float("-inf"))
+        previous_kv = kv[:, previous_tok_idx, : self.head_dim].masked_fill(is_first_entry_in_doc, 0.0)
+        previous_gate = gate[:, previous_tok_idx, : self.head_dim] + self.position_bias[:, : self.head_dim]
+        previous_gate = previous_gate.masked_fill(is_first_entry_in_doc, float("-inf"))
         return (
-            torch.cat([previous_kv, kv[..., self.head_dim :]], dim=2),
-            torch.cat([previous_gate, gate[..., self.head_dim :]], dim=2),
+            torch.cat([previous_kv, window_kv[..., self.head_dim :]], dim=2),
+            torch.cat([previous_gate, window_gate[..., self.head_dim :]], dim=2),
         )
 
     def _fetch(self, proj: torch.Tensor, cp_group: dist.ProcessGroup | None, cp_world_size: int) -> torch.Tensor:
@@ -474,14 +479,16 @@ class DeepseekV4Compressor(nn.Module):
         side, into one entry per row of `entry_tok_idx`, which indexes its token axis.
         """
         kv, gate = proj.split(self.n_series * self.head_dim, dim=-1)
-        kv = kv[:, entry_tok_idx]
-        gate = gate[:, entry_tok_idx] + self.position_bias
+        window_kv = kv[:, entry_tok_idx]
+        window_gate = gate[:, entry_tok_idx] + self.position_bias
         if self.n_series == 2:
-            kv, gate = self._overlap_with_previous_window(kv, gate, entry_local_idx)
+            window_kv, window_gate = self._overlap_with_previous_window(
+                kv, gate, window_kv, window_gate, entry_tok_idx, entry_local_idx
+            )
 
         # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
-        weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
-        return (kv * weights).sum(dim=2)
+        weights = window_gate.softmax(dim=2, dtype=torch.float32).to(window_kv.dtype)
+        return (window_kv * weights).sum(dim=2)
 
     def _pool_cudnn(
         self,
