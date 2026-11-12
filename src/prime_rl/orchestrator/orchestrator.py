@@ -79,7 +79,6 @@ from prime_rl.orchestrator.utils import (
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
-from prime_rl.specdecode.draft import check_draft_swap, local_draft_dir
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
@@ -93,6 +92,7 @@ from prime_rl.utils.pathing import (
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful

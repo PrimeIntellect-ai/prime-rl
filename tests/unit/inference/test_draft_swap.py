@@ -4,7 +4,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from prime_rl.specdecode.draft import check_draft_swap
+from prime_rl.utils.specdec import check_draft_swap
 
 
 def test_draft_swap_requires_same_architecture_and_tensors(tmp_path):
