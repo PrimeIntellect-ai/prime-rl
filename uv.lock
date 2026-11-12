@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -17,29 +17,29 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-certifi = false
-deep-ep = false
-deep-select = false
-dion = false
-fastokens = false
-flash-attn-3 = false
-flashinfer-python = false
-harbor = "2026-10-08T00:00:00Z"
-humming-kernels = false
-instanttensor = false
-modelexpress = false
-nixl-cu13 = false
-prime-kernels = false
-prime-pydantic-config = false
-prime-runs = false
-prime-sandboxes = false
-prime-traces = false
-prime-tunnel = false
-renderers = false
-tokenspeed-mla = false
-torchao = false
 verifiers = false
+prime-pydantic-config = false
+harbor = "2026-10-08T00:00:00Z"
+prime-traces = false
 vllm-router = false
+dion = false
+deep-select = false
+prime-runs = false
+flash-attn-3 = false
+prime-tunnel = false
+flashinfer-python = false
+humming-kernels = false
+torchao = false
+instanttensor = false
+tokenspeed-mla = false
+nixl-cu13 = false
+deep-ep = false
+certifi = false
+prime-sandboxes = false
+renderers = false
+modelexpress = false
+prime-kernels = false
+fastokens = false
 
 [manifest]
 members = [
@@ -79,7 +79,6 @@ members = [
     "i3-math",
     "i3-science",
     "ifeval",
-    "jobbench",
     "kimina",
     "kuhn-poker",
     "lab",
@@ -137,7 +136,6 @@ members = [
     "swe-atlas-qna",
     "swe-atlas-rf",
     "swe-atlas-tw",
-    "swe-lancer",
     "swe-sweep",
     "swebench-multilingual",
     "swebench-pro",
@@ -145,9 +143,7 @@ members = [
     "swelego",
     "swerebench-v2",
     "swesmith-env",
-    "terminal-bench",
     "terminal-bench-2",
-    "terminal-bench-4-1",
     "terminal-bench-science",
     "terminal-lego",
     "tmax",
@@ -240,7 +236,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -255,7 +251,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -270,7 +266,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -464,7 +460,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -497,7 +493,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -710,7 +706,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -793,7 +789,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "browsecomp-plus"
@@ -813,7 +809,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -850,7 +846,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -941,7 +937,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1003,7 +999,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1071,7 +1067,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1398,7 +1394,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "deepdive"
@@ -1412,7 +1408,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1452,7 +1448,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.20" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1507,7 +1503,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1551,15 +1547,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dockerfile-parse"
-version = "2.0.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/92/df/929ee0b5d2c8bd8d713c45e71b94ab57c7e11e322130724d54f469b2cd48/dockerfile-parse-2.0.1.tar.gz", hash = "sha256:3184ccdc513221983e503ac00e1aa504a2aa8f84e5de673c46b0b6eee99ec7bc", size = 24556, upload-time = "2023-07-18T13:36:07.897Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/6c/79cd5bc1b880d8c1a9a5550aa8dacd57353fa3bb2457227e1fb47383eb49/dockerfile_parse-2.0.1-py2.py3-none-any.whl", hash = "sha256:bdffd126d2eb26acf1066acb54cb2e336682e1d72b974a40894fac76a4df17f6", size = 14845, upload-time = "2023-07-18T13:36:06.052Z" },
-]
-
-[[package]]
 name = "docstring-parser"
 version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1591,7 +1578,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -1639,7 +1626,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2092,7 +2079,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2107,7 +2094,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2122,7 +2109,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2164,7 +2151,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "genson"
@@ -2173,6 +2160,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f8/53/de162dc8e03fccd9ebe59d17c7812378fe8bd2b604f6b1b94d00165140ac/genson-1.4.0.tar.gz", hash = "sha256:bc7f1c1bae87a21ca44d81149aec95a3f4468d676de9b8b08caa064f3c50b3da", size = 47908, upload-time = "2026-07-06T08:21:50.331Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/02/767f744ab6d4cb7761e5008acc3d534b7a0481af62563d52e391fbcb2140/genson-1.4.0-py3-none-any.whl", hash = "sha256:03bc71bbe52defde70660cc4dcd1ea1097997da5a1cbb90a9dbd3acc7c9e1b65", size = 24484, upload-time = "2026-07-06T08:21:49.046Z" },
+]
+
+[[package]]
+name = "gepa"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/62/10f5a8f24c075e3b64f952be73ba8e15f0055584bbcdf9ce48d754a36679/gepa-0.1.1.tar.gz", hash = "sha256:643fda01c23de4c9f01306e01305dd69facc29bcb34ad59e4cd07e6621d34aa1", size = 272251, upload-time = "2026-03-16T10:17:53.131Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dc/b7/8c72dedbb950d88a6f64588fcbc590d2a21e2b9f19b36aa6c5016c54ec75/gepa-0.1.1-py3-none-any.whl", hash = "sha256:71ead7c591eafcc727b83509cdc4182f20264800a6ddf8520d61419daeb47466", size = 244246, upload-time = "2026-03-16T10:17:51.922Z" },
 ]
 
 [[package]]
@@ -2351,7 +2347,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2366,7 +2362,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2391,7 +2387,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "grpcio"
@@ -2518,7 +2514,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2538,7 +2534,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2676,7 +2672,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2739,7 +2735,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "orjson" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2758,7 +2754,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "markdown", specifier = ">=3.5.1" },
     { name = "sympy", specifier = ">=1.12.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2773,7 +2769,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2788,7 +2784,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -2827,7 +2823,7 @@ requires-dist = [
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3078,17 +3074,6 @@ wheels = [
 ]
 
 [[package]]
-name = "jobbench"
-version = "0.1.0"
-source = { editable = "deps/prime-envs/environments/office/jobbench" }
-dependencies = [
-    { name = "verifiers", extra = ["harbor"] },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
-
-[[package]]
 name = "joblib"
 version = "1.5.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3197,7 +3182,7 @@ dependencies = [
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
     { name = "pyarrow", specifier = ">=15" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3270,7 +3255,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "langdetect"
@@ -3312,7 +3297,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "litellm"
@@ -3353,7 +3338,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3414,7 +3399,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "pytrec-eval-terrier" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3443,7 +3428,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3458,7 +3443,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3473,7 +3458,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3551,7 +3536,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3578,7 +3563,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3593,7 +3578,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3646,7 +3631,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3683,7 +3668,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3774,7 +3759,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3789,7 +3774,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3807,7 +3792,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3825,7 +3810,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -3939,7 +3924,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "filelock" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4089,7 +4074,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "multi-swe-bench", url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4204,7 +4189,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "nltk"
@@ -4258,7 +4243,7 @@ dependencies = [
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
     { name = "pyarrow", specifier = ">=15" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4576,7 +4561,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4609,7 +4594,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4624,7 +4609,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4641,7 +4626,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "python-dateutil" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4705,7 +4690,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4722,7 +4707,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4859,7 +4844,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "orjson"
@@ -4947,7 +4932,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -4989,7 +4974,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "nltk", specifier = ">=3.8" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -5016,7 +5001,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "automation-bench", git = "https://github.com/xeophon/AutomationBench-PI.git?rev=9556666" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -5028,7 +5013,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "pi-officeqa-pro-v2"
@@ -5039,18 +5024,18 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "pi-programbench"
-version = "0.3.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/code/pi_programbench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "pi-swe-sweep"
@@ -5061,7 +5046,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "pi-terminalbench2-1"
@@ -5072,7 +5057,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "pillow"
@@ -5116,7 +5101,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -5592,7 +5577,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "prometheus-client"
@@ -5640,7 +5625,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -5735,7 +5720,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -5773,7 +5758,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 provides-extras = ["server"]
 
@@ -5807,7 +5792,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lean-common", editable = "deps/prime-envs/packages/lean_common" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6288,7 +6273,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6348,7 +6333,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pyarrow", specifier = ">=17" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6363,7 +6348,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6619,7 +6604,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6659,7 +6644,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6687,7 +6672,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6743,7 +6728,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "sentence-transformers"
@@ -6857,7 +6842,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -6872,7 +6857,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -7068,7 +7053,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swe-atlas-rf"
@@ -7079,7 +7064,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swe-atlas-tw"
@@ -7090,22 +7075,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
-
-[[package]]
-name = "swe-lancer"
-version = "0.1.0"
-source = { editable = "deps/prime-envs/environments/swe/swe_lancer" }
-dependencies = [
-    { name = "pyyaml" },
-    { name = "verifiers", extra = ["harbor"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
-]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swe-rex"
@@ -7135,7 +7105,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swebench"
@@ -7171,7 +7141,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swebench-pro"
@@ -7182,7 +7152,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swebench-verified"
@@ -7193,7 +7163,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "swelego"
@@ -7207,7 +7177,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -7222,7 +7192,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -7246,7 +7216,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "swebench", specifier = ">=4.1.0,<5" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -7321,21 +7291,6 @@ wheels = [
 ]
 
 [[package]]
-name = "terminal-bench"
-version = "0.1.1"
-source = { editable = "deps/prime-envs/environments/terminal/terminal_bench" }
-dependencies = [
-    { name = "dockerfile-parse" },
-    { name = "verifiers", extra = ["harbor"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dockerfile-parse", specifier = ">=2.0.1" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
-]
-
-[[package]]
 name = "terminal-bench-2"
 version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/terminal/terminal_bench_2" }
@@ -7344,33 +7299,18 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
-
-[[package]]
-name = "terminal-bench-4-1"
-version = "4.1.0"
-source = { editable = "deps/prime-envs/environments/terminal/terminal_bench_4_1" }
-dependencies = [
-    { name = "dockerfile-parse" },
-    { name = "verifiers", extra = ["harbor"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dockerfile-parse", specifier = ">=2.0.1" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
-]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "terminal-bench-science"
-version = "0.1.2"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/science/terminal_bench_science" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "terminal-lego"
@@ -7384,7 +7324,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -7465,7 +7405,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1" }]
 
 [[package]]
 name = "tokenizers"
@@ -7779,7 +7719,7 @@ dependencies = [
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
     { name = "orjson", specifier = ">=3.10.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -7869,7 +7809,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -8007,7 +7947,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -8028,7 +7968,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "uvicorn"
@@ -8078,7 +8018,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "faker", specifier = ">=20.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -8088,6 +8028,7 @@ dependencies = [
     { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "anthropic" },
+    { name = "gepa" },
     { name = "h11" },
     { name = "httpx" },
     { name = "httpx2" },
@@ -8121,6 +8062,7 @@ ta = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "anthropic", specifier = ">=1.0.0" },
+    { name = "gepa", specifier = ">=0.0.6" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.24.0" },
     { name = "httpx", specifier = ">=0.27.0" },
@@ -8190,7 +8132,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -8794,7 +8736,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.1" },
 ]
 
 [[package]]
@@ -8832,7 +8774,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1" }]
 
 [[package]]
 name = "wordle"
