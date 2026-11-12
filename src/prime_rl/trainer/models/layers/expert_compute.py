@@ -21,19 +21,12 @@ def to_local(tensor: torch.Tensor) -> torch.Tensor:
 
 
 class ExpertCompute(Protocol):
-    """Expert compute on dispatched tokens grouped by expert. ``host_num_tokens_per_expert`` is
-    ``num_tokens_per_expert`` as a CPU tensor when the dispatch has copied it to the host."""
-
     token_group_alignment: int
 
     def validate(self, experts: "GroupedExperts") -> None: ...
 
     def __call__(
-        self,
-        experts: "GroupedExperts",
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        host_num_tokens_per_expert: torch.Tensor | None = None,
+        self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor
     ) -> torch.Tensor: ...
 
 
@@ -83,30 +76,23 @@ class GroupedGemmExpertCompute:
     def validate(self, experts: "GroupedExperts") -> None:
         """The shared forward handles the experts' activation, biases, and weight layout."""
 
-    def __call__(
-        self,
-        experts: "GroupedExperts",
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        host_num_tokens_per_expert: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         assert x.dim() == 2
-        gemm = self.bind_gemm(host_num_tokens_per_expert)
 
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         x_bf16 = x.bfloat16()
 
         if experts.gate_up_proj is None:
             up_proj = to_local(experts.up_proj).transpose(-2, -1)
-            up = gemm(x_bf16, up_proj.bfloat16(), offsets)
+            up = self.gemm(x_bf16, up_proj.bfloat16(), offsets)
 
             gate = None
             if experts.gate_proj is not None:
                 gate_proj = to_local(experts.gate_proj).transpose(-2, -1)
-                gate = gemm(x_bf16, gate_proj.bfloat16(), offsets)
+                gate = self.gemm(x_bf16, gate_proj.bfloat16(), offsets)
         else:
             gate_up_proj = to_local(experts.gate_up_proj).transpose(-2, -1)
-            gate_up = gemm(x_bf16, gate_up_proj.bfloat16(), offsets)
+            gate_up = self.gemm(x_bf16, gate_up_proj.bfloat16(), offsets)
             gate, up = gate_up.chunk(2, dim=-1)
 
         if experts.up_proj_bias is not None:
@@ -119,14 +105,11 @@ class GroupedGemmExpertCompute:
 
         hidden = experts.activation.apply(gate, up)
         down_proj = to_local(experts.down_proj).transpose(-2, -1)
-        output = gemm(hidden, down_proj.bfloat16(), offsets)
+        output = self.gemm(hidden, down_proj.bfloat16(), offsets)
         if experts.down_proj_bias is not None:
             down_proj_bias = to_local(experts.down_proj_bias)
             output = output + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()
         return output.type_as(x)
-
-    def bind_gemm(self, host_num_tokens_per_expert: torch.Tensor | None) -> Callable:
-        return self.gemm
 
 
 class BF16ExpertCompute(GroupedGemmExpertCompute):
@@ -137,20 +120,9 @@ class BF16ExpertCompute(GroupedGemmExpertCompute):
 class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self) -> None:
         from prime_rl.trainer.models.kernels.fp8_utils import GROUP_ALIGNMENT
-        from prime_rl.trainer.models.layers.fp8_expert_weights import Fp8ExpertWeight, prequantized_grouped_fp8_gemm
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
-        def gemm(
-            x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, host_num_tokens_per_expert: torch.Tensor | None
-        ) -> torch.Tensor:
-            if isinstance(weight, Fp8ExpertWeight):
-                return prequantized_grouped_fp8_gemm(x, weight, offs, host_num_tokens_per_expert)
-            return grouped_fp8_gemm(x, weight, offs, host_num_tokens_per_expert)
-
-        super().__init__(gemm, token_group_alignment=GROUP_ALIGNMENT)
-
-    def bind_gemm(self, host_num_tokens_per_expert: torch.Tensor | None) -> Callable:
-        return partial(self.gemm, host_num_tokens_per_expert=host_num_tokens_per_expert)
+        super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
 
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):

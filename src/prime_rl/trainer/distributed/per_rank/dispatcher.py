@@ -18,7 +18,6 @@ class PerRankDispatchState:
     home: SlotMap
     expert: SlotMap
     expert_weights: Tensor | None
-    host_num_tokens_per_expert: Tensor
 
 
 def _send_buffer_rows(sends: Tensor) -> tuple[Tensor, Tensor]:
@@ -80,10 +79,9 @@ class PerRankTokenDispatcher(TokenDispatcherBase[PerRankDispatchState]):
             received = all_to_all_counts(counts.view(-1), self.group).view(counts.shape)
             routes_per_local_expert = received[:, 1:].sum(dim=0)
             rows_per_expert = ((routes_per_local_expert + alignment - 1) // alignment).clamp(min=1) * alignment
-            # One transfer to the host: the split sizes and the expert input's rows per local expert.
-            host = torch.cat((pairs, received[:, 0], rows_per_expert)).cpu()
+            # One transfer to the host: the split sizes and the expert input's rows.
+            host = torch.cat((pairs, received[:, 0], rows_per_expert.sum().view(1))).cpu()
         input_splits, output_splits = host[:ranks], host[ranks : 2 * ranks]
-        host_num_tokens_per_expert = host[2 * ranks :]
         num_received = int(output_splits.sum())
 
         home = SlotMap(home_rows, int(input_splits.sum()))
@@ -94,7 +92,7 @@ class PerRankTokenDispatcher(TokenDispatcherBase[PerRankDispatchState]):
         with torch.no_grad():
             routes = scatter_slots(routes.to(torch.int32), home)
             routes = all_to_all_single(routes, output_splits, input_splits, self.group, num_received)
-            expert = self._expert_slots(routes, received, rows_per_expert, int(host_num_tokens_per_expert.sum()))
+            expert = self._expert_slots(routes, received, rows_per_expert, int(host[-1]))
         routed_input = scatter_slots(tokens, expert, scores if score_before_experts else None)
         state = PerRankDispatchState(
             input_splits=input_splits,
@@ -102,7 +100,6 @@ class PerRankTokenDispatcher(TokenDispatcherBase[PerRankDispatchState]):
             home=home,
             expert=expert,
             expert_weights=None if score_before_experts else scores,
-            host_num_tokens_per_expert=host_num_tokens_per_expert,
         )
         return routed_input, rows_per_expert.to(torch.int32), state
 
@@ -123,9 +120,6 @@ class PerRankTokenDispatcher(TokenDispatcherBase[PerRankDispatchState]):
         offset = routes_from.sum(dim=0).unsqueeze(1) + torch.arange(alignment, device=device)
         padding = torch.where(offset < rows_per_expert.unsqueeze(1), group_start.unsqueeze(1) + offset, -1)
         return SlotMap(torch.where(local, rows, -1).to(torch.int32), num_rows, padding.view(-1).to(torch.int32))
-
-    def host_num_tokens_per_expert(self, state: PerRankDispatchState) -> Tensor:
-        return state.host_num_tokens_per_expert
 
     def combine(self, routed_output: Tensor, state: PerRankDispatchState) -> Tensor:
         # Per received token: the weighted sum of its outputs from this rank's experts.

@@ -16,12 +16,9 @@ NUM_EXPERTS, TOP_K, DIM = 16, 3, 6
 
 
 def _scaled_square_experts(first_expert: int):
-    """Expert e squares its input and scales it by its global number + 1 (rows after the last group give 0). The
-    dispatch's host copy of the counts must equal the counts."""
+    """Expert e squares its input and scales it by its global number + 1 (rows after the last group give 0)."""
 
-    def experts(x: torch.Tensor, counts: torch.Tensor, host_counts: torch.Tensor) -> torch.Tensor:
-        if not torch.compiler.is_compiling():
-            assert host_counts.device.type == "cpu" and host_counts.tolist() == counts.tolist()
+    def experts(x: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
         expert = torch.searchsorted(torch.cumsum(counts.long(), dim=0), torch.arange(x.shape[0]), right=True)
         scale = torch.where(expert < len(counts), first_expert + 1 + expert, 0).to(x.dtype)
         return x.square() * scale.unsqueeze(1)
