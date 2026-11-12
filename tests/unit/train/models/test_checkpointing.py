@@ -36,6 +36,8 @@ class TokenLocalBlock(nn.Module):
 
 
 class TwoProjections(nn.Module):
+    is_token_local = True
+
     def __init__(self) -> None:
         super().__init__()
         self.first = nn.Linear(8, 8, bias=False)
@@ -94,6 +96,7 @@ def test_selective_policy_saves_default_and_custom_targets():
     )
 
 
+@pytest.mark.parametrize("token_chunk_size", [None, 4])
 @pytest.mark.parametrize(
     ("targets", "saved_mm_modules"),
     [
@@ -103,7 +106,7 @@ def test_selective_policy_saves_default_and_custom_targets():
         (["aten::mm@sec*.0"], ["second.0"]),
     ],
 )
-def test_module_qualified_targets_save_only_matching_call_sites(targets, saved_mm_modules):
+def test_module_qualified_targets_save_only_matching_call_sites(targets, saved_mm_modules, token_chunk_size):
     saved_nodes = []
 
     def recording_partition(joint_module, joint_inputs, *, num_fwd_outputs, **kwargs):
@@ -113,19 +116,22 @@ def test_module_qualified_targets_save_only_matching_call_sites(targets, saved_m
         saved_nodes.extend(forward.graph.find_nodes(op="output")[0].args[0][num_fwd_outputs:])
         return forward, backward
 
-    config = ActivationCheckpointConfig(mode="selective", targets=targets)
+    config = ActivationCheckpointConfig(mode="selective", targets=targets, token_chunk_size=token_chunk_size)
     checkpointed = get_activation_checkpoint_wrapper(config)(TwoProjections())
-    compiled = torch.compile(
-        checkpointed, backend=aot_autograd(fw_compiler=nop, partition_fn=recording_partition), fullgraph=True
-    )
-    compiled(torch.randn(4, 8, requires_grad=True)).sum().backward()
+    backend = aot_autograd(fw_compiler=nop, partition_fn=recording_partition)
+    if token_chunk_size is None:
+        compiled = torch.compile(checkpointed, backend=backend, fullgraph=True)
+    else:
+        checkpointed.compile_chunk(backend=backend, fullgraph=True)
+        compiled = checkpointed
+    compiled(torch.randn(1, 8, 8, requires_grad=True)).sum().backward()
 
-    saved_mm_paths = [
-        list(node.meta["nn_module_stack"].values())[-1][0]
-        for node in saved_nodes
-        if node.target is torch.ops.aten.mm.default
-    ]
-    assert [path.rpartition("_checkpoint_wrapped_module'].")[2] for path in saved_mm_paths] == saved_mm_modules
+    saved_mm_modules_seen = []
+    for node in saved_nodes:
+        if node.target is torch.ops.aten.mm.default:
+            block_source, *_, module_source = [source for source, _ in node.meta["nn_module_stack"].values()]
+            saved_mm_modules_seen.append(module_source.removeprefix(f"{block_source}."))
+    assert saved_mm_modules_seen == saved_mm_modules
 
 
 def test_module_qualified_targets_raise_without_compile():
