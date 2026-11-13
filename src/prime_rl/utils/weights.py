@@ -1,6 +1,7 @@
 import json
 import re
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
@@ -129,6 +130,15 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
 
 
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
+
+
+def group_by_layer(keys: Iterable[str]) -> dict[str, list[str]]:
+    """Group complete decoder layers for conversion, with non-layer keys together."""
+    layer_to_keys: dict[str, list[str]] = {}
+    for key in keys:
+        match = _LAYER_RE.match(key)
+        layer_to_keys.setdefault(match.group(1) if match else "", []).append(key)
+    return layer_to_keys
 
 
 def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
