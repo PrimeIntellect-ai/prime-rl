@@ -52,7 +52,6 @@ class GptOssDecoderLayer(nn.Module):
             activation="clamped_swiglu",
             bias=True,
         )
-        experts.init_weights(config.initializer_range)
         self.mlp = MoE(
             router=router,
             experts=experts,
@@ -98,6 +97,14 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config: GptOssConfig):
         return conversion_chain(config)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        std = self.config.initializer_range
+        if isinstance(module, GptOssAttention):
+            nn.init.normal_(module.sinks, mean=0.0, std=std)
+        elif isinstance(module, MoE):
+            nn.init.normal_(module.router.gate.bias, mean=0.0, std=std)
 
 
 class GptOssModel(GptOssPreTrainedModel):

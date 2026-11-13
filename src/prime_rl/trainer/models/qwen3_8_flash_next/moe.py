@@ -15,7 +15,6 @@ class SigmoidOutputGatedMoE(MoE):
         num_experts: int,
         top_k: int,
         activation: ActivationType,
-        init_std: float,
         load_balance_coeff: float | None = None,
     ) -> None:
         experts = GroupedExperts(
@@ -25,7 +24,6 @@ class SigmoidOutputGatedMoE(MoE):
             expert_type="gated",
             activation=activation,
         )
-        experts.init_weights(init_std)
         router = TokenChoiceTopKRouter(
             dim=dim,
             num_experts=num_experts,

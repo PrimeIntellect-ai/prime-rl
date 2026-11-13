@@ -48,7 +48,6 @@ class GptOssAttention(nn.Module):
             bias=config.attention_bias,
         )
         self.sinks = nn.Parameter(torch.empty(config.num_attention_heads))
-        nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
         self.flash_attn = flash_attn_4_varlen_func
 
     def attention_flops(self, seq_len: int) -> int:

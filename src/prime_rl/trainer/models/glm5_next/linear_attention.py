@@ -1,3 +1,5 @@
+import math
+
 import torch
 from fla.modules import FusedRMSNormGated
 from fla.modules.conv import causal_conv1d
@@ -48,8 +50,8 @@ class KimiDeltaAttention(nn.Module):
 
         self.f_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
         self.f_b_proj = nn.Linear(head_dim, self.projection_size, bias=False)
-        self.A_log = nn.Parameter(torch.zeros(num_heads))
-        self.dt_bias = nn.Parameter(torch.zeros(self.projection_size))
+        self.A_log = nn.Parameter(torch.empty(num_heads))
+        self.dt_bias = nn.Parameter(torch.empty(self.projection_size))
         self.b_proj = nn.Linear(hidden_size, num_heads, bias=False)
 
         self.g_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
@@ -58,6 +60,15 @@ class KimiDeltaAttention(nn.Module):
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
 
         self.cp_context = CPContext()
+        self.reset_parameters()
+
+    @torch.no_grad()
+    def reset_parameters(self) -> None:
+        # fla's KimiDeltaAttention init with a gate lower bound: dt is log-uniform in [1e-3, 0.1] and dt_bias is
+        # its inverse softplus.
+        nn.init.zeros_(self.A_log)
+        self.dt_bias.uniform_(math.log(1e-3), math.log(0.1)).exp_().clamp_(min=1e-4)
+        self.dt_bias.add_(torch.log(-torch.expm1(-self.dt_bias)))
 
     def _depthwise_conv(self) -> nn.Conv1d:
         return nn.Conv1d(

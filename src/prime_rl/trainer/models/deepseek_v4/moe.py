@@ -6,7 +6,6 @@ selection with a frozen token-id lookup but keeps the learned gating weights.
 """
 
 import torch
-from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.activations import ClampedSilu
@@ -90,11 +89,6 @@ class DeepseekV4MoE(MoE):
         )
         self.layer_idx = layer_idx
         self.is_hash = is_hash
-
-    def init_weights(self, init_std: float, buffer_device: torch.device) -> None:
-        super().init_weights(init_std, buffer_device)
-        # HF draws both halves of its fused gate_up_proj from std=0.02; the shared init uses init_std for up.
-        nn.init.trunc_normal_(self.experts.up_proj, mean=0.0, std=0.02)
 
     def forward(
         self,

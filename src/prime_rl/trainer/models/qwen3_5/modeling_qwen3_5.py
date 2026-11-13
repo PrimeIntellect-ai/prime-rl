@@ -64,7 +64,6 @@ class Qwen3_5DecoderLayer(nn.Module):
                 expert_type="gated",
                 activation=config.hidden_act,
             )
-            experts.init_weights(config.initializer_range)
             self.mlp = MoE(
                 router=router,
                 experts=experts,
@@ -132,6 +131,11 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config):
         return conversion_chain(config)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, (ZeroCenteredRMSNorm, GatedDeltaNet)):
+            module.reset_parameters()
 
 
 class Qwen3_5Model(Qwen3_5PreTrainedModel):

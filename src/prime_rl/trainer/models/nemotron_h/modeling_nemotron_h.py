@@ -80,7 +80,6 @@ class NemotronHDecoderLayer(nn.Module):
                 activation=config.mlp_hidden_act,
                 bias=config.mlp_bias,
             )
-            experts.init_weights(config.initializer_range)
             shared_expert = FeedForward(
                 dim=config.hidden_size,
                 hidden_dim=config.moe_shared_expert_intermediate_size,
@@ -152,6 +151,11 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config: NemotronHConfig | NemotronHOmniConfig):
         return conversion_chain(config)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, NemotronHMamba2):
+            module.reset_parameters()
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
