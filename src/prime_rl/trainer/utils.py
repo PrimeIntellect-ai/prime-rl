@@ -1,5 +1,6 @@
 import gc
 import math
+import mmap
 import os
 import pickle
 import shutil
@@ -113,6 +114,34 @@ def clip_grad_norm_(
         for parameters in mesh_parameters.values():
             torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
+
+
+class _PageLockedMapping(mmap.mmap):
+    """Anonymous shared mapping that stays page-locked with cudaHostRegister until it is freed."""
+
+    registered_ptr: int | None = None
+
+    def __del__(self):
+        if self.registered_ptr is not None:
+            torch.cuda.check_error(torch.cuda.cudart().cudaHostUnregister(self.registered_ptr))
+
+
+def empty_pinned(shape: tuple[int, ...] | torch.Size, dtype: torch.dtype) -> Tensor:
+    """Allocate a page-locked CPU tensor of exactly the requested size.
+
+    `pin_memory=True` goes through torch's caching host allocator, which rounds every block up to the
+    next power of two, so a 1.1 GiB buffer pins 2 GiB. This pins a page-aligned mapping instead. The
+    tensor owns the mapping through `torch.frombuffer`, so the memory is unregistered and unmapped
+    only when the last view of its storage is freed.
+    """
+    nbytes = torch.Size(shape).numel() * dtype.itemsize
+    if nbytes == 0:
+        return torch.empty(shape, dtype=dtype, pin_memory=True)
+    mapping = _PageLockedMapping(-1, nbytes)
+    tensor = torch.frombuffer(mapping, dtype=torch.uint8)
+    torch.cuda.check_error(torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), nbytes, 0))
+    mapping.registered_ptr = tensor.data_ptr()
+    return tensor.view(dtype).view(shape)
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
