@@ -1,4 +1,5 @@
 import shutil
+import time
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +20,15 @@ class BatchRequest(msgspec.Struct):
     step: int
     committed: int
     """The newest step a trainer checkpoint covers; a retaining sender releases the steps up to it."""
+    requested_at: float = 0.0
+    """Wall-clock time the rank asked (0: not reported). The trainer was busy until then."""
+
+
+def last_requested_at(requests: list[BatchRequest]) -> float | None:
+    """When the last of a step's ranks asked for it, None if any rank did not report it."""
+    if not requests or any(request.requested_at <= 0 for request in requests):
+        return None
+    return max(request.requested_at for request in requests)
 
 
 class BatchLog:
@@ -68,8 +78,9 @@ class BatchSender(ABC):
         self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
         self.output_dir = output_dir
         self.data_world_size = data_world_size
-        # Seconds the last send waited for the trainer to request its step
+        # Seconds the last send waited for the trainer to request its step, and when its last rank asked
         self.last_wait_s = 0.0
+        self.last_requested_at: float | None = None
         self.retain = retain
         """Keep every delivered step in the ``BatchLog`` until a trainer checkpoint covers it."""
         self.log = BatchLog(output_dir)
@@ -119,7 +130,9 @@ class BatchReceiver(ABC):
         self.log = BatchLog(output_dir)
 
     def request(self) -> BatchRequest:
-        return BatchRequest(self.world_size, self.rank, self.data_rank, self.current_step, self.committed)
+        return BatchRequest(
+            self.world_size, self.rank, self.data_rank, self.current_step, self.committed, requested_at=time.time()
+        )
 
     @abstractmethod
     def wait(self) -> None:

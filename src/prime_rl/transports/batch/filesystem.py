@@ -4,7 +4,7 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender
+from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender, last_requested_at
 from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.utils.pathing import get_step_path, sync_wait_for_path
 
@@ -61,6 +61,7 @@ class FileSystemBatchSender(BatchSender):
                 for path in step_path.glob("rank_*.request")
             ]
             if requests and len(requests) == requests[0].world_size:
+                self.last_requested_at = last_requested_at(requests)
                 return max(request.committed for request in requests)
             await asyncio.sleep(REQUEST_POLL_INTERVAL_S)
 

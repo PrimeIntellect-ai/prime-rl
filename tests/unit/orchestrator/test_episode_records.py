@@ -79,11 +79,15 @@ def test_received_episode_writes_plain_records(tmp_path):
         _assert_plain_streams(node)
     assert [node["token_ids"] for node in live_trace["nodes"]] == [[1], [2], [3, 4]]
 
-    # The annotation stream carries the branch advantages as numbers
-    annotations = chunk_path(get_annotations_dir(tmp_path) / "unknown", 0)
-    updates = [orjson.loads(line) for line in annotations.read_bytes().splitlines()]
-    branch_advantages = [branch["advantages"] for update in updates for branch in update["branches"]]
-    assert branch_advantages == [[0.0, 0.0, 0.7, 0.7]]
+    # The annotation stream carries the branch advantages as float32 bytes beside the line
+    stream = get_annotations_dir(tmp_path) / "unknown"
+    (annotation,) = chunk_path(stream, 0).read_bytes().splitlines()
+    (branch,) = orjson.loads(annotation)["branches"]
+    ref = branch["advantages"]
+    with open(chunk_path(stream, ref["bin"], ".bin"), "rb") as f:
+        f.seek(ref["offset"])
+        decoded = np.frombuffer(f.read(ref["count"] * np.dtype(np.float32).itemsize), dtype=np.float32)
+    assert np.array_equal(decoded, np.float32([0.0, 0.0, 0.7, 0.7]))
 
 
 def test_received_episode_uploads_plain_json():
