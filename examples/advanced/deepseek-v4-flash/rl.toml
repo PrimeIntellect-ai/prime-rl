@@ -1,6 +1,6 @@
-# DeepSeek-V4-Flash agentic RL on the `scaleswe` SWE taskset at 131k context, bash harness on a
-# prime sandbox runtime; eval on SWE-Bench Verified. Hardware-agnostic base: compose it with a
-# hardware overlay that sets the topology and the precision, e.g.
+# DeepSeek-V4-Flash agentic RL on `terminal-lego` (terminal tasks) and `swelego` (SWE) at 131k
+# context, bash harness on a prime sandbox runtime; eval on SWE-Bench Verified. Hardware-agnostic
+# base: compose it with a hardware overlay that sets the topology and the precision, e.g.
 #
 #   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/h200.toml
 
@@ -9,7 +9,7 @@ seq_len = 131072
 output_dir = "/shared/outputs" # FILL IN: point at your shared filesystem
 
 [slurm]
-job_name = "dsv4f-swe"
+job_name = "dsv4f-rl"
 partition = "all" # FILL IN: set to your cluster's partition
 
 [model]
@@ -19,7 +19,7 @@ name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 
 [monitors.wandb]
 project = "deepseek-v4-flash"
-name = "swe"
+name = "terminal-lego-swelego"
 
 [weight_broadcast]
 type = "nccl"
@@ -37,11 +37,15 @@ type = "muon"
 
 [orchestrator]
 batch_size = 512
-# SWE episodes span many trainer steps at high concurrency.
+# Episodes span many trainer steps at high concurrency.
 max_staleness = 32
 
 [orchestrator.train]
 group_size = 16
+
+# Pass-rate-scaled, so groups that all solve still train: shorter solutions win.
+[orchestrator.train.algo.length_penalty]
+type = "linear"
 
 [orchestrator.renderer]
 # The bf16 re-export is not in the renderer map, so name the renderer explicitly.
@@ -52,8 +56,13 @@ drop_thinking = false
 thinking_retention = "all"
 
 [[orchestrator.train.source]]
-name = "scaleswe"
-env.taskset.id = "scaleswe"
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
+env.agent.harness.id = "bash"
+
+[[orchestrator.train.source]]
+name = "swelego"
+env.taskset.id = "swelego"
 env.agent.harness.id = "bash"
 
 [orchestrator.eval]

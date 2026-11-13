@@ -1,17 +1,28 @@
 # DeepSeek-V4-Flash
 
-Agentic RL on [`deepseek-ai/DeepSeek-V4-Flash-0731`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) (284B MoE, 13B active) at 131k context on the `scaleswe` SWE taskset, with a `bash` harness in sandboxes and SWE-Bench Verified evals. The model is small for its class and has a very small KV-cache footprint, so this recipe aims for high concurrency: at least 1024 rollouts in flight.
+Agentic RL on [`deepseek-ai/DeepSeek-V4-Flash-0731`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) (284B MoE, 13B active) at 131k context. It trains on two tasksets at equal ratio, `terminal-lego` (13,825 terminal tasks) and `swelego` (4,323 SWE tasks), with a `bash` harness in sandboxes and SWE-Bench Verified evals. A linear length penalty scales with each group's pass rate, so groups where every rollout solves the task still train: shorter solutions get the higher advantage. The model is small for its class and has a very small KV-cache footprint, so this recipe aims for high concurrency: at least 1024 rollouts in flight.
 
 The recipe is a hardware-agnostic base plus one overlay per GPU type. The base holds the model, task, algorithm, and inference layout. The overlay holds the topology, the precision, and the kernels:
 
 | Config | What it sets |
 |---|---|
-| [`rl.toml`](rl.toml) | Base: `scaleswe` training, `swebench-verified` evals, Muon, batch 512 / group 16, DEP8 inference (one replica per node: attention data parallel, experts sharded 8 ways). Does not parse standalone. |
+| [`rl.toml`](rl.toml) | Base: `terminal-lego` + `swelego` training with a linear length penalty, `swebench-verified` evals, Muon, batch 512 / group 16, DEP8 inference (one replica per node: attention data parallel, experts sharded 8 ways). Does not parse standalone. |
 | [`h200.toml`](h200.toml) | 8×H200 nodes: 4 trainer + 2 inference nodes, blockwise FP8 trainer and online FP8 vLLM, DeepEP low-latency all-to-all, 1024+ rollouts in flight. |
 
 ```bash
 uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/h200.toml
 ```
+
+## Tasks
+
+The base model solves most of both tasksets, so the length penalty does much of the work. Baseline with the bash harness, 8 random tasks × 8 rollouts each, temperature 1.0, on the H200 inference setup below:
+
+| Taskset | Solve rate | Tasks solved by all / some / none | Turns p50 / p90 | Episode tokens p50 / p90 / max |
+|---|---|---|---|---|
+| `terminal-lego` | 0.95 | 5 / 3 / 0 | 6 / 10 | 3k / 6k / 20k |
+| `swelego` | 0.83 | 5 / 3 / 0 | 33 / 47 | 23k / 39k / 47k |
+
+No rollout came close to the 131k context limit.
 
 ## H200 setup
 
@@ -30,7 +41,7 @@ Measured with fake data and balanced routing, FP8, full activation checkpointing
 
 The checkpoint's dense weights sit on the FP8 grid (DeepSeek ships them as FP8), and the bf16 re-export keeps those values. If inference re-quantizes the weights and the trainer does not, small updates round away on the inference side and the two policies drift apart. The H200 overlay therefore quantizes both sides the same way:
 
-- Trainer: dense linears in DeepGEMM blockwise FP8 (`[trainer.model.quantization] type = "fp8"`) and routed experts in DeepGEMM FP8 grouped GEMMs (`moe.compute.type = "deepgemm_fp8"`). The FP8 trainer runs at the same memory and step time as bf16.
+- Trainer: dense linears in DeepGEMM blockwise FP8 (`[trainer.model.quantization] type = "fp8"`) and routed experts in DeepGEMM FP8 grouped GEMMs (`moe.compute.type = "deepgemm_fp8"`). The FP8 trainer has the same peak memory as bf16, and its steps take about 5% longer (22.8 s vs 21.8 s at `cp = 8`).
 - vLLM: online per-block FP8 (`quantization = "fp8_per_block"`) with FP32 block scales (`VLLM_USE_DEEP_GEMM_E8M0 = "0"`; vLLM defaults to power-of-two scales, which the trainer only uses on Blackwell).
 - The attention compressor and the indexer stay bf16 on both sides.
 
