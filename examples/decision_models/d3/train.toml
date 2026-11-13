@@ -27,7 +27,7 @@ import_path = "decision_models.d3.encoder.D3Encoder"
 
 [loss]
 type = "custom"
-import_path = "decision_models.loss.decision_loss"
+import_path = "prime_rl.trainer.sft.system_one.loss.decision_loss"
 kwargs = { brier_weight = 0.0 }  # soft cross-entropy alone: d3 published no training recipe
 
 [optim]

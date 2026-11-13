@@ -26,7 +26,7 @@ import_path = "decision_models.decider.encoder.DeciderEncoder"
 
 [loss]
 type = "custom"
-import_path = "decision_models.loss.decision_loss"
+import_path = "prime_rl.trainer.sft.system_one.loss.decision_loss"
 kwargs = { brier_weight = 0.0 }  # soft cross-entropy alone: Perplexity published no training recipe
 
 [optim]
