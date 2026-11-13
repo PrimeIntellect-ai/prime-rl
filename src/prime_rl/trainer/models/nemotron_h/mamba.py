@@ -130,7 +130,7 @@ class NemotronHMamba2(nn.Module):
         self.dt_bias.clamp_(min=self.time_step_floor)
         self.dt_bias.add_(torch.log(-torch.expm1(-self.dt_bias)))
         with implicit_replication():
-            self.A_log.copy_(torch.arange(1, self.num_heads + 1, device=self.A_log.device).log())
+            self.A_log.copy_(torch.arange(1, self.num_heads + 1, dtype=torch.float32, device=self.A_log.device).log())
         nn.init.ones_(self.D)
 
     def attention_flops(self, seq_len: int) -> int:
