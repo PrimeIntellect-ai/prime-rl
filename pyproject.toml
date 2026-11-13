@@ -373,7 +373,7 @@ known-third-party = ["verifiers", "renderers", "pydantic_config"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["deps"]
+extend-exclude = ["deps", "examples/decision_models/clef/joint_schema_model.py"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
