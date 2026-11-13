@@ -14,8 +14,8 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
 
 
-def _subagent_nodes(trace: vf.Trace) -> set[int]:
-    """Nodes owned by a subagent, following harness-declared semantic edges."""
+def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
+    """Weighted output and new input tokens, counted once on trainable branches."""
     subagents: set[int] = set()
     successors: dict[int, list[int]] = {}
     for node_id, node in enumerate(trace.nodes):
@@ -31,12 +31,7 @@ def _subagent_nodes(trace: vf.Trace) -> set[int]:
             if child not in subagents:
                 subagents.add(child)
                 pending.append(child)
-    return subagents
 
-
-def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
-    """Weighted output and new input tokens, counted once on trainable branches."""
-    subagents = _subagent_nodes(trace)
     output_tokens = input_tokens = 0.0
     seen: set[int] = set()
     for branch in trace.branches:
@@ -63,9 +58,11 @@ def _root_latency(trace: vf.Trace, tokens_per_second: float) -> float:
             "The length penalty's latency term needs a `tool_seconds` metric on every trace, "
             "which this trace's harness did not report"
         )
-    subagents = _subagent_nodes(trace)
+    # An ACP harness labels each call with its agent's session; the root's is the trace's.
     output_tokens = sum(
-        call.usage.completion_tokens for call in trace.calls if call.usage is not None and call.node not in subagents
+        call.usage.completion_tokens
+        for call in trace.calls
+        if call.usage is not None and (call.acp is None or call.acp.agent_session_id in (None, trace.id))
     )
     return tool_seconds + output_tokens / tokens_per_second
 

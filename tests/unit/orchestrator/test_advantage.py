@@ -444,17 +444,16 @@ def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
 
 
 def _agent_tree_episode(tool_seconds: float | None) -> vf.Episode:
-    """A root agent that spawns a subagent between its two turns, with the tool time
-    its harness reported."""
+    """A root agent that compacts after spawning a subagent, with the tool time its
+    harness reported. Calls carry their agent's session, the root's being the trace's."""
     episode = _build_episode(1.0, sampled_lengths=[1])
     trace = episode.traces[0]
     trace.nodes.clear()
     trace.calls.clear()
 
-    def turn(parent, input_tokens, output_tokens, links=()):
+    def turn(session_id, input_tokens, output_tokens):
         prompt_id = len(trace.nodes)
-        trace.nodes.append(vf.MessageNode(parent=parent, message=vf.UserMessage(content="q")))
-        node_id = len(trace.nodes)
+        trace.nodes.append(vf.MessageNode(message=vf.UserMessage(content="q")))
         trace.nodes.append(
             vf.MessageNode(
                 parent=prompt_id,
@@ -462,17 +461,20 @@ def _agent_tree_episode(tool_seconds: float | None) -> vf.Episode:
                 sampled=True,
                 token_ids=[1] * output_tokens,
                 mask=[True] * output_tokens,
-                semantic_parents=[vf.ParentLink(node=source, type=kind) for source, kind in links],
             )
         )
         trace.calls.append(
-            vf.ModelCall(node=node_id, usage=vf.Usage(prompt_tokens=input_tokens, completion_tokens=output_tokens))
+            vf.ModelCall(
+                node=prompt_id + 1,
+                usage=vf.Usage(prompt_tokens=input_tokens, completion_tokens=output_tokens),
+                acp=vf.ACPInfo(request_id=f"r{prompt_id}", agent_session_id=session_id),
+            )
         )
-        return node_id
 
-    root = turn(None, 100, 200)
-    turn(None, 50, 400, [(root, "subagent_call")])
-    turn(root, 320, 100, [(root, "continuation")])
+    turn(trace.id, 100, 200)
+    turn("child", 50, 400)
+    # The root's compacted context is a new physical branch of the same session.
+    turn(trace.id, 320, 100)
     if tool_seconds is not None:
         trace.record_metric("tool_seconds", tool_seconds)
     return episode
