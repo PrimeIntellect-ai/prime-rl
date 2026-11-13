@@ -1553,3 +1553,18 @@ def test_engines_that_quantize_experts_otherwise_are_rejected(compute, engines, 
         RLConfig.model_validate(
             {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {"vllm": engines}}
         )
+
+
+@pytest.mark.parametrize("quantization", [None, "online"])
+def test_engine_targets_warn_that_they_must_cover_the_trainers_experts(quantization):
+    engines = {"quantization_config": {"targets": [{"layers": "model.layers.0.*", "moe": "mxfp8"}]}}
+    if quantization is not None:
+        engines["quantization"] = quantization
+    with pytest.warns(UserWarning, match="quantization_config.targets is set"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": {"type": "mxfp8"}}}},
+                "orchestrator": {},
+                "inference": {"vllm": engines},
+            }
+        )

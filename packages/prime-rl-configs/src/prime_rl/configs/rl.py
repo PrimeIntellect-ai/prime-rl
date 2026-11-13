@@ -534,6 +534,12 @@ class RLConfig(BaseConfig):
             return self
         vllm = self.inference.vllm
         config = dict(getattr(vllm, "quantization_config", None) or {})
+        if "targets" in config:
+            warnings.warn(
+                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
+                f"({compute.apply_to}) with {wanted!r}.",
+                stacklevel=2,
+            )
         if vllm.quantization is None:
             if not compute.selects_all:
                 raise ValueError(
@@ -544,11 +550,6 @@ class RLConfig(BaseConfig):
             vllm.quantization_config = {**config, "moe": wanted}
             return self
         if "targets" in config:
-            warnings.warn(
-                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
-                f"({compute.apply_to}) with {wanted!r}.",
-                stacklevel=2,
-            )
             return self
         engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
         if engines != wanted or not compute.selects_all:
