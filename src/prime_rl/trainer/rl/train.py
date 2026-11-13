@@ -491,6 +491,9 @@ def train(config: TrainerConfig):
                     sparse_backward=micro_batch["sparse_head_backward"],
                 ).to("cuda")
                 label_support = support.shift_left()
+            replayed_input_tokens = (
+                support_replay_mask(support, input_ids[0], support.row_index()) if support is not None else None
+            )
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
                 if support is None or support.logprobs is None:
@@ -659,6 +662,11 @@ def train(config: TrainerConfig):
             with torch.no_grad():
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
             tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
+            # A replayed one-entry sampling mask gives a logprob of exactly 0 without any rounding
+            collapse_mask = mismatch_mask if replayed_input_tokens is None else mismatch_mask & ~replayed_input_tokens
+            tensor_stats.add(
+                "logprob_collapse_regime", out["logprobs"].detach() > -(2**-24), collapse_mask, env_ids, env_names
+            )
             if micro_batch["staleness"] is not None:
                 staleness = micro_batch["staleness"].to("cuda")
                 tensor_stats.add(
