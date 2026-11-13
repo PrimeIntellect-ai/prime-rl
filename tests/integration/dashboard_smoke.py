@@ -21,7 +21,20 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _browser_launches() -> bool:
+    from playwright.sync_api import Error, sync_playwright
+
+    with sync_playwright() as playwright:
+        try:
+            playwright.chromium.launch().close()
+        except Error:
+            return False
+    return True
+
+
 def _install_browser() -> None:
+    if _browser_launches():
+        return
     subprocess.run(
         ["uv", "run", "playwright", "install", "--with-deps", "--only-shell", "chromium"],
         check=True,
