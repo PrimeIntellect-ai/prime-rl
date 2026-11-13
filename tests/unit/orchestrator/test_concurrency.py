@@ -11,6 +11,7 @@ from prime_rl.orchestrator.concurrency import (
     LOAD_WINDOW_POLLS,
     QUEUE_TARGET,
     RESUME_SKIP_POLLS,
+    STEP_MIN,
     ConcurrencyController,
     EngineLoadSample,
     Poll,
@@ -19,6 +20,7 @@ from prime_rl.orchestrator.concurrency import (
 )
 from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.live import context
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import LiveTrace, Policy
 
 POLL_SECONDS = 5.0
@@ -67,15 +69,33 @@ class Pool:
 
     def __init__(self, inflight: int):
         self.inflight = inflight
+        self.finished = 0.0
         self.limits: list[int] = []
         self.cancelled: list[int] = []
 
 
-def controller(inflight: int = 100) -> tuple[ConcurrencyController, Pool]:
+def controller(inflight: int = 100, trainer: TrainerCapacity | None = None) -> tuple[ConcurrencyController, Pool]:
     ctl = ConcurrencyController(ConcurrencyConfig(initial_inflight=100), fallback_cost=1)
     pool = Pool(inflight)
-    ctl.bind(set_limit=pool.limits.append, get_inflight=lambda: pool.inflight, on_overload=pool.cancelled.append)
+    ctl.bind(
+        set_limit=pool.limits.append,
+        get_inflight=lambda: pool.inflight,
+        on_overload=pool.cancelled.append,
+        get_train_finished=lambda: pool.finished,
+        trainer=trainer,
+    )
     return ctl, pool
+
+
+def trainer(rollouts_per_busy_s: float, busy: float = 1.0) -> TrainerCapacity:
+    """A trainer that consumes ``rollouts_per_busy_s`` while busy, busy ``busy`` of each 100 s step."""
+    capacity = TrainerCapacity()
+    for step in range(4):
+        capacity.shipped(
+            int(rollouts_per_busy_s * 100 * busy), requested_at=100.0 * step - 100 * (1 - busy), now=100.0 * step
+        )
+    capacity.rollouts_shipped = 0  # the simulated pools ship every rollout they finish: no shipped share to apply
+    return capacity
 
 
 def turnover(ctl: ConcurrencyController, pool: Pool) -> None:
@@ -84,17 +104,20 @@ def turnover(ctl: ConcurrencyController, pool: Pool) -> None:
         ctl.record_episode(10_000, 16)
 
 
-def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int, queued=lambda inflight: 0) -> None:
+def run(ctl: ConcurrencyController, pool: Pool, throughput, polls: int, queued=lambda inflight: 0, each=None) -> None:
     """The pool fills the cap, turns over every 50 polls, and the engines generate ``throughput(inflight)`` tokens
     per second with ``queued(inflight)`` requests waiting."""
     for _ in range(polls):
         pool.inflight = ctl.max_inflight
         for _ in range(max(1, pool.inflight // 50)):
             ctl.record_episode(10_000, 16)
+        pool.finished += pool.inflight / 50
         sample = engine(
             finished=10, generated=int(throughput(pool.inflight) * POLL_SECONDS), waiting=queued(pool.inflight)
         )
         ctl.observe([sample])
+        if each is not None:
+            each()
 
 
 def trimmed(inflight: int, queued_share: float) -> int:
@@ -152,8 +175,9 @@ def test_fast_climb_ends_where_growth_stops_paying():
     assert 130 <= ctl.max_inflight < 400
 
 
-def test_step_up_that_pays_is_kept():
-    ctl, pool = controller()
+@pytest.mark.parametrize("hungry", [False, True], ids=["no-trainer", "trainer-hungrier-than-the-engines"])
+def test_step_up_that_pays_is_kept(hungry):
+    ctl, pool = controller(trainer=trainer(100.0) if hungry else None)
     ctl.climbing = False
     run(ctl, pool, lambda inflight: 10 * inflight, polls=400)  # throughput in proportion to the pool
     assert ctl.max_inflight > 200 and all(limit >= 100 for limit in pool.limits)
@@ -166,6 +190,21 @@ def test_step_up_that_buys_nothing_returns():
     rejected = pool.limits.index(100)
     assert max(pool.limits) == 150  # one step up, rejected
     assert all(75 <= limit <= 115 for limit in pool.limits[rejected:])  # then small steps around the knee
+
+
+def test_fed_trainer_cuts_the_cap_and_a_starving_one_takes_the_cut_back():
+    # The pool finishes 0.4 train rollouts/s at 100 units, in proportion to the pool, and engine throughput grows
+    # with it; the trainer consumes 0.24/s, so beyond ~66 units rollouts only go stale
+    capacity = trainer(0.24)
+    ctl, pool = controller(trainer=capacity)
+    ctl.climbing = False
+    run(ctl, pool, lambda inflight: 10 * inflight, polls=600)
+    assert max(pool.limits) < 100  # never restored, although every cut lost throughput
+    assert 66 <= ctl.max_inflight <= 80  # just above the 0.264 rollouts/s the trainer needs with its margin
+    cap = ctl.max_inflight
+    capacity.shipped(24, requested_at=430.0, now=500.0)  # the trainer waited 70% of its step
+    ctl.trainer_shipped()
+    assert ctl.max_inflight > cap
 
 
 def test_queue_does_not_hold_growth_that_pays():
@@ -341,3 +380,52 @@ def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
     dispatcher.out_q.put_nowait(episode)
     assert asyncio.run(dispatcher.get()) is episode
     assert dispatcher.queued_train_rollouts == 1
+
+
+def test_starved_trainer_steps_up_until_fed_and_cuts_stay_above_the_starving_cap():
+    # As above, but the trainer starves below 70 units: a bump still short keeps stepping up, never back down
+    capacity = trainer(0.24)
+    ctl, pool = controller(trainer=capacity)
+    ctl.climbing = False
+    ctl.cap = ctl.max_inflight = 60
+    ctl.fed_cut = True
+    capacity.shipped(24, requested_at=430.0, now=500.0)  # waited 70% of its step at 60 units
+    ctl.trainer_shipped()
+    bumped = ctl.max_inflight
+    run(ctl, pool, lambda inflight: 10 * inflight, polls=600)
+    assert bumped > 60 and min(pool.limits[pool.limits.index(bumped) :]) > 60
+
+
+def test_starvation_after_a_throughput_drop_respects_its_ceiling():
+    ctl, pool = controller(trainer=trainer(0.24))
+    ctl.climbing = False
+    ctl.cap = ctl.max_inflight = 80
+    ctl.ceiling = 90.0  # a KV thrash above 90 trimmed the cap there earlier
+    ctl.fed_cut = True
+    ctl.trainer.shipped(24, requested_at=430.0, now=500.0)
+    ctl.trainer_shipped()
+    assert ctl.max_inflight == 90
+    ctl.trim(70, 80, reason="queue", cancel=False)
+    assert not ctl.fed_cut  # a trim set the cap, so a later wait does not undo it
+
+
+def test_starve_bump_past_a_ceiling_takes_the_smallest_step_and_never_lowers_the_cap():
+    ctl, pool = controller(trainer=trainer(0.24))
+    ctl.climbing = False
+    ctl.cap = ctl.max_inflight = 120
+    ctl.ceiling = 90.0  # an old throughput drop, which later steps climbed past
+    ctl.fed_cut = True
+    ctl.trainer.shipped(24, requested_at=430.0, now=500.0)
+    ctl.trainer_shipped()
+    assert ctl.max_inflight == int(120 * STEP_MIN)
+
+
+def test_rollouts_that_never_ship_do_not_feed_the_trainer():
+    # The pool finishes 0.4 train rollouts/s at 100 units, but only half of them ship (failed or filtered): the
+    # trainer, eating 0.24/s, is fed only above ~132 units, so the cap is never cut below 100
+    capacity = trainer(0.24)
+    ctl, pool = controller(trainer=capacity)
+    ctl.climbing = False
+    shipped = lambda: setattr(capacity, "rollouts_shipped", (ctl.finished or 0) // 2)
+    run(ctl, pool, lambda inflight: 10 * inflight, polls=600, each=shipped)
+    assert min(pool.limits) >= 100
