@@ -523,16 +523,25 @@ class ConcurrencyController(Reconfigurable):
         self.fed_cut = False
         self.floor = self.max_inflight
         cap = self.max_inflight * STEP_MAX**0.7
-        self.cap = self.clamp(min(cap, self.ceiling) if self.ceiling is not None else cap)
+        if self.ceiling is not None and cap > self.ceiling:
+            # Up to a throughput drop's cap; already past it, by the smallest step, as every step up: never down
+            cap = self.ceiling if self.max_inflight < self.ceiling else self.max_inflight * STEP_MIN
+        self.cap = self.clamp(cap)
         self.apply_limit(int(self.cap), reason=f"trainer waited {self.trainer.waited:.0%} of a step")
         # Upward: a level still short of the trainer steps up again, and one that feeds it is cut by the fed rule
         self.restart_steps()
 
     def surplus(self, window: Window) -> float | None:
-        """The window's train rollouts per second over the trainer's capacity plus ``TRAINER_MARGIN``; at least 1
-        means the trainer is fed. None without a measured trainer."""
+        """The window's train rollouts per second the trainer gets over its capacity plus ``TRAINER_MARGIN``; at
+        least 1 means the trainer is fed. None without a measured trainer."""
         rate = self.trainer.rate if self.trainer is not None else None
-        return window.rollouts / window.seconds / ((1 + TRAINER_MARGIN) * rate) if rate else None
+        if not rate:
+            return None
+        # Failed and filtered rollouts never ship: count the share that does (low while batches still fill, so the
+        # error leans towards not fed)
+        shipped_so_far = self.trainer.rollouts_shipped
+        shipped = min(shipped_so_far / self.finished, 1.0) if self.finished and shipped_so_far else 1.0
+        return window.rollouts * shipped / window.seconds / ((1 + TRAINER_MARGIN) * rate)
 
     def fed(self, window: Window) -> bool:
         surplus = self.surplus(window)
