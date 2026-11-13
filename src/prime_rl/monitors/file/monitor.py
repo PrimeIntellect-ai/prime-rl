@@ -7,15 +7,18 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
+import numpy as np
 import orjson
+from verifiers.v1.trace import EXCLUDE_FIELDS
+from verifiers.v1.types import decode_ndarray
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
-from prime_rl.monitors.file.traces.index import index_row
+from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
-from prime_rl.monitors.file.traces.update import update_index_row
+from prime_rl.monitors.file.traces.update import STREAM_FIELDS, update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
 
@@ -23,6 +26,34 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+
+LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
+"""Node fields that stay on the wire but out of live trace files: expensive per-token information
+only the trainer needs."""
+
+
+def _live_value(value: Any) -> Any:
+    """A node field for a live trace file: per-token streams arrive as raw-bytes `__nd__` dicts
+    (a dict of them for `loss_weights`), which orjson writes as lists once decoded."""
+    if isinstance(value, dict):
+        if value.get("__nd__"):
+            return decode_ndarray(value)
+        return {key: _live_value(item) for key, item in value.items()}
+    return value
+
+
+def _write_streams(branch: dict[str, Any], value_stream: ChunkedJsonl) -> dict[str, Any]:
+    """The branch with each per-token stream replaced by its ``{bin, offset, count}`` ref,
+    the float32 values appended to ``value_stream``."""
+    line = dict(branch)
+    for field in STREAM_FIELDS:
+        values = line.get(field)
+        if values is None:
+            continue
+        count = len(values)
+        bin_chunk, offset = value_stream.append(np.ascontiguousarray(values, dtype=np.float32).tobytes())
+        line[field] = {"bin": bin_chunk, "offset": offset, "count": count}
+    return line
 
 
 class FileMonitor(Monitor):
@@ -43,6 +74,7 @@ class FileMonitor(Monitor):
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
+        self._value_streams: dict[Path, ChunkedJsonl] = {}
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
@@ -105,16 +137,15 @@ class FileMonitor(Monitor):
                     appends.pop(path, None)
                     path.unlink(missing_ok=True)
                     continue
-                # Training arrays stay on the wire; live records only need display data.
-                line = {key: value for key, value in delta.items() if key != "routing_repairs"}
+                line = dict(delta)
                 if "nodes" in line:
                     line["nodes"] = [
-                        {key: value for key, value in node.items() if key not in ("routed_experts", "sampling_mask")}
+                        {key: _live_value(value) for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
                         for node in line["nodes"]
                     ]
                 if "open" in delta:
                     line["dispatch"] = event["dispatch"]
-                # deltas key semantic links by node index (int)
+                # env-defined dicts (`info`, `metrics`, task data) may be keyed by int
                 appends.setdefault(path, []).append(
                     orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS)
                 )
@@ -133,6 +164,15 @@ class FileMonitor(Monitor):
             self._streams[directory] = (stream, open(get_index_path(directory), "ab"))
         return self._streams[directory]
 
+    def _value_stream(self, directory: Path) -> ChunkedJsonl:
+        """The ``.bin`` chunks holding an annotation stream's float32 values, opened on
+        first use and kept open."""
+        if directory not in self._value_streams:
+            self._value_streams[directory] = ChunkedJsonl(
+                directory, self.config.chunk_bytes, self.config.compress, suffix=".bin"
+            )
+        return self._value_streams[directory]
+
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Append each episode to the trace stream as it completes — every episode is
         serialized exactly once, in arrival order, whatever its kind, so an in-progress
@@ -144,14 +184,17 @@ class FileMonitor(Monitor):
 
         def write() -> None:
             stream, index = self._stream(get_trace_stream(self.output_dir))
-            # An index row goes out with every episode: summarising the record here,
-            # while it is already in hand, saves every reader from parsing a stream
+            # An index row goes out with every episode: summarising the episode here,
+            # while it is still in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
             for episode in episodes:
-                record = episode.to_record(float_decimals=self.config.float_decimals)
-                chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
+                # `to_json` encodes in short steps, so a long episode never holds the GIL
+                # (and the event loop) for the whole encode.
+                line = episode.to_json(float_decimals=self.config.float_decimals)
+                chunk, offset = stream.append(line, b"\n")
                 self._logged += 1
-                index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))
+                row = index_row(self._logged, index_record(episode), chunk, offset)
+                index.write(orjson.dumps(row, default=str, option=OPTS))
             stream.flush()
             index.flush()
 
@@ -166,11 +209,16 @@ class FileMonitor(Monitor):
             return
 
         def write() -> None:
-            stream, index = self._stream(get_annotations_dir(self.output_dir) / (self.producer or "unknown"))
+            directory = get_annotations_dir(self.output_dir) / (self.producer or "unknown")
+            stream, index = self._stream(directory)
+            value_stream = self._value_stream(directory)
             # the scalars go to a sibling index so a reader can answer "which cohort,
             # what credit" without touching the token streams
             for update in updates:
-                chunk, offset = stream.append(orjson.dumps(update, option=OPTS))
+                line = dict(update)
+                line["branches"] = [_write_streams(branch, value_stream) for branch in update.get("branches") or []]
+                value_stream.flush()
+                chunk, offset = stream.append(orjson.dumps(line, option=OPTS))
                 index.write(orjson.dumps(update_index_row(update, chunk, offset), option=OPTS))
             stream.flush()
             index.flush()
@@ -181,4 +229,6 @@ class FileMonitor(Monitor):
         for stream, index in self._streams.values():
             stream.close()
             index.close()
+        for value_stream in self._value_streams.values():
+            value_stream.close()
         self.logger.info(f"Finalized metrics at {self.path}")

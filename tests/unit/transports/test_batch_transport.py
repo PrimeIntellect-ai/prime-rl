@@ -1,8 +1,10 @@
 import asyncio
 import socket
+import time
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from prime_rl.configs.shared import ZMQTransportConfig
@@ -14,13 +16,13 @@ from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 
 def _micro_batch(token: int) -> MicroBatch:
     return MicroBatch(
-        input_ids=[token],
-        loss_mask=[True],
-        advantages=[1.0],
-        inference_logprobs=[0.0],
-        position_ids=[0],
+        input_ids=np.array([token], np.int32),
+        loss_mask=np.array([True]),
+        advantages=np.array([1.0], np.float32),
+        inference_logprobs=np.array([0.0], np.float32),
+        position_ids=np.array([0], np.int32),
         sequence_lengths=[1],
-        temperatures=[1.0],
+        temperatures=np.array([1.0], np.float32),
         env_names=["env"],
         seq_lens=[1],
     )
@@ -37,19 +39,20 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _filesystem(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
-    sender = FileSystemBatchSender(output_dir, data_world_size=2)
-    receivers = [
+def _filesystem_receivers(output_dir: Path, transport: None = None) -> list[BatchReceiver]:
+    return [
         FileSystemBatchReceiver(output_dir, data_rank, rank, world_size=len(RANK_TO_DATA_RANK))
         for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
     ]
-    return sender, receivers
 
 
-def _zmq(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
-    transport = ZMQTransportConfig(host="127.0.0.1", port=_free_port())
-    sender = ZMQBatchSender(output_dir, data_world_size=2, current_step=0, transport=transport)
-    receivers = [
+def _filesystem(output_dir: Path, retain: bool = False) -> tuple[BatchSender, list[BatchReceiver], None]:
+    sender = FileSystemBatchSender(output_dir, data_world_size=2, retain=retain)
+    return sender, _filesystem_receivers(output_dir), None
+
+
+def _zmq_receivers(output_dir: Path, transport: ZMQTransportConfig) -> list[BatchReceiver]:
+    return [
         ZMQBatchReceiver(
             output_dir,
             data_rank,
@@ -60,7 +63,12 @@ def _zmq(output_dir: Path) -> tuple[BatchSender, list[BatchReceiver]]:
         )
         for rank, data_rank in enumerate(RANK_TO_DATA_RANK)
     ]
-    return sender, receivers
+
+
+def _zmq(output_dir: Path, retain: bool = False) -> tuple[BatchSender, list[BatchReceiver], ZMQTransportConfig]:
+    transport = ZMQTransportConfig(host="127.0.0.1", port=_free_port(), retain=retain)
+    sender = ZMQBatchSender(output_dir, data_world_size=2, current_step=0, transport=transport)
+    return sender, _zmq_receivers(output_dir, transport), transport
 
 
 async def _send_while_ranks_request(
@@ -80,12 +88,69 @@ async def _send_while_ranks_request(
 
 @pytest.mark.parametrize("setup_transport", [_filesystem, _zmq], ids=["filesystem", "zmq"])
 def test_step_is_sent_only_after_every_trainer_rank_requests_it(
-    tmp_path: Path, setup_transport: Callable[[Path], tuple[BatchSender, list[BatchReceiver]]]
+    tmp_path: Path, setup_transport: Callable[..., tuple[BatchSender, list[BatchReceiver], object]]
 ):
-    sender, receivers = setup_transport(tmp_path)
+    sender, receivers, _ = setup_transport(tmp_path)
 
+    started = time.time()
     result = asyncio.run(_send_while_ranks_request(sender, receivers))
 
-    assert result == (False, [MICRO_BATCH_GRID[data_rank] for data_rank in RANK_TO_DATA_RANK])
+    sent_before_last_request, received = result
+    assert sent_before_last_request is False
+    # Streams arrive as raw buffers: compare each rank's tokens with what its data rank was sent
+    assert [[np.frombuffer(mb.input_ids, np.int32).tolist() for mb in batches] for batches in received] == [
+        [mb.input_ids.tolist() for mb in MICRO_BATCH_GRID[data_rank]] for data_rank in RANK_TO_DATA_RANK
+    ]
+    # The sender knows when the last rank asked: the trainer was busy until then (file mtimes are coarse)
+    assert sender.last_requested_at is not None
+    assert started + 0.4 <= sender.last_requested_at <= time.time() + 1
     for transport in [sender, *receivers]:
+        transport.close()
+
+
+def _tokens(step: int, data_rank: int) -> int:
+    return 2 * step + data_rank
+
+
+def _received_tokens(receiver: BatchReceiver) -> list[int]:
+    (micro_batch,) = receiver.receive()
+    return np.frombuffer(micro_batch.input_ids, np.int32).tolist()
+
+
+async def _send(sender: BatchSender, receivers: list[BatchReceiver]) -> None:
+    """Ship the sender's current step, a grid whose tokens name the step and data rank."""
+    step = sender.current_step
+    grid = [[_micro_batch(_tokens(step, data_rank))] for data_rank in range(2)]
+    waits = [asyncio.to_thread(receiver.wait) for receiver in receivers]
+    await asyncio.wait_for(asyncio.gather(sender.send(grid), *waits), timeout=10)
+    for receiver in receivers:
+        assert _received_tokens(receiver) == [_tokens(step, receiver.data_rank)]
+
+
+@pytest.mark.parametrize(
+    "setup_transport, setup_receivers",
+    [(_filesystem, _filesystem_receivers), (_zmq, _zmq_receivers)],
+    ids=["filesystem", "zmq"],
+)
+def test_restarted_ranks_get_the_retained_steps_until_a_checkpoint_covers_them(
+    tmp_path: Path, setup_transport: Callable, setup_receivers: Callable
+):
+    sender, receivers, transport = setup_transport(tmp_path, retain=True)
+    for _ in range(2):
+        asyncio.run(_send(sender, receivers))
+
+    # A trainer restarted from before step 0 gets both steps while the sender waits on step 2.
+    restarted = setup_receivers(tmp_path, transport)
+    for step in range(2):
+        for receiver in restarted:
+            receiver.wait()
+            assert _received_tokens(receiver) == [_tokens(step, receiver.data_rank)]
+    assert sender.current_step == 2
+
+    for receiver in restarted:
+        receiver.committed = 0
+    asyncio.run(_send(sender, restarted))
+    assert sender.log.read(0, data_rank=0) is None
+    assert sender.log.read(1, data_rank=0) is not None
+    for transport in [sender, *receivers, *restarted]:
         transport.close()

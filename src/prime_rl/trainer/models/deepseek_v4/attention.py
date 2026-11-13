@@ -217,6 +217,15 @@ class CompressionLayout:
             starts[entry_doc_idx, None] + entry_pos[:, None] + torch.arange(compress_rate, device=device)[None, :]
         )
 
+        # These sizes follow the document lengths, which change from one micro batch to the next.
+        # Marked dynamic up front, the compiled layers trace them symbolically on their first
+        # compile instead of recompiling once per field as each size first changes.
+        for tensor in (entry_tok_idx, entry_doc_idx, entry_local_idx):
+            torch._dynamo.maybe_mark_dynamic(tensor, 0)
+        # Unbacked, unlike the others: a backed dynamic size is assumed to be at least 2, so a row
+        # holding a single document would still compile a graph of its own.
+        torch._dynamo.decorators.mark_unbacked(first_entry_of_doc, 0)
+
         return cls(
             entry_tok_idx=entry_tok_idx,
             entry_doc_idx=entry_doc_idx,
@@ -302,6 +311,12 @@ class PackedContext:
         slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
         window_indices = torch.where(slots <= tok_idx[:, None], slots, IGNORE_SLOT).to(torch.int32)
 
+        # `n_queries` follows this rank's row length. `position_ids` is a view, and dynamo guards its base too.
+        torch._dynamo.maybe_mark_dynamic(position_ids, 1)
+        torch._dynamo.maybe_mark_dynamic(position_ids._base, 0)
+        torch._dynamo.maybe_mark_dynamic(tok_doc_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(window_indices, 0)
+
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
@@ -310,27 +325,6 @@ class PackedContext:
             },
             window_indices=window_indices,
         )
-
-    def check_position_ids(self, position_ids: Tensor) -> None:
-        """Raise unless `position_ids` agrees with the document boundaries this context came from.
-
-        A document starts exactly where the derived positions are zero, so the check is that the
-        caller's positions vanish there too. A padded micro-batch restarts `position_ids` at 0
-        inside its last document, which this permits: padding sits mid-document, never at a start.
-        A sequence-global `arange` over a packed row never restarts, and a 1-based one never
-        reaches zero at all; both are rejected. Under CP the comparison is against this rank's
-        queries alone, which lines up because the trainer shards the caller's `position_ids` the
-        same way.
-        """
-        disagrees = (self.position_ids == 0) & (position_ids != 0)
-        if disagrees.any():
-            token = int(disagrees.any(dim=0).nonzero()[0])
-            raise ValueError(
-                f"position_ids must restart at 0 at every document boundary of seq_lens: token "
-                f"{token} starts a document but carries {position_ids[:, token].tolist()}. A caller "
-                "that passes none of its own gets the 1-based arange the injected LM head "
-                "substitutes (see `prime_rl.trainer.models.layers.lm_head`), which this rejects."
-            )
 
 
 @dataclass(frozen=True)
@@ -554,6 +548,7 @@ class DeepseekV4Indexer(nn.Module):
             entry_stop,
             self.index_topk,
             amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
+            cp_group_name=cp_group.group_name if cp_world_size > 1 else None,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
@@ -682,7 +677,6 @@ class DeepseekV4Attention(nn.Module):
         self.rope_layer_type = "main" if self.layer_type == "sliding_attention" else "compress"
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
-        self.attention_dropout = config.attention_dropout
         self.scaling = self.head_dim**-0.5
 
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)

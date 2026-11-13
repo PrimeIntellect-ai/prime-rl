@@ -11,12 +11,15 @@ from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
+    GCConfig,
     HeartbeatConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
+    validate_step_dir,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -24,11 +27,6 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
-
-
-class GCConfig(BaseConfig):
-    interval: int = Field(50, ge=1)
-    """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -40,6 +38,9 @@ class ActivationCheckpointConfig(BaseConfig):
 
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+
+    token_chunk_size: int | None = Field(None, ge=3)
+    """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -128,6 +129,9 @@ class FP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
+
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
@@ -136,6 +140,9 @@ class MXFP8Config(BaseConfig):
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from torchao MXFP8 replacement."""
+
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
@@ -208,36 +215,97 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
 
     type: Literal["deepep"] = "deepep"
-    num_sms: int = Field(20, ge=1)
+    num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
 
-    token_chunk_size: int | None = Field(None, ge=1)
-    """Optional chunk size used to pipeline dispatch with local expert compute."""
+
+class LLEPConfig(BaseConfig):
+    """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
+    part of their routes, with a copy of the experts' weights, to the least-loaded ranks. The computation stays exact."""
+
+    alpha: float = Field(1.05, ge=1.0)
+    """A rank counts as full at ``alpha`` times the mean routes per rank."""
+
+    min_chunk: int = Field(1024, ge=1)
+    """Fewest routes worth copying an expert's weights to another rank."""
+
+    lam: float = Field(1.1, ge=0.0)
+    """Below this busiest-rank over mean-rank load, every expert stays on its own rank (standard EP)."""
+
+    max_foreign: int = Field(8, ge=1)
+    """Experts a rank can compute for other ranks; each costs one expert's weights (and gradients) of memory."""
+
+    chunk_tokens: int | None = Field(None, ge=1)
+    """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
+    instead of the whole batch (for long sequences). ``None``: one call per layer."""
+
+    max_recv: float = Field(1.3, gt=0.0)
+    """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
+    every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
+    reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""
+
+    @model_validator(mode="after")
+    def validate_max_recv(self):
+        if self.max_recv < max(self.alpha, self.lam):
+            raise ValueError("model.moe.dispatch.llep.max_recv must be at least max(alpha, lam).")
+        return self
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
+    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
-    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
-    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
+    micro batch under context parallelism (``model.seq_len / model.cp`` for RL,
+    ``data.micro_batch_size * data.seq_len / model.cp`` for SFT) and cannot be smaller."""
 
-    num_reserved_sms: int = Field(16, ge=1)
-    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+    num_reserved_sms: int = Field(16, ge=2)
+    """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
+    at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
+    a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that. Defaults to 32 with
+    ``llep``, whose weight copies run next to the grid."""
+
+    llep: LLEPConfig | None = None
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
+    ``"mxfp8_qat"`` (SM100)."""
+
+    @model_validator(mode="after")
+    def validate_llep_precision(self):
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
+            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        return self
+
+    @model_validator(mode="after")
+    def llep_reserved_sms(self):
+        if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
+            self.num_reserved_sms = 32
+        return self
 
 
-def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+def rl_micro_batch_multiple(model: "ModelConfig") -> int:
+    """RL micro batches are padded to a multiple of this: one shard per CP rank, and MXFP8 linears quantize
+    grad_output in 32-token blocks per CP rank."""
+    if isinstance(model.quantization, MXFP8Config):
+        return model.cp * 32
+    return model.cp
+
+
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int, cp: int) -> int:
     """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
-    buffer must hold the full micro batch."""
+    buffer must hold the rank's full share of the micro batch. Context parallelism splits every micro
+    batch evenly over the ``cp`` ranks, so that share is ``micro_batch_tokens / cp``."""
+    rank_tokens = -(-micro_batch_tokens // cp)
     if max_tokens_per_rank is None:
-        return micro_batch_tokens
-    if max_tokens_per_rank < micro_batch_tokens:
+        return rank_tokens
+    if max_tokens_per_rank < rank_tokens:
         raise ValueError(
-            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
-            f"({micro_batch_tokens} tokens)."
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the tokens a rank "
+            f"holds per micro batch ({micro_batch_tokens} tokens over cp={cp}: {rank_tokens})."
         )
     return max_tokens_per_rank
 
@@ -256,8 +324,14 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    vlm: VLMConfig | None = None
+    """VLM configuration. Setting this enables vision-language model support."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
+
+    init_from: Path | None = None
+    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -307,7 +381,7 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "cudnn_flashmla"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, vLLM's bundled FlashMLA (installed with the ``gpu`` extra), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -323,6 +397,12 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def validate_init_from(self):
+        if self.init_from is not None:
+            validate_step_dir(self.init_from, field="model.init_from")
+        return self
 
     @model_validator(mode="after")
     def validate_cp(self):
@@ -344,12 +424,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(compute, MXFP8MoEComputeConfig):
-                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
-        elif dispatch.transport == "mxfp8":
+        if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self
@@ -440,6 +515,9 @@ class AdamWConfig(BaseOptimizerConfig):
     betas2: float = Field(0.999, ge=0)
     """Adam second-moment (β2) decay."""
 
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon, added to the denominator of the update."""
+
 
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
@@ -455,6 +533,9 @@ class MuonConfig(BaseOptimizerConfig):
 
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+
+    eps: float = Field(1e-8, gt=0)
+    """Epsilon for the AdamW sub-optimizer used on non-Muon params."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):
@@ -486,6 +567,13 @@ class CheckpointConfig(BaseConfig):
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
 
+    async_save: bool = False
+    """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
+    buffers and returns; a background thread writes the copy while training continues. The buffers are kept for
+    the next save, so this costs pinned host memory about the size of the rank's checkpoint shard. Without
+    optimizer offload the copy also overlaps the next step, until its optimizer step. A save first waits for the
+    previous write to finish."""
+
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
@@ -516,48 +604,14 @@ class IcePopLossConfig(BaseConfig):
 
     score_centering_topk: int = Field(128, ge=1)
     """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
+    Probabilities retain full-vocabulary normalization. With sampling replay, the
+    complete recorded support is captured instead."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
         return self
-
-
-class PPOLossConfig(BaseConfig):
-    type: Literal["ppo"] = "ppo"
-
-    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
-    """Lower ratio bound for the clipped surrogate."""
-
-    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
-    """Upper ratio bound for the clipped surrogate."""
-
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the unbounded side of the surrogate while preserving its gradient."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    @model_validator(mode="after")
-    def validate_max_importance_ratio(self):
-        if self.max_importance_ratio < self.ratio_high:
-            raise ValueError("max_importance_ratio must be at least ratio_high")
-        return self
-
-
-class CISPOLossConfig(BaseConfig):
-    type: Literal["cispo"] = "cispo"
-
-    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
-    """Lower bound for the detached importance weight; zero disables lower clipping."""
-
-    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
-    """Upper bound for the detached importance weight."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -571,7 +625,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 
@@ -583,6 +637,15 @@ class FakeDataLoaderConfig(BaseConfig):
     generate_samples: bool = False
     """Generate separate samples and pack them into a single micro-batch instead of using random tensors."""
 
+    doc_len: int | None = Field(None, ge=1)
+    """Length of each generated sample, the last one cut to fill the micro batch. If None, lengths are random up to a micro batch's length / 8. Requires generate_samples."""
+
+    @model_validator(mode="after")
+    def doc_len_requires_generate_samples(self):
+        if self.doc_len is not None and not self.generate_samples:
+            raise ValueError("data.fake.doc_len requires data.fake.generate_samples")
+        return self
+
 
 class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
@@ -593,7 +656,8 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseTrainerConfig(BaseConfig):
-    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer
+    (``SupervisedTrainerConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
@@ -632,8 +696,8 @@ class BaseTrainerConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: ControlConfig | None = None
-    """Serve the run control API on the master rank (pause the run after the next
-    step). If None, the run takes no control requests."""
+    """Serve the run control API on the master rank (pause or checkpoint the run
+    after the next step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
@@ -644,17 +708,6 @@ class BaseTrainerConfig(BaseConfig):
             self.model.freeze_moe_router = self.auto_freeze_moe_router
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = self.auto_weight_decay
-        return self
-
-    @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
         return self
 
     @model_validator(mode="after")
@@ -729,17 +782,23 @@ class TrainerConfig(BaseTrainerConfig):
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    annotations: bool = True
+    """Write the trainer's recomputed per-token logprobs and entropies as trace annotations,
+    so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
+    Each step gathers every trained token to the master rank before the optimizer step;
+    disable with ``--no-annotations`` to skip that work."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
@@ -747,11 +806,28 @@ class TrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_retain(self):
+        if not self.rollout_transport.retain:
+            return self
+        if not (self.ckpt and self.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
+            )
+        return self
+
+    @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
-        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
+        ``rl_micro_batch_multiple`` and split over the CP ranks."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
+            multiple = rl_micro_batch_multiple(self.model)
+            micro_batch_tokens = -(-self.model.seq_len // multiple) * multiple
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
-                dispatch.max_tokens_per_rank, self.model.seq_len
+                dispatch.max_tokens_per_rank, micro_batch_tokens, self.model.cp
             )
         return self

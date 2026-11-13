@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pybase64
 import pytest
+import torch
 from fastapi.responses import JSONResponse
 from renderers.client import (
     _parse_compact_logprobs,
@@ -40,7 +41,7 @@ from vllm.logprobs import FlatLogprobs, Logprob
 from vllm.outputs import CompletionOutput, RequestOutput
 
 from prime_rl.inference.patches import PackedSamplingMask
-from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
+from prime_rl.inference.vllm.paired_capture import NEG_INF_BITS, pack_sampler_rows
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _PackedOutputs,
@@ -118,31 +119,47 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     assert payload["usage"]["total_tokens"] == 7
 
 
-@pytest.mark.parametrize("flat", [False, True])
-@pytest.mark.parametrize("selection", [slice(None), slice(1, 3), slice(None, None, 2), slice(0, 0)])
-def test_compact_logprobs_roundtrip_ragged_slices(flat, selection):
-    rows = [{7: Logprob(-0.5)}, {8: Logprob(-1.5), 9: Logprob(float("-inf"))}, {10: Logprob(-2.5)}]
-    logprobs = FlatLogprobs() if flat else []
-    logprobs.extend(rows)
-    encoded = serialize_compact_logprobs(logprobs[selection], 2)
-    raw = pybase64.b64decode(encoded["data"])
-    selected = rows[selection]
-    count = sum(map(len, selected))
-    assert encoded["format"] == "u32-f32-le-v1"
-    assert encoded["num_top_logprobs"] == 2
-    assert encoded["offsets"] == [0, *np.cumsum([len(row) for row in selected]).tolist()]
-    np.testing.assert_array_equal(np.frombuffer(raw, dtype="<u4", count=count), [i for row in selected for i in row])
-    np.testing.assert_array_equal(
-        np.frombuffer(raw, dtype="<f4", offset=count * 4),
-        [max(v.logprob, -9999.0) for row in selected for v in row.values()],
+@pytest.mark.asyncio
+async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
+    # A replay request without compact logprobs: an overflowed step leaves an empty mask row.
+    mask = PackedSamplingMask(ids=np.array([1, 2], dtype=np.int64), counts=np.array([2, 0], dtype=np.int32))
+    output = CompletionOutput(0, "", [1, 2], None, None, sampling_mask=mask, finish_reason="length")
+
+    async def outputs():
+        yield RequestOutput("test", None, [10], None, [output], True)
+
+    params = SamplingParams(extra_args={"prl_replay": True})
+    packed = _PackedOutputs(outputs(), GenerateRequest(model="test", token_ids=[10], sampling_params=params))
+    with pytest.raises(ValueError, match="sampling_support_capacity"):
+        async for _ in packed:
+            pass
+
+
+def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool):
+    """The packed int64 mask the patched sampler hands to the server (pinned host copies need CUDA)."""
+    logits = torch.full((len(sampled_ids), 8), -torch.inf)
+    for i, q in logq.items():
+        logits[:, i] = q
+    if replay:
+        ids = torch.isfinite(logits).nonzero()[:, 1].view(len(sampled_ids), -1)
+        values = logits.gather(1, ids).log_softmax(-1)
+        packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
+    else:
+        cu, num_sampled = torch.arange(len(sampled_ids) + 1), torch.ones(len(sampled_ids), dtype=torch.int32)
+        sampled = torch.tensor(sampled_ids).view(-1, 1)
+        rows = np.full(len(sampled_ids), 4)
+        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows)
+    return PackedSamplingMask(
+        ids=packed.flatten().numpy(), counts=np.full(len(sampled_ids), packed.shape[1], dtype=np.int32)
     )
 
 
+@pytest.mark.gpu
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("routed", [False, True])
-async def test_compact_formatter_matches_native_evidence_and_metadata(flat, replay, routed):
+async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, routed):
     serving = object.__new__(PrimeRlServingTokens)
     serving.engine_client = SimpleNamespace(
         vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=routed))
@@ -161,54 +178,61 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
         else:
             logprobs.append({i: Logprob(logq[i]) for i in ids})
     support = (
-        PackedSamplingMask(ids=np.array([3, 1, 2, 1, 3, 2], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32))
+        PackedSamplingMask(ids=np.array([1, 2, 3, 1, 2, 3], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32))
         if replay
         else None
     )
     experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.uint8) if routed else None
-    output = RequestOutput(
-        "test",
-        None,
-        [10, 11],
-        [None, {11: Logprob(-0.5)}],
-        [
-            CompletionOutput(
-                i,
-                "",
-                sampled_ids,
-                None,
-                logprobs,
-                routed_experts=experts,
-                sampling_mask=support,
-                finish_reason="length",
-            )
-            for i in range(2)
-        ],
-        True,
-        num_cached_tokens=1,
-        kv_transfer_params={"kv": "kept"},
-        ec_transfer_params={"ec": "kept"},
-    )
 
-    async def generate_outputs():
-        yield deepcopy(output)
+    def request_output(logprobs, mask):
+        return RequestOutput(
+            "test",
+            None,
+            [10, 11],
+            [None, {11: Logprob(-0.5)}],
+            [
+                CompletionOutput(
+                    i,
+                    "",
+                    sampled_ids,
+                    None,
+                    logprobs,
+                    routed_experts=experts,
+                    sampling_mask=deepcopy(mask),
+                    finish_reason="length",
+                )
+                for i in range(2)
+            ],
+            True,
+            num_cached_tokens=1,
+            kv_transfer_params={"kv": "kept"},
+            ec_transfer_params={"ec": "kept"},
+        )
 
     responses = []
     evidence = []
-    for compact in (False, True):
-        params = SamplingParams(logprobs=4, extra_args={"prl_compact_logprobs": True} if compact else None)
+    for captured in (False, True):
+        output = (
+            request_output(None, _gpu_capture(logq, sampled_ids, replay))
+            if captured
+            else request_output(logprobs, support)
+        )
+
+        async def generate_outputs():
+            yield deepcopy(output)
+
+        extra_args = {"prl_paired_capture": True} if replay else {"prl_sampler_rows": 4}
+        params = SamplingParams(logprobs=None if captured else 4, extra_args=extra_args if captured else None)
         request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params, return_token_ids=True)
         request._response_mm_placeholders = {"image": [PlaceholderRangeInfo(offset=0, length=1)]}
         metadata = RequestResponseMetadata(request_id="test")
         response = await serving.serve_tokens_full_generator(request, generate_outputs(), "test", "test", metadata)
         assert isinstance(response, GenerateTokensResponse)
-        assert params.logprobs == 4
         assert request.sampling_params is params
-        assert output.outputs[0].logprobs is logprobs
         assert response.usage == metadata.final_usage_info
         payload = parse_generate_response(JSONResponse(content=response.model_dump()).body)
         for choice in payload["choices"]:
-            if compact:
+            if captured:
                 assert choice["logprobs"] is None
                 assert isinstance(choice["compact_logprobs"]["data"], memoryview)
                 evidence.append(_parse_compact_logprobs(choice, sampled_ids, 2))
@@ -224,7 +248,9 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
             choice.pop("compact_logprobs", None)
         payload.pop("created")
         responses.append(payload)
-    assert all(item == evidence[0] for item in evidence)
+    evidence = [(np.round(logprobs, 6).tolist(), *heads) for logprobs, *heads in evidence]
+    assert all(item[0] == evidence[0][0] and item[1] == evidence[0][1] for item in evidence)
+    np.testing.assert_allclose(np.array(evidence[-1][2]), np.array(evidence[0][2]), atol=1e-6)
     assert evidence[0][1] == ([[1, 2, 3]] * 2 if replay else [[1, 2]] * 2)
     assert responses[0] == responses[1]
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
@@ -239,3 +265,126 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
     logprobs.append({3: Logprob(float("-inf"), 9, None)})
 
     np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
+
+
+@pytest.mark.gpu
+def test_capture_supports_is_the_masked_set():
+    from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
+
+    from prime_rl.inference.vllm.paired_capture import capture_supports
+
+    torch.manual_seed(0)
+    num_reqs, vocab = 6, 50_000
+    logits = torch.randn(num_reqs, vocab, device="cuda") * torch.tensor([1, 2, 4, 8, 0.1, 3], device="cuda")[:, None]
+    logits[3] = logits[3].round()
+    top_p = torch.tensor([0.95, 0.9, 0.97, 0.5, 0.99, 0.95], device="cuda")
+    masked = apply_top_k_top_p_triton(logits.clone(), None, top_p)
+    cu = torch.arange(num_reqs + 1, device="cuda", dtype=torch.int32)
+    committed = torch.tensor([1, 1, 0, 1, 1, 1], device="cuda", dtype=torch.int32)
+    rows = (
+        torch.tensor([2], device="cuda"),
+        torch.tensor([[7, 8, 9]], device="cuda"),
+        torch.tensor([3], device="cuda"),
+    )
+    captured = capture_supports(masked, cu, committed, 1 << 20, rows).to_cpu_nonblocking()
+    torch.cuda.synchronize()
+    supports = captured.tolists()
+
+    offsets = supports.offsets
+    for req in range(num_reqs):
+        entries = supports.token_ids[offsets[req] : offsets[req + 1]]
+        if req == 2:
+            assert entries.tolist() == [7, 8, 9]
+            continue
+        kept = torch.isfinite(masked[req]).nonzero().squeeze(-1)
+        ids = entries & 0xFFFFFFFF
+        values = ((entries >> 32).astype(np.int32) ^ NEG_INF_BITS).view(np.float32)
+        assert ids.tolist() == kept.tolist()
+        np.testing.assert_allclose(values, masked[req, kept].log_softmax(-1).cpu().numpy(), atol=1e-5)
+
+    overflow = capture_supports(masked, cu, committed, int(offsets[2]), rows).to_cpu_nonblocking()
+    torch.cuda.synchronize()
+    assert overflow.counts_cpu.tolist()[:2] == [offsets[1], offsets[2] - offsets[1]]
+    assert (overflow.counts_cpu[2:] == -1).all()
+
+
+@pytest.mark.gpu
+def test_verified_supports_follow_accepted_positions_across_chunks():
+    from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
+
+    from prime_rl.inference.vllm.paired_capture import VerifiedSupports, capture_verified_supports
+
+    torch.manual_seed(0)
+    # Request 0 verifies 3 positions, request 1 only its bonus row, request 2 (not replayed) 3 positions.
+    logits = torch.randn(7, 50_000, device="cuda")
+    masked = apply_top_k_top_p_triton(logits, None, torch.full((7,), 0.9, device="cuda"))
+    cu = torch.tensor([0, 3, 4, 7], device="cuda", dtype=torch.int32)
+    num_sampled = torch.tensor([3, 1, 2], device="cuda", dtype=torch.int32)
+    replay = np.array([True, True, False])
+    whole = capture_verified_supports(masked, cu, num_sampled, replay, 3, 1 << 20)
+    chunked = VerifiedSupports.cat(
+        [
+            capture_verified_supports(masked[:3], cu[:2], num_sampled[:1], replay[:1], 3, 1 << 20),
+            capture_verified_supports(masked[3:], cu[1:] - 3, num_sampled[1:], replay[1:], 3, 1 << 20),
+        ]
+    )
+    for supports in (whole, chunked):
+        supports.to_cpu_nonblocking()
+        torch.cuda.synchronize()
+        lists = supports.tolists(np.array([3, 1, 2]))
+        assert lists.cu_num_generated_tokens == [0, 3, 4, 6]
+        for position, row in enumerate([0, 1, 2, 3]):
+            entries = lists.token_ids[lists.offsets[position] : lists.offsets[position + 1]]
+            kept = torch.isfinite(masked[row]).nonzero().squeeze(-1)
+            values = ((entries >> 32).astype(np.int32) ^ NEG_INF_BITS).view(np.float32)
+            assert (entries & 0xFFFFFFFF).tolist() == kept.tolist()
+            np.testing.assert_allclose(values, masked[row, kept].log_softmax(-1).cpu().numpy(), atol=1e-5)
+        assert np.diff(lists.offsets)[4:].tolist() == [0, 0]
+
+
+@pytest.mark.asyncio
+async def test_flat_sampled_logprobs_are_packed():
+    """The default RL path (flat logprobs, logprobs<=1): upstream reads ``logprobs`` before it
+    consumes the outputs, so the override must turn them off up front."""
+    serving = object.__new__(PrimeRlServingTokens)
+    serving.engine_client = SimpleNamespace(
+        vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=False))
+    )
+    serving.enable_prompt_tokens_details = False
+    serving.enable_log_outputs = False
+    logprobs = FlatLogprobs()
+    for sampled, value in [(2, -0.25), (7, -20000.0)]:
+        logprobs.append_fast([sampled], [value], iter(range(1)), [None])
+    output = RequestOutput(
+        "test",
+        None,
+        [10, 11],
+        None,
+        [CompletionOutput(0, "", [2, 7], None, logprobs, finish_reason="length")],
+        True,
+    )
+
+    async def generate_outputs():
+        yield output
+
+    params = SamplingParams(logprobs=1, flat_logprobs=True)
+    request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params, return_token_ids=True)
+    metadata = RequestResponseMetadata(request_id="test")
+    response = await serving.serve_tokens_full_generator(request, generate_outputs(), "test", "test", metadata)
+    assert isinstance(response, GenerateTokensResponse)
+    assert params.logprobs == 1
+    [choice] = response.model_dump()["choices"]
+    assert choice["logprobs"] is None
+    packed = choice["completion_logprobs"]
+    values = np.frombuffer(pybase64.b64decode(packed["data"]), dtype=packed["dtype"])
+    np.testing.assert_array_equal(values, np.array([-0.25, -9999.0], dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("logprobs", "logprob_token_ids", "packed"),
+    [(0, None, True), (1, None, True), (1, [4, 5], False), (-1, None, False), (2, None, False)],
+)
+def test_only_sampled_token_logprobs_are_packed_flat(logprobs, logprob_token_ids, packed):
+    params = SamplingParams(logprobs=logprobs, logprob_token_ids=logprob_token_ids, flat_logprobs=True)
+    request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params)
+    assert _PackedOutputs(_empty_request_outputs(), request).strips_logprobs is packed

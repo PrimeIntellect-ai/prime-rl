@@ -3,8 +3,8 @@
 Configurations for running prime-rl.
 
 - **[`advanced/`](advanced)** — frontier-model training configs without launch walkthroughs:
-  `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft + a standalone
-  vLLM serving pre-flight). For the tutorialized equivalents, see
+  `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft, SWE RL with
+  MXFP8 inference, and a standalone vLLM serving pre-flight). For the tutorialized equivalents, see
   [`examples/advanced/`](../examples/advanced).
 - **`ci/`** — integration and nightly configs used by CI.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`

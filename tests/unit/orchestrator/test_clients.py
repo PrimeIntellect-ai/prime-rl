@@ -1,8 +1,9 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -48,11 +49,12 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path"), 3))
 
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
+        params={"weight_version": 3},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
 
@@ -84,6 +86,26 @@ def test_admin_plane_initializes_nccl():
             "timeout": 1200,
         },
     )
+    asyncio.run(admin_plane.aclose())
+
+
+def test_update_draft_weights_fails_fast_on_a_failed_load():
+    admin_plane = AdminPlane(ClientConfig())
+    request = httpx.Request("POST", "http://engine/update_draft_weights")
+    failed = MagicMock()
+    failed.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "load failed", request=request, response=httpx.Response(500, request=request)
+    )
+    client = create_autospec(httpx.AsyncClient, instance=True)
+    client.post.return_value = failed
+    admin_plane.clients = [client]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(admin_plane.update_draft_weights(Path("/drafts/v2")))
+
+    client.post.assert_awaited_once()
+    assert client.post.await_args.args == ("/update_draft_weights",)
+    assert client.post.await_args.kwargs["json"] == {"weight_dir": "/drafts/v2"}
     asyncio.run(admin_plane.aclose())
 
 

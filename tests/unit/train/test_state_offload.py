@@ -1,10 +1,19 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
+import dion
 import pytest
 import torch
+import torch.distributed as dist
+from torch.distributed.checkpoint import load as dcp_load
+from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
 
+from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.trainer.ckpt import AppState, CheckpointManager, PinnedStager, Progress
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
+from prime_rl.trainer.utils import get_dcp_group
 
 pytestmark = [pytest.mark.gpu]
 
@@ -112,3 +121,53 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
     assert pointers_before.keys() == pointers_after.keys()
     for key, pointer in pointers_before.items():
         assert pointers_after[key] == pointer, f"state buffer reallocated for {key}"
+
+
+def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
+    """dion's Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
+
+    def setup():
+        model = make_model(0)
+        groups = [
+            dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
+            dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
+        ]
+        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        return model, CPUOffloadOptimizer(optimizer)
+
+    model, optimizer = setup()
+    run_steps(model, optimizer, num_steps=3, seed=1)
+    dcp_save({"app": AppState(model, [optimizer], None, None)}, checkpoint_id=tmp_path)
+    run_steps(model, optimizer, num_steps=2, seed=2)
+
+    resumed_model, resumed_optimizer = setup()
+    dcp_load({"app": AppState(resumed_model, [resumed_optimizer], None, None)}, checkpoint_id=tmp_path)
+    assert [group["step"] for group in resumed_optimizer.param_groups] == [3, 3]
+    run_steps(resumed_model, resumed_optimizer, num_steps=2, seed=2)
+    assert_params_equal(model, resumed_model)
+
+
+def test_offloaded_async_save_writes_after_it_returned(tmp_path) -> None:
+    """With an offload optimizer the async save finishes staging before it returns; a write that only starts
+    afterwards must still get the staged state."""
+    dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29515", world_size=1, rank=0)
+    try:
+        model = make_model(0)
+        optimizer = CPUOffloadOptimizer(torch.optim.AdamW(model.parameters(), lr=1e-2))
+        run_steps(model, optimizer, num_steps=1, seed=1)
+        manager = CheckpointManager(tmp_path, CheckpointConfig(async_save=True))
+        manager.stager = PinnedStager()
+        manager.write_group = dist.new_group(backend="gloo")
+        manager.writer = ThreadPoolExecutor(max_workers=1)
+        # Hold the writer thread until save() has returned
+        release = threading.Event()
+        manager.writer.submit(release.wait)
+
+        manager.save(1, model, [optimizer], None, Progress(step=1))
+        release.set()
+        manager.wait()
+
+        assert (manager.get_ckpt_path(1) / ".metadata").exists()
+    finally:
+        dist.destroy_process_group()
+        get_dcp_group.cache_clear()

@@ -86,7 +86,6 @@ dist_timeout_seconds = 1800
 [trainer.model]
 name = "zai-org/GLM-5.3-BF16"
 attn = "flash_attention_2" # ignored with GLM5
-fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
 ep = 8
 
@@ -110,7 +109,7 @@ weight_decay = 0.0
 
 [orchestrator]
 batch_size = 256
-max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
+max_staleness = 8 # 16/32 can be better, 8 is more CPU stable
 
 [orchestrator.train]
 group_size = 16

@@ -21,12 +21,15 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
+from pydantic import ValidationError
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
@@ -36,9 +39,11 @@ if TYPE_CHECKING:
     from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401
 from prime_rl import monitors
+from prime_rl.configs.diff import ConfigChange, diff_config, merge_resumed_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.control.controller import Controller
+from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
+from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
@@ -46,14 +51,17 @@ from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
+from prime_rl.orchestrator.draft import DraftLoader
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
     EvalBatch,
@@ -63,10 +71,11 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
-    episode_staleness,
     eval_work,
     intercept_vf_logging,
+    max_rollout_staleness,
     release_and_trim,
+    rollout_staleness,
     set_default_executor,
     trim_process_memory,
 )
@@ -75,13 +84,20 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
+from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step, write_resolved_config
+from prime_rl.utils.pathing import (
+    get_broadcast_dir,
+    get_config_dir,
+    resolve_latest_ckpt_step,
+    write_resolved_config,
+)
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
-# shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
+# shutdown wedges (env-worker-pool ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
 # Maximum shipped batches that inference has not applied the policy for yet. The
@@ -89,6 +105,9 @@ SHUTDOWN_TIMEOUT_S = 300
 # when the watcher advances ``policy.version``. Shipping itself is paced by the
 # trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
+
+# A send that waited at least this long for the trainer's request means the trainer is the bottleneck.
+TRAINER_BOUND_WAIT_S = 0.5
 
 
 class Orchestrator:
@@ -118,7 +137,10 @@ class Orchestrator:
     concurrency: ConcurrencyController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
+    gc: GarbageCollector | None
     periodic_logger: PeriodicLogger
+    reconfigurables: list[Reconfigurable]
+    """Components that apply live config updates."""
 
     # Set by ``setup()`` only when relevant config is present
     heart: Heartbeat | None
@@ -131,21 +153,29 @@ class Orchestrator:
     lag_task: asyncio.Task | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
-        self.config = config
         write_resolved_config(config.output_dir, config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Route the in-process v1 library logging through our handler. The
-        # env server runs in a child process, so its logging is separate.
-        intercept_vf_logging(logger="verifiers.v1", level="WARN")
+        # Route the in-process v1 library logging through our handler. The env
+        # worker pool runs in a child process and sets up its own at the same level.
+        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
         get_logger().info("Starting orchestrator")
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+        # The launch config, before live updates, which checkpoints record as the merge base.
+        self.launch_config = dump_resolved_config(config)
+        # The draft the engines launch with, before live updates are restored.
+        self.launch_draft = config.speculative_decoding.draft if config.speculative_decoding is not None else None
+        self.config_revision = 0
+        self.resume_step = resolve_resume_step(config, self.ckpt_manager)
+        # Components read the config when built, so a resumed run restores live updates first.
+        self.config = self.restore_live_config(config) if self.resume_step is not None else config
         self.controller = None
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
         self.policy = Policy(version=0, model_name="")
+        self.gc = GarbageCollector(config.gc.interval) if config.gc else None
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
@@ -160,11 +190,20 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        # Rollouts of the batch cut and waiting for the trainer to request it
+        self.unsent_rollouts = 0
+        # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
+        # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
+        self.ships = 0
+        self.shipped_at: float | None = None
+        self.trainer_rate: float | None = None
+        self.trainer_capacity = TrainerCapacity()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
         self.clients = None
         self.admin_plane = None
+        self.draft_loader = None
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -173,7 +212,6 @@ class Orchestrator:
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
-        self.resume_step = None
         self.lag_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -203,9 +241,13 @@ class Orchestrator:
         self.admin_plane = setup_admin_plane(
             config.model.client, config.model.name, roles=config.inference_metrics_roles
         )
+        if config.speculative_decoding is not None:
+            # A draft restored from live updates loads with the startup policy.
+            self.draft_loader = DraftLoader(self.admin_plane, self.launch_draft, config.speculative_decoding.draft)
+            self.admin_plane.after_transfer = self.draft_loader.sync
 
         await monitors.setup(
-            producer="orch",
+            producer="orchestrator",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,
@@ -214,9 +256,10 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
-        self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
-        # Base labels for sandboxes created in this process; env-server processes read
+        # The launcher-set $PRL_RUN_ID is the run identity; a hosted launch sets only the
+        # platform's $RUN_ID, and standalone runs mint a local one.
+        self.run_id = os.environ.get("PRL_RUN_ID") or os.environ.get("RUN_ID") or uuid.uuid4().hex
+        # Base labels for sandboxes created in this process; env-worker-pool processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
         if self.run_name:
@@ -232,17 +275,12 @@ class Orchestrator:
             config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
+            replicas=config.env_worker_pool_replicas,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
-
-        if config.resume is not None:
-            if config.resume.dir is not None:
-                self.resume_step = config.resume.dir_step
-            else:
-                self.resume_step = config.resume.step
-                if self.resume_step is None:
-                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+            self.eval_envs = EvalEnvs(
+                config.eval.source, config.env_addresses, config_dir, replicas=config.env_worker_pool_replicas
+            )
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
@@ -278,9 +316,9 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
         if self.resume_step is not None:
-            resume = self.config.resume
-            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            self.ckpt_manager.load(
+                self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
+            )
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -323,6 +361,16 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
+        self.train_sink = TrainSink(
+            config,
+            tokenizer=self.tokenizer,
+            train_envs=self.train_envs,
+            progress=self.progress,
+            batch_size=config.batch_size,
+            on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
+            group_size=self.train_source.group_size,
+        )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
@@ -335,15 +383,22 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             dispatch_per_minute=config.dispatch_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_call=self.concurrency.record_call,
+            on_pause=self.concurrency.pause,
+            on_resume=self.concurrency.resume,
+            unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.unsent_rollouts,
+            batch_size=lambda: self.train_sink.batch_size,
+            trainer_rate=lambda: self.trainer_rate,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
+            get_train_finished=lambda: self.dispatcher.finished_train_rollouts,
+            trainer=self.trainer_capacity,
         )
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
@@ -357,14 +412,6 @@ class Orchestrator:
         # One awaited scrape so the concurrency controller derives (and logs) its
         # initial limit before the loop-start line; failures are tolerated.
         await self.inference_metrics.probe()
-        self.train_sink = TrainSink(
-            config,
-            tokenizer=self.tokenizer,
-            train_envs=self.train_envs,
-            progress=self.progress,
-            batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
-        )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -385,6 +432,12 @@ class Orchestrator:
             interval=log_interval,
         )
 
+        self.reconfigurables = [self.concurrency, self.train_envs, self.train_source, self.train_sink]
+        if self.eval_source is not None:
+            self.reconfigurables.append(self.eval_source)
+        if self.draft_loader is not None:
+            self.reconfigurables.append(self.draft_loader)
+
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
         await self.watcher.sync_startup(sync_version, timeout=config.weight_broadcast.timeout)
@@ -403,6 +456,8 @@ class Orchestrator:
         # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
+        if self.gc is not None:
+            self.gc.start()
         await self.periodic_logger.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
@@ -413,6 +468,8 @@ class Orchestrator:
             self.controller = Controller(
                 requires_step=True,
                 on_submit=lambda: loop.call_soon_threadsafe(self.control_requested.set),
+                read_config=lambda: (self.config_revision, self.config),
+                check_config=self.check_config,
             )
             ControlServer(self.controller, config.control).start()
             self.component_tasks.append(asyncio.create_task(self.serve_control(), name="control"))
@@ -455,7 +512,7 @@ class Orchestrator:
             if loop_done and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -525,7 +582,7 @@ class Orchestrator:
                 break
 
             try:
-                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                item = await asyncio.wait_for(self.dispatcher.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
                 continue
@@ -581,6 +638,7 @@ class Orchestrator:
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+                self.train_sink.release_samples(batch.samples)
             self.train_sink.discard_queued()
 
     def take_rollout_metrics(self) -> dict[str, float]:
@@ -592,7 +650,7 @@ class Orchestrator:
         self.progress.total_samples += window.traces
         self.progress.total_problems += window.groups
         metrics = {
-            "off_policy/dropped": 0.0,
+            "staleness/rollout/dropped": 0.0,
             "rollout/queued/pruned": 0.0,
             "rollout/queued/cancelled": 0.0,
         } | window.metrics.to_dict()
@@ -616,7 +674,7 @@ class Orchestrator:
                 f"({window.discarded / window.attempts:.1%}): stale={window.stale}, "
                 f"errored={window.errored}, cancelled={window.cancelled}, "
                 f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
-                "Review max_off_policy_steps, episode errors, and reward signal."
+                "Review max_staleness, episode errors, and reward signal."
             )
         return metrics
 
@@ -650,6 +708,7 @@ class Orchestrator:
         # step, or a lowered ``max_steps``): never ship beyond the budget.
         if config.max_steps is not None and step > config.max_steps:
             self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+            self.train_sink.release_samples(batch.samples)
             await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
             return
 
@@ -690,12 +749,25 @@ class Orchestrator:
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
+        self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
-        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.unsent_rollouts = 0
+        shipped_at = time.perf_counter()
+        # The trainer's first step in a process includes its warmup, so its pace counts from the second one
+        self.ships += 1
+        trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
+        self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
+        self.shipped_at = shipped_at
+        self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
+        self.concurrency.trainer_shipped()
+        wait_for_policy_time = shipped_at - send_start_time - send_batch_time
+        self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()
+        self.revert_rejected_draft()
         if self.controller is not None:
-            self.shipped_state = (step, build_state(self.progress, self.train_source))
+            self.apply_config_update()
+            self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
             self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
@@ -715,19 +787,23 @@ class Orchestrator:
                 "time/send_batch": send_batch_time,
                 "step": step,
             }
-            # Staleness of the shipped cohort, decomposed into its in-flight and
-            # in-queue shares. Queue drops are reported with rollout windows.
-            staleness = [episode_staleness(episode, step) for episode in effective]
+            # Token and rollout staleness of the shipped cohort. Queue drops and
+            # masked tokens are reported with rollout windows.
+            staleness = [s for episode in effective if (s := rollout_staleness(episode, step)) is not None]
             if staleness:
-                totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
+                rollouts = [s.rollout for s in staleness]
+                in_flight = [s.in_flight for s in staleness]
+                in_queue = [s.in_queue for s in staleness]
                 metrics |= {
-                    "off_policy/mean": sum(totals) / len(totals),
-                    "off_policy/max": float(max(totals)),
-                    "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
-                    "off_policy/in_flight/max": float(max(in_flight)),
-                    "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
-                    "off_policy/in_queue/max": float(max(in_queue)),
+                    "staleness/rollout/mean": sum(rollouts) / len(rollouts),
+                    "staleness/rollout/max": float(max(rollouts)),
+                    "staleness/rollout/in_flight/mean": sum(in_flight) / len(in_flight),
+                    "staleness/rollout/in_flight/max": float(max(in_flight)),
+                    "staleness/rollout/in_queue/mean": sum(in_queue) / len(in_queue),
+                    "staleness/rollout/in_queue/max": float(max(in_queue)),
                 }
+                if num_tokens := sum(s.token_count for s in staleness):
+                    metrics["staleness/token/mean"] = sum(s.token_sum for s in staleness) / num_tokens
             for env_name, env_pool in effective.by_env().items():
                 metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
             return metrics
@@ -755,13 +831,15 @@ class Orchestrator:
             await self.wait_for_version(step, reason="before shutdown")
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
-        # and with a tight ``max_off_policy_steps`` it never fills at all (the
+        # and with a tight ``max_staleness`` it never fills at all (the
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
         # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
         if self.release_future is not None:
             await asyncio.shield(self.release_future)
+        if self.gc is not None:
+            self.gc.run(step)
         payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
         self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
@@ -858,7 +936,18 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
+        payload: dict[str, float] = {
+            **disp_gauges,
+            **disp_drain,
+            **watcher_gauges,
+            **self.concurrency.gauges(),
+            **self.trainer_capacity.gauges(),
+            **self.clients.session_release_gauges(),
+        }
+        if self.draft_loader is not None:
+            payload |= self.draft_loader.gauges()
+        if self.gc is not None:
+            payload |= self.gc.gauges()
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean
@@ -876,13 +965,13 @@ class Orchestrator:
         n_effective = effective.num_traces
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
+        max_staleness = max_rollout_staleness(effective, step)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Max Off-Policy {max_off_policy_steps} | "
+            f"Max Staleness {max_staleness} | "
             f"Truncation {eff.is_truncated.mean():.1%} | Timeout {eff.is_timeout.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -900,13 +989,15 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
+                f"Max Staleness {max_rollout_staleness(env_eff_pool, step)} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {env_eff.is_timeout.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch through the monitors."""
+        """Persist + log one completed eval epoch through the monitors. Aggregating an epoch
+        walks every trace's node graph, which takes seconds for a large epoch, so it runs in
+        worker threads."""
         if not batch.episodes and not batch.failures:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
@@ -914,37 +1005,46 @@ class Orchestrator:
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
-        policy_spans = [eval_work(episode).policy for episode in batch.episodes]
+        episodes = batch.episodes
+        effective = episodes.effective
+        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        if effective_episodes:
+            await monitors.log(effective_episodes, batch.step, "eval", "effective")
+            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
+            await monitors.log_annotations(annotations)
+        policy_spans = [eval_work(episode).policy for episode in episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
         policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
-        # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
-        # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
-        episodes = batch.episodes
-        effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
-        metrics["step"] = float(batch.step)
-        await monitors.log(metrics, step=batch.step)
 
-        # Success line — quality metrics over the effective set, error rate over the full returned
-        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
-        eff, full = effective.metrics, episodes.metrics
+        def epoch_metrics() -> dict[str, float]:
+            # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
+            # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
+            metrics: dict[str, float] = {}
+            for subset, pool in (("all", episodes), ("effective", effective)):
+                metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+            total_attempts = len(episodes) + len(batch.failures)
+            metrics |= dispatch_failure_metrics(
+                batch.failures,
+                prefix=f"eval/{batch.env_name}/all",
+                total_attempts=total_attempts,
+            )
+            metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+            metrics["step"] = float(batch.step)
+            return metrics
+
+        await monitors.log(await asyncio.to_thread(epoch_metrics), step=batch.step)
+
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        await asyncio.to_thread(self.log_eval_batch, batch, policy_version=policy_version, elapsed=elapsed)
+
+    def log_eval_batch(self, batch: EvalBatch, *, policy_version: int, elapsed: float) -> None:
+        """Success line — quality metrics over the effective set, error rate over the full returned
+        cohort. ``Stat.mean()`` is 0.0 for an empty set."""
+        eff, full = batch.episodes.effective.metrics, batch.episodes.metrics
         get_logger().success(
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
@@ -968,22 +1068,121 @@ class Orchestrator:
         t = time.perf_counter()
         # Synchronous on purpose: the payload is tiny, and snapshotting on the
         # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step)
         return time.perf_counter() - t
 
     def apply_control(self) -> None:
-        """Save the state as of shipping the last step if a pause is due at it. A trainer paused
-        there never requests the next step, so this stays the last shipped step."""
+        """Save the state as of shipping the last step if a pause or checkpoint is due at it. A
+        trainer paused there never requests the next step, so this stays the last shipped step. A
+        checkpoint must arrive before the trainer finishes the step and requests the next one."""
         if self.shipped_state is None:
             return
         step, state = self.shipped_state
-        if self.controller.update(step):
-            self.ckpt_manager.save_state(state, step)
-            self.controller.mark_saved(step)
-            get_logger().info(f"Paused at step {step}, saved its state")
+        action_type = self.controller.update(step)
+        if action_type is None:
+            return
+        self.ckpt_manager.save_state(state, step)
+        self.controller.mark_saved(step)
+        get_logger().info(f"Saved the state of step {step} for a {action_type}")
+
+    def apply_config_update(self) -> None:
+        """Apply a queued config update from the step about to be collected. Runs right after
+        shipping, before anything is dispatched for that step; running episodes keep their
+        settings and nothing is cancelled."""
+        self.controller.apply_update(self.progress.step, self.apply_config)
+
+    def check_config(self, raw: dict) -> tuple[OrchestratorConfig, list[ConfigChange]]:
+        """Validate a submitted config; a new draft must be able to replace the served one in place."""
+        config, changes = validate_update(self.config, raw)
+        if (
+            self.draft_loader is not None
+            and config.speculative_decoding.draft != self.config.speculative_decoding.draft
+        ):
+            try:
+                check_draft_swap(
+                    local_draft_dir(str(self.launch_draft)), local_draft_dir(str(config.speculative_decoding.draft))
+                )
+            except (OSError, ValueError) as error:
+                raise InvalidConfigError(f"The draft cannot replace the served draft: {error}") from error
+        return config, changes
+
+    def revert_rejected_draft(self) -> None:
+        """Revert a draft that failed to load as a new config revision, so the live config, its records
+        and checkpoints name the draft the engines serve."""
+        rejected = self.draft_loader.take_rejected() if self.draft_loader is not None else None
+        if rejected is None or self.config.speculative_decoding.draft != rejected:
+            return
+        config = self.config.model_copy(deep=True)
+        config.speculative_decoding.draft = self.draft_loader.good
+        change = ConfigChange(path="speculative_decoding.draft", old=str(rejected), new=str(self.draft_loader.good))
+        if self.controller is None:
+            self.apply_config(config, [change])
+            return
+        with self.controller.lock:
+            self.apply_config(config, [change])
+
+    def apply_config(self, config: OrchestratorConfig, changes: list[ConfigChange]) -> None:
+        self.config_revision += 1
+        update = ConfigUpdate(
+            revision=self.config_revision, step=self.progress.step, config=config, changes=tuple(changes)
+        )
+        self.config = config
+        for component in self.reconfigurables:
+            component.reconfigure(update)
+        logged = ", ".join(f"{change.path}: {change.old!r} -> {change.new!r}" for change in changes) or "no changes"
+        get_logger().info(f"Applied config revision {update.revision} from step {update.step}: {logged}")
+        self.write_config_record(update.step, changes)
+
+    def restore_live_config(self, launch: OrchestratorConfig) -> OrchestratorConfig:
+        """Resume the live updates checkpointed at the resume step: each value the launch config
+        left as the checkpointed run was launched with resumes from the checkpoint, and every
+        value it changed wins. Checkpoints without configs resume with the launch config."""
+        state = self.ckpt_manager.read_config_state(self.resume_step, resume_path(launch))
+        if state is None:
+            return launch
+        merged = merge_resumed_config(state["base"], state["applied"], self.launch_config)
+        try:
+            config = OrchestratorConfig.model_validate(merged)
+        except ValidationError as error:
+            raise ValueError(
+                f"The launch config merged with the live updates checkpointed at step {self.resume_step} "
+                f"is invalid; change the launch config to resolve it:\n{error}"
+            ) from error
+        self.config_revision = state["revision"]
+        changes = diff_config(launch, config).changes
+        if changes:
+            restored = ", ".join(f"{change.path}: {change.old!r} -> {change.new!r}" for change in changes)
+            get_logger().info(f"Restored live config updates (revision {self.config_revision}): {restored}")
+            self.write_config_record(self.resume_step + 1, changes, config)
+        return config
+
+    def write_config_record(
+        self, step: int, changes: list[ConfigChange], config: OrchestratorConfig | None = None
+    ) -> None:
+        """Record the config in effect from ``step`` and how it differs from the one before."""
+        config = config or self.config
+        updates_dir = get_config_dir(config.output_dir) / "updates"
+        updates_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "revision": self.config_revision,
+            "step": step,
+            "changes": [change.model_dump(mode="json") for change in changes],
+            "config": dump_resolved_config(config),
+        }
+        (updates_dir / f"rev_{self.config_revision}.json").write_text(json.dumps(record, indent=2))
+
+    def config_state(self) -> dict:
+        """The configs a checkpoint records. Saved after shipping step S, it holds the config
+        that applies from S + 1, the step a resume from S continues at."""
+        return {
+            "base": self.launch_config,
+            "applied": dump_resolved_config(self.config),
+            "revision": self.config_revision,
+        }
 
     async def serve_control(self) -> None:
-        """Apply each submitted pause on the event loop, also while a send blocks on the trainer."""
+        """Apply each submitted pause or checkpoint on the event loop, also while a send blocks on
+        the trainer."""
         while True:
             await self.control_requested.wait()
             self.control_requested.clear()
@@ -1064,6 +1263,24 @@ class Orchestrator:
             os._exit(0 if clean_exit else 1)
         await task
         get_logger().debug(f"Stopped orchestrator components in {format_time(time.perf_counter() - t0)}")
+
+
+def resolve_resume_step(config: OrchestratorConfig, ckpt_manager: CheckpointManager) -> int | None:
+    """The checkpoint step a run resumes from, None to start from scratch."""
+    if config.resume is None:
+        return None
+    if config.resume.dir is not None:
+        return config.resume.dir_step
+    if config.resume.step is not None:
+        return config.resume.step
+    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+
+
+def resume_path(config: OrchestratorConfig) -> Path | None:
+    """An external checkpoint's orchestrator directory when forking another run, else None."""
+    if config.resume is None or config.resume.dir is None:
+        return None
+    return config.resume.dir / "orchestrator"
 
 
 @clean_exit

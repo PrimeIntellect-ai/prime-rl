@@ -21,7 +21,7 @@ def run_dir(output_dir: Path) -> Path:
 @pytest.fixture(scope="module")
 def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) -> ProcessResult:
     """`uv run eval` of single-turn null-harness rollouts against Prime Inference (the
-    default client and model); needs `PRIME_API_KEY`, no GPU, no sandbox."""
+    default client and the CI model); needs `PRIME_API_KEY`, no GPU, no sandbox."""
     cmd = [
         "uv",
         "run",
@@ -29,6 +29,7 @@ def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) ->
         "@",
         "configs/ci/integration/gsm8k-eval.toml",
         "--clean",
+        "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",

@@ -67,11 +67,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "inference.vllm.model",
         "orchestrator.model.name",
     )
-    propagate(
-        "model.vlm",
-        "trainer.model.vlm",
-        "orchestrator.model.vlm",
-    )
+    propagate("model.vlm", "trainer.model.vlm")
 
     # [log]
     propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
@@ -88,6 +84,7 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
+    propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
     # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
@@ -103,9 +100,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
     propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
 
-    # [monitors.prime] leaf → orchestrator only (the RL trainer has no platform
-    # integration; the SFT trainer does, but it parses SFTConfig directly).
-    propagate("monitors.prime.name", "orchestrator.monitors.prime.name")
+    # [monitors.prime] leaf.
+    propagate("monitors.prime.name", "trainer.monitors.prime.name", "orchestrator.monitors.prime.name")
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
@@ -170,7 +166,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "ckpt": ("trainer", "orchestrator"),
         "monitors.wandb": ("trainer", "orchestrator"),
         "monitors.file": ("trainer", "orchestrator"),
-        "monitors.prime": ("orchestrator",),
+        "monitors.prime": ("trainer", "orchestrator"),
     }
     for key, targets in presence_targets.items():
         value = get(key)
@@ -192,3 +188,14 @@ def propagate_shared_fields(data: Any) -> Any:
         raise ValueError("\n".join(lines))
 
     return data
+
+
+def check_derived(config: Any, field: str, value: Any, path: str) -> None:
+    """Check a field the launcher derives. An explicit value is accepted only when it
+    equals the derived one, so resolved configs re-parse but a conflicting value fails
+    instead of being silently replaced. The caller applies the derived value."""
+    if field in config.model_fields_set and getattr(config, field) != value:
+        raise ValueError(
+            f"{path} ({getattr(config, field)!r}) conflicts with the derived value ({value!r}). "
+            "It is set automatically by the launcher; remove it."
+        )

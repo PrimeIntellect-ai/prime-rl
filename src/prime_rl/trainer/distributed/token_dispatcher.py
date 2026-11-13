@@ -6,8 +6,8 @@ import torch
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.distributed.collectives import (
+    all_to_all_counts,
     all_to_all_single,
-    all_to_all_single_equal,
     mxfp8_all_to_all_combine,
     mxfp8_all_to_all_dispatch,
 )
@@ -27,8 +27,6 @@ class TokenDispatcher(Protocol):
         *,
         score_before_experts: bool,
     ) -> torch.Tensor: ...
-
-    def synchronize(self) -> None: ...
 
 
 class FusedTokenDispatcher:
@@ -92,9 +90,6 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
         routed_output = experts(routed_input, num_tokens_per_expert)
         return self.combine(routed_output, state)
 
-    def synchronize(self) -> None:
-        return None
-
 
 @dataclass(frozen=True)
 class PermutationState:
@@ -114,6 +109,7 @@ class LocalDispatchState:
 class TorchDispatchState(LocalDispatchState):
     input_splits: torch.Tensor
     output_splits: torch.Tensor
+    num_routed_tokens: int
 
 
 def permute_for_grouped_gemm(
@@ -175,6 +171,26 @@ def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> tor
     return output[:-1]
 
 
+@torch.library.custom_op("prime_rl::stable_argsort", mutates_args=())
+def stable_argsort(x: torch.Tensor) -> torch.Tensor:
+    """Stable argsort that keeps torch.compile from recompiling when the token count changes.
+
+    Left inline, torch.compile recompiles the whole decoder layer whenever a rank's routed-token count crosses 32767,
+    the int16 bound inductor's sort lowering guards on:
+    https://github.com/pytorch/pytorch/blob/v2.13.0/torch/_inductor/lowering.py#L7719-L7726
+    Wrapping the sort in a custom op prevents that. Performance should not suffer: above a routed-token count of
+    512, torch.compile already runs this same ATen sort:
+    https://github.com/pytorch/pytorch/blob/v2.13.0/torch/_inductor/ir.py#L3085-L3095
+    It needs no backward: it returns integer indices, which carry no gradient.
+    """
+    return torch.argsort(x, stable=True)
+
+
+@stable_argsort.register_fake
+def _(x: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(x, dtype=torch.int64)
+
+
 def _local_reorder(
     x: torch.Tensor,
     top_scores: torch.Tensor,
@@ -190,7 +206,7 @@ def _local_reorder(
         min=0,
         max=num_experts,
     ).to(torch.int64)
-    route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
+    route_indices_experts_sorted = stable_argsort(flattened_experts)
     top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
     # A route slot is token_index * top_k + expert_slot (position among selected experts).
     # // top_k recovers its token; keep the full slot index to restore outputs in combine.
@@ -292,16 +308,18 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return all_to_all_single(x, output_splits, input_splits, self.group)
+        return all_to_all_single(x, output_splits, input_splits, self.group, output_size)
 
     def _combine_tokens(
         self,
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return all_to_all_single(x, output_splits, input_splits, self.group)
+        return all_to_all_single(x, output_splits, input_splits, self.group, output_size)
 
     def dispatch(
         self,
@@ -326,7 +344,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
 
         ep_degree = self.group.size()
         with torch.no_grad():
-            num_tokens_per_expert_group = all_to_all_single_equal(num_tokens_per_expert, self.group)
+            num_tokens_per_expert_group = all_to_all_counts(num_tokens_per_expert, self.group)
             input_splits, output_splits = torch.stack(
                 (
                     num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
@@ -334,7 +352,9 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
                 )
             ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
 
-        routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits)
+        num_routed_tokens = routed_input.shape[0]
+        num_received_tokens = int(output_splits.sum())
+        routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits, num_received_tokens)
         experts_per_rank = self.num_experts // ep_degree
         routed_input, num_tokens_per_expert, permutation = permute_for_grouped_gemm(
             routed_input,
@@ -350,12 +370,15 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             permutation=permutation,
             input_splits=input_splits,
             output_splits=output_splits,
+            num_routed_tokens=num_routed_tokens,
         )
         return routed_input, num_tokens_per_expert, state
 
     def combine(self, routed_output: torch.Tensor, state: TorchDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
-        routed_output = self._combine_tokens(routed_output, state.input_splits, state.output_splits)
+        routed_output = self._combine_tokens(
+            routed_output, state.input_splits, state.output_splits, state.num_routed_tokens
+        )
         return _combine_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
@@ -379,13 +402,15 @@ class MXFP8TorchTokenDispatcher(TorchTokenDispatcher):
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return mxfp8_all_to_all_dispatch(x, output_splits, input_splits, self.group)
+        return mxfp8_all_to_all_dispatch(x, output_splits, input_splits, self.group, output_size)
 
     def _combine_tokens(
         self,
         x: torch.Tensor,
         output_splits: torch.Tensor,
         input_splits: torch.Tensor,
+        output_size: int,
     ) -> torch.Tensor:
-        return mxfp8_all_to_all_combine(x, output_splits, input_splits, self.group)
+        return mxfp8_all_to_all_combine(x, output_splits, input_splits, self.group, output_size)

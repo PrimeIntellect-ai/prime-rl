@@ -22,6 +22,7 @@ from collections import OrderedDict
 from itertools import groupby
 from pathlib import Path
 
+import numpy as np
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
@@ -29,7 +30,7 @@ from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, g
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.live import LiveFolds, live_etag, live_path, live_rows, stage
-from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
+from prime_rl.monitors.file.traces.update import STREAM_FIELDS, branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir, get_platform_run_path
 from prime_rl.utils.process import set_proc_title
@@ -240,8 +241,10 @@ def resolved_config_dir(run_dir: Path, attempt: str = "latest") -> Path:
 
 def main_config(run_dir: Path) -> tuple[str, dict]:
     configs = resolved_config_dir(run_dir)
-    if (configs / "sft.json").exists():
-        return "sft", read_json(configs / "sft.json")
+    # Pretraining uses the same trainer as SFT, so the dashboard shows its runs as SFT runs.
+    for name in ("sft.json", "pretrain.json"):
+        if (configs / name).exists():
+            return "sft", read_json(configs / name)
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
     if (configs / "eval.json").exists():
@@ -836,16 +839,6 @@ def timeline_status(trace: dict) -> str:
     return "completed"
 
 
-def timeline_reward(trace: dict) -> float | None:
-    rewards = [reward for reward in (trace.get("rewards") or {}).values() if isinstance(reward, dict)]
-    if not rewards:
-        return None
-    return sum(
-        (reward.get("score") or 0) * (reward.get("weight") if reward.get("weight") is not None else 1)
-        for reward in rewards
-    )
-
-
 def annotation_streams(run_dir: Path) -> list[Path]:
     """The annotation streams, one chunk directory per producer, each indexed beside it."""
     directory = get_annotations_dir(run_dir)
@@ -894,6 +887,27 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     return index
 
 
+def resolve_stream_refs(stream: Path, update: dict) -> None:
+    """An update's stream refs, decoded from the ``.bin`` chunks beside its line into
+    float lists with NaN as None. A ref past the end of a truncated chunk reads as no
+    value: fold_trace_updates skips a None stream, while a ref dict left in place
+    would slice it and raise."""
+    for branch in update.get("branches") or []:
+        for field in STREAM_FIELDS:
+            ref = branch.get(field)
+            if not isinstance(ref, dict):
+                continue
+            nbytes = ref["count"] * np.dtype(np.float32).itemsize
+            with open_chunk(stream, ref["bin"], ".bin") as f:
+                f.seek(ref["offset"])
+                data = f.read(nbytes)
+            if len(data) < nbytes:
+                branch[field] = None
+                continue
+            values = np.frombuffer(data, dtype=np.float32)
+            branch[field] = orjson.loads(orjson.dumps(values, option=orjson.OPT_SERIALIZE_NUMPY))
+
+
 def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
     """Every update recorded against one trace, read by seeking to each record."""
     entry = annotation_index(run_dir).get(trace_id)
@@ -902,7 +916,9 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
         try:
             with open_chunk(stream, chunk) as f:
                 f.seek(offset)
-                updates.append(orjson.loads(f.readline()))
+                update = orjson.loads(f.readline())
+            resolve_stream_refs(stream, update)
+            updates.append(update)
         except (OSError, orjson.JSONDecodeError):
             continue
     return updates
@@ -952,9 +968,6 @@ def activity_spans(
         ended = call_time.get("end")
         usage = call.get("usage") or {}
         input_tokens, cached_tokens, output_tokens = token_usage(usage)
-        reasoning_tokens = usage.get("reasoning_tokens")
-        if reasoning_tokens is None:
-            reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
         text = " ".join(message_text(node.get("message") or {}).split())
         mask = node.get("mask")
         spans.append(
@@ -972,7 +985,6 @@ def activity_spans(
                 "input_tokens": input_tokens,
                 "cached_tokens": cached_tokens,
                 "output_tokens": output_tokens,
-                "reasoning_tokens": reasoning_tokens,
                 "cost": usage.get("cost"),
                 "trainable": any(mask) if isinstance(mask, list) and mask else None,
             }
@@ -1004,6 +1016,20 @@ def lifecycle_spans(trace: dict) -> list[dict]:
             }
         )
     return spans
+
+
+def new_input_tokens(activities: list[dict]) -> int | None:
+    """Fed-in tokens of one call chain, counted once: each call's prompt beyond the
+    previous call's final sequence, clamped at zero (verifiers' `min_new_input_tokens`)."""
+    total = None
+    previous = 0
+    for span in sorted(activities, key=lambda span: span["call_index"]):
+        if span.get("input_tokens") is None:
+            continue
+        prompt = span["input_tokens"] + (span.get("cached_tokens") or 0)
+        total = (total or 0) + max(0, prompt - previous)
+        previous = prompt + (span.get("output_tokens") or 0)
+    return total
 
 
 def timeline_lane(
@@ -1042,14 +1068,15 @@ def timeline_lane(
         values = [span[field] for span in activities if isinstance(span.get(field), (int, float))]
         return sum(values) if values else None
 
-    input_tokens = total("input_tokens")
-    cached_tokens = total("cached_tokens")
     output_tokens = total("output_tokens")
-    reasoning_tokens = total("reasoning_tokens")
-    total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
-    total_tokens = (
-        total_input_tokens + output_tokens if total_input_tokens is not None and output_tokens is not None else None
-    )
+    if branch:
+        input_tokens = new_input_tokens(activities)
+    else:
+        # the trace counts input on shared branch prefixes once; its call list
+        # interleaves branches, so the lane's spans cannot reproduce that
+        input_tokens = trace.get("num_input_tokens")
+        output_tokens = trace.get("num_output_tokens", output_tokens)
+    total_tokens = input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None
     context_lengths = [
         (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
         for span in activities
@@ -1064,18 +1091,15 @@ def timeline_lane(
         "ended_at": ended,
         "status": status,
         "outcome": status if branch else (trace.get("stop_condition") or status),
-        "reward": timeline_reward(trace),
+        "reward": trace.get("reward") if trace.get("rewards") else None,
         "usage": {
             "model_calls": len(activities),
             "input_tokens": input_tokens,
-            "cached_tokens": cached_tokens,
-            "total_input_tokens": total_input_tokens,
             "output_tokens": output_tokens,
-            "reasoning_tokens": reasoning_tokens,
             "latest_context_tokens": context_lengths[-1] if context_lengths else None,
             "max_context_tokens": max(context_lengths, default=None),
             "total_tokens": total_tokens,
-            "cost": total("cost"),
+            "cost": total("cost") if branch else (trace.get("usage") or {}).get("cost"),
         },
         "spans": spans,
     }
@@ -1794,7 +1818,7 @@ _live_folds = LiveFolds()
 
 @app.get("/api/runs/{run}/live")
 def live_traces(run: str, etag: str | None = None) -> dict:
-    """The run's in-flight traces, folded from the env servers' streamed deltas
+    """The run's in-flight traces, folded from the env worker pools' streamed deltas
     (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
     phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
     gone has finished and sits in the stream. ``etag`` is the fingerprint the client

@@ -7,7 +7,6 @@ import torch.distributed as dist
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM as PrimeRLGptOssForCausalLM
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention, substitute_gpt_oss_ulysses_attention
-from prime_rl.utils.cp import setup_cp_attention_params
 
 
 def _config() -> GptOssConfig:
@@ -95,8 +94,6 @@ def test_gpt_oss_context_parallel_attention(cp_process_group):
         reference_sink_grad = attention.sinks.grad.detach().clone()
         attention.sinks.grad = None
 
-        position_ids = torch.tensor([[0, 1, 2, 3, 4, 0, 1, 2]], device="cuda")
-        setup_cp_attention_params(position_ids, seq_lens=torch.tensor([5, 3], device="cuda"))
         substitute_gpt_oss_ulysses_attention(process_group)
 
         local_slice = slice(local_rank * 4, (local_rank + 1) * 4)

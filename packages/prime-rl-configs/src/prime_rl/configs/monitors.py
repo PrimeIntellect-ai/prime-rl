@@ -35,7 +35,7 @@ class FileMonitorConfig(BaseConfig):
     compress: bool = True
     """Seal full chunks with zstd once the stream rolls past them (the live chunk stays
     plain text). Sealed chunks use seekable frames: a reader still lands on one line,
-    and ``zstd -dcf stream/* | jq`` reads a whole stream."""
+    and ``zstd -dcf stream/*.jsonl* | jq`` reads a whole stream."""
 
     float_decimals: int | None = 4
     """Decimals kept for per-token float streams (logprobs, entropies, advantages) in
@@ -43,14 +43,9 @@ class FileMonitorConfig(BaseConfig):
     not the records, so this only trades record size against overlay precision."""
 
 
-class PrimeTrainMonitorConfig(BaseConfig):
+class PrimeMonitorConfig(BaseConfig):
     name: str | None = None
-    """Run name shown on the platform. Inherits ``run.name`` when unset."""
-
-
-class PrimeEvalMonitorConfig(BaseConfig):
-    name: str | None = None
-    """Evaluation name shown on the platform. Inherits ``run.name`` when unset."""
+    """Run or evaluation name shown on Prime. Inherits ``run.name`` when unset."""
 
 
 class MonitorsConfig(BaseConfig):
@@ -60,12 +55,7 @@ class MonitorsConfig(BaseConfig):
     file: FileMonitorConfig | None = FileMonitorConfig()
     """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""
 
-
-class TrainMonitorsConfig(MonitorsConfig):
-    prime: PrimeTrainMonitorConfig | None = None
-    """Log metrics and episodes to the Prime Intellect platform. If None, disabled."""
-
-
-class EvalMonitorsConfig(MonitorsConfig):
-    prime: PrimeEvalMonitorConfig | None = None
-    """Upload every eval source's finished epoch as an evaluation on the Prime Intellect platform. If None, disabled."""
+    prime: PrimeMonitorConfig | None = PrimeMonitorConfig()
+    """Log metrics and episodes to the Prime Intellect platform: a training run's processes
+    log to one platform run, and a standalone eval uploads each source's epoch as an
+    evaluation. On by default and needs a Prime API key; disable with ``--no-monitors.prime``."""

@@ -6,13 +6,9 @@
 #
 #   uv run eval @ tests/regression/configs/eval/gsm8k.toml
 
-model = "internal/glm-5.3-high-throughput"
+model = "internal/deepseek-v4.1-flash-1017-ci"
 group_size = 1
 dashboard = false
-
-[concurrency]
-min_inflight = 256
-max_inflight = 256
 
 [sampling]
 max_completion_tokens = 8192

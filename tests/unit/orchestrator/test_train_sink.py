@@ -9,15 +9,21 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
-from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage
+from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage, WeightVersionSpan
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.control.types import ConfigUpdate
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.train_sink import TrainSink
+from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
+from prime_rl.orchestrator.utils import episode_group_id
+from prime_rl.transports.payload import PayloadHook, wait_for_deletes
 from prime_rl.utils.logger import setup_logger
+
+# Samples hold numpy streams; encode them as lists to compare them byte for byte.
+ENCODER = msgspec.msgpack.Encoder(enc_hook=lambda value: value.tolist())
 
 setup_logger("warning")
 
@@ -69,12 +75,13 @@ def episode(traces, *, group="g", version=0):
     )
 
 
-def sink(*, constant=True, admitted=True, batch_size=100):
-    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_off_policy_steps=1)
+def sink(*, constant=True, admitted=True, batch_size=100, closed=None, group_size=None):
+    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
-        config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
+        config=SimpleNamespace(group_size=1),
+        sampling_at=lambda step: vf.SamplingConfig(temperature=1.0),
         requires_sampling_masks=False,
-        requires_top_logprobs=False,
+        requires_sampler_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
     )
     return TrainSink(
@@ -84,6 +91,8 @@ def sink(*, constant=True, admitted=True, batch_size=100):
         progress=Progress(),
         batch_size=batch_size,
         on_result=lambda group: admitted,
+        on_groups_closed=closed.extend if closed is not None else None,
+        group_size=group_size,
     )
 
 
@@ -96,10 +105,10 @@ def test_zero_output_finalization_releases_objects_without_reporting(constant, a
             t = trace(advantage=0)
             ep = episode([t], group=str(i))
             refs.extend([weakref.ref(t), weakref.ref(ep)])
-            before = msgspec.msgpack.encode(trace_to_samples(t, env_name="test"))
+            before = ENCODER.encode(trace_to_samples(t, env_name="test"))
             batch = await s.add(ep)
             assert batch is None or not batch.samples
-            assert msgspec.msgpack.encode(trace_to_samples(t, env_name="test")) == before
+            assert ENCODER.encode(trace_to_samples(t, env_name="test")) == before
             assert s.take_rollout_window() is None
             assert s.rollout_window.attempts == i + 1
             del t, ep, batch
@@ -127,14 +136,14 @@ def test_queued_trace_does_not_own_discarded_siblings():
         ep = episode([kept, *discarded])
         refs = [weakref.ref(t) for t in discarded] + [weakref.ref(ep)]
         s = sink()
-        before = msgspec.msgpack.encode(trace_to_samples(kept, env_name="test"))
+        before = ENCODER.encode(trace_to_samples(kept, env_name="test"))
         assert await s.add(ep) is None
-        assert all(t.nodes[2].token_ids == [3, 4] for t in discarded)
+        assert all(t.nodes[2].token_ids.tolist() == [3, 4] for t in discarded)
         del discarded, ep
         gc.collect()
         assert all(ref() is None for ref in refs)
         assert s.episode_by_trace[kept.id].traces == [kept]
-        assert msgspec.msgpack.encode(trace_to_samples(kept, env_name="test")) == before
+        assert ENCODER.encode(trace_to_samples(kept, env_name="test")) == before
         window = s.take_rollout_window(force=True)
         assert window.traces == 5 and window.attempts == 1
         assert window.metrics.to_dict()["rollout/traces/discarded"] == 4
@@ -156,8 +165,40 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
         assert ref() is None
         window = s.take_rollout_window(force=True)
         assert window.attempts == 0 and window.traces == 0
-        assert window.metrics.to_dict()["off_policy/dropped"] == 1
+        assert window.metrics.to_dict()["staleness/rollout/dropped"] == 1
         assert s.take_rollout_window(force=True) is None
+
+    asyncio.run(run())
+
+
+def test_mask_stale_tokens_keeps_fresher_tokens():
+    t = trace()
+    # Unlabelled tokens take the episode's dispatch version (the fallback).
+    t.nodes[2].weight_versions = [
+        WeightVersionSpan(version="default", start=0, end=1),
+        WeightVersionSpan(version="3", start=1, end=2),
+    ]
+    [sample] = trace_to_samples(t, env_name="test")
+    sample.ref_kl_weights = np.ones(4, dtype=np.float32)
+    assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2) == 1
+    assert sample.mask.tolist() == [False, False, False, True]
+    assert sample.ref_kl_weights.tolist() == [1.0, 1.0, 0.0, 1.0]
+
+
+def test_partially_stale_trace_ships_fresh_tokens():
+    async def run():
+        s = sink(batch_size=1)
+        s.progress.step = 4
+        t = trace()
+        t.nodes[2].weight_versions = [
+            WeightVersionSpan(version="default", start=0, end=1),
+            WeightVersionSpan(version="3", start=1, end=2),
+        ]
+        batch = await s.add(episode([t], version=1))
+        assert batch.samples[0].mask.tolist() == [False, False, False, True]
+        # Batch 4 trains on v3: the unlabelled token took dispatch version v1.
+        assert batch.samples[0].staleness.tolist() == [-1, -1, 2, 0]
+        assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
 
     asyncio.run(run())
 
@@ -172,7 +213,7 @@ def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
         assert len(batch.samples) == 1 and batch.samples[0].trace_id == kept.id
         assert len(batch.cohort) == 1 and batch.cohort.episodes[0].id == ep_id
         assert sibling.id in s.pending_batch
-        assert zero.nodes[2].token_ids == [3, 4]
+        assert list(zero.nodes[2].token_ids) == [3, 4]
         batch = await s.take_batch()
         assert len(batch.samples) == 2
         assert len(batch.cohort) == 1 and batch.cohort.num_traces == 2
@@ -201,11 +242,11 @@ def test_failures_and_cancellations_accumulate_until_reporting():
             assert s.take_rollout_window() is None
             assert not s.pending_group_failures
         for i in range(4):
-            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "stale"))
+            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "overload"))
         assert s.take_rollout_window() is None
         window = s.take_rollout_window(force=True)
         assert window.attempts == window.discarded == 12
-        assert window.stale == 4
+        assert window.cancelled == 4
         assert window.errored == 8
         assert window.metrics.to_dict()["train/agg/all/dispatch_failure/mean"] == 1
         assert not s.pending_group_cancellations
@@ -228,5 +269,158 @@ def test_partial_window_and_shutdown_release():
         assert window.attempts == 1
         assert window.metrics.to_dict()["rollout/queued/cancelled"] == 1
         assert s.take_rollout_window(force=True) is None
+
+    asyncio.run(run())
+
+
+def test_reconfigure_applies_new_batch_size_and_staleness():
+    async def run():
+        s = sink(batch_size=4)
+        await s.add(episode([trace()], group="a"))
+        await s.add(episode([trace()], group="b"))
+        config = OrchestratorConfig(batch_size=2, max_staleness=1)
+        s.reconfigure(ConfigUpdate(revision=1, step=1, config=config, changes=()))
+        assert len((await s.take_batch()).samples) == 2
+
+        s.progress.step = 2
+        await s.add(episode([trace()], group="c"))
+        config = OrchestratorConfig(batch_size=2, max_staleness=0)
+        s.reconfigure(ConfigUpdate(revision=2, step=2, config=config, changes=()))
+        await s.take_batch()
+        assert not s.pending_batch
+
+    asyncio.run(run())
+
+
+def test_groups_close_when_they_finalize_without_shipping():
+    async def run():
+        closed = []
+        rejected = sink(admitted=False, closed=closed)
+        await rejected.add(episode([trace()], group="rejected"))
+        assert closed == ["rejected"]
+
+        s = sink(batch_size=2, closed=closed)
+        await s.add(episode([trace(ok=False)], group="failed"))
+        await s.cancel(GroupCancellation("train", "test", "overload", 1, 1, "overload"))
+        assert closed == ["rejected", "failed", "overload"]
+
+        # A shutdown drop re-runs on resume, so the group stays open.
+        await s.cancel(GroupCancellation("train", "test", "shutdown", 1, 1, "shutdown"))
+        assert closed == ["rejected", "failed", "overload"]
+
+        s.progress.step = 4
+        await s.add(episode([trace()], group="stale"))
+        assert closed[-1] == "stale" and not s.pending_batch
+
+        closed.clear()
+        pruned = sink(constant=False, batch_size=1, closed=closed)
+        batch = await pruned.add(episode([trace(advantage=0)], group="pruned"))
+        assert not batch.samples and closed == ["pruned"]
+
+    asyncio.run(run())
+
+
+def test_shipped_groups_close_when_the_consumer_ships_them():
+    async def run():
+        closed = []
+        s = sink(constant=False, batch_size=2, closed=closed)
+        batch = await s.add(episode([trace(), trace(advantage=0), trace()], group="partial"))
+        assert len(batch.samples) == 1 and len(s.pending_batch) == 1
+        assert {episode_group_id(episode) for episode in batch.cohort.episodes} == {"partial"}
+        # Taking the batch does not close it: a batch that never ships re-runs on resume.
+        assert closed == []
+        s.shipped(batch)
+        assert closed == ["partial"]
+
+    asyncio.run(run())
+
+
+def test_unshipped_groups_stay_open_at_shutdown():
+    async def run():
+        closed = []
+        s = sink(constant=False, batch_size=2, closed=closed)
+        await s.add(episode([trace(), trace(advantage=0), trace()], group="partial"))
+        s.discard_queued()
+        assert closed == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("make_trace", "admitted", "reason"),
+    [
+        (lambda: trace(advantage=0), True, "zero advantage"),
+        (lambda: trace(), False, "rejected by curriculum"),
+        (lambda: trace(trainable=False), True, "no trainable survivors"),
+    ],
+)
+def test_zero_output_warning_names_the_drop_reason(monkeypatch, make_trace, admitted, reason):
+    warnings = []
+    monkeypatch.setattr(
+        "prime_rl.orchestrator.train_sink.get_logger",
+        lambda: SimpleNamespace(debug=lambda message: None, warning=warnings.append),
+    )
+    s = sink(admitted=admitted, batch_size=4)
+
+    async def run():
+        for i in range(4):
+            await s.add(episode([make_trace()], group=str(i)))
+
+    asyncio.run(run())
+
+    assert warnings == [
+        f"No admitted train payload after 4 finalized units (1 zero-output batch equivalents), by drop reason: {reason}=4"
+    ]
+
+
+def test_open_group_closes_at_the_size_it_was_drawn_with():
+    async def run():
+        closed = []
+        sizes = {"old": 2, "new": 3}
+        s = sink(batch_size=100, closed=closed, group_size=sizes.get)
+        # A live update raises the env's group size while group "old" is open.
+        s.train_envs.get("test").config.group_size = 3
+        for _ in range(2):
+            await s.add(episode([trace()], group="old"))
+        assert "old" not in s.pending_groups
+        for _ in range(2):
+            await s.add(episode([trace()], group="new"))
+        assert len(s.pending_groups["new"]) == 2
+        await s.add(episode([trace()], group="new"))
+        assert "new" not in s.pending_groups
+        # A group the source does not know takes the env's current size.
+        for _ in range(2):
+            await s.add(episode([trace()], group="unknown"))
+        assert len(s.pending_groups["unknown"]) == 2
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("support", ["missing", "head", "replayed"])
+def test_truncated_sampling_requires_replayed_support(support):
+    async def run():
+        hook = PayloadHook()
+        t = trace()
+        if support != "missing":
+            t.nodes[-1].sampler_support = vf.SamplerSupport(
+                ids=np.array([3, 4], dtype=np.int32),
+                counts=np.array([1, 1], dtype=np.int32),
+                replayed=np.full(2, support == "replayed", dtype=np.bool_),
+                logprobs=np.array([-0.1, -0.2], dtype=np.float32),
+            )
+        ep = episode([t])
+        hook.keep(ep, vf.SamplingConfig())
+        s = sink()
+        s.train_envs.get("test").requires_sampling_masks = True
+        try:
+            if support == "replayed":
+                await s.add(ep)
+                assert s.pending_batch
+            else:
+                with pytest.raises(RuntimeError, match="carry no sampling masks"):
+                    await s.add(ep)
+        finally:
+            hook.discard(ep)
+            wait_for_deletes()
 
     asyncio.run(run())

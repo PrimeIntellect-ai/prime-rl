@@ -1,3 +1,4 @@
+import inspect
 import json as json_module
 import logging
 import sys
@@ -68,8 +69,9 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        # Step out of this handler, then past stdlib logging's frames, to the call site.
+        frame, depth = inspect.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
 
@@ -88,11 +90,13 @@ def setup_logger(
     json_logging: bool = False,
     log_file: Path | None = None,
     console_level: str | None = None,
+    colorize: bool = True,
 ):
     """Install the prime-rl logger: a console sink (colorized, or JSON lines with
     ``json_logging``) and, with ``log_file``, a plain-text file sink for processes that
     no launcher redirects. ``console_level`` raises the console sink's threshold above
-    ``log_level`` (the file keeps everything), e.g. to surface only errors while a run is in flight."""
+    ``log_level`` (the file keeps everything), e.g. to surface only errors while a run is in flight.
+    ``colorize=False`` writes the console sink in the file sink's plain layout."""
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
 
@@ -116,6 +120,9 @@ def setup_logger(
     else:
         debug = "".join([f"<level>{NO_BOLD}", " [{file}::{line}]", f"{RESET}</level>"])
     format = time + message + debug
+    plain = "{time:HH:mm:ss} {level: >7} " + f"{tag_prefix}{{message}}"
+    if log_level.upper() == "DEBUG":
+        plain += " [{file}::{line}]"
 
     # NOTE: We are creating a new "module-level" logger instance for prime-rl so that third-party code cannot "hijack" our logger
     # This is a bit hacky because loguru does not publicly expose the logger class, but oh well, it works
@@ -143,17 +150,30 @@ def setup_logger(
     if json_logging and tag:
         logger = logger.bind(tag=tag)
 
+    # Records bound with ``console=True`` (the launcher's banner) pass ``console_level``.
+    console_no = logger.level((console_level or log_level).upper()).no
+
+    def console_filter(record) -> bool:
+        return record["level"].no >= console_no or record["extra"].get("console", False)
+
     # diagnose=False: repr()-ing frame locals that hold multi-GB tensors makes a crash look like a hang.
     # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
     if json_logging:
-        logger.add(json_sink, level=(console_level or log_level).upper(), enqueue=True, diagnose=False)
+        logger.add(json_sink, level=log_level.upper(), filter=console_filter, enqueue=True, diagnose=False)
     else:
-        logger.add(sys.stdout, format=format, level=(console_level or log_level).upper(), colorize=True, diagnose=False)
+        logger.add(
+            sys.stdout,
+            format=format if colorize else plain,
+            level=log_level.upper(),
+            filter=console_filter,
+            colorize=colorize,
+            diagnose=False,
+        )
     if log_file is not None:
         # The console format carries raw ANSI codes; the file gets a plain layout.
         logger.add(
             log_file,
-            format="{time:HH:mm:ss} {level: >7} " + f"{tag_prefix}{{message}}",
+            format=plain,
             level=log_level.upper(),
             colorize=False,
             diagnose=False,

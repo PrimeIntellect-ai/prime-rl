@@ -13,13 +13,15 @@ from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
+from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig, LagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and_contiguous
 from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
-from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerForCausalLM, MuseGlimmerTextConfig
+from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -40,11 +42,16 @@ from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalL
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
 AutoConfig.register("deepseek_v4", DeepseekV4Config, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
+AutoConfig.register("glm5_next", Glm5NextConfig, exist_ok=True)
+AutoConfig.register("glm5_next_text", Glm5NextTextConfig, exist_ok=True)
 AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
 AutoConfig.register("gpt_oss", GptOssConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
+AutoConfig.register("muse_glimmer", MuseGlimmerConfig, exist_ok=True)
+AutoConfig.register("muse_glimmer_text", MuseGlimmerTextConfig, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
+AutoConfig.register("nemotron_h_omni", NemotronHOmniConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
 AutoConfig.register("qwen3_5", Qwen3_5Config, exist_ok=True)
 AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
@@ -64,10 +71,15 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (AfmoeConfig, AfmoeForCausalLM),
     (DeepseekV4Config, DeepseekV4ForCausalLM),
     (Glm4MoeConfig, Glm4MoeForCausalLM),
+    (Glm5NextTextConfig, Glm5NextForCausalLM),
+    (Glm5NextConfig, Glm5NextForCausalLM),
     (GlmMoeDsaConfig, GlmMoeDsaForCausalLM),
     (LagunaConfig, LagunaForCausalLM),
     (MiniMaxM2Config, MiniMaxM2ForCausalLM),
+    (MuseGlimmerTextConfig, MuseGlimmerForCausalLM),
+    (MuseGlimmerConfig, MuseGlimmerForCausalLM),
     (NemotronHConfig, NemotronHForCausalLM),
+    (NemotronHOmniConfig, NemotronHForCausalLM),
     (Qwen3MoeConfig, Qwen3MoeForCausalLM),
     (Qwen3_5TextConfig, Qwen3_5ForCausalLM),
     (Qwen3_5MoeTextConfig, Qwen3_5ForCausalLM),
@@ -116,6 +128,8 @@ _CUSTOM_VLM_MAPPING: dict[str, type] = {
     "qwen3_5": Qwen3_5ForCausalLM,
     "qwen3_5_moe": Qwen3_5ForCausalLM,
     "qwen4_exp": Qwen3_8FlashNextForCausalLM,
+    "glm5_next": Glm5NextForCausalLM,
+    "muse_glimmer": MuseGlimmerForCausalLM,
 }
 
 

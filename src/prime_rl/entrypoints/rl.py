@@ -1,18 +1,21 @@
 import json
 import os
+import socket
 import subprocess
 import sys
-import uuid
+import tempfile
+import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
-from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
+from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -23,9 +26,9 @@ from prime_rl.utils.pathing import (
     get_launcher_log_dir,
     launcher_attempt_env,
     prepare_attempt_dirs,
+    prepare_run,
     resolve_latest_ckpt_step,
-    validate_run_dir,
-    write_env_server_config,
+    write_env_worker_pool_config,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -37,6 +40,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.utils import get_free_port
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -46,23 +50,27 @@ ORCHESTRATOR_CONFIG = "orchestrator.json"
 INFERENCE_CONFIG = "inference.json"
 
 ENVS_DIR = "envs"
+ROLLOUT_STORE_DIR = Path(tempfile.gettempdir()) / "prime-rl-rollout-store"
+
+MODELEXPRESS_BIN_DIR = Path(__file__).resolve().parents[3] / "third_party" / "modelexpress" / "bin"
+MODELEXPRESS_READY_TIMEOUT_S = 120
 
 
-def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
+def env_worker_pools(config: RLConfig) -> list[tuple[str, EnvConfig]]:
     """``(split, source)`` for every launcher-managed train/eval source. The launcher
-    runs one env server per source; each binds an OS-assigned port and publishes it to
+    runs one env worker pool per source; each binds an OS-assigned port and publishes it to
     its address file, where the orchestrator picks it up. A source with ``serve.address``
-    set is externally managed — its server runs elsewhere and only the orchestrator
-    connects to it — so the launcher neither writes its TOML nor spawns a server for it."""
+    set is externally managed — its pool runs elsewhere and only the orchestrator
+    connects to it — so the launcher neither writes its TOML nor starts a pool for it."""
     return [(split, source) for split, source in config.orchestrator.env_sources if source.serve.address is None]
 
 
-def env_server_names(config: RLConfig, split: str) -> list[str]:
-    """Names of the launcher-managed env servers for one split."""
-    return [source.resolved_name for source_split, source in env_servers(config) if source_split == split]
+def env_worker_pool_names(config: RLConfig, split: str) -> list[str]:
+    """Names of the launcher-managed env worker pools for one split."""
+    return [source.resolved_name for source_split, source in env_worker_pools(config) if source_split == split]
 
 
-def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
+def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | dict[str, Any] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / RL_CONFIG, "w") as f:
@@ -77,9 +85,78 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
     ]
     if config.inference is not None:
         components.append(("Inference", config_dir / INFERENCE_CONFIG))
-    if env_servers(config):
+    if env_worker_pools(config):
         components.append(("Envs", f"{config_dir}/{ENVS_DIR}/*/*.json"))
     return components
+
+
+def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, timeout: float) -> None:
+    """Block until ``host:port`` accepts TCP connections; fail if ``name`` exits first."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
+            pass
+        if processes.stop_events[name].is_set():
+            raise RuntimeError(f"{name} exited before listening on {host}:{port}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"{name} did not listen on {host}:{port} within {timeout}s")
+        time.sleep(0.5)
+
+
+def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> None:
+    """Start a run-scoped ModelExpress server backed by its own Redis."""
+    server, redis = MODELEXPRESS_BIN_DIR / "modelexpress-server", MODELEXPRESS_BIN_DIR / "redis-server"
+    if not (server.is_file() and redis.is_file()):
+        raise FileNotFoundError(
+            f"ModelExpress server binaries are missing in {MODELEXPRESS_BIN_DIR}; run scripts/install_modelexpress.sh"
+        )
+    state_dir = log_dir / "modelexpress"
+    (state_dir / "cache").mkdir(parents=True, exist_ok=True)
+
+    redis_port = get_free_port()
+    processes.start(
+        "redis",
+        [
+            str(redis),
+            "--port",
+            str(redis_port),
+            "--bind",
+            "127.0.0.1",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+            "--dir",
+            str(state_dir),
+        ],
+        env=dict(os.environ),
+        log_path=state_dir / "redis.log",
+    )
+    wait_for_port("127.0.0.1", redis_port, processes, "redis", MODELEXPRESS_READY_TIMEOUT_S)
+
+    processes.start(
+        "modelexpress",
+        [
+            str(server),
+            "--port",
+            str(port),
+            "--metrics-port",
+            "0",
+            "--cache-directory",
+            str(state_dir / "cache"),
+        ],
+        env={
+            **os.environ,
+            "MX_METADATA_BACKEND": "redis",
+            "REDIS_URL": f"redis://127.0.0.1:{redis_port}",
+            "MX_HEARTBEAT_TIMEOUT_SECS": "31536000",
+        },
+        log_path=state_dir / "server.log",
+    )
+    wait_for_port("127.0.0.1", port, processes, "modelexpress", MODELEXPRESS_READY_TIMEOUT_S)
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
@@ -92,11 +169,14 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     if config.inference is not None:
         write_pd_configs(config.inference, output_dir)
 
-    # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
+    # One EnvWorkerPoolConfig per launcher-managed source: `env-worker-pool @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
-    for split, source in env_servers(config):
-        write_env_server_config(output_dir, split, source, config.orchestrator.log)
+    # Train pools of a retaining run keep their arrays on node-local disk, not in memory.
+    retain = config.rollout_transport is not None and config.rollout_transport.retain
+    for split, source in env_worker_pools(config):
+        store_dir = ROLLOUT_STORE_DIR if retain and split == "train" else None
+        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, store_dir)
 
 
 def rl_local(config: RLConfig):
@@ -122,7 +202,7 @@ def rl_local(config: RLConfig):
             trainer=True,
             orchestrator=True,
             inference=config.inference is not None,
-            env_names={split: env_server_names(config, split) for split in ("train", "eval")},
+            env_names={split: env_worker_pool_names(config, split) for split in ("train", "eval")},
         )
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
@@ -157,6 +237,10 @@ def rl_local(config: RLConfig):
             )
 
     with ProcessGroup() as processes:
+        if config.weight_broadcast is not None and config.weight_broadcast.type == "modelexpress":
+            logger.info(f"Starting ModelExpress server on port {config.weight_broadcast.port}")
+            start_modelexpress(processes, config.weight_broadcast.port, log_dir)
+
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
@@ -183,9 +267,9 @@ def rl_local(config: RLConfig):
 
         frozen_endpoints: list[str] = []
         for env in config.orchestrator.train.source:
-            for ref in (env.algo.sampling.source, getattr(env.algo, "teacher", None)):
-                if isinstance(ref, FrozenModelConfig):
-                    frozen_endpoints.append(f"{ref.name} ({ref.base_url})")
+            ref = getattr(env.algo, "teacher", None)
+            if isinstance(ref, FrozenModelConfig):
+                frozen_endpoints.append(f"{ref.name} ({ref.base_url})")
         if frozen_endpoints:
             endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(
@@ -194,15 +278,15 @@ def rl_local(config: RLConfig):
                 "otherwise rollouts will hang."
             )
 
-        # Start one env server per source. The orchestrator waits for each server's
-        # published address and polls until it answers, so the servers and the
+        # Start one env worker pool per source. The orchestrator waits for each broker's
+        # published address and polls until it answers, so the pools and the
         # orchestrator start in parallel.
-        for split, source in env_servers(config):
+        for split, source in env_worker_pools(config):
             name = source.resolved_name
-            logger.info(f"Starting {name} server")
+            logger.info(f"Starting {name} env worker pool")
             processes.start(
-                f"{split} env server {name}",
-                ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
+                f"{split} env worker pool {name}",
+                ["env-worker-pool", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
                 env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
                 log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
@@ -254,7 +338,8 @@ def rl_local(config: RLConfig):
         )
 
         logger.success("Launcher complete")
-        log_dashboard_url(logger, dashboard_url)
+        links = run_links(config.run_dir, log_dir, config.orchestrator.monitors, lambda: bool(processes.error_queue))
+        log_run_links(dashboard_url, links)
 
         # Trainer and orchestrator completion is the successful stop condition.
         processes.wait("trainer", "orchestrator")
@@ -288,22 +373,23 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         else {}
     )
 
-    # Env servers launch next to the orchestrator, one per launcher-managed train/eval source.
-    train_env_names = env_server_names(config, "train")
-    eval_env_names = env_server_names(config, "eval")
+    # Env worker pools launch on every inference node, one replica per launcher-managed train/eval source.
+    train_env_names = env_worker_pool_names(config, "train")
+    eval_env_names = env_worker_pool_names(config, "eval")
 
-    nixl_broadcast = (
+    # NIXL and ModelExpress weight broadcasts both rendezvous through a ModelExpress server.
+    mx_broadcast = (
         config.weight_broadcast
-        if config.weight_broadcast is not None and config.weight_broadcast.type == "nixl"
+        if config.weight_broadcast is not None and config.weight_broadcast.type in ("nixl", "modelexpress")
         else None
     )
-    launch_modelexpress = nixl_broadcast is not None and config.slurm.launch_modelexpress
     modelexpress_vars = {
-        "use_nixl_broadcast": nixl_broadcast is not None,
-        "launch_modelexpress": launch_modelexpress,
-        "modelexpress_host": nixl_broadcast.host if nixl_broadcast is not None else "",
-        "modelexpress_port": nixl_broadcast.port if nixl_broadcast is not None else 0,
-        "modelexpress_redis_port": 6380 if nixl_broadcast is not None and nixl_broadcast.port == 6379 else 6379,
+        "use_nixl_broadcast": mx_broadcast is not None and mx_broadcast.type == "nixl",
+        "uses_modelexpress_server": mx_broadcast is not None,
+        "launch_modelexpress": mx_broadcast is not None and config.slurm.launch_modelexpress,
+        "modelexpress_host": mx_broadcast.host if mx_broadcast is not None else "",
+        "modelexpress_port": mx_broadcast.port if mx_broadcast is not None else 0,
+        "modelexpress_redis_port": 6380 if mx_broadcast is not None and mx_broadcast.port == 6379 else 6379,
     }
 
     ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
@@ -430,8 +516,8 @@ def rl_slurm(config: RLConfig):
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})
         logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', [('RL', config_dir / RL_CONFIG)])}")
 
-        train_env_names = env_server_names(config, "train")
-        eval_env_names = env_server_names(config, "eval")
+        train_env_names = env_worker_pool_names(config, "train")
+        eval_env_names = env_worker_pool_names(config, "eval")
 
         log_message = format_log_message(
             log_dir=log_dir,
@@ -441,11 +527,15 @@ def rl_slurm(config: RLConfig):
             env_names={"train": train_env_names, "eval": eval_env_names},
         )
     else:
+        # The job's run owner registers the Prime run with the whole config; nothing runs it.
+        # It keeps [slurm], which multi-node needs, so it drops the copy in [inference].
+        write_config(config, config_dir, exclude={"dry_run": True, "clean": True, "inference": {"slurm"}})
         write_subconfigs(config, config_dir)
-        logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', rl_config_components(config, config_dir))}")
+        components = [("RL", config_dir / RL_CONFIG), *rl_config_components(config, config_dir)]
+        logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', components)}")
 
-        train_env_names = env_server_names(config, "train")
-        eval_env_names = env_server_names(config, "eval")
+        train_env_names = env_worker_pool_names(config, "train")
+        eval_env_names = env_worker_pool_names(config, "eval")
 
         has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(
@@ -475,27 +565,12 @@ def rl_slurm(config: RLConfig):
         sys.exit(1)
 
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
-    log_dashboard_url(logger, dashboard_url)
+    log_run_links(dashboard_url)
 
 
 def rl(config: RLConfig):
-    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
-    # the vehicle for runtime info between processes, and every spawned process inherits
-    # them. Components launched standalone have no run identity. TODO: fetch the id from
-    # the Prime SDK once runs are registered there.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    resuming = config.resume is not None
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(
-        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
-    )
-    config.run_dir.mkdir(parents=True, exist_ok=True)
-    if ckpt_output_dir is not None:
-        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_run(config, ckpt_output_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
@@ -503,7 +578,7 @@ def rl(config: RLConfig):
     # from a previous run and the orchestrator would see a negative async level.
     get_logger().info("Starting RL run")
     resume_step: int | None = None
-    if resuming:
+    if config.resume is not None:
         if config.resume.dir is not None:
             resume_step = config.resume.dir_step
         else:
@@ -524,14 +599,20 @@ def rl(config: RLConfig):
 
         pre_download_model(config.trainer.model.name, skip_weights=config.trainer.model.debug.random_init)
 
+    from prime_rl.monitors.prime import launch_run
+
+    # On SLURM the job registers the run: the in-job `rl` (single node) or the
+    # batch script's run owner (multi node), so that a live process owns its status.
     if config.slurm is not None:
         rl_slurm(config)
-    else:
+        return
+    with launch_run(config, None if config.dry_run else config.orchestrator.monitors.prime):
         rl_local(config)
 
 
 def main():
     set_proc_title("Launcher")
+    check_mode("rl")
     rl(cli(RLConfig))
 
 

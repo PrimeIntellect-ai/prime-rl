@@ -44,6 +44,7 @@ def rl_process(
         wandb_project,
         "--monitors.wandb.name",
         f"{wandb_name}-custom",
+        "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",
