@@ -296,8 +296,11 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    annotation_writer = AnnotationWriter(
-        parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
+    # Only the file monitor stores annotations, so without it there is nothing to write.
+    annotation_writer = (
+        AnnotationWriter(parallel_dims, world, config.monitors.file.float_decimals)
+        if config.annotations and config.monitors.file
+        else None
     )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -319,7 +322,7 @@ def train(config: TrainerConfig):
         logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
-    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     while True:
         # Reset peak memory stats
@@ -367,6 +370,11 @@ def train(config: TrainerConfig):
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
+            # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
+            # Reading the result on the host waits for every rank's contribution, which each
+            # rank makes only after its fetch: without this, a data master that finished
+            # fetching first deleted the arrays while its CP peers were still fetching them.
+            failed = failed.cpu()
             # Every rank has fetched its arrays now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
@@ -665,7 +673,8 @@ def train(config: TrainerConfig):
                     fold_all=False,
                 )
 
-            annotation_writer.export(micro_batch, out)
+            if annotation_writer is not None:
+                annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
                 routing_stats.append(take_moe_routing_stats(model))
@@ -682,7 +691,8 @@ def train(config: TrainerConfig):
                 lambda: mismatch_kl[mismatch_mask].mean().item(),
             )
 
-        annotation_writer.flush()
+        if annotation_writer is not None:
+            annotation_writer.flush()
         # Free this batch before the next one is received and converted
         del micro_batches, micro_batch
         # Invalid sampler evidence fails the step before the optimizer applies its gradients

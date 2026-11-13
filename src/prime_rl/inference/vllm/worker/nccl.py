@@ -7,7 +7,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, load_weights_checkpoint_layerwise
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -87,7 +87,7 @@ class NCCLWeightBroadcastReceiver:
                 yield key, value
 
 
-class NCCLWeightUpdateWorker(Worker):
+class NCCLWeightUpdateWorker(WeightRPCMixin, Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
 
     def init_broadcaster(
