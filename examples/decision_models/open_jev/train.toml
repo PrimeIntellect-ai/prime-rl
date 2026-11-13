@@ -1,0 +1,53 @@
+# Open-Jev-2B: full fine-tuning of Qwen3.5-2B with a decision head, on one GPU. From the repository root:
+#     PYTHONPATH=examples uv run sft @ examples/decision_models/open_jev/train.toml
+# Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured.
+mode = "sft"
+# One pass over the 79,116 training records is 13,677 steps: a step is one packed row of up to 4,096 tokens, 5.8 records
+# on average.
+max_steps = 13700
+
+[model]
+name = "outputs/open-jev/Qwen3.5-2B-decision"  # the base weights plus the decision head (prepare_checkpoint.py)
+
+[model.implementation]
+import_path = "decision_models.open_jev.model.Qwen3_5Decision"
+
+[data]
+type = "system_one"
+name = "outputs/open-jev/Open-Jev-system-one"  # the records (convert_dataset.py)
+subsets = ["release-v2-redistributable"]
+splits = ["train"]
+seq_len = 4096  # the longest record has 3,091 tokens
+batch_size = 1
+
+[data.encoder]
+import_path = "decision_models.open_jev.encoder.OpenJevEncoder"
+
+[loss]
+type = "custom"
+import_path = "decision_models.loss.decision_loss"
+kwargs = { brier_weight = 0.1 }  # Open-Jev's
+
+[optim]
+lr = 1e-5  # untuned: a conservative starting value for full fine-tuning
+
+[scheduler]
+type = "cosine"  # untuned, like the learning rate; Open-Jev's rates are constant
+warmup_steps = 500
+
+[val]
+interval = 1370  # ten times, the last on the final step
+eval_on_start = true  # the baseline: the untrained head is a zero-shot Yes/No judge
+
+[val.data]
+name = "outputs/open-jev/Open-Jev-system-one"
+subsets = ["release-v2-redistributable"]
+splits = ["validation"]
+seq_len = 4096
+
+[val.data.encoder]
+import_path = "decision_models.open_jev.encoder.OpenJevEncoder"
+
+[ckpt]
+interval = 1370
+keep_last = 2
