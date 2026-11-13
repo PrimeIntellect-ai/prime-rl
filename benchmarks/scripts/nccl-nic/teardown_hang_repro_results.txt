@@ -1,0 +1,34 @@
+checkout 9b4e0f50a, torch 2.14.0+cu130, NCCL 23007
+NCCL 23007 lazy-p2p run 1: PASS in 35 s
+NCCL 23007 lazy-p2p run 2: PASS in 35 s
+NCCL 23007 lazy-p2p run 3: PASS in 36 s
+NCCL 23007 eager-p2p run 1: PASS in 29 s
+NCCL 23007 eager-p2p run 2: PASS in 30 s
+NCCL 23007 eager-p2p run 3: PASS in 29 s
+NCCL 23007 batched-p2p run 1: PASS in 30 s
+NCCL 23007 batched-p2p run 2: PASS in 29 s
+NCCL 23007 batched-p2p run 3: PASS in 29 s
+NCCL 23007 eager-subgroup-p2p run 1: PASS in 31 s
+NCCL 23007 eager-subgroup-p2p run 2: PASS in 30 s
+NCCL 23007 eager-subgroup-p2p run 3: PASS in 30 s
+checkout 8d4adad4c, torch 2.14.0+cu130, NCCL 23203
+NCCL 23203 lazy-p2p run 1: HANG (8/8 ranks entered destroy_process_group, 0/8 finished) in 124 s
+NCCL 23203 lazy-p2p run 2: HANG (8/8 ranks entered destroy_process_group, 0/8 finished) in 124 s
+NCCL 23203 lazy-p2p run 3: HANG (8/8 ranks entered destroy_process_group, 0/8 finished) in 124 s
+NCCL 23203 lazy-p2p run 4: HANG (8/8 ranks entered destroy_process_group, 0/8 finished) in 123 s
+NCCL 23203 lazy-p2p run 5: HANG (8/8 ranks entered destroy_process_group, 0/8 finished) in 124 s
+NCCL 23203 eager-p2p run 1: PASS in 31 s
+NCCL 23203 eager-p2p run 2: PASS in 30 s
+NCCL 23203 eager-p2p run 3: PASS in 31 s
+NCCL 23203 eager-p2p run 4: PASS in 30 s
+NCCL 23203 eager-p2p run 5: PASS in 31 s
+NCCL 23203 batched-p2p run 1: PASS in 30 s
+NCCL 23203 batched-p2p run 2: PASS in 31 s
+NCCL 23203 batched-p2p run 3: PASS in 30 s
+NCCL 23203 batched-p2p run 4: PASS in 31 s
+NCCL 23203 batched-p2p run 5: PASS in 30 s
+NCCL 23203 eager-subgroup-p2p run 1: PASS in 32 s
+NCCL 23203 eager-subgroup-p2p run 2: PASS in 32 s
+NCCL 23203 eager-subgroup-p2p run 3: PASS in 33 s
+NCCL 23203 eager-subgroup-p2p run 4: PASS in 32 s
+NCCL 23203 eager-subgroup-p2p run 5: PASS in 33 s
