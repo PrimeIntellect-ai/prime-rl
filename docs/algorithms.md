@@ -391,6 +391,21 @@ subagent_token_weight = 0.0
 num_turns_weight = 0.0
 ```
 
+The opt-in `cost-latency` penalty replaces those terms with the two things a deployed agent is charged for, under the same `pass_rate` scaling and group-max normalization:
+
+- **Cost** (`cost_weight`): output plus newly introduced input tokens of every model call in the trace, subagents included at full weight.
+- **Latency** (`latency_weight`): the root agent's end-to-end time, as measured harness time plus estimated inference time. Harness time is the wall-clock time between the root agent's model calls — tool execution, waits, harness overhead. Inference time is the root agent's output tokens divided by `tokens_per_second`, the deployed model's decode speed, so the training deployment's speed does not enter. Subagents add latency only through the time the root agent spends waiting on them, which does run at the training deployment's speed.
+
+Each trace records `length_penalty/cost_tokens`, `length_penalty/harness_time`, and `length_penalty/inference_time` as metrics.
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "cost-latency"
+cost_weight = 0.1
+latency_weight = 0.1
+tokens_per_second = 100
+```
+
 Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.

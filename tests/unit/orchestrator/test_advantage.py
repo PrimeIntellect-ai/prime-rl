@@ -4,12 +4,13 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
+    CostLatencyLengthPenaltyConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     LinearSubagentLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens, _root_latency
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -441,6 +442,78 @@ def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
+
+
+def _agent_tree_episode(root_gap: float, subagent_seconds: float, root_seconds: float = 5.0) -> vf.Episode:
+    """A root agent that spawns a subagent between its two turns. The root's calls
+    take ``root_seconds`` each and sit ``root_gap`` seconds apart; the subagent's one
+    call takes ``subagent_seconds``."""
+    episode = _build_episode(1.0, sampled_lengths=[1])
+    trace = episode.traces[0]
+    trace.nodes.clear()
+    trace.calls.clear()
+
+    def turn(parent, input_tokens, output_tokens, start, seconds, links=()):
+        prompt_id = len(trace.nodes)
+        trace.nodes.append(vf.MessageNode(parent=parent, message=vf.UserMessage(content="q")))
+        node_id = len(trace.nodes)
+        trace.nodes.append(
+            vf.MessageNode(
+                parent=prompt_id,
+                message=vf.AssistantMessage(content="a"),
+                sampled=True,
+                token_ids=[1] * output_tokens,
+                mask=[True] * output_tokens,
+                semantic_parents=[vf.ParentLink(node=source, type=kind) for source, kind in links],
+            )
+        )
+        trace.calls.append(
+            vf.ModelCall(
+                node=node_id,
+                usage=vf.Usage(prompt_tokens=input_tokens, completion_tokens=output_tokens),
+                time=vf.TimeSpan(start=start, end=start + seconds),
+            )
+        )
+        return node_id
+
+    root = turn(None, 100, 200, 1000.0, root_seconds)
+    turn(None, 50, 400, 1001.0 + root_seconds, subagent_seconds, [(root, "subagent_call")])
+    turn(root, 320, 100, 1000.0 + root_seconds + root_gap, root_seconds, [(root, "continuation")])
+    return episode
+
+
+def test_cost_latency_measures_root_harness_time_and_estimates_root_inference():
+    trace = _agent_tree_episode(root_gap=30.0, subagent_seconds=20.0).traces[0]
+    # The gap between the root's calls is harness time, however long the subagent's
+    # own inference took inside it; root inference is 300 output tokens at 100 tok/s,
+    # whatever its calls took on the training deployment.
+    assert _root_latency(trace, 100.0) == pytest.approx((30.0, 3.0))
+    slow_inference = _agent_tree_episode(root_gap=30.0, subagent_seconds=20.0, root_seconds=60.0).traces[0]
+    assert _root_latency(slow_inference, 100.0) == pytest.approx((30.0, 3.0))
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert _root_latency(restored, 100.0) == pytest.approx((30.0, 3.0))
+
+
+def test_cost_latency_latency_term_penalizes_waiting():
+    group = [_agent_tree_episode(root_gap=10.0, subagent_seconds=5.0), _agent_tree_episode(30.0, 5.0)]
+    cfg = CostLatencyLengthPenaltyConfig(cost_weight=0.0, latency_weight=0.2)
+    # Latencies 13s and 33s: penalties 0.2 * 13/33 and 0.2, centered on their mean.
+    advantage = 0.2 * (1 - 13 / 33) / 2
+    assert _grpo(group, length_penalty=cfg) == pytest.approx([advantage, -advantage], abs=1e-6)
+    assert group[1].traces[0].metrics["length_penalty/harness_time"] == pytest.approx(30.0)
+    assert group[1].traces[0].metrics["length_penalty/inference_time"] == pytest.approx(3.0)
+
+
+def test_cost_latency_cost_term_counts_subagent_tokens():
+    cheap = _agent_tree_episode(root_gap=10.0, subagent_seconds=5.0)
+    costly = _agent_tree_episode(root_gap=10.0, subagent_seconds=5.0)
+    subagent_call = costly.traces[0].calls[1]
+    subagent_call.usage = vf.Usage(prompt_tokens=50, completion_tokens=1400)
+    cfg = CostLatencyLengthPenaltyConfig(cost_weight=0.2, latency_weight=0.0)
+    # Output 700 + new input 170 = 870 tokens, against 1870 with the larger subagent.
+    advantage = 0.2 * (1 - 870 / 1870) / 2
+    assert _grpo([cheap, costly], length_penalty=cfg) == pytest.approx([advantage, -advantage], abs=1e-6)
+    assert cheap.traces[0].metrics["length_penalty/cost_tokens"] == pytest.approx(870)
 
 
 def test_assign_advantages_broadcasts_scalar():

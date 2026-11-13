@@ -6,7 +6,11 @@ import numpy as np
 import verifiers.v1 as vf
 from verifiers.v1.trace import min_new_input_tokens
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
+from prime_rl.configs.algorithm import (
+    CostLatencyLengthPenaltyConfig,
+    GRPOAlgoConfig,
+    LinearSubagentLengthPenaltyConfig,
+)
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
 
@@ -14,8 +18,8 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
 
 
-def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
-    """Weighted output and new input tokens, counted once on trainable branches."""
+def _subagent_nodes(trace: vf.Trace) -> set[int]:
+    """Nodes owned by a subagent, following harness-declared semantic edges."""
     subagents: set[int] = set()
     successors: dict[int, list[int]] = {}
     for node_id, node in enumerate(trace.nodes):
@@ -31,7 +35,12 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
             if child not in subagents:
                 subagents.add(child)
                 pending.append(child)
+    return subagents
 
+
+def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
+    """Weighted output and new input tokens, counted once on trainable branches."""
+    subagents = _subagent_nodes(trace)
     output_tokens = input_tokens = 0.0
     seen: set[int] = set()
     for branch in trace.branches:
@@ -47,6 +56,24 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
             output_tokens += weight * call.usage.completion_tokens
             input_tokens += weight * increment
     return output_tokens, input_tokens
+
+
+def _root_latency(trace: vf.Trace, tokens_per_second: float) -> tuple[float, float]:
+    """The root agent's harness and inference seconds. Harness time is the measured
+    wall-clock time between its model calls; inference time is its output tokens at
+    the deployed decode speed, so the training deployment's speed does not enter."""
+    subagents = _subagent_nodes(trace)
+    # A call that committed no turn has no owner; counting it as the root's keeps a
+    # failed request's duration out of harness time.
+    calls = [call for call in trace.calls if call.node not in subagents]
+    harness = 0.0
+    last_end: float | None = None
+    for start, end in sorted((call.time.start, call.time.end) for call in calls if call.time.end):
+        if last_end is not None:
+            harness += max(0.0, start - last_end)
+        last_end = end if last_end is None else max(last_end, end)
+    output_tokens = sum(call.usage.completion_tokens for call in calls if call.usage is not None)
+    return harness, output_tokens / tokens_per_second
 
 
 class GRPOAlgorithm(Algorithm):
@@ -71,6 +98,17 @@ class GRPOAlgorithm(Algorithm):
         length_penalty = self.length_penalty
         if length_penalty is None:
             shaped_rewards = rewards
+        elif isinstance(length_penalty, CostLatencyLengthPenaltyConfig):
+            cost = torch.tensor([sum(_length_penalty_tokens(trace, 1.0)) for trace in traces], dtype=rewards.dtype)
+            times = [_root_latency(trace, length_penalty.tokens_per_second) for trace in traces]
+            latency = torch.tensor([harness + inference for harness, inference in times], dtype=rewards.dtype)
+            for trace, tokens, (harness, inference) in zip(traces, cost.tolist(), times, strict=True):
+                trace.record_metric("length_penalty/cost_tokens", tokens)
+                trace.record_metric("length_penalty/harness_time", harness)
+                trace.record_metric("length_penalty/inference_time", inference)
+            penalty_frac = length_penalty.cost_weight * (cost / cost.max().clamp(min=1)) + (
+                length_penalty.latency_weight * (latency / latency.max().clamp(min=1e-6))
+            )
         else:
             subagent_weight = (
                 length_penalty.subagent_token_weight
@@ -100,8 +138,8 @@ class GRPOAlgorithm(Algorithm):
                 + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
                 + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
             )
-            penalty = rewards.mean() * penalty_frac
-            shaped_rewards = rewards - penalty
+        if length_penalty is not None:
+            shaped_rewards = rewards - rewards.mean() * penalty_frac
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
             lengths = torch.tensor(
