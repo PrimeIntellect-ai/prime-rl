@@ -558,6 +558,9 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    remote_dir: str | None = None
+    """Object store URL checkpoints are mirrored to, e.g. ``s3://bucket/run/checkpoints`` (credentials and endpoint from the ``AWS_*`` environment). A sync process per node uploads each step once it is on disk, with ``.metadata`` last, and owns ``keep_last``/``keep_interval`` on disk and remote. Resume pulls a step that is not complete on disk while the trainer starts up."""
+
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""
 
