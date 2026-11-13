@@ -38,10 +38,11 @@ class LoRAModule(nn.Module):
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
 
     def reset_parameters(self) -> None:
-        """Kaiming uniform for A, zeros for B."""
+        """Kaiming uniform per A matrix, zeros for B."""
         for name, param in self.named_parameters(recurse=False):
             if name.endswith("lora_A"):
-                nn.init.kaiming_uniform_(param, a=math.sqrt(5))
+                bound = 1 / math.sqrt(param.shape[-1])
+                nn.init.uniform_(param, -bound, bound)
             else:
                 nn.init.zeros_(param)
 
