@@ -15,8 +15,8 @@ from prime_rl.transports.weights.base import (
     SENDER_READY_MARKER,
     WeightReceiver,
     WeightSender,
-    marker_exists,
 )
+from prime_rl.utils.pathing import exists_revalidated
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -75,9 +75,9 @@ class FileSystemWeightReceiver(WeightReceiver):
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
         # A trainer restarted mid-broadcast offers the version again: acknowledge every offer.
-        while not marker_exists(weights_dir / FINISHED_MARKER):
-            offered = marker_exists(weights_dir / SENDER_READY_MARKER)
-            if offered and not marker_exists(weights_dir / RECEIVER_READY_MARKER):
+        while not exists_revalidated(weights_dir / FINISHED_MARKER):
+            offered = exists_revalidated(weights_dir / SENDER_READY_MARKER)
+            if offered and not exists_revalidated(weights_dir / RECEIVER_READY_MARKER):
                 # The trainer resets the directory for a new offer; the next pass acknowledges it.
                 with contextlib.suppress(FileNotFoundError):
                     self._ack(step)
