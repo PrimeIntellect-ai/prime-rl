@@ -197,8 +197,9 @@ class Dispatcher:
         self.unconsumed_train_rollouts = unconsumed_train_rollouts
         self.batch_size = batch_size
         self.trainer_rate = trainer_rate
-        # Rollouts of the train episodes waiting in ``out_q``
+        # Rollouts of the train episodes waiting in ``out_q``, and of every train episode finished so far
         self.queued_train_rollouts = 0
+        self.finished_train_rollouts = 0
         # Average seconds from dispatch to completion of a train episode
         self.generation_s: float | None = None
 
@@ -863,6 +864,7 @@ class Dispatcher:
         episode.record_run(run)
         if meta.kind == "train":
             self.queued_train_rollouts += len(episode.traces)
+            self.finished_train_rollouts += len(episode.traces)
         await self.emit(episode)
 
     async def get(self) -> DispatchResult:
