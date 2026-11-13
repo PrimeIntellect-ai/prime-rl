@@ -15,6 +15,9 @@ from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loade
 
 from prime_rl.inference.vllm.worker.weight_transfer import (
     CheckpointIndexMap,
+    WeightRPCMixin,
+    checkpoint_weights,
+    get_weight_model,
     load_weights_checkpoint_layerwise,
     update_mla_absorbed_weights,
 )
@@ -60,7 +63,7 @@ _prefetch_pool = ThreadPoolExecutor(1)
 _reader_pool: ThreadPoolExecutor | None = None
 
 
-class FileSystemWeightUpdateWorker(Worker):
+class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
     """vLLM worker extension for updating weights in-place using shared filesystem.
 
     A broadcast step dir holds a full HF checkpoint (anchor), a sparse delta
@@ -78,12 +81,7 @@ class FileSystemWeightUpdateWorker(Worker):
         return None
 
     def _model(self) -> Module:
-        # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
-        model = self.model_runner.model
-        if hasattr(model, "runnable"):
-            model = model.runnable
-        assert isinstance(model, Module)
-        return model
+        return get_weight_model(self.model_runner, "model")
 
     def prefetch_weights_from_path(self, weight_path: str) -> None:
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
@@ -441,17 +439,8 @@ class FileSystemWeightUpdateWorker(Worker):
         only the rows it holds, straight into its params, and returns their check for ``_check``."""
         model = self._model()
         if self.index_map is None:
-            model_loader = get_model_loader(self.load_config)
-            assert isinstance(model_loader, DefaultModelLoader)
-            local_source = DefaultModelLoader.Source(
-                step_dir.as_posix(),
-                revision=None,  # TODO: Check that this is correct or if we should use the default (model_config.revision)
-                prefix="",
-                fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
-                allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
-            )
-            weights_iterator = model_loader._get_weights_iterator(local_source)
-            load_weights_checkpoint_layerwise(model, weights_iterator, self.model_runner.model_config, self.vllm_config)
+            weights = checkpoint_weights(model, step_dir.as_posix(), self.load_config)
+            load_weights_checkpoint_layerwise(model, weights, self.model_runner.model_config, self.vllm_config)
             return None
         start = time.perf_counter()
         index_map = self.index_map

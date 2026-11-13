@@ -300,8 +300,11 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    annotation_writer = AnnotationWriter(
-        parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
+    # Only the file monitor stores annotations, so without it there is nothing to write.
+    annotation_writer = (
+        AnnotationWriter(parallel_dims, world, config.monitors.file.float_decimals)
+        if config.annotations and config.monitors.file
+        else None
     )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -678,7 +681,8 @@ def train(config: TrainerConfig):
                     fold_all=False,
                 )
 
-            annotation_writer.export(micro_batch, out)
+            if annotation_writer is not None:
+                annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
                 routing_stats.append(take_moe_routing_stats(model))
@@ -695,7 +699,8 @@ def train(config: TrainerConfig):
                 lambda: mismatch_kl[mismatch_mask].mean().item(),
             )
 
-        annotation_writer.flush()
+        if annotation_writer is not None:
+            annotation_writer.flush()
         # Free this batch before the next one is received and converted
         del micro_batches, micro_batch
         # Invalid sampler evidence fails the step before the optimizer applies its gradients
