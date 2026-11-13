@@ -73,6 +73,10 @@ jobs:
             with:
               enable-cache: false
       - name: Install dependencies
+        timeout-minutes: 20
+        env:
+          UV_LOCK_TIMEOUT: "600"
+          UV_HTTP_RETRIES: "8"
         run: uv sync --all-extras --all-packages --locked
       - name: Run unit tests
         env:
@@ -135,6 +139,10 @@ jobs:
             with:
               enable-cache: false
       - name: Install dependencies
+        timeout-minutes: 20
+        env:
+          UV_LOCK_TIMEOUT: "600"
+          UV_HTTP_RETRIES: "8"
         run: uv sync --all-extras --all-packages --locked
       - name: Install ModelExpress server
         if: matrix.test == 'reverse_text_modelexpress'
