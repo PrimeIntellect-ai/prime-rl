@@ -1475,6 +1475,26 @@ def test_model_init_scratch_rejects_lora():
         SFTConfig.model_validate({"model": {"init": {"type": "scratch"}, "lora": {}}})
 
 
+@pytest.mark.parametrize("tokenizer", [None, "Qwen/Qwen3-0.6B"])
+def test_inference_parsers_resolve_from_the_tokenizer_name(tokenizer: str | None):
+    data = {
+        "model": {"name": "runs/sft/checkpoints/step_500"},
+        "trainer": {},
+        "orchestrator": {
+            "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            "renderer": {"name": "qwen3"},
+        },
+        "inference": {},
+    }
+    if tokenizer is None:
+        with pytest.warns(UserWarning, match="set tokenizer.name"):
+            config = RLConfig.model_validate(data)
+        assert config.inference.vllm.tool_call_parser is None
+    else:
+        config = RLConfig.model_validate({**data, "tokenizer": {"name": tokenizer}})
+        assert config.inference.vllm.tool_call_parser == "hermes"
+
+
 def test_model_init_checkpoint_requires_a_step_dir():
     TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt"})
     with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):

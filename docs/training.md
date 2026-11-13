@@ -508,7 +508,7 @@ A resume can add, remove or change train and eval sources.
 | `hf` | The weights of `model.name` | `model.name` | `uv run sft`, `uv run rl` |
 | `ckpt` | The trainer checkpoint in `model.name`, a step directory (`.../step_<N>`) of another run | The `config.json` and tokenizer files in that step directory | |
 
-Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `ckpt` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `ckpt` run sets it explicitly.
+Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `ckpt` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `ckpt` run sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them.
 
 ```bash
 # SFT from a pretraining checkpoint
