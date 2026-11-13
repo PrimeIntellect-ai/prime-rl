@@ -73,7 +73,7 @@ ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
 
 class LinearLengthPenaltyConfig(BaseConfig):
-    """Linear ``pass_rate``-scaled penalty subtracted from each reward before the GRPO baseline — the sum of three terms (completion tokens, input tokens, turns), each normalized by the group's own max for that quantity and disabled by setting its coefficient to 0."""
+    """Linear ``pass_rate``-scaled penalty subtracted from each reward before the GRPO baseline — the sum of four terms (completion tokens, input tokens, turns, latency), each normalized by the group's own max for that quantity and disabled by setting its coefficient to 0."""
 
     type: Literal["linear"] = "linear"
 
@@ -85,6 +85,12 @@ class LinearLengthPenaltyConfig(BaseConfig):
 
     num_turns_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
+
+    latency_weight: float = Field(0.0, ge=0, allow_inf_nan=False)
+    """Scale on the latency term: the root agent's end-to-end seconds, as a fraction of the group's max. Latency is the root agent's tool time plus its inference time. Tool time is measured by the harness and read from the trace's ``tool_seconds`` metric — the wall-clock time the root agent spent executing its own tool calls, waits on subagents included; a trace without the metric is an error. Inference time is estimated as the root agent's output tokens over ``tokens_per_second``, so neither the training deployment's speed nor its retries enter. Unlike the token and turns terms, subagents count only through the time the root agent waits on them. 0 disables the term."""
+
+    tokens_per_second: float = Field(100.0, gt=0, allow_inf_nan=False)
+    """Decode speed of the deployed model, in output tokens per second, for the latency term's inference time."""
 
 
 class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
@@ -186,7 +192,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: Annotated[LengthPenaltyConfig | None, Live()] = None
-    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
+    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, turns, and latency terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
 
     @field_validator("length_penalty", mode="before")
     @classmethod

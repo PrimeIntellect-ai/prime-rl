@@ -251,6 +251,7 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
         ({}, LinearLengthPenaltyConfig),
         ({"num_output_tokens_weight": 0.5}, LinearLengthPenaltyConfig),
         ({"type": "linear"}, LinearLengthPenaltyConfig),
+        ({"latency_weight": 0.2, "tokens_per_second": 80}, LinearLengthPenaltyConfig),
         ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
         ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
     ],

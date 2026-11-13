@@ -49,6 +49,24 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
     return output_tokens, input_tokens
 
 
+def _root_latency(trace: vf.Trace, tokens_per_second: float) -> float:
+    """The root agent's end-to-end seconds: the tool time its harness measured, plus
+    its output tokens at the deployed decode speed."""
+    tool_seconds = trace.metrics.get("tool_seconds")
+    if tool_seconds is None:
+        raise ValueError(
+            "The length penalty's latency term needs a `tool_seconds` metric on every trace, "
+            "which this trace's harness did not report"
+        )
+    # An ACP harness labels each call with its agent's session; the root's is the trace's.
+    output_tokens = sum(
+        call.usage.completion_tokens
+        for call in trace.calls
+        if call.usage is not None and (call.acp is None or call.acp.agent_session_id in (None, trace.id))
+    )
+    return tool_seconds + output_tokens / tokens_per_second
+
+
 class GRPOAlgorithm(Algorithm):
     """Group Relative Policy Optimization: sample a group of rollouts from the
     policy per example; credit = reward minus the group mean (optionally
@@ -100,6 +118,11 @@ class GRPOAlgorithm(Algorithm):
                 + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
                 + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
             )
+            if length_penalty.latency_weight:
+                latency = torch.tensor(
+                    [_root_latency(trace, length_penalty.tokens_per_second) for trace in traces], dtype=rewards.dtype
+                )
+                penalty_frac = penalty_frac + length_penalty.latency_weight * (latency / latency.max().clamp(min=1e-6))
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
         baseline = shaped_rewards.mean()

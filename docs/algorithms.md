@@ -391,6 +391,15 @@ subagent_token_weight = 0.0
 num_turns_weight = 0.0
 ```
 
+Both penalties take an opt-in **latency** term (`latency_weight`, default `0`), normalized by the group's max like the others: the root agent's end-to-end time, as its tool time plus its inference time. Tool time is measured by the harness and read from the trace's `tool_seconds` metric — the wall-clock time the root agent spent executing its own tool calls, waits on subagents included. Inference time is the root agent's output tokens divided by `tokens_per_second`, the deployed model's decode speed, so neither the training deployment's speed nor its retries enter. Where the token and turns terms charge for every agent's work, latency charges subagents only through the time the root agent waits on them. The term needs a harness that reports `tool_seconds` (`rlm` does).
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "linear"
+latency_weight = 0.1
+tokens_per_second = 100
+```
+
 Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
