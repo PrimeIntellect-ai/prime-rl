@@ -1,0 +1,15 @@
+# A mechanics check, composed after train.toml: 4 layers, 30 steps, validation and a checkpoint every 10 steps.
+#     PYTHONPATH=examples uv run sft @ examples/decision_models/d3/train.toml @ examples/decision_models/d3/smoke.toml
+max_steps = 30
+
+[model.debug]
+num_layers = 4  # the fourth layer is Qwen3.5's first full-attention layer, the kind d3 runs non-causally
+
+[scheduler]
+warmup_steps = 5
+
+[val]
+interval = 10
+
+[ckpt]
+interval = 10
