@@ -31,8 +31,6 @@ PYTHONPATH=examples uv run sft @ examples/decision_models/clef/train.toml
 
 The run is one pass over the 6,682 training records in 290 steps of two packed rows, 23 records a step on average. It validates on the 732 validation records before the first step and every 58 steps, the last time on the final step. The first validation measures the released model. A run without a Prime API key needs `--no-monitors.prime`.
 
-`accuracy` scores a target whose top options tie against the first of them in Clef's option order. On 3 of the 2,540 validation questions that is another option than in prime-rl's order (noul `false`, `true`; choice ids as the record gives them), so there it is not comparable with a model read in that order.
-
 Memory is not measured, and by arithmetic the full run does not fit one 80 GB GPU. prime-rl holds each weight in fp32 on the GPU, about 36 GB for 9 billion parameters, with an fp32 gradient next to each trained one, and it moves AdamW's two moments from CPU RAM to the GPU for every optimizer step: up to four fp32 copies at once. On N GPUs (`--deployment.num_train_gpus N`, with `data.batch_size` a multiple of N) each holds 1/N of them. The mechanics check trains 2 layers and is expected to fit one GPU.
 
 ## Differences from Clef
