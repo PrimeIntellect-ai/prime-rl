@@ -22,7 +22,7 @@ from modelexpress_rl import (
 from torch import nn
 
 from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.base import WeightReceiver, WeightSender, marker_exists
 from prime_rl.utils.pathing import wait_for_path
 
 VERSION_MARKER = ".mx_version"
@@ -99,7 +99,7 @@ class ModelExpressWeightSender(WeightSender):
             try:
                 installed = step_dir / INSTALLED_MARKER
                 deadline = time.monotonic() + self.timeout
-                while not installed.exists():
+                while not marker_exists(installed):
                     if time.monotonic() >= deadline:
                         raise TimeoutError(
                             f"Inference did not install version {version.version_id} within {self.timeout}s"
