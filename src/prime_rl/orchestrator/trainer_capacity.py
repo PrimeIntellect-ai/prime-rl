@@ -28,6 +28,8 @@ class TrainerCapacity:
         self.steps: deque[Step] = deque(maxlen=WINDOW_STEPS)
         self.ships = 0
         self.shipped_at: float | None = None
+        # Every train rollout shipped so far, warmup included
+        self.rollouts_shipped = 0
 
     def shipped(self, rollouts: int, requested_at: float | None, now: float | None = None) -> None:
         """A batch of ``rollouts`` finished train rollouts shipped at ``now``, which the trainer requested at
@@ -35,6 +37,7 @@ class TrainerCapacity:
         now = time.time() if now is None else now
         previous, self.shipped_at = self.shipped_at, now
         self.ships += 1
+        self.rollouts_shipped += rollouts
         if previous is None or self.ships <= WARMUP_SHIPS or requested_at is None or now <= previous:
             return
         period = now - previous
