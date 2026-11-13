@@ -330,7 +330,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 | `model.implementation.import_path` | The model class to build instead of prime-rl's own for the checkpoint's architecture, e.g. one with an added head, or a decision model for System One data |
 
-**Custom model class.** `[model.implementation]` `import_path` names a subclass of prime-rl's class for the architecture (e.g. `prime_rl.trainer.models.qwen3.modeling_qwen3.Qwen3ForCausalLM`); it takes no `kwargs`, since the class's hyperparameters belong in the checkpoint's `config.json`. The class keeps the base class's module names, so the checkpoint at `model.name` loads as usual. A parameter the class adds that the checkpoint lacks gets its weight from the class's `init_missing_weights`, called once the checkpoint's weights are loaded (loading fails on a missing weight that the method does not return); a resumed run and a run whose `model.name` is a checkpoint step directory (see [Model Initialization](#model-initialization)) take every weight from the trainer checkpoint instead, and with `model.init.type = "scratch"` the class's `_init_weights` initializes the added modules with the rest (a parameter it does not reach fails at startup). A resume's architecture check compares the checkpoint's `config.json`, not the class, so a resume keeps the run's `model.implementation`: without it, the resume loads the base model's weights and drops the added modules. A checkpoint stored under other names is converted by the class's `is_hf_state_dict`, `is_prime_state_dict` and `convert_to_prime`, as for prime-rl's own classes. The converted-weights cache (`model.conversion_dir`, marked by `.prime-v1`) is not keyed by the class, so a class that changes the conversion should use its own `model.conversion_dir`. With LoRA, only the adapters train: an added module stays frozen at the weights it starts with, unless it is a linear layer that `model.lora.target_modules` names, which gives it an adapter of its own. prime-rl replaces the model's `forward` with its own, so the class changes what the model holds, not the loss. Only the trainer builds the class: it has no vLLM counterpart, since vLLM serves only the classes its own registry resolves a checkpoint to, so its weights cannot be broadcast or served. `model.implementation` is therefore refused with weight broadcasts (RL, online evals), and a checkpoint exported with added modules loads with the same class.
+**Custom model class.** `[model.implementation]` `import_path` names a subclass of prime-rl's class for the architecture (e.g. `prime_rl.trainer.models.qwen3.modeling_qwen3.Qwen3ForCausalLM`); it takes no `kwargs`, since the class's hyperparameters belong in the checkpoint's `config.json`. The class keeps the base class's module names, so the checkpoint at `model.name` loads as usual. A parameter the class adds that the checkpoint lacks gets its weight from the class's `init_missing_weights`, called once the checkpoint's weights are loaded (loading fails on a missing weight that the method does not return); a resumed run and a run whose `model.name` is a checkpoint step directory (see [Model Initialization](#model-initialization)) take every weight from the trainer checkpoint instead, and with `model.init.type = "scratch"` the class's `_init_weights` initializes the added modules with the rest (a parameter it does not reach fails at startup). A resume's architecture check compares the checkpoint's `config.json`, not the class, so a resume keeps the run's `model.implementation`: without it, the resume loads the base model's weights and drops the added modules. A checkpoint stored under other names is converted by the class's `is_hf_state_dict`, `is_prime_state_dict` and `convert_to_prime`, as for prime-rl's own classes. The converted-weights cache (`model.conversion_dir`, marked by `.prime-v1`) is not keyed by the class, so a class that changes the conversion should use its own `model.conversion_dir`. With LoRA, only the adapters train: an added module stays frozen at the weights it starts with, unless it is a linear layer that `model.lora.target_modules` names, which gives it an adapter of its own. prime-rl replaces the model's `forward` with its own, so the class changes what the model holds, not the forward pass: a method it adds runs only when a [custom loss](#custom-loss) calls it, as `decision_loss` does for [System One data](#system-one-data). Only the trainer builds the class: it has no vLLM counterpart, since vLLM serves only the classes its own registry resolves a checkpoint to, so its weights cannot be broadcast or served. `model.implementation` is therefore refused with weight broadcasts (RL, online evals), and a checkpoint exported with added modules loads with the same class.
 
 ### Custom Loss
 
@@ -390,7 +390,7 @@ The samples are called one after another, as in RL, so many short samples cost o
 
 ### System One Data
 
-`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record into its request (the state and questions, without labels) and one target per question, the model's strategy renders the request into tokens, and a [custom loss](#custom-loss) of yours compares the model's output with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
+`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record into its request (the state and questions, without labels) and one target per question, the model's strategy renders the request into tokens, your model class reads each question's logits from the hidden states, and `decision_loss`, selected as a [custom loss](#custom-loss), compares them with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
 
 **Prepare the records.** prime-rl does not convert datasets; you write the HF dataset. Its columns are `state`, `questions`, and `label` and/or `soft_label`, plus an optional `id` that names the record in warnings and errors (when absent, its subset if any, split and row index, joined by `/`). All but `id` are string columns of JSON text (write them with `json.dumps`), so a text state is a JSON string; a label column that is null in every row counts as absent. A dataset that stores them under other names maps them in `[data.columns]`, e.g. `state = "ticket"`. One row:
 
@@ -455,13 +455,49 @@ class MyStrategy(SystemOneStrategy):
 - **Input.** `request.state` and each question's `instructions` and `criteria` are the decoded JSON (noul criteria without their null descriptions); `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: a strategy may shorten its own content to fit, or return `None` to skip a record whose request it cannot render. A record is also skipped, with a warning, when its rendering is longer than `max_tokens` (prime-rl never truncates a record) or none of its questions has a label. A malformed record is not skipped: it raises and stops the run before the strategy sees it, e.g. a column that is not JSON text, an empty question id, option id or score level, a repeated score level, a label that is not an option, or a soft label that is not a distribution. A data rank that skips more than twice as many rows in a row as the dataset has also raises.
 - **Output.** `input_ids`, `seq_lens`, `read_spans`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every rendering against the `RenderedRequest` contract and raises on a violation.
 
+**Write the readout.** The model class adds the head and defines one more method, the model's readout, which `decision_loss` calls:
+
+```python
+def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]
+```
+
+It returns one 1-D logit vector per question of the packed row, in pack order (records in `batch["sample_data"]` order, questions in record order), with one logit per option in the order of the question's `options`; their softmax is the question's distribution. `hidden_states` are the backbone's final (post-norm) hidden states, and `batch` is the micro-batch on the device, whose questions carry no `target`. A record's logits must not depend on the other records of the row. The method is called inside the forward pass, so it calls the model's modules, on inputs in their weights' dtype; the logits may have any float dtype. The contract is the `DecisionModel` protocol in `prime_rl.trainer.sft.system_one.loss`, which the class satisfies by defining the method, without importing or inheriting it. A head for `MyStrategy`, read at one token per question:
+
+```python
+# my_pkg/model.py
+from torch import Tensor, nn
+
+from prime_rl.trainer.data import Batch
+from prime_rl.trainer.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
+
+class MyDecisionModel(Qwen3ForCausalLM):
+    """Qwen3 plus a head with one logit per option, up to 255 options."""
+
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self.decision_head = nn.Linear(config.hidden_size, 255)  # its weights come from the checkpoint
+
+    @classmethod
+    def system_one_strategy(cls):
+        from my_pkg.strategy import MyStrategy
+
+        return MyStrategy
+
+    def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
+        questions = [question for record in batch["sample_data"] for question in record["questions"]]
+        reads = hidden_states[batch["loss_mask"]]  # one read token per question, in pack order
+        logits = self.decision_head(reads.to(self.decision_head.weight.dtype))
+        return [row[: len(question["options"])] for row, question in zip(logits, questions, strict=True)]
+```
+
 **Configure.** `data.name`, a model class that declares `system_one_strategy` and a [custom loss](#custom-loss) are required:
 
 ```toml
 [model]
 name = "my-org/my-decision-model"
 
-[model.implementation]            # the decision model class, which names its strategy
+[model.implementation]            # the decision model class: its strategy, its head and decision_logits
 import_path = "my_pkg.model.MyDecisionModel"
 
 [data]
@@ -472,7 +508,10 @@ batch_size = 32
 
 [loss]
 type = "custom"
-import_path = "my_pkg.loss.decision_loss"
+import_path = "prime_rl.trainer.sft.system_one.loss.decision_loss"
+
+[loss.kwargs]                     # optional
+brier_weight = 0.1
 
 [val]                             # optional
 interval = 500
@@ -485,6 +524,7 @@ seq_len = 4096
 
 - **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, and no segment spans two records; the padding of `data.pad_to_seq_len` is a segment of its own, which the loss does not see. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
 - **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros.
+- **The loss.** `decision_loss` is soft cross-entropy plus `brier_weight` (default 0) x Brier score between each labelled question's distribution and its target, computed in float32. It raises when `decision_logits` does not return one vector per question with one logit per option. Its `count` is the number of labelled questions, and it logs `ce`, `brier` and `accuracy` (the top logit is at a top option of the target) as `loss/<name>` and `val/<name>`, each a mean over labelled questions. A [custom loss](#custom-loss) of yours can be named in its place: it receives the same batch and needs no `decision_logits`.
 - **What the loss receives.** A record is one sample, so the loss is called once per record, on its tokens alone. A record is never cut: one longer than `data.seq_len` is skipped, and a row has room for `data.seq_len * data.micro_batch_size` tokens, so `inputs.truncated` is false. `inputs.sample_data` is the record's dict: per question, in record order, its `options` in the head's order, its `reads` as `[start, end)` spans of the record's tokens (`inputs.hidden_states[start:end]`), and its `target`, which follows `options` and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.loss_mask]` is every read token of the record, in order. With `MyStrategy` and prompts of 30, 34 and 31 tokens, the example's dict is:
 
   ```python
@@ -498,7 +538,7 @@ seq_len = 4096
 - **Validation and unused settings.** `[val.data]` takes only a missing `type` from `[data]`; both must be System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`; validation records are rendered by the same strategy. The strategy owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read.
 - **Multi-GPU validation.** Validation stops on every rank as soon as one data rank runs out of packed rows, so with several data ranks some validation records can go unscored; one-GPU validation scores every record, and training is unaffected. Ranks can pack different numbers of rows, and no `[val.data]` setting evens them out: for a validation loss over every record, train on one GPU or score the checkpoint separately, and compare validation losses only across runs with the same number of data ranks.
 
-**Launch.** The model class, its strategy and the loss must be importable where the trainer runs.
+**Launch.** The model class and its strategy (and a loss of your own, if you name one) must be importable where the trainer runs.
 
 ```bash
 uv run sft @ system_one.toml
