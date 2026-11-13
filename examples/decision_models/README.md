@@ -4,23 +4,15 @@ A decision model answers typed questions about a state with one probability dist
 
 ## The contract
 
-A decision model is three pieces of user code, named in the config:
+A decision model is two pieces of user code, named in the config, plus the loss prime-rl ships for them:
 
 | Piece | Config | What it does |
 |---|---|---|
 | Encoder | `[data.encoder]` | A `SystemOneEncoder` subclass: a record becomes tokens, attention segments and, per question, the token spans the head reads. It owns its chat template. |
 | Model class | `[model.implementation]` | A subclass of prime-rl's class for the architecture, with the head and a `decision_logits` method. The checkpoint holds the head's weights. |
-| Loss | `[loss] type = "custom"` | `decision_models.loss.decision_loss`, the same function for every model. |
+| Loss | `[loss] type = "custom"` | `prime_rl.trainer.sft.system_one.loss.decision_loss`, the same function for every model. |
 
-The method is the model's readout:
-
-```python
-def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]
-```
-
-It returns one 1-D logit vector per question of the micro-batch, in pack order (records in `batch["sample_data"]` order, questions in record order), with one logit per option in the order of the question's `options`. `hidden_states` are the backbone's final hidden states and `batch["loss_mask"]` marks every read token. It is called inside the forward pass, so it calls the head as a module, on inputs in the head's weight dtype.
-
-`decision_loss` calls the method on a batch without the targets, checks that it got one vector per question with one logit per option, and computes soft cross-entropy plus `brier_weight` x Brier score per labelled question. It logs `ce`, `brier` and `accuracy` under `loss/` in training and `val/` in validation, each a mean over labelled questions.
+`decision_logits` is the model's readout: one logit vector per question of the packed row. Its contract, and what `decision_loss` computes from it, are in [System One Data](../../docs/training.md#system-one-data) and in `DecisionModel` in `src/prime_rl/trainer/sft/system_one/loss.py`.
 
 ## Models
 
@@ -37,7 +29,6 @@ Open-Jev trains on its own dataset. The other three train on Typed Decisions Syn
 
 | File | What |
 |---|---|
-| `loss.py` | `decision_loss`, shared by all models |
 | `open_jev/encoder.py` | `OpenJevEncoder`: every option of every question is its own yes/no prompt (one prompt for noul), each its own attention segment, read at its last token |
 | `open_jev/model.py` | `Qwen3_5Decision`: prime-rl's Qwen3.5 plus `decision_head`, a linear layer that scores a prompt. A noul question's logits are `[0, score]`; a choice or score question's are its prompts' scores |
 | `open_jev/prepare_checkpoint.py` | The checkpoint: the base model's files plus the head, initialised to `lm_head[Yes] - lm_head[No]` |
