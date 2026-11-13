@@ -33,6 +33,12 @@ keep_last = 1
 [trainer.optim]
 type = "muon"
 
+# IcePop masks tokens whose trainer/inference probability ratio leaves [0.2, 5]; score centering
+# centers the score over the truncated sampling support below.
+[trainer.loss]
+type = "icepop"
+score_centering = true
+
 # --- Orchestrator ---
 
 [orchestrator]
@@ -42,6 +48,9 @@ max_staleness = 32
 
 [orchestrator.train]
 group_size = 16
+
+[orchestrator.train.sampling]
+top_p = 0.97
 
 # Pass-rate-scaled, so groups that all solve still train: shorter solutions win.
 [orchestrator.train.algo.length_penalty]
