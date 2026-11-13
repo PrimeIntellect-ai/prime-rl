@@ -99,7 +99,8 @@ def test_module_qualified_targets_save_only_matching_call_sites(targets, saved_m
         return forward, backward
 
     config = ActivationCheckpointConfig(mode="selective", targets=targets, token_chunk_size=token_chunk_size)
-    checkpointed = get_activation_checkpoint_wrapper(config)(TwoProjections())
+    matched_module_targets = set()
+    checkpointed = get_activation_checkpoint_wrapper(config, matched_module_targets)(TwoProjections())
     backend = aot_autograd(fw_compiler=nop, partition_fn=recording_partition)
     if token_chunk_size is None:
         compiled = torch.compile(checkpointed, backend=backend, fullgraph=True)
@@ -114,6 +115,7 @@ def test_module_qualified_targets_save_only_matching_call_sites(targets, saved_m
             block_source, *_, module_source = [source for source, _ in node.meta["nn_module_stack"].values()]
             saved_mm_modules_seen.append(module_source.removeprefix(f"{block_source}."))
     assert saved_mm_modules_seen == saved_mm_modules
+    assert matched_module_targets == {target for target in targets if "@" in target}
 
 
 def test_module_qualified_targets_raise_without_compile():

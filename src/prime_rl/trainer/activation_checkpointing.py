@@ -253,6 +253,7 @@ def get_activation_checkpoint_wrapper(
         if matched_module_targets is None:
             matched_module_targets = set()
 
+        # A closure, not a partial: compile deep-copies context_fn, and a copied partial would fill a copied set.
         def policy(
             context: SelectiveCheckpointContext,
             operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
