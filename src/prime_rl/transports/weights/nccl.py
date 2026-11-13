@@ -1,4 +1,4 @@
-import pickle
+import json
 from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
@@ -89,10 +89,10 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
     # Build metadata: for each dtype group, store keys and shapes
     metadata = {}
     for dtype, items in dtype_groups.items():
-        metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
+        metadata[str(dtype)] = [(key, list(value.shape), value.numel()) for key, value in items]
 
     # Send metadata
-    state = pickle.dumps(metadata)
+    state = json.dumps(metadata).encode()
     size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.ByteTensor(list(state)).cuda()
