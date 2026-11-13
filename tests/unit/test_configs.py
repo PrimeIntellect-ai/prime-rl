@@ -1477,8 +1477,16 @@ def test_model_init_checkpoint_requires_a_step_dir():
         TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
 
 
-@pytest.mark.parametrize(("init_type", "load_format"), [("hf", None), ("scratch", "dummy"), ("ckpt", "dummy")])
-def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_type: str, load_format: str | None):
+@pytest.mark.parametrize(
+    ("init_type", "explicit", "load_format"),
+    [("hf", None, None), ("scratch", None, "dummy"), ("ckpt", None, "dummy"), ("scratch", "auto", "auto")],
+)
+def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
+    init_type: str, explicit: str | None, load_format: str | None
+):
+    vllm = {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}
+    if explicit is not None:
+        vllm["load_format"] = explicit
     name = "runs/sft/checkpoints/step_500" if init_type == "ckpt" else "Qwen/Qwen3-0.6B"
     config = RLConfig.model_validate(
         {
@@ -1488,7 +1496,7 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_ty
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
                 "renderer": {"name": "qwen3"},
             },
-            "inference": {"vllm": {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}},
+            "inference": {"vllm": vllm},
         }
     )
     assert config.trainer.model.init.type == init_type
@@ -1500,23 +1508,24 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_ty
 
 
 @pytest.mark.parametrize(
-    ("draft", "match"),
+    ("init_type", "vllm", "match"),
     [
-        ({"method": "mtp", "num_speculative_tokens": 1}, "reads its draft weights from model.name"),
-        ({"model": "drafts/qwen3-0.6b", "num_speculative_tokens": 1}, "with the target's load format"),
+        ("scratch", {"speculative_config": {"method": "mtp"}}, "reads its draft weights from model.name"),
+        ("scratch", {"speculative_config": {"model": "drafts/qwen3-0.6b"}}, "with the target's load format"),
+        ("hf", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
     ],
 )
-def test_a_draft_without_its_own_weights_requires_the_hf_init(draft: dict, match: str):
+def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: str, vllm: dict, match: str):
     with pytest.raises(ValidationError, match=match):
         RLConfig.model_validate(
             {
-                "model": {"init": {"type": "scratch"}},
+                "model": {"init": {"type": init_type}},
                 "trainer": {},
                 "orchestrator": {
                     "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
                     "renderer": {"name": "qwen3"},
                 },
-                "inference": {"vllm": {"speculative_config": draft}},
+                "inference": {"vllm": vllm},
             }
         )
 
