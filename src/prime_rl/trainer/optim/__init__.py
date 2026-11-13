@@ -53,8 +53,10 @@ def setup_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     offload: OffloadMode = "none",
+    offload_overlap_forward: bool = False,
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
+    accumulate_grads_on_gpu: bool = False,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
@@ -89,14 +91,22 @@ def setup_optimizer(
             optimizer,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
+            accumulate_grads_on_gpu=accumulate_grads_on_gpu,
         )
         return optimizer, optimizer._gradient_manager
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(optimizer), None
+        overlap_model = model if offload_overlap_forward and config.type == "adamw" else None
+        return CPUOffloadOptimizer(optimizer, overlap_model=overlap_model), None
 
     return optimizer, None
+
+
+def wait_for_optimizer_step(optimizer: OptimizerLike) -> None:
+    """Make the current stream wait for a step that would otherwise overlap the next forward."""
+    if isinstance(optimizer, CPUOffloadOptimizer):
+        optimizer.wait()
 
 
 def _create_optimizer(

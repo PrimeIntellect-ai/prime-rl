@@ -22,7 +22,7 @@ from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer, wait_for_optimizer_step
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -169,8 +169,10 @@ def train(config: SFTConfig | PretrainConfig):
         list(model.named_parameters()),
         parallel_dims,
         offload=config.model.offload,
+        offload_overlap_forward=config.model.offload_overlap_forward,
         model=model,
         full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
+        accumulate_grads_on_gpu=config.model.offload_grad_accumulation == "gpu",
     )
 
     # Set up the learning rate scheduler
@@ -575,6 +577,7 @@ def train(config: SFTConfig | PretrainConfig):
         if weight_sender is not None and not is_last_step and is_online_eval_step(progress.step):
             logger.info(f"Broadcasting weights at step {progress.step}")
             broadcast_start_time = time.perf_counter()
+            wait_for_optimizer_step(optimizer)
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
@@ -711,6 +714,7 @@ def train(config: SFTConfig | PretrainConfig):
     # run has no final epoch.
     if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
+        wait_for_optimizer_step(optimizer)
         weight_sender.broadcast(model, step=progress.step)
 
     if gradient_manager is not None:

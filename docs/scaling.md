@@ -165,7 +165,7 @@ Every chunk runs the MoE's EP all-to-alls, so all ranks of an EP group must run 
 
 ### Optimizer Offloading
 
-State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). With AdamW, the step streams the states through the GPU in chunks; set `model.offload_overlap_forward = true` to run those copies and updates alongside the next forward, each FSDP module waiting only for its own parameters (off by default). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
 
 ### LM Head Chunking
 

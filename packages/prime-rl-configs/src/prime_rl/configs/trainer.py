@@ -305,6 +305,12 @@ class ModelConfig(BaseModelConfig):
     offload: OffloadMode = "optimizer"
     """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
 
+    offload_grad_accumulation: Literal["cpu", "gpu"] = "cpu"
+    """Where ``offload = "full"`` sums a step's micro-batch gradients. ``cpu`` copies every backward's gradients to CPU and adds them there. ``gpu`` sums them in FP32 on the GPU and copies once after the last backward, which cuts host traffic per step by the number of micro batches but holds 4 bytes per local parameter of GPU memory during the step."""
+
+    offload_overlap_forward: bool = False
+    """With ``offload = "optimizer"`` and AdamW, run the optimizer step's state copies and updates alongside the next forward instead of waiting for them: each FSDP module waits only for the chunks holding its own parameters before its all-gather, and weight broadcasts wait for the whole step first. The math is unchanged; the step's gradients stay allocated until their chunk has updated. Off by default until it has been exercised in RL runs."""
+
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
@@ -658,6 +664,12 @@ class BaseTrainerConfig(BaseConfig):
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
+        return self
+
+    @model_validator(mode="after")
+    def gpu_grad_accumulation_requires_full_offload(self):
+        if self.model.offload_grad_accumulation == "gpu" and self.model.offload != "full":
+            raise ValueError('model.offload_grad_accumulation = "gpu" requires model.offload = "full"')
         return self
 
     @model_validator(mode="after")
