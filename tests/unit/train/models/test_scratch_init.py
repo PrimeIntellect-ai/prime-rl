@@ -60,16 +60,16 @@ LAYER_KINDS = {
 
 def tiny_config(config_cls):
     default = config_cls()
+
+    def shrink(config):
+        tiny = {key: value for key, value in TINY.items() if hasattr(config, key)}
+        return tiny | LAYER_KINDS.get(config.model_type, {})
+
     sub_configs = {
-        name: getattr(default, name) for name in default.sub_configs if getattr(default, name, None) is not None
-    }
-    kwargs = {
-        name: {key: value for key, value in TINY.items() if hasattr(config, key)}
-        | LAYER_KINDS.get(config.model_type, {})
-        for name, config in (sub_configs or {None: default}).items()
+        name: shrink(getattr(default, name)) for name in default.sub_configs if getattr(default, name, None) is not None
     }
     # Sparse attention backend the CPU can construct; models without sparse attention ignore it.
-    return config_cls(**(kwargs if sub_configs else kwargs[None]), dsa_backend="tilelang")
+    return config_cls(**(sub_configs or shrink(default)), dsa_backend="tilelang")
 
 
 @pytest.mark.parametrize(

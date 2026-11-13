@@ -650,8 +650,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 @torch.no_grad()
 def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
-    ``_init_weights``), seeded with ``seed``. The floating parameters and buffers are NaN before, so one the init does
-    not reach fails here."""
+    ``_init_weights``), seeded with ``seed``. Floating parameters and buffers are NaN-filled first, so any the init misses
+    raises."""
     get_logger().info(f"Initializing the weights from scratch (seed {seed})")
     model.to_empty(device="cuda")
     torch.distributed.barrier()

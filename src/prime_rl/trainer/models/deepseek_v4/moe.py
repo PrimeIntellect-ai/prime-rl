@@ -16,8 +16,8 @@ from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceT
 class DeepseekV4HashRouter(TokenChoiceTopKRouter):
     """A bootstrap layer's router: selection is a frozen token-id lookup, gating still learned.
 
-    `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint
-    and zeros until one fills it. A frozen selection cannot be steered, so a hash layer has no use
+    `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint,
+    or drawn by `init_tid2eid` from scratch. A frozen selection cannot be steered, so a hash layer has no use
     for the aux-loss-free load-balancing bias, and HF's `DeepseekV4HashRouter` carries no
     `e_score_correction_bias` to load into it either; `selection_bias=False` leaves that buffer
     unbuilt, keeping the state dict aligned with HF's.
