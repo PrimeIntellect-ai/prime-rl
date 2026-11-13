@@ -86,7 +86,7 @@ def test_received_episode_writes_plain_records(tmp_path):
     ref = branch["advantages"]
     with open(chunk_path(stream, ref["bin"], ".bin"), "rb") as f:
         f.seek(ref["offset"])
-        decoded = np.frombuffer(f.read(ref["count"] * 4), dtype=np.float32)
+        decoded = np.frombuffer(f.read(ref["count"] * np.dtype(np.float32).itemsize), dtype=np.float32)
     assert np.array_equal(decoded, np.float32([0.0, 0.0, 0.7, 0.7]))
 
 

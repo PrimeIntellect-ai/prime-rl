@@ -899,10 +899,11 @@ def resolve_stream_refs(stream: Path, update: dict) -> None:
             if not isinstance(ref, dict):
                 continue
             try:
+                nbytes = ref["count"] * np.dtype(np.float32).itemsize
                 with open_chunk(stream, ref["bin"], ".bin") as f:
                     f.seek(ref["offset"])
-                    data = f.read(ref["count"] * 4)
-                if len(data) != ref["count"] * 4:
+                    data = f.read(nbytes)
+                if len(data) != nbytes:
                     raise ValueError("short read")
             except (KeyError, TypeError, ValueError, OSError):
                 branch[field] = None

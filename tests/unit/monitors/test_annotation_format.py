@@ -104,7 +104,9 @@ def test_streams_larger_than_a_chunk_never_span_chunks(tmp_path):
     assert refs[("a", "trainer_logprobs")] == {"bin": 0, "offset": 0, "count": 100}
     assert sum(ref["bin"] == 0 for ref in refs.values()) == 1
     assert {ref["bin"] for ref in refs.values()} == {0, 1, 2}
-    assert all(ref["offset"] + ref["count"] * 4 <= sizes[ref["bin"]] for ref in refs.values())
+    assert all(
+        ref["offset"] + ref["count"] * np.dtype(np.float32).itemsize <= sizes[ref["bin"]] for ref in refs.values()
+    )
 
     written = {
         "a": {"trainer_logprobs": big, "entropies": small},
