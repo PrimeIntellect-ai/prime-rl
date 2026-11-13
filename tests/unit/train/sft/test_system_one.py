@@ -1,10 +1,15 @@
 import json
+import math
 
 import pytest
+import torch
 from datasets import Dataset
+from torch import nn
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
+from prime_rl.trainer.sft.loss import LossInputs
 from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneDataset, SystemOneEncoder
+from prime_rl.trainer.sft.system_one.loss import decision_loss
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
 
 COLUMNS = SystemOneColumnsConfig()
@@ -177,3 +182,63 @@ def test_process_raises_on_overlapping_read_spans():
 
 def test_process_skips_record_without_labels():
     assert _dataset([[(1, 2)], [(2, 4)], [(6, 7)]])._process(row()) is None
+
+
+class StubDecisionModel:
+    """A readout that returns the logits of the given distributions, in float64 so that the loss has to cast them, and
+    keeps the batch it was called with."""
+
+    def __init__(self, probs):
+        self.logits = [torch.tensor(p, dtype=torch.float64).log() for p in probs]
+
+    def decision_logits(self, hidden_states, batch):
+        self.batch = batch
+        return self.logits
+
+
+def _decision_inputs(model) -> LossInputs:
+    """A row of two records. In the second, ``outage`` has no label and the target of ``team`` is tied."""
+    second = {**row(label={"urgency": 0}, soft_label={"team": {"billing": 0.5, "technical": 0.5}}), "id": "s"}
+    dataset = _dataset([[(1, 2)], [(2, 4)], [(6, 7), (8, 10)]])
+    records = [dataset._process(example)["sample_data"] for example in (ROW, second)]
+    return LossInputs(model=model, hidden_states=torch.zeros(1, 20, 4), batch={"sample_data": records})
+
+
+def test_decision_loss_sums_over_labelled_questions():
+    # Targets: [1, 0], [0.25, 0.75], [0, 0, 1] in record r; none, [0.5, 0.5], [1, 0, 0] in record s.
+    model = StubDecisionModel([[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
+    outputs = decision_loss(_decision_inputs(model), brier_weight=0.1)
+
+    ce = sum(
+        [
+            -math.log(0.8),
+            -(0.25 * math.log(0.75) + 0.75 * math.log(0.25)),
+            -math.log(0.5),
+            -(0.5 * math.log(0.2) + 0.5 * math.log(0.8)),
+            -math.log(0.5),
+        ]
+    )
+    brier = 0.08 + 0.5 + 0.375 + 0.18 + 0.375
+    assert outputs.count == 5 and isinstance(outputs.count, int)
+    torch.testing.assert_close(outputs.loss, torch.tensor(ce + 0.1 * brier))
+    # Accuracy: team is wrong in r, and right in s at either option of its tied target.
+    expected = {"ce": torch.tensor(ce), "brier": torch.tensor(brier), "accuracy": torch.tensor(4.0)}
+    assert outputs.metrics.keys() == expected.keys()
+    for name, value in expected.items():
+        torch.testing.assert_close(outputs.metrics[name], value)
+
+    # The readout gets the records without the targets.
+    questions = [question for record in model.batch["sample_data"] for question in record["questions"]]
+    assert [record["id"] for record in model.batch["sample_data"]] == ["r", "s"]
+    assert questions[1] == {"id": "team", "type": "choice", "options": ["billing", "technical"], "reads": [[2, 4]]}
+    assert all("target" not in question for question in questions)
+
+
+def test_decision_loss_rejects_broken_readouts():
+    probs = [[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]]
+    with pytest.raises(ValueError, match=r"5 logit vectors for the 6 questions of records \['r', 's'\]"):
+        decision_loss(_decision_inputs(StubDecisionModel(probs[:-1])))
+    with pytest.raises(ValueError, match=r"record 's', question 'team': .* shape \(3,\) for 2 options"):
+        decision_loss(_decision_inputs(StubDecisionModel([*probs[:4], [0.2, 0.3, 0.5], probs[5]])))
+    with pytest.raises(TypeError, match=r"decision_logits.*Linear.*\[model.implementation\]"):
+        decision_loss(_decision_inputs(nn.Linear(4, 2)))
