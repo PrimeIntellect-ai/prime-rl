@@ -12,12 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
-from prime_rl.configs.algorithm import (
-    CostLatencyLengthPenaltyConfig,
-    GRPOAlgoConfig,
-    LinearLengthPenaltyConfig,
-    LinearSubagentLengthPenaltyConfig,
-)
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
@@ -256,9 +251,9 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
         ({}, LinearLengthPenaltyConfig),
         ({"num_output_tokens_weight": 0.5}, LinearLengthPenaltyConfig),
         ({"type": "linear"}, LinearLengthPenaltyConfig),
+        ({"latency_weight": 0.2, "tokens_per_second": 80}, LinearLengthPenaltyConfig),
         ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
         ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
-        ({"type": "cost-latency", "tokens_per_second": 80}, CostLatencyLengthPenaltyConfig),
     ],
 )
 def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):

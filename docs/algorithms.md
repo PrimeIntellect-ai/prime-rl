@@ -391,17 +391,11 @@ subagent_token_weight = 0.0
 num_turns_weight = 0.0
 ```
 
-The opt-in `cost-latency` penalty replaces those terms with the two things a deployed agent is charged for, under the same `pass_rate` scaling and group-max normalization:
-
-- **Cost** (`cost_weight`): output plus newly introduced input tokens of every model call in the trace, subagents included at full weight.
-- **Latency** (`latency_weight`): the root agent's end-to-end time, as measured harness time plus estimated inference time. Harness time is the wall-clock time between the root agent's model calls — tool execution, waits, harness overhead. Inference time is the root agent's output tokens divided by `tokens_per_second`, the deployed model's decode speed, so the training deployment's speed does not enter. Subagents add latency only through the time the root agent spends waiting on them, which does run at the training deployment's speed.
-
-Each trace records `length_penalty/cost_tokens`, `length_penalty/harness_time`, and `length_penalty/inference_time` as metrics.
+Both penalties take an opt-in **latency** term (`latency_weight`, default `0`), normalized by the group's max like the others: the root agent's end-to-end time, as its tool time plus its inference time. Tool time is measured by the harness and read from the trace's `tool_seconds` metric — the wall-clock time the root agent spent executing its own tool calls, waits on subagents included. Inference time is the root agent's output tokens divided by `tokens_per_second`, the deployed model's decode speed, so neither the training deployment's speed nor its retries enter. Where the token and turns terms charge for every agent's work, latency charges subagents only through the time the root agent waits on them. The term needs a harness that reports `tool_seconds` (`rlm` does).
 
 ```toml
 [orchestrator.train.algo.length_penalty]
-type = "cost-latency"
-cost_weight = 0.1
+type = "linear"
 latency_weight = 0.1
 tokens_per_second = 100
 ```
