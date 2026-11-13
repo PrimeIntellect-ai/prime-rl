@@ -58,6 +58,9 @@ def register_packed_parameter_state_dict_hooks(module: nn.Module, spec: PackedPa
             state_dict[f"{prefix}{logical_name}"] = view
 
     def join_logical_entries_into_packed_entry(module, state_dict, prefix, *load_state_dict_args) -> None:
+        # A partial state dict, e.g. a checkpoint without frozen weights, may leave this parameter out.
+        if f"{prefix}{spec.logical_names[0]}" not in state_dict:
+            return
         state_dict[f"{prefix}{spec.name}"] = spec.pack_logical_tensors(
             [state_dict.pop(f"{prefix}{logical_name}") for logical_name in spec.logical_names]
         )
@@ -193,9 +196,12 @@ def write_back_loaded_packed_parameters(model: nn.Module, state_dict: dict[str, 
 
     Loading into ``model.state_dict()`` in place only reaches a packed parameter through
     entries that alias it, so the entries that are copies are packed and written back here.
+    Packed parameters whose entries are not in a partial state dict are left unchanged.
     """
     with torch.no_grad():
         for packed_info in get_model_packed_parameters(model):
+            if packed_info.logical_fqns[0] not in state_dict:
+                continue
             packed_info.parameter.copy_(
                 packed_info.spec.pack_logical_tensors([state_dict[fqn] for fqn in packed_info.logical_fqns])
             )

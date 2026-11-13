@@ -42,7 +42,7 @@ from prime_rl.trainer.activation_checkpointing import (
     TokenChunkedCheckpointWrapper,
     get_activation_checkpoint_wrapper,
 )
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
+from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
@@ -153,6 +153,17 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def freeze_ngram_embedding(model: nn.Module) -> None:
+    """Freeze the hashed n-gram embedding tables."""
+    num_frozen = 0
+    for module in model.modules():
+        if isinstance(module, NGramTable):
+            module.weight.requires_grad = False
+            num_frozen += 1
+    if num_frozen > 0:
+        get_logger().info(f"Froze {num_frozen} n-gram embedding tables")
+
+
 def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
@@ -182,6 +193,20 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
 
     if num_frozen > 0:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
+def freeze_layers(model: nn.Module, num_layers: int) -> None:
+    """Freeze the input embeddings and the first ``num_layers`` decoder layers."""
+    if model.config.tie_word_embeddings:
+        raise ValueError("freeze_layers freezes the input embeddings, which are tied to the LM head in this model")
+    # Resolved like frozen_weight_keys, which picks the frozen weights to skip.
+    language_model = get_language_model(model)
+    if num_layers > len(language_model.layers):
+        raise ValueError(f"freeze_layers={num_layers} exceeds the model's {len(language_model.layers)} layers")
+    embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+    for module in [embed_module, *language_model.layers[:num_layers]]:
+        module.requires_grad_(False)
+    get_logger().info(f"Froze the input embeddings and the first {num_layers} decoder layers")
 
 
 def apply_force_balanced_routing(model: nn.Module) -> None:
@@ -649,7 +674,8 @@ def initialize_from_scratch(model: nn.Module) -> None:
         raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig, keys: set[str] | None = None):
+    """Materialize the model on the GPU and load its weights from ``config.name``, or only ``keys`` if given."""
     device = "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
@@ -658,6 +684,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
+    if keys is not None and not keys:
+        return
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         return
@@ -725,13 +753,15 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
+    if keys is not None:
+        state_dict = {key: state_dict[key] for key in keys}
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         # Tied checkpoints ship no lm_head weight: the head loads through the input embedding it shares.
         assert model.lm_head.weight is model.get_input_embeddings().weight, (
             f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
         )
-        state_dict.pop("lm_head.weight")
+        state_dict.pop("lm_head.weight", None)
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
@@ -967,6 +997,9 @@ def setup_model(
     if config.freeze_moe_router:
         freeze_moe_router(model)
 
+    if config.freeze_ngram_embedding:
+        freeze_ngram_embedding(model)
+
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
     # No-op for models without a sparse indexer.
@@ -977,11 +1010,8 @@ def setup_model(
 
     configure_moe_runtime(model, config, parallel_dims)
     configure_ngram_runtime(model, parallel_dims)
-    if parallel_dims.ep_enabled:
-        # EP replaces params with DTensors that default to requires_grad=True,
-        # re-freeze base params that LoRA froze earlier.
-        if config.lora is not None:
-            freeze_all_except_lora(model)
+    if config.freeze_layers > 0:
+        freeze_layers(model, config.freeze_layers)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(frozen_vision_encoder)
@@ -1004,10 +1034,8 @@ def setup_model(
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
         )
-        device = "cuda"
-        model.to_empty(device=device)
-        torch.distributed.barrier()
-        model.init_buffers_post_meta()
+        # Checkpoints skip frozen weights, so they come from the base model as on a fresh start.
+        load_dcp_from_hf(model, config, keys=model.frozen_weight_keys())
     elif init_from_scratch:
         initialize_from_scratch(model)
     else:
