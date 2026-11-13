@@ -12,7 +12,7 @@ in write order, newest wins.
 
 from typing import Any
 
-UPDATE_VERSION = 1
+UPDATE_VERSION = 2
 
 STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
