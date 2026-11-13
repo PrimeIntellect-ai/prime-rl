@@ -5,15 +5,25 @@ DeepSeek-V4 rotates only the trailing `rope_dim` channels of each head, with eac
 adjacently. Eagerly, every rotation widens the cos/sin tables and rebuilds the whole head with
 `torch.cat`, a large share of attention time. `dsv4_rope` rotates in one kernel pass, reading
 fp32 cos and sin from a `[cos | sin]` cache by position, bit for bit with vLLM's `rotary_embedding`.
-`dsv4_q_norm_rope` puts the query's RMSNorm in the same op so the query is rounded to bf16 once, as vLLM's
-fused prefill kernel does.
+`dsv4_q_norm_rope` puts the query's RMSNorm in the same op so the query is rounded to bf16 once, and at the
+shapes vLLM serves it runs vLLM's own fused prefill kernel. `dsv4_indexer_q_rope_quant` rotates the
+Lightning Indexer's query and quantizes it to FP8 in one op, as vLLM does.
 """
 
 import torch
 import triton
 import triton.language as tl
 
+from prime_rl.trainer.models.kernels.fp8_indexer import per_token_group_quant_fp8
 from prime_rl.trainer.models.layers.norms import get_quack_rmsnorm
+
+VLLM_Q_NORM_ROPE_HEAD_DIM = 512
+VLLM_Q_NORM_ROPE_ROPE_DIM = 64
+VLLM_Q_NORM_ROPE_NUM_HEADS = (8, 16, 32, 64, 128)
+VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
+"""The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
+Q_NORM_ROPE_BACKWARD_BLOCK_H = 4
+Q_NORM_ROPE_BACKWARD_NUM_WARPS = 2
 
 
 @triton.autotune(
@@ -123,79 +133,214 @@ def _dsv4_rope_autograd_backward(ctx, grad: torch.Tensor):
 dsv4_rope.register_autograd(_dsv4_rope_autograd_backward, setup_context=_dsv4_rope_setup_context)
 
 
-@torch.library.custom_op("prime_rl::dsv4_q_norm_rope", mutates_args=())
-def _dsv4_q_norm_rope(
+@triton.jit
+def _q_norm_rope_backward_kernel(
+    GRAD,
+    X,
+    GRAD_X,
+    COS_SIN,
+    POS,
+    num_heads,
+    eps,
+    head_dim: tl.constexpr,
+    rope_dim: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+):
+    """Rotate the gradient back in fp32, then the RMSNorm backward, with `rstd` recomputed from `x`."""
+    token = tl.program_id(0).to(tl.int64)
+    heads = tl.program_id(1) * BLOCK_H + tl.arange(0, BLOCK_H)
+    rope_pairs = tl.arange(0, head_dim // 2) - (head_dim - rope_dim) // 2
+    is_rope = (rope_pairs >= 0)[None, :]
+    cos_sin = COS_SIN + tl.load(POS + token).to(tl.int64) * rope_dim
+    cos = tl.load(cos_sin + rope_pairs, mask=rope_pairs >= 0, other=1.0)
+    sin = tl.load(cos_sin + rope_dim // 2 + rope_pairs, mask=rope_pairs >= 0, other=0.0)
+
+    offsets = (token * num_heads + heads[:, None]) * head_dim + tl.arange(0, head_dim)[None, :]
+    mask = heads[:, None] < num_heads
+    x = tl.load(X + offsets, mask=mask, other=0.0).to(tl.float32)
+    grad = tl.load(GRAD + offsets, mask=mask, other=0.0).to(tl.float32)
+    rstd = tl.rsqrt(tl.sum(x * x, 1) * (1.0 / head_dim) + eps)[:, None]
+    normed = x * rstd
+
+    grad1, grad2 = tl.split(tl.reshape(grad, (BLOCK_H, head_dim // 2, 2)))
+    grad_normed1 = tl.where(is_rope, tl.fma(grad1, cos, grad2 * sin), grad1)
+    grad_normed2 = tl.where(is_rope, tl.fma(grad2, cos, -(grad1 * sin)), grad2)
+    grad_normed = tl.reshape(tl.join(grad_normed1, grad_normed2), (BLOCK_H, head_dim))
+    mean_dot = tl.sum(grad_normed * normed, 1)[:, None] * (1.0 / head_dim)
+    grad_x = (grad_normed - normed * mean_dot) * rstd
+    tl.store(GRAD_X + offsets, grad_x.to(GRAD_X.dtype.element_ty), mask=mask)
+
+
+def _vllm_q_norm_rope(
     q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The normed and rotated `q` in `q`'s dtype, plus the fp32 per-row `rstd` that backward needs."""
+) -> torch.Tensor | None:
+    """vLLM's fused prefill q norm + RoPE of `q`, or `None` outside the op's contract."""
+    num_heads, head_dim = q.shape[-2:]
+    if not (
+        q.is_cuda
+        and q.dtype == torch.bfloat16
+        and head_dim == VLLM_Q_NORM_ROPE_HEAD_DIM
+        and cos_sin_cache.shape[-1] == VLLM_Q_NORM_ROPE_ROPE_DIM
+        and num_heads in VLLM_Q_NORM_ROPE_NUM_HEADS
+    ):
+        return None
+    import vllm._C_stable_libtorch  # noqa: F401
+
+    rows = q.reshape(-1, num_heads, head_dim).contiguous()
+    if rows.numel() == 0:
+        return q.new_empty(q.shape)
+    # The kv input is only read for the cache insert, which an empty `slot_mapping` skips.
+    kv = rows.new_empty(rows.shape[0], head_dim)
+    out = torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+        rows,
+        kv,
+        q.new_empty(1, 1, dtype=torch.uint8),
+        q.new_empty(0, dtype=torch.int64),
+        position_ids.reshape(-1).long(),
+        cos_sin_cache,
+        q_head_padded=num_heads,
+        eps=eps,
+        cache_block_size=1,
+        apply_q_norm=True,
+        kv_mxfp8=False,
+        apply_q_rope=True,
+        is_q_interleaved=False,
+    )
+    return out.view(q.shape)
+
+
+@torch.library.custom_op("prime_rl::dsv4_q_norm_rope", mutates_args=())
+def dsv4_q_norm_rope(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
+) -> torch.Tensor:
+    """Unweighted RMSNorm over `head_dim`, then interleaved RoPE, in fp32 and rounded once to `q`'s dtype.
+
+    At the shapes vLLM serves (bf16, `head_dim` 512, `rope_dim` 64, 8, 16, 32, 64 or 128 heads), the forward
+    is vLLM's own fused prefill kernel, so it matches serving bit for bit. Elsewhere an fp32 RMSNorm feeds
+    the rotation, which differs from vLLM's on a few elements per million by one ulp. The
+    backward is one kernel that reads `q` and the gradient once. Each direction is one op that autograd
+    and Inductor cannot see into, so the backward needs no fp32 intermediate and Inductor cannot reorder
+    the norm's reduction.
+
+    Args:
+        q: `(..., heads, head_dim)`, one entry of `position_ids` per token; `head_dim` a power of two.
+        cos_sin_cache: `(max_position, rope_dim)` fp32 and contiguous, cos then sin, one entry per pair each.
+        position_ids: int32 or int64, one per token, each in `[0, max_position)`.
+        eps: added to the mean square before the reciprocal square root.
+    """
+    out = _vllm_q_norm_rope(q, cos_sin_cache, position_ids, eps)
+    if out is not None:
+        return out
     rows = q.reshape(-1, q.shape[-1])
     if get_quack_rmsnorm() is not None:
         from quack.rmsnorm import rmsnorm_fwd
 
-        normed, _, rstd = rmsnorm_fwd(rows, out_dtype=torch.float32, eps=eps, store_rstd=True)
+        normed = rmsnorm_fwd(rows, out_dtype=torch.float32, eps=eps)[0]
     else:
-        rstd = torch.rsqrt(rows.float().square().mean(-1) + eps)
-        normed = rows.float() * rstd[:, None]
-    return _triton_rope(normed.view(q.shape), cos_sin_cache, position_ids, False, out_dtype=q.dtype), rstd
+        normed = rows.float() * torch.rsqrt(rows.float().square().mean(-1, keepdim=True) + eps)
+    return _triton_rope(normed.view(q.shape), cos_sin_cache, position_ids, False, out_dtype=q.dtype)
 
 
-@_dsv4_q_norm_rope.register_fake
+@dsv4_q_norm_rope.register_fake
 def _dsv4_q_norm_rope_fake(
     q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return q.new_empty(q.shape), q.new_empty(q.numel() // q.shape[-1], dtype=torch.float32)
+) -> torch.Tensor:
+    return q.new_empty(q.shape)
 
 
 @torch.library.custom_op("prime_rl::dsv4_q_norm_rope_backward", mutates_args=())
 def _dsv4_q_norm_rope_backward(
-    grad: torch.Tensor, q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, rstd: torch.Tensor
+    grad: torch.Tensor, q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
 ) -> torch.Tensor:
-    rows = q.reshape(-1, q.shape[-1])
-    grad_normed = _triton_rope(grad, cos_sin_cache, position_ids, True).view(rows.shape)
-    if get_quack_rmsnorm() is not None:
-        from quack.rmsnorm import rmsnorm_bwd
-
-        return rmsnorm_bwd(rows, None, grad_normed, rstd)[0].view(q.shape)
-    normed = rows.float() * rstd[:, None]
-    grad_normed = grad_normed.float()
-    grad_rows = (grad_normed - normed * (grad_normed * normed).mean(-1, keepdim=True)) * rstd[:, None]
-    return grad_rows.to(q.dtype).view(q.shape)
+    grad = grad.contiguous()
+    q = q.contiguous()
+    grad_q = torch.empty_like(q)
+    if grad_q.numel() == 0:
+        return grad_q
+    num_heads, head_dim = q.shape[-2:]
+    _q_norm_rope_backward_kernel[(position_ids.numel(), triton.cdiv(num_heads, Q_NORM_ROPE_BACKWARD_BLOCK_H))](
+        grad,
+        q,
+        grad_q,
+        cos_sin_cache,
+        position_ids.contiguous(),
+        num_heads,
+        eps,
+        head_dim,
+        cos_sin_cache.shape[-1],
+        BLOCK_H=Q_NORM_ROPE_BACKWARD_BLOCK_H,
+        num_warps=Q_NORM_ROPE_BACKWARD_NUM_WARPS,
+    )
+    return grad_q
 
 
 @_dsv4_q_norm_rope_backward.register_fake
 def _dsv4_q_norm_rope_backward_fake(
-    grad: torch.Tensor, q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, rstd: torch.Tensor
+    grad: torch.Tensor, q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
 ) -> torch.Tensor:
     return q.new_empty(q.shape)
 
 
 def _dsv4_q_norm_rope_setup_context(ctx, inputs, output) -> None:
-    q, cos_sin_cache, position_ids, _ = inputs
-    ctx.save_for_backward(q, cos_sin_cache, position_ids, output[1])
+    q, cos_sin_cache, position_ids, eps = inputs
+    ctx.save_for_backward(q, cos_sin_cache, position_ids)
+    ctx.eps = eps
 
 
-def _dsv4_q_norm_rope_autograd_backward(ctx, grad: torch.Tensor, grad_rstd: torch.Tensor):
-    q, cos_sin_cache, position_ids, rstd = ctx.saved_tensors
-    return _dsv4_q_norm_rope_backward(grad, q, cos_sin_cache, position_ids, rstd), None, None, None
+def _dsv4_q_norm_rope_autograd_backward(ctx, grad: torch.Tensor):
+    q, cos_sin_cache, position_ids = ctx.saved_tensors
+    return _dsv4_q_norm_rope_backward(grad, q, cos_sin_cache, position_ids, ctx.eps), None, None, None
 
 
-_dsv4_q_norm_rope.register_autograd(_dsv4_q_norm_rope_autograd_backward, setup_context=_dsv4_q_norm_rope_setup_context)
+dsv4_q_norm_rope.register_autograd(_dsv4_q_norm_rope_autograd_backward, setup_context=_dsv4_q_norm_rope_setup_context)
 
 
-def dsv4_q_norm_rope(
-    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, eps: float
-) -> torch.Tensor:
-    """Unweighted RMSNorm over `head_dim`, then interleaved RoPE, both in fp32, rounded once to `q`'s dtype.
+@torch.library.custom_op("prime_rl::dsv4_indexer_q_rope_quant", mutates_args=())
+def dsv4_indexer_q_rope_quant(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, w: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The indexer query's RoPE and per-head UE8M0 FP8 quantization, each head's scale folded into `w`.
 
-    The norm and rotation form one op that autograd and Inductor cannot see into:
+    On bf16 CUDA queries this is vLLM's fused kernel, bit for bit with the unfused `dsv4_rope` +
+    `per_token_group_quant_fp8` pair that runs elsewhere. Both floor each head's absolute maximum at
+    `VLLM_INDEXER_FP8_AMAX_FLOOR`.
 
-    - Autograd: as separate nodes, backward would pass an fp32 gradient of the normalized query between
-      them, twice the size of `q` (4 GiB per layer for 32k tokens of 64 heads of 512). Here the
-      rotation's backward runs on the bf16 gradient and feeds the norm's backward directly.
-    - Inductor: without quack, the norm falls back to torch ops, which Inductor would fuse and reorder,
-      flipping a bf16 ULP on a few hundred outputs so compiled results drift from eager and from vLLM.
+    Args:
+        q: `(tokens, heads, head_dim)`, unrotated.
+        cos_sin_cache: `(max_position, rope_dim)` fp32 and contiguous, cos then sin, one entry per pair each.
+        position_ids: int32 or int64, one per token, each in `[0, max_position)`.
+        w: `(tokens, heads)` bf16 per-head weights.
 
-    `q` is `(..., heads, head_dim)`; `cos_sin_cache` and `position_ids` are as in `dsv4_rope`.
+    Returns:
+        The float8_e4m3fn query, shaped like `q`, and the fp32 weights times each head's query scale.
     """
-    out, _ = _dsv4_q_norm_rope(q, cos_sin_cache, position_ids, eps)
-    return out
+    if q.is_cuda and q.dtype == torch.bfloat16:
+        from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
+
+        return fused_indexer_q_rope_quant(
+            position_ids.reshape(-1).long(),
+            q.contiguous(),
+            cos_sin_cache,
+            w,
+            index_weights_softmax_scale=1.0,
+            index_weights_head_scale=1.0,
+        )
+    return _unfused_indexer_q_rope_quant(q, cos_sin_cache, position_ids, w)
+
+
+def _unfused_indexer_q_rope_quant(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, w: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`dsv4_indexer_q_rope_quant` as the `dsv4_rope` kernel, `per_token_group_quant_fp8` and the fold into `w`."""
+    rotated = _triton_rope(q, cos_sin_cache, position_ids, False)
+    q_fp8, q_scales = per_token_group_quant_fp8(
+        rotated.reshape(-1, q.shape[-1]), group_size=q.shape[-1], use_ue8m0=True, eps=VLLM_INDEXER_FP8_AMAX_FLOOR
+    )
+    return q_fp8.view(q.shape), w * q_scales.view(q.shape[:-1])
+
+
+@dsv4_indexer_q_rope_quant.register_fake
+def _dsv4_indexer_q_rope_quant_fake(
+    q: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, w: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return q.new_empty(q.shape, dtype=torch.float8_e4m3fn), w.new_empty(w.shape, dtype=torch.float32)

@@ -146,16 +146,18 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
     dsv4_compressed_kv_fake_quant,
     dsv4_swa_kv_fake_quant,
 )
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
+    VLLM_INDEXER_FP8_AMAX_FLOOR,
+    dsv4_indexer_q_rope_quant,
+    dsv4_q_norm_rope,
+    dsv4_rope,
+)
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer_prequantized
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-
-VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
-"""The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
@@ -786,18 +788,17 @@ class DeepseekV4Indexer(nn.Module):
 
         cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
-        q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
         entry_start = layout.first_entry_of_doc[packed.tok_doc_idx].int()
         entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
-        # fp8_indexer has no batch axis
-        top_k_indices = fp8_indexer(
-            q[0],
+        q_fp8, scaled_w = dsv4_indexer_q_rope_quant(q[0], cos_sin_cache, packed.position_ids, w[0])
+        top_k_indices = fp8_indexer_prequantized(
+            q_fp8,
             compressed_kv[0],
-            w[0],
+            scaled_w,
             entry_start,
             entry_stop,
             self.index_topk,
