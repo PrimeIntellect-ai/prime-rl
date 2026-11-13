@@ -5538,8 +5538,8 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.9"
-source = { registry = "https://pypi.org/simple" }
+version = "0.5.11"
+source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=fae6d0bc91717b95ff1b109d93d58a22e3408df2#fae6d0bc91717b95ff1b109d93d58a22e3408df2" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
@@ -5549,10 +5549,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyqwest" },
     { name = "tenacity" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
 ]
 
 [[package]]
@@ -8134,7 +8130,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-sandboxes", specifier = ">=0.5.9" },
+    { name = "prime-sandboxes", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=fae6d0bc91717b95ff1b109d93d58a22e3408df2" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev9" },
