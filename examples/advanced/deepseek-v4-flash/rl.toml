@@ -33,8 +33,6 @@ keep_last = 1
 [trainer.optim]
 type = "muon"
 
-# IcePop masks tokens whose trainer/inference probability ratio leaves [0.2, 5]; score centering
-# centers the score over the truncated sampling support below.
 [trainer.loss]
 type = "icepop"
 score_centering = true
