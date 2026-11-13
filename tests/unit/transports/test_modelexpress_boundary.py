@@ -121,6 +121,8 @@ def test_modelexpress_worker_forwards_generator_buffer_config():
 
 @pytest.mark.parametrize("outcome", ["success", "timeout", "wrong_uid", "read_error"])
 def test_modelexpress_installation_outcome_reaches_non_master_without_shared_storage(tmp_path, outcome):
+    from prime_rl.transports.weights.base import marker_exists
+
     source = ast.parse((ROOT / "src/prime_rl/transports/weights/modelexpress.py").read_text())
     sender = next(
         node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ModelExpressWeightSender"
@@ -156,6 +158,7 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
             barrier=lambda: calls.append((rank, "barrier")),
         ),
         "INSTALLED_MARKER": ".installed",
+        "marker_exists": marker_exists,
     }
     exec(compile(ast.fix_missing_locations(module), "<installation acknowledgment>", "exec"), namespace)
     installed = tmp_path / ".installed"
