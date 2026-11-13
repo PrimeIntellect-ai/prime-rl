@@ -83,6 +83,7 @@ class DeepseekV4Config(PretrainedConfig):
         attention_dropout: Dropout ratio on the attention probabilities.
         kv_precision: Precision attention reads keys and values at, `"bf16"` or `"fp8"` (vLLM's `fp8_ds_mla` rounding).
         compressor_backend: Kernels of the compressors' softmax-gated pooling, `"cudnn"` (the cuDNN frontend's fused CSA/HCA compressor where it applies, else torch) or `"torch"`.
+        cp_kv_exchange: How attention reaches keys on other context-parallel ranks, `"all_gather"` (the whole row) or `"halo"` (the tokens just before this rank's shard, plus the pooled entries).
         output_router_logits: Whether to return the router logits.
         router_aux_loss_coef: Coefficient of the router auxiliary loss.
         router_jitter_noise: Jitter noise added to the router inputs during training.
@@ -148,6 +149,7 @@ class DeepseekV4Config(PretrainedConfig):
         attention_dropout: float = 0.0,
         kv_precision: str = "bf16",
         compressor_backend: str = "cudnn",
+        cp_kv_exchange: str = "all_gather",
         output_router_logits: bool = False,
         router_aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
@@ -183,6 +185,7 @@ class DeepseekV4Config(PretrainedConfig):
         self.attention_dropout = attention_dropout
         self.kv_precision = kv_precision
         self.compressor_backend = compressor_backend
+        self.cp_kv_exchange = cp_kv_exchange
         self.index_n_heads = index_n_heads
         self.index_head_dim = index_head_dim
         self.index_topk = index_topk
