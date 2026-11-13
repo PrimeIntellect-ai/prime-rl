@@ -157,6 +157,14 @@ override-dependencies = [
     "nvidia-cutlass-dsl==4.8.0",
     # vLLM 0.33.0 is compiled against and pins exactly torch 2.14.0.
     "torch==2.14.0",
+    # torch 2.14 pins NCCL 2.30.7, which puts both GPUs of a pair on the same NIC when every GPU
+    # runs its own cross-node communicator at once (e.g. FSDP with expert parallelism inside a
+    # node), cutting their bandwidth 40-50% where two GPUs share two NICs. Fixed in NCCL 2.31.2:
+    # https://github.com/NVIDIA/nccl/releases/tag/v2.31.2-1
+    # Drop this pin once torch pins NCCL >= 2.31.2. With NCCL >= 2.31.2, torch releases up to 2.15
+    # can hang in destroy_process_group when a process group holds several communicators, e.g.
+    # unbatched send/recv to several peers on a group created without device_id (pytorch#201536).
+    "nvidia-nccl-cu13==2.32.3 ; sys_platform == 'linux'",
     "openenv-core",
 ]
 
