@@ -8,6 +8,9 @@ from typing import Iterator
 
 import torch
 
+# PyTorch reads the first of these that is set, in this order, for every accelerator.
+_ALLOC_CONF_VARS = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+
 _pool: torch.cuda.MemPool | None = None
 _allocator: torch.cuda.memory.CUDAPluggableAllocator | None = None
 
@@ -69,28 +72,31 @@ void cuda_free(void* pointer, ptrdiff_t size, int device, void* stream) {
 
 
 def _expandable_segments_enabled(config: str) -> bool:
-    for item in config.split(","):
-        key, separator, value = item.partition(":")
-        if separator and key.strip() == "expandable_segments" and value.strip().lower() == "true":
-            return True
-    return False
+    """Parse as PyTorch does: whitespace is ignored and the last setting wins."""
+    enabled = False
+    for item in "".join(config.split()).split(","):
+        key, _, value = item.partition(":")
+        if key == "expandable_segments":
+            enabled = value == "True"
+    return enabled
 
 
 def _check_caching_allocator_registerable() -> None:
     """Reject expandable segments, which hand out unregisterable addresses.
 
     An expandable segment spans several driver-level physical handles, so the NIC
-    cannot pin the virtual range and NIXL registration fails. Both variables are
-    read because a trainer inherits ``PYTORCH_CUDA_ALLOC_CONF`` from
-    ``DEFAULT_TRAINER_ENV_VARS`` regardless of its accelerator.
+    cannot pin the virtual range and NIXL registration fails. PyTorch configures
+    every accelerator's allocator from the first of ``_ALLOC_CONF_VARS`` that is
+    set, so this checks the same variable. A trainer inherits
+    ``PYTORCH_CUDA_ALLOC_CONF`` from ``DEFAULT_TRAINER_ENV_VARS`` regardless of its
+    accelerator, which takes precedence over ``PYTORCH_ALLOC_CONF``. Settings
+    changed at runtime, after PyTorch reads the environment, are not seen.
     """
-    config = os.environ.get("PYTORCH_ALLOC_CONF")
-    if config is None:
-        config = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-    if _expandable_segments_enabled(config):
+    name = next((var for var in _ALLOC_CONF_VARS if var in os.environ), None)
+    if name is not None and _expandable_segments_enabled(os.environ[name]):
         raise RuntimeError(
             "NIXL weight transfer cannot register memory allocated with "
-            "expandable_segments:True. Set PYTORCH_ALLOC_CONF=expandable_segments:False "
+            f"expandable_segments:True. Set {name}=expandable_segments:False "
             "in this component's env_vars."
         )
 
