@@ -2,15 +2,15 @@
 
 Agentic RL on [`deepseek-ai/DeepSeek-V4-Flash-0731`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) (284B MoE, 13B active) at 131k context. It trains on two tasksets at equal ratio, `terminal-lego` (13,825 terminal tasks) and `swelego` (4,323 SWE tasks), with a `bash` harness in sandboxes and evals on `openthoughts-tblite` (100 terminal tasks). A linear length penalty scales with each group's pass rate, so groups where every rollout solves the task still train: shorter solutions get the higher advantage. The model is small for its class and has a very small KV-cache footprint, so this recipe aims for high concurrency: at least 1024 rollouts in flight.
 
-The recipe is a hardware-agnostic base plus one overlay per GPU type. The base holds the model, task, algorithm, and inference layout. The overlay holds the topology, the precision, and the kernels:
+The recipe is a hardware-agnostic base plus one overlay per GPU type under `gpu/`. The base holds the model, task, algorithm, and inference layout. The overlay holds the topology, the precision, and the kernels:
 
 | Config | What it sets |
 |---|---|
 | [`rl.toml`](rl.toml) | Base: `terminal-lego` + `swelego` training with a linear length penalty, `openthoughts-tblite` evals, Muon, batch 512 / group 16, DEP8 inference (one replica per node: attention data parallel, experts sharded 8 ways). Does not parse standalone. |
-| [`h200.toml`](h200.toml) | 8×H200 nodes: 4 trainer + 2 inference nodes, blockwise FP8 trainer and online FP8 vLLM, DeepEP low-latency all-to-all, 1024+ rollouts in flight. |
+| [`gpu/h200.toml`](gpu/h200.toml) | 8×H200 nodes: 4 trainer + 2 inference nodes, blockwise FP8 trainer and online FP8 vLLM, DeepEP low-latency all-to-all, 1024+ rollouts in flight. |
 
 ```bash
-uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/h200.toml
+uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
 ```
 
 ## Tasks
@@ -65,7 +65,7 @@ With DeepEP low-latency, one node holds about 100M KV tokens, which is roughly 7
 The trainer stays at 4 nodes. To generate rollouts faster, add inference replicas:
 
 ```bash
-uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/h200.toml \
+uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml \
   --deployment.num-infer-replicas 4
 ```
 

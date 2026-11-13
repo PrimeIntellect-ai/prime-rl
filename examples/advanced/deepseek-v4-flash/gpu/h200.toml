@@ -1,7 +1,7 @@
 # H200 overlay for rl.toml: 4 trainer nodes + 2 one-node DEP8 inference replicas, FP8 on both
 # sides. Add inference replicas with `--deployment.num-infer-replicas`.
 #
-#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/h200.toml
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
 
 [deployment]
 type = "multi_node"

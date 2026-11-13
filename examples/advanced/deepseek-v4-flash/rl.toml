@@ -2,7 +2,7 @@
 # context, bash harness on a prime sandbox runtime; eval on OpenThoughts-TBLite. Hardware-agnostic
 # base: compose it with a hardware overlay that sets the topology and the precision, e.g.
 #
-#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/h200.toml
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
 
 max_steps = 1000
 seq_len = 131072
