@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import time
 from pathlib import Path
 
 import torch.nn as nn
@@ -16,6 +17,7 @@ from prime_rl.transports.weights.base import (
     WeightReceiver,
     WeightSender,
 )
+from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, revalidate
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -71,15 +73,47 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
-    async def receive(self, step: int) -> None:
+    prepared_step: int | None = None
+
+    async def prepare(self, step: int) -> None:
+        """Acknowledge v{step} and wait for its weights while the engines keep serving: a sparse delta's manifest
+        comes first and its part files as the trainer encodes, so the engines read and decode them now and the
+        pause only applies the delta."""
+        if self.prepared_step == step:
+            return
         weights_dir = self.step_dir(step)
-        # A trainer restarted mid-broadcast offers the version again: acknowledge every offer.
-        while not (weights_dir / FINISHED_MARKER).exists():
-            if (weights_dir / SENDER_READY_MARKER).exists() and not (weights_dir / RECEIVER_READY_MARKER).exists():
-                # The trainer resets the directory for a new offer; the next pass acknowledges it.
-                with contextlib.suppress(FileNotFoundError):
-                    self._ack(step)
-            await asyncio.sleep(0.1)
+        manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
+        while not (manifest.exists() or finished.exists()):
+            self._ack_offer(step)
+            await asyncio.sleep(0.05)
+            revalidate(manifest.parent)
+        if manifest.exists():
+            start = time.perf_counter()
+            await self.admin_plane.prefetch_weights(weights_dir)
+            self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
+        self.prepared_step = step
+
+    def _ack_offer(self, step: int) -> bool:
+        """Acknowledge an offer of v{step} not yet acknowledged. A trainer restarted mid-broadcast offers the version
+        again, resetting the directory, so every offer is acknowledged."""
+        weights_dir = self.step_dir(step)
+        if (weights_dir / SENDER_READY_MARKER).exists() and not (weights_dir / RECEIVER_READY_MARKER).exists():
+            with contextlib.suppress(FileNotFoundError):
+                self._ack(step)
+                return True
+        return False
+
+    async def receive(self, step: int) -> None:
+        await self.prepare(step)
+        weights_dir = self.step_dir(step)
+        finished = weights_dir / FINISHED_MARKER
+        while not finished.exists():
+            if self._ack_offer(step):
+                # A new offer rewrites the delta: prefetch it again rather than apply the abandoned one
+                self.prepared_step = None
+                await self.prepare(step)
+            await asyncio.sleep(0.05)
+            revalidate(weights_dir)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
