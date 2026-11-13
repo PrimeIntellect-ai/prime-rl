@@ -11,4 +11,6 @@ Choose the deployment workflow first.
 - **Start a local / SLURM run** — see `start-run/SKILL.md` for the `rl`, `sft`, and `inference` entrypoints and how to launch them (single-node, SLURM, dry-run).
 - **Monitor a local / SLURM run** — see `monitor-run/SKILL.md` for the runbook: how to find the output dir, what to tail, which metrics to watch, and how to restart safely.
 
+For ablation comparisons and plots, read [analyzing runs](monitor-run/references/analyze-runs.md), including restart and pipeline-warmup handling.
+
 The local start/monitor subskills assume the `configs` skill for config-loading mechanics. Model Factory dispatch takes a TOML filename directly and has its own CLI flags. Standalone evals (`uv run eval`) are the `eval` skill; online evals follow the selected training workflow.
