@@ -888,24 +888,20 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
 
 
 def resolve_stream_refs(stream: Path, update: dict) -> None:
-    """A v2 record's stream refs, decoded from the binary chunks beside its line.
-
-    Reads back the float32 values v1 wrote inline, NaN as None. A ref that does not
-    resolve leaves no value in its place: fold_trace_updates skips a None stream,
-    while a ref dict left in place would slice it and raise."""
+    """An update's stream refs, decoded from the ``.bin`` chunks beside its line into
+    float lists with NaN as None. A ref past the end of a truncated chunk reads as no
+    value: fold_trace_updates skips a None stream, while a ref dict left in place
+    would slice it and raise."""
     for branch in update.get("branches") or []:
         for field in STREAM_FIELDS:
             ref = branch.get(field)
             if not isinstance(ref, dict):
                 continue
-            try:
-                nbytes = ref["count"] * np.dtype(np.float32).itemsize
-                with open_chunk(stream, ref["bin"], ".bin") as f:
-                    f.seek(ref["offset"])
-                    data = f.read(nbytes)
-                if len(data) != nbytes:
-                    raise ValueError("short read")
-            except (KeyError, TypeError, ValueError, OSError):
+            nbytes = ref["count"] * np.dtype(np.float32).itemsize
+            with open_chunk(stream, ref["bin"], ".bin") as f:
+                f.seek(ref["offset"])
+                data = f.read(nbytes)
+            if len(data) < nbytes:
                 branch[field] = None
                 continue
             values = np.frombuffer(data, dtype=np.float32)
@@ -921,10 +917,9 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
             with open_chunk(stream, chunk) as f:
                 f.seek(offset)
                 update = orjson.loads(f.readline())
-            if isinstance(update, dict) and update.get("version") == 2:
-                resolve_stream_refs(stream, update)
+            resolve_stream_refs(stream, update)
             updates.append(update)
-        except (OSError, orjson.JSONDecodeError, ValueError):
+        except (OSError, orjson.JSONDecodeError):
             continue
     return updates
 

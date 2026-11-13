@@ -61,8 +61,8 @@ def seal(path: Path) -> None:
 
 
 class ChunkedJsonl:
-    """Appends lines (or raw bytes, in ``.bin`` chunks) to the live chunk of a stream and
-    reports where each one landed."""
+    """Appends records to the live chunk of a stream and reports where each one landed:
+    JSONL lines by default, raw bytes in ``.bin`` chunks."""
 
     def __init__(self, directory: Path, max_bytes: int, compress: bool, suffix: str = ".jsonl") -> None:
         directory.mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,7 @@ class ChunkedJsonl:
         self.size = self.file.tell()
 
     def append(self, *parts: bytes) -> tuple[int, int]:
-        """Write one line, given in parts so a long line is never copied to add its
+        """Write one record, given in parts so a long line is never copied to add its
         newline; returns ``(chunk, offset)``, the address a reader seeks to."""
         size = sum(map(len, parts))
         if self.size and self.size + size > self.max_bytes:
