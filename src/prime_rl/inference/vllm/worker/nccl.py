@@ -1,4 +1,4 @@
-import pickle
+import json
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -35,7 +35,10 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
     state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
     communicator.broadcast(state_tensor, src=0)
 
-    metadata = pickle.loads(bytes(state_tensor.cpu().numpy()))
+    metadata = {
+        getattr(torch, dtype_name.removeprefix("torch.")): [(key, tuple(shape), numel) for key, shape, numel in infos]
+        for dtype_name, infos in json.loads(bytes(state_tensor.cpu().numpy())).items()
+    }
 
     # Receive concatenated tensors per dtype and split them back
     for dtype, tensor_info_list in metadata.items():
