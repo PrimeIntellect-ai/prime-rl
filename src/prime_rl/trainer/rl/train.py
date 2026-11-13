@@ -92,6 +92,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import (
+    get_ckpt_dir,
     resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
     write_resolved_config,
@@ -181,7 +182,9 @@ def train(config: TrainerConfig):
                 # A trainer restarted on its own: the orchestrator may be steps ahead.
                 checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_manager.ckpt_dir)
             elif checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+                # Fake data runs without an orchestrator, so there is no second half to wait for.
+                orchestrator_ckpt_dir = None if config.data.fake else get_ckpt_dir(config.output_dir)
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, orchestrator_ckpt_dir)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

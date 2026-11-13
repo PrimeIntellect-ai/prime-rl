@@ -144,7 +144,10 @@ def main():
         components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
         for source in env_worker_pools:
             components.append(
-                (f" {source.resolved_name}", write_env_worker_pool_config(config_dir, "eval", source, config.log))
+                (
+                    f" {source.resolved_name}",
+                    write_env_worker_pool_config(config_dir, "eval", source, config.log, config.run_dir),
+                )
             )
     if config.dry_run:
         logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")

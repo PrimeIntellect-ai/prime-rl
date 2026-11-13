@@ -18,17 +18,21 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
+from verifiers.v1.restore import unsaveable
+from verifiers.v1.utils.loaders import default_harness_id, harness_class
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.env import EnvClient
+from prime_rl.env.types import RestoreRef
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
@@ -75,6 +79,12 @@ class Env:
         self._env_clients: list[EnvClient] = []
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
+        self.late_restores: list[RestoreRef] = []
+        self.save_skipped: Counter[str] = Counter()
+        """Why running rollouts took no restore point at the last ``save``, counted."""
+        """Restore points of replicas that answered a ``save`` after its timeout: nothing
+        resumes from them, so their owner deletes their snapshots and files."""
+        self._late_saves: set[asyncio.Task] = set()
 
     @property
     def name(self) -> str:
@@ -127,11 +137,15 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        restore: str | None = None,
+        request_id: str | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env worker pool's stream — a turn or a phase
-        change of one of the episode's traces — as it lands. The run goes to the replica
-        with the fewest runs in flight."""
+        change of one of the episode's traces — as it lands. ``restore`` is the path of a
+        restore file (``save``): the run continues that rollout. ``request_id`` names the
+        run in what ``save`` returns. The run goes to the replica with the fewest runs in
+        flight."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
         replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
@@ -143,9 +157,71 @@ class Env:
                 model=model_name,
                 sampling=sampling,
                 on_delta=on_delta,
+                restore=restore,
+                request_id=request_id,
             )
         finally:
             self._in_flight[replica] -= 1
+
+    async def save(self, directory: str, timeout: float) -> dict[str, RestoreRef]:
+        """Take a memory checkpoint of every rollout running on every replica, each
+        written as a restore file under ``directory``. Returns the restore points by the
+        ``request_id`` of their run; the caller owns their snapshots. A replica that
+        fails contributes nothing, and neither does one that takes longer than
+        ``timeout``: what it returns later lands in ``late_restores``."""
+        saves = [asyncio.create_task(client.save(directory)) for client in self.env_clients]
+        done, pending = await asyncio.wait(saves, timeout=timeout)
+        restores: dict[str, RestoreRef] = {}
+        self.save_skipped = Counter()
+        for save in done:
+            if save.exception() is not None:
+                get_logger().warning(f"Saving the running rollouts of {self.name} failed: {save.exception()!r}")
+            else:
+                restores |= save.result().restores
+                self.save_skipped.update(save.result().skipped)
+        for save in pending:
+            self._late_saves.add(save)
+            save.add_done_callback(self._collect_late_save)
+        if pending:
+            get_logger().warning(
+                f"{len(pending)} of {len(saves)} replicas of {self.name} did not save their running rollouts "
+                f"within {timeout:.0f}s; those rollouts start over on resume"
+            )
+        return restores
+
+    async def release(self) -> None:
+        """Let the rollouts that ``save`` holds at their restore points go on. A replica
+        that does not answer releases its rollouts by itself after two minutes."""
+        results = await asyncio.gather(*(client.release() for client in self.env_clients), return_exceptions=True)
+        failed = [result for result in results if isinstance(result, BaseException)]
+        if failed:
+            get_logger().warning(
+                f"{len(failed)} of {len(results)} replicas of {self.name} did not release their saved rollouts: "
+                f"{failed[0]!r}"
+            )
+
+    def _collect_late_save(self, save: asyncio.Task) -> None:
+        self._late_saves.discard(save)
+        if not save.cancelled() and save.exception() is None:
+            self.late_restores.extend(save.result().restores.values())
+
+    def unsaveable(self) -> str | None:
+        """Why this env's running rollouts can take no restore point, so a resume starts
+        them over; None when its config allows them. Only a single-agent env's rollouts
+        continue from a restore point."""
+        agent = getattr(self.config.env, "agent", None)
+        if not isinstance(agent, vf.AgentConfig):
+            return "its env has more than one agent"
+        reason = unsaveable(agent)
+        if reason is None and agent.harness is None:
+            harness = default_harness_id(self.config.env.taskset.id)
+            if not harness_class(harness).SUPPORTS_MEMORY_RESTORE:
+                reason = f"harness {harness!r} cannot continue from a memory snapshot"
+        return reason
+
+    async def discard(self, snapshots: list[dict]) -> list[str]:
+        """Delete box snapshots this run owns; returns the ids of the deleted."""
+        return await self.env_clients[0].discard(snapshots)
 
 
 class TrainEnv(Env):

@@ -181,6 +181,39 @@ class TrainSink(Reconfigurable):
         """Delete the env workers' arrays of samples that will never ship."""
         self._release(sample_payload_urls(samples))
 
+    def state_dict(self) -> dict:
+        """What the sink holds between two results, for a rollout checkpoint: the groups
+        still collecting episodes, and the traces queued for the next batches with
+        their episodes. The containers are copies; the episodes and samples are not."""
+        return {
+            "pending_groups": {group_id: list(group) for group_id, group in self.pending_groups.items() if group},
+            "pending_group_failures": {
+                group_id: list(failures) for group_id, failures in self.pending_group_failures.items() if failures
+            },
+            "pending_group_cancellations": dict(self.pending_group_cancellations),
+            "pending_batch": dict(self.pending_batch),
+            "episode_by_trace": dict(self.episode_by_trace),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Take back what ``state_dict`` saved, except the entries of envs this run does
+        not train on."""
+        names = set(self.train_envs.names)
+        for group_id, group in state["pending_groups"].items():
+            if episode_env_name(group[0]) in names:
+                self.pending_groups[group_id] = list(group)
+        for group_id, failures in state["pending_group_failures"].items():
+            if failures[0].env_name in names:
+                self.pending_group_failures[group_id] = list(failures)
+        for group_id, cancellation in state["pending_group_cancellations"].items():
+            if cancellation.env_name in names:
+                self.pending_group_cancellations[group_id] = cancellation
+        for trace_id, samples in state["pending_batch"].items():
+            episode = state["episode_by_trace"][trace_id]
+            if episode_env_name(episode) in names:
+                self.pending_batch[trace_id] = samples
+                self.episode_by_trace[trace_id] = episode
+
     def group_size_for(self, group_id: str, env_name: str) -> int:
         size = self.group_size(group_id) if self.group_size is not None else None
         return size if size is not None else self.train_envs.get(env_name).config.group_size

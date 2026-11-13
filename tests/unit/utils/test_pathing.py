@@ -7,6 +7,7 @@ from prime_rl.utils.pathing import (
     get_batch_dir,
     get_broadcast_dir,
     get_step_path,
+    resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
     validate_run_dir,
 )
@@ -119,6 +120,27 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+def test_an_rl_run_resumes_from_the_latest_step_both_halves_wrote(tmp_path):
+    trainer_dir, orchestrator_dir = tmp_path / "trainer_ckpts", tmp_path / "checkpoints"
+
+    def write(step: int, *, trainer: bool, orchestrator: bool) -> None:
+        if trainer:
+            (trainer_dir / f"step_{step}" / "trainer").mkdir(parents=True)
+            (trainer_dir / f"step_{step}" / "trainer" / ".metadata").touch()
+        if orchestrator:
+            (orchestrator_dir / f"step_{step}" / "orchestrator").mkdir(parents=True)
+            (orchestrator_dir / f"step_{step}" / "orchestrator" / "progress.pt").touch()
+
+    write(5, trainer=True, orchestrator=True)
+    # The orchestrator wrote its half, then the run crashed before the trainer wrote its own.
+    write(10, trainer=False, orchestrator=True)
+    (trainer_dir / "step_10" / "trainer").mkdir(parents=True)
+    write(15, trainer=True, orchestrator=False)
+    assert resolve_latest_ckpt_step(trainer_dir, orchestrator_dir) == 5
+    assert resolve_latest_ckpt_step(trainer_dir) == 15
+    assert resolve_latest_ckpt_step(tmp_path / "none", orchestrator_dir) is None
 
 
 def test_latest_trainer_checkpoint_skips_steps_without_a_complete_trainer_save(tmp_path):

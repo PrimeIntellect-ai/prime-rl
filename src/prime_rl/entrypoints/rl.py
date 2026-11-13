@@ -176,7 +176,9 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     retain = config.rollout_transport is not None and config.rollout_transport.retain
     for split, source in env_worker_pools(config):
         store_dir = ROLLOUT_STORE_DIR if retain and split == "train" else None
-        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, store_dir)
+        write_env_worker_pool_config(
+            output_dir, split, source, config.orchestrator.log, config.orchestrator.output_dir, store_dir
+        )
 
 
 def rl_local(config: RLConfig):
@@ -585,7 +587,7 @@ def rl(config: RLConfig):
             resume_step = config.resume.step
             if resume_step is None:
                 ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base), get_ckpt_dir(config.run_dir))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

@@ -1476,3 +1476,36 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+@pytest.mark.parametrize("rollouts", [False, True])
+def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"interval": 5, "rollouts": rollouts},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.orchestrator.ckpt.rollouts is rollouts
+    assert config.orchestrator.ckpt.interval == config.trainer.ckpt.interval == 5
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_ckpt_rollouts_is_off_by_default():
+    config = RLConfig.model_validate({"ckpt": {}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}})
+    assert config.orchestrator.ckpt.rollouts is False
+
+
+@pytest.mark.parametrize(
+    "ckpt",
+    [
+        {"ckpt": {"output_dir": "/ckpts"}, "trainer": {}},
+        {"ckpt": {}, "trainer": {"ckpt": {"output_dir": "/ckpts"}}},
+    ],
+    ids=["shared", "trainer-only"],
+)
+def test_the_orchestrator_knows_where_the_trainer_checkpoints(ckpt):
+    config = RLConfig.model_validate({**ckpt, "orchestrator": {"renderer": {"name": "default"}}})
+    assert config.trainer.ckpt.output_dir == Path("/ckpts")
+    assert config.orchestrator.ckpt.trainer_output_dir == Path("/ckpts")

@@ -255,12 +255,13 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
 
 
 def write_env_worker_pool_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, store_dir: Path | None = None
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, output_dir: Path, store_dir: Path | None = None
 ) -> Path:
     """Write the ``EnvWorkerPoolConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
-    broker publishes the OS-assigned port it binds to the address file next to it. With
+    broker publishes the OS-assigned port it binds to the address file next to it.
+    ``output_dir`` is the run directory: the pool keeps checkpoint files only there. With
     ``store_dir``, the pool keeps its training arrays in a rollout store under it."""
     env_dir = config_dir / "envs" / split
     env_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +271,7 @@ def write_env_worker_pool_config(
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.level, "json_logging": log.json_logging},
+        "output_dir": output_dir.absolute().as_posix(),
     }
     if store_dir is not None:
         pool_config["store_dir"] = store_dir.as_posix()
@@ -330,9 +332,61 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
-def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
+def kept_ckpt_steps(steps: list[int], keep_last: int | None, keep_interval: int | None) -> set[int]:
+    """The checkpoint steps of ``steps`` that the retention policy keeps: the newest
+    ``keep_last`` and every multiple of ``keep_interval``. Without a policy, all."""
+    if keep_last is None and keep_interval is None:
+        return set(steps)
+    kept = set(sorted(steps)[-keep_last:]) if keep_last is not None else set()
+    if keep_interval is not None:
+        kept.update(step for step in steps if step % keep_interval == 0)
+    return kept
+
+
+def is_file_name(name: str) -> bool:
+    """Whether ``name`` names a file inside whatever directory it is joined to."""
+    return bool(name) and name not in (".", "..") and name == os.path.basename(name) and "\0" not in name
+
+
+_save_root: str | None = None
+
+
+def set_save_root(root: Path | None) -> None:
+    """Name the run directory of this process: the one directory its env worker reads
+    and writes checkpoint files in (``confined``)."""
+    global _save_root
+    _save_root = None if root is None else os.path.realpath(root)
+
+
+def confined(path: str | Path) -> Path:
+    """``path`` with its links resolved, when it lies in the run directory
+    (``set_save_root``); a ``ValueError`` otherwise. The paths an env worker gets come
+    over the network, so they name no file outside its run."""
+    if _save_root is None:
+        raise ValueError("this process has no run directory to keep checkpoint files in")
+    resolved = os.path.realpath(path)
+    if not resolved.startswith(_save_root + os.sep):
+        raise ValueError(f"{str(path)!r} is outside the run directory {_save_root!r}")
+    return Path(resolved)
+
+
+def is_complete_rl_ckpt(ckpt_dir: Path, orchestrator_ckpt_dir: Path, step: int) -> bool:
+    """Whether both halves of an RL run's checkpoint of ``step`` are written: the trainer's
+    (its sharded state ends with ``.metadata``) and the orchestrator's."""
+    trainer = get_step_path(ckpt_dir, step) / "trainer" / ".metadata"
+    orchestrator = get_step_path(orchestrator_ckpt_dir, step) / "orchestrator" / "progress.pt"
+    return trainer.exists() and orchestrator.exists()
+
+
+def resolve_latest_ckpt_step(ckpt_dir: Path, orchestrator_ckpt_dir: Path | None = None) -> int | None:
+    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found.
+
+    For an RL run, pass ``orchestrator_ckpt_dir``, where the orchestrator writes its half (``ckpt_dir`` holds
+    the trainer's). The two halves are written at different times, so a crash can leave a step with only one;
+    such a step does not count."""
     steps = get_all_ckpt_steps(ckpt_dir)
+    if orchestrator_ckpt_dir is not None:
+        steps = [step for step in steps if is_complete_rl_ckpt(ckpt_dir, orchestrator_ckpt_dir, step)]
     if len(steps) == 0:
         logger = get_logger()
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")

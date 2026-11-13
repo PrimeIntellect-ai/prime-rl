@@ -420,7 +420,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Orchestrator | Progress, per-env data state, and with `ckpt.rollouts` the rollouts | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -466,6 +466,40 @@ uv run rl @ rl.toml --max-steps 50 --ckpt --run.name my-rl \
 - The open train groups: groups that were drawn but not shipped at the checkpoint. The checkpoint saves no partial groups, so a resume re-runs each one whole, before it draws new tasks. A re-run group goes through the curriculum again, with its new rollouts. A group that finished without training (for example, rejected by the curriculum) does not re-run.
 - A resume drops the open groups of a removed source or task. It also drops those of a streaming taskset, which cannot find a task by key.
 
+#### Checkpointing rollouts
+
+By default a resumed run starts with an empty pipeline. Set `--ckpt.rollouts` to also checkpoint the train rollouts:
+
+```bash
+uv run rl @ rl.toml --ckpt.interval 25 --ckpt.rollouts
+```
+
+The orchestrator then saves step N when the trainer publishes the weights of N, before inference applies them. The checkpoint holds the pipeline of that moment, so a resumed run ships the batches that the first run would have shipped.
+
+A resume restores:
+
+- The finished episodes that did not ship: the episodes in the result queue, the groups that still collect episodes, the traces queued for a batch, and a batch that the trainer did not take yet. Their training arrays are in `step_{n}/orchestrator/rollouts/arrays/`.
+- The open train groups, with the number of episodes that each group still owes. A resume does not re-run them whole.
+- The running rollouts. Each env worker takes a memory checkpoint of the sandbox of each running rollout and writes a restore file to `step_{n}/orchestrator/rollouts/`. The resumed run continues each rollout in a new sandbox, before it starts new work. An env worker pool reads and writes these files only in its `--output-dir`. The launchers set it to the run directory. If you start a pool yourself, set it to the run directory too.
+- The in-flight limit of the concurrency controller.
+
+These start over:
+
+- A running rollout that cannot take a memory checkpoint. The resumed run runs its task from the start, in the same group. Restore points cover single-agent episodes with one harness on Prime sandboxes. These rollouts take none:
+  - A rollout on a runtime without memory snapshots, for example the subprocess runtime.
+  - A rollout of a harness that cannot continue from a memory snapshot. The null, bash and ACP harnesses (for example rlm) can.
+  - A rollout of an episode with more than one agent run.
+  - A rollout whose task has tool servers, shared tools or services of its own.
+  - A rollout that has not booted its sandbox yet, or that is in setup or scoring.
+- A running rollout whose env worker did not answer in 300 seconds.
+- All eval rollouts. Eval epochs are not checkpointed.
+
+The orchestrator logs one line per checkpoint with the episode counts, the time of each phase and the size on disk. The same values are in the `ckpt/rollouts/*` metrics.
+
+The memory checkpoints are sandbox snapshots, and the run that takes them owns them. The file `checkpoints/rollout_snapshots.json` records the snapshots of each checkpoint step. After each checkpoint and at a clean shutdown, the orchestrator deletes the snapshots of the steps whose directory is gone (`keep_last` and `keep_interval` remove whole step directories). At a clean shutdown it also deletes the snapshots of the steps that `keep_last` and `keep_interval` remove once the trainer has written its last checkpoint. The snapshots of a checkpoint that stays on disk stay too. If you delete a run directory by hand, delete its snapshots on the sandbox provider as well. A run that forks another run's checkpoint with `--resume.dir` never deletes the snapshots of that run.
+
+A checkpoint that has rollouts resumes without them when `ckpt.rollouts` is off: the open groups re-run whole.
+
 #### Changing sources on resume
 
 A resume can add, remove or change train and eval sources.
@@ -494,6 +528,8 @@ curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{
 ```
 
 Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
+
+With `ckpt.rollouts`, the orchestrator saves N with its rollouts when the trainer publishes the weights of N. Send the orchestrator its request before that moment. A later request saves the state as of shipping N, without rollouts.
 
 A `checkpoint` action takes the same two calls and saves step N without stopping the run. Since the trainer keeps going, the orchestrator has to receive its request before the trainer finishes N and requests N + 1; a later request gets a 409 because the orchestrator no longer has the state of N:
 
