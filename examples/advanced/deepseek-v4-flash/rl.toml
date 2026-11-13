@@ -67,6 +67,7 @@ env.agent.harness.id = "bash"
 
 [orchestrator.eval]
 interval = 50
+group_size = 4
 
 [[orchestrator.eval.source]]
 name = "openthoughts-tblite"
