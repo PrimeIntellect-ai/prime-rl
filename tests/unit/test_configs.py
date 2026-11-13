@@ -1488,12 +1488,37 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(init_ty
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
                 "renderer": {"name": "qwen3"},
             },
-            "inference": {},
+            "inference": {"vllm": {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}},
         }
     )
     assert config.trainer.model.init.type == init_type
-    assert getattr(config.inference.to_namespace(), "load_format", None) == load_format
+    namespace = config.inference.to_namespace()
+    assert getattr(namespace, "load_format", None) == load_format
+    draft_load_config = {"load_format": "auto"} if load_format == "dummy" else None
+    assert namespace.speculative_config.get("draft_load_config") == draft_load_config
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("draft", "match"),
+    [
+        ({"method": "mtp", "num_speculative_tokens": 1}, "reads its draft weights from model.name"),
+        ({"model": "drafts/qwen3-0.6b", "num_speculative_tokens": 1}, "with the target's load format"),
+    ],
+)
+def test_a_draft_without_its_own_weights_requires_the_hf_init(draft: dict, match: str):
+    with pytest.raises(ValidationError, match=match):
+        RLConfig.model_validate(
+            {
+                "model": {"init": {"type": "scratch"}},
+                "trainer": {},
+                "orchestrator": {
+                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                    "renderer": {"name": "qwen3"},
+                },
+                "inference": {"vllm": {"speculative_config": draft}},
+            }
+        )
 
 
 def test_lora_requires_the_hf_init():

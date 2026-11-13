@@ -9,6 +9,7 @@ from pydantic_config import BaseConfig
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
+from prime_rl.utils.validation import check_derived
 
 # TODO: Set thinking/ solution budget
 
@@ -711,3 +712,40 @@ class InferenceConfig(BaseConfig):
             namespace.kv_transfer_config = kv_transfer_config
 
         return namespace
+
+
+MODEL_NAME_DRAFT_METHODS = ("mtp", "dspark")
+
+
+def setup_dummy_load(inference: InferenceConfig, init_type: str) -> None:
+    """With weights other than the HF model's, the server loads none: the trainer's startup broadcast supplies them. A
+    speculative draft with its own ``model`` still loads it from disk, except a ``draft_model`` draft, which vLLM
+    loads with the target's load format. A draft that reads its weights from ``model.name`` (MTP, DSpark without a
+    ``model``) has none to load there."""
+    check_derived(inference.vllm, "load_format", "dummy", "inference.vllm.load_format")
+    inference.vllm.load_format = "dummy"
+    overrides = [inference.vllm.model_extra or {}]
+    if isinstance(inference.deployment, DisaggregatedInferenceDeploymentConfig):
+        overrides += [inference.deployment.prefill_vllm_overrides, inference.deployment.decode_vllm_overrides]
+    for override in overrides:
+        draft = next((value for key, value in override.items() if key.replace("-", "_") == "speculative_config"), None)
+        if not draft:
+            continue
+        draft_keys = {key.replace("-", "_") for key in draft}
+        # vLLM treats a draft with a model but no method as a draft_model draft
+        method = str(draft.get("method") or ("draft_model" if "model" in draft_keys else None))
+        if method == "draft_model":
+            raise ValueError(
+                f'vLLM loads a speculative_config method "draft_model" draft with the target\'s load format, which '
+                f'init type "{init_type}" sets to dummy: use a method such as "eagle3" or model.init.type = "hf"'
+            )
+        if "model" in draft_keys:
+            if "draft_load_config" not in draft_keys:
+                draft["draft_load_config"] = {"load_format": "auto"}
+            continue
+        if method in MODEL_NAME_DRAFT_METHODS or method.endswith("_mtp"):
+            raise ValueError(
+                f'speculative_config method "{method}" reads its draft weights from model.name, which init type '
+                f'"{init_type}" does not load: set speculative_config.model to a draft checkpoint or use '
+                'model.init.type = "hf"'
+            )
