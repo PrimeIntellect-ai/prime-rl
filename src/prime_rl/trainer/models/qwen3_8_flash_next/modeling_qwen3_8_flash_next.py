@@ -172,9 +172,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         self.gradient_checkpointing = False
         self.post_init()
-        for module in self.modules():
-            if isinstance(module, NGramTable):
-                module.init_weights(config.initializer_range)
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens

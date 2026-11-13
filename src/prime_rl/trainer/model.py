@@ -650,13 +650,32 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 @torch.no_grad()
 def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
-    ``_init_weights``), seeded with ``seed``."""
+    ``_init_weights``), seeded with ``seed``. The floating parameters and buffers are NaN before, so one the init does
+    not reach fails here."""
     get_logger().info(f"Initializing the weights from scratch (seed {seed})")
     model.to_empty(device="cuda")
     torch.distributed.barrier()
+
+    def floating_tensors() -> dict[str, Tensor]:
+        tensors = {**dict(model.named_parameters()), **dict(model.named_buffers())}
+        return {
+            name: tensor.to_local() if isinstance(tensor, DTensor) else tensor
+            for name, tensor in tensors.items()
+            if tensor.is_floating_point()
+        }
+
+    for tensor in floating_tensors().values():
+        tensor.fill_(float("nan"))
     model.init_buffers_post_meta()
     torch.manual_seed(seed)
     model.initialize_weights()
+    uninitialized = [name for name, tensor in floating_tensors().items() if tensor.isnan().any()]
+    if uninitialized:
+        more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
+        raise RuntimeError(
+            f'{model.config.model_type!r} does not support model.init.type = "scratch": its init does not reach '
+            f"{', '.join(uninitialized[:3])}{more}"
+        )
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):

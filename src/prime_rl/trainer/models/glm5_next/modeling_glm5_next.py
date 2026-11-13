@@ -22,7 +22,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
-from prime_rl.trainer.models.glm5_next.sparse_attention import PoolLayout, SparseMlaAttention
+from prime_rl.trainer.models.glm5_next.sparse_attention import KPoolIndexer, PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -175,6 +175,10 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
             module.init_weights(init_std)
         elif isinstance(module, KimiDeltaAttention):
             module.reset_parameters()
+        elif isinstance(module, KPoolIndexer):
+            # Uniform pooling, as constructed.
+            nn.init.zeros_(module.index_kpool_compress_ape)
+            nn.init.zeros_(module.index_kpool_compress_gate)
 
 
 class Glm5NextTextModel(Glm5NextPreTrainedModel):

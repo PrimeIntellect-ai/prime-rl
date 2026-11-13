@@ -27,6 +27,13 @@ class DeepseekV4HashRouter(TokenChoiceTopKRouter):
         super().__init__(**router_kwargs, selection_bias=False)
         self.register_buffer("tid2eid", torch.zeros(vocab_size, self.top_k, dtype=torch.long), persistent=True)
 
+    @torch.no_grad()
+    def init_tid2eid(self) -> None:
+        """Route each token id to `top_k` distinct experts drawn at random. The draw uses the CPU generator, which
+        `initialize_from_scratch` seeds alike on every rank, so all ranks build the same table."""
+        scores = torch.rand(self.tid2eid.shape[0], self.num_experts)
+        self.tid2eid.copy_(scores.topk(self.top_k, dim=-1).indices)
+
 
 class DeepseekV4MoE(MoE):
     """A V4 MoE layer, hash-routed or standard according to `config.num_hash_layers`.
