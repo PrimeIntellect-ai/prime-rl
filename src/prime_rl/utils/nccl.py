@@ -1,3 +1,5 @@
+import json
+import math
 import os
 from collections.abc import Iterator
 
@@ -63,3 +65,24 @@ def iter_tensor_buckets(
         bucket_bytes += size
     if bucket:
         yield bucket
+
+
+def encode_tensor_metadata(metadata: dict[torch.dtype, list[tuple[str, torch.Size, int]]]) -> bytes:
+    """Serialize a broadcast's tensor metadata as JSON: ``[[dtype name, [[key, shape], ...]], ...]``."""
+    return json.dumps(
+        [
+            [str(dtype).removeprefix("torch."), [[key, list(shape)] for key, shape, _ in tensor_info]]
+            for dtype, tensor_info in metadata.items()
+        ]
+    ).encode()
+
+
+def decode_tensor_metadata(data: bytes) -> dict[torch.dtype, list[tuple[str, torch.Size, int]]]:
+    """Parse ``encode_tensor_metadata`` output, deriving each tensor's element count from its shape."""
+    metadata = {}
+    for dtype_name, tensor_info in json.loads(data):
+        dtype = getattr(torch, dtype_name)
+        if not isinstance(dtype, torch.dtype):
+            raise ValueError(f"Invalid dtype in weight metadata: {dtype_name}")
+        metadata[dtype] = [(key, torch.Size(shape), math.prod(shape)) for key, shape in tensor_info]
+    return metadata

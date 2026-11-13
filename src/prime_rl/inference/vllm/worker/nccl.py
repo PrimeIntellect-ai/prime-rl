@@ -1,4 +1,3 @@
-import pickle
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -8,7 +7,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, load_weights_checkpoint_layerwise
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.nccl import decode_tensor_metadata, disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -35,7 +34,7 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
     state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
     communicator.broadcast(state_tensor, src=0)
 
-    metadata = pickle.loads(bytes(state_tensor.cpu().numpy()))
+    metadata = decode_tensor_metadata(bytes(state_tensor.cpu().numpy()))
 
     # Receive concatenated tensors per dtype and split them back
     for dtype, tensor_info_list in metadata.items():
