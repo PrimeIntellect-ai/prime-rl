@@ -521,6 +521,14 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
             shutil.rmtree(get_step_path(directory, step))
 
 
+def try_rmtree(path: Path) -> None:
+    """Remove a directory tree, logging and skipping on failure."""
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        get_logger().warning(f"Failed to remove {path}: {error}, skipping cleanup")
+
+
 async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0

@@ -646,6 +646,9 @@ OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig,
 
 
 class CheckpointConfig(BaseCheckpointConfig):
+    remote_dir: str | None = None
+    """Object store URL checkpoints are mirrored to, e.g. ``s3://bucket/run/checkpoints`` (credentials and endpoint from the ``AWS_*`` environment). A sync process per node uploads each step once it is on disk, with ``.metadata`` last, and owns ``keep_last``/``keep_interval`` on disk and remote. Resume pulls a step that is not complete on disk while the trainer starts up."""
+
     skip_dataloader: bool = False
     """Skip loading the dataloader from checkpoint."""
 

@@ -4,7 +4,8 @@ import gc
 import json
 import math
 import queue
-import shutil
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from obstore.store import from_url
 from torch import nn
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX
@@ -34,6 +36,7 @@ from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrai
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
+from prime_rl.trainer.ckpt_sync import METADATA_FILE, get_remote_steps
 from prime_rl.trainer.data import with_workers
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -55,6 +58,7 @@ from prime_rl.utils.pathing import (
     get_step_path,
     is_ckpt_step_complete,
     kept_ckpt_steps,
+    try_rmtree,
 )
 
 
@@ -389,14 +393,6 @@ def _storage_key(tensor: torch.Tensor) -> tuple:
     return local.untyped_storage()._cdata, local.storage_offset(), tuple(local.shape)
 
 
-def _try_rmtree(path: Path, logger) -> None:
-    """Remove a directory tree, logging and skipping on failure."""
-    try:
-        shutil.rmtree(path)
-    except OSError as e:
-        logger.warning(f"Failed to remove {path}: {e}, skipping cleanup")
-
-
 class AppState(Stateful):
     """
     A wrapper for checkpointing the trainer with sharded weights and optimizer
@@ -589,9 +585,43 @@ class CheckpointManager:
         else:
             self.ckpt_steps = all_steps
 
+        # With a remote, a sync process per node moves the checkpoints (see ckpt_sync)
+        self.remote_steps: set[int] = set()
+        self.sync: subprocess.Popen | None = None
+        self.pull_step: int | None = None
+        if config.remote_dir is not None:
+            _, self.remote_steps = get_remote_steps(from_url(config.remote_dir))
+            if self.world.local_rank == 0:
+                self.sync = self._start_sync()
+
+    def close(self) -> None:
+        """Wait for the pending save, then for the sync process to upload it and exit."""
+        self.wait()
+        if self.sync is None:
+            return
+        self._send("exit")
+        self.sync.stdin.close()
+        exit_code = self.sync.wait()
+        self.sync = None
+        if exit_code != 0:
+            raise RuntimeError(f"The checkpoint sync process exited with code {exit_code}, see its error above")
+
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
+
+    def prefetch(self, step: int) -> None:
+        """Start pulling a step that is only complete in the remote, so it downloads while the trainer starts up.
+        ``load`` waits for it."""
+        if step not in self.remote_steps or (self.get_ckpt_path(step) / METADATA_FILE).exists():
+            return
+        self.pull_step = step
+        self._send(f"pull {step}")
+
+    def resolve_latest_step(self, disk_step: int | None) -> int | None:
+        """The later of ``disk_step``, the step the caller resolved on disk, and the latest step in the remote. None
+        starts from scratch."""
+        return max((step for step in (disk_step, *self.remote_steps) if step is not None), default=None)
 
     def save_to_path(
         self,
@@ -727,6 +757,8 @@ class CheckpointManager:
         """Load the trainer checkpoint for a given step (in-place). ``path`` overrides
         where the checkpoint is read from (an external run's ``step_<N>/trainer``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
+        if path is None and step == self.pull_step:
+            self._finish_pull(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         check_model_config(self.model_files.config, ckpt_path.parent)
@@ -767,9 +799,10 @@ class CheckpointManager:
             write.add_done_callback(self.pending.record_end_time)
 
     def _register(self, step: int) -> None:
-        """Count a fully written checkpoint, making it visible to ``maybe_clean``."""
+        """Count a fully written checkpoint, making it visible to ``maybe_clean``, and queue its upload."""
         if step not in self.ckpt_steps:
             bisect.insort(self.ckpt_steps, step)
+        self._send(f"upload {step}")
 
     def wait_for_staging(self) -> None:
         """The mutation fence of an async save: call before anything mutates the checkpointed state (the
@@ -802,27 +835,65 @@ class CheckpointManager:
         self._register(pending.step)
 
     def maybe_clean(self) -> None:
-        """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
-        if self.config.keep_last is None and self.config.keep_interval is None:
+        """Delete past checkpoints by the keep_last and keep_interval policies. With a remote, the sync process
+        applies them once a step is uploaded, so a step never leaves the disk before it is in the remote."""
+        if self.config.remote_dir is not None:
             return
-
-        # Get all the checkpoint steps to delete
-        assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-
         steps_to_keep = kept_ckpt_steps(self.ckpt_steps, self.config.keep_last, self.config.keep_interval)
-
-        # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
-        ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+        # Only the master deletes, so ranks never race on a shared disk
         if self.world.is_master:
-            for ckpt_step in ckpt_steps_to_delete:
-                trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
-                ckpt_path = trainer_ckpt_path.parent
-                if ckpt_path.exists():
-                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    _try_rmtree(ckpt_path, self.logger)
-
-        # Update checkpoint steps
+            for step in self.ckpt_steps:
+                if step not in steps_to_keep:
+                    try_rmtree(get_step_path(self.ckpt_dir, step))
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
+
+    def _check_sync(self) -> None:
+        if (exit_code := self.sync.poll()) is not None:
+            raise RuntimeError(f"The checkpoint sync process exited with code {exit_code}, see its error above")
+
+    def _finish_pull(self, step: int) -> None:
+        """Every node pulls its share of the step, then node 0 commits it by writing its ``.metadata``."""
+        self._receive(f"pulled {step}")
+        torch.distributed.barrier(group=get_dcp_group())
+        if self.world.is_master:
+            self._send(f"commit {step}")
+            self._receive(f"committed {step}")
+        torch.distributed.barrier(group=get_dcp_group())
+        self.pull_step = None
+
+    def _receive(self, expected: str) -> None:
+        """Block on the local sync process's answer. Only the local rank 0 owns one."""
+        if self.sync is None:
+            return
+        answer = self.sync.stdout.readline().strip()
+        if answer != expected:
+            self._check_sync()
+            raise RuntimeError(f"The checkpoint sync process answered {answer!r} instead of {expected!r}")
+
+    def _send(self, command: str) -> None:
+        """Queue a command on the local sync process. Only the local rank 0 owns one."""
+        if self.sync is None:
+            return
+        self._check_sync()
+        self.sync.stdin.write(f"{command}\n")
+        self.sync.stdin.flush()
+
+    def _start_sync(self) -> subprocess.Popen:
+        args = [
+            sys.executable,
+            "-m",
+            "prime_rl.trainer.ckpt_sync",
+            self.config.remote_dir,
+            str(self.ckpt_dir),
+            f"--node-rank={self.world.rank // self.world.local_world_size}",
+            f"--num-nodes={self.world.num_nodes}",
+            f"--ranks-per-node={self.world.local_world_size}",
+        ]
+        if self.config.keep_last is not None:
+            args.append(f"--keep-last={self.config.keep_last}")
+        if self.config.keep_interval is not None:
+            args.append(f"--keep-interval={self.config.keep_interval}")
+        return subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 
 
 def setup_ckpt_manager(

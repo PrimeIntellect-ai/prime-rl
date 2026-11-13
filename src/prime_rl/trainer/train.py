@@ -165,6 +165,13 @@ def train(config: SFTConfig | PretrainConfig):
     model_files = setup_model_files(config.model, tokenizer, processor)
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
 
+    # The remote may hold a later step than the disk, and a remote-only step downloads while the trainer starts up
+    if config.resume is not None and config.resume.dir is None:
+        if config.resume.step is None:
+            checkpoint_step = ckpt_manager.resolve_latest_step(checkpoint_step)
+        if checkpoint_step is not None:
+            ckpt_manager.prefetch(checkpoint_step)
+
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
@@ -732,7 +739,7 @@ def train(config: SFTConfig | PretrainConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
-        ckpt_manager.wait()
+        ckpt_manager.close()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
