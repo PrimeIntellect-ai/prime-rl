@@ -64,6 +64,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 expert_type="gated",
                 activation=config.hidden_act,
             )
+            experts.init_weights(config.initializer_range)
             self.mlp = MoE(
                 router=router,
                 experts=experts,

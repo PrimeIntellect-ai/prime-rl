@@ -52,6 +52,7 @@ class GptOssDecoderLayer(nn.Module):
             activation="clamped_swiglu",
             bias=True,
         )
+        experts.init_weights(config.initializer_range)
         self.mlp = MoE(
             router=router,
             experts=experts,

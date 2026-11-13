@@ -78,6 +78,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
             num_experts=config.num_experts,
             top_k=config.num_experts_per_tok,
             activation=config.hidden_act,
+            init_std=config.initializer_range,
             load_balance_coeff=config.load_balance_coeff,
         )
         connection_args = {
@@ -171,6 +172,9 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         self.gradient_checkpointing = False
         self.post_init()
+        for module in self.modules():
+            if isinstance(module, NGramTable):
+                module.init_weights(config.initializer_range)
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens

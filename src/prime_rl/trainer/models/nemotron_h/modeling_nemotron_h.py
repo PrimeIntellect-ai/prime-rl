@@ -80,6 +80,7 @@ class NemotronHDecoderLayer(nn.Module):
                 activation=config.mlp_hidden_act,
                 bias=config.mlp_bias,
             )
+            experts.init_weights(config.initializer_range)
             shared_expert = FeedForward(
                 dim=config.hidden_size,
                 hidden_dim=config.moe_shared_expert_intermediate_size,
