@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer, wait_for_optimizer_step
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import (
@@ -220,6 +220,7 @@ def train(config: TrainerConfig):
         list(model.named_parameters()),
         parallel_dims,
         offload=config.model.offload,
+        offload_overlap_forward=config.model.offload_overlap_forward,
         model=model,
         full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
     )
@@ -728,6 +729,7 @@ def train(config: TrainerConfig):
             # so a still-running kernel holding a cached block (e.g. the
             # optimizer step's tail) faults with an illegal memory access
             # once its block is freed under it.
+            wait_for_optimizer_step(optimizer)
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
             weight_sender.broadcast(model, step=progress.step)

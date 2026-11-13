@@ -305,6 +305,9 @@ class ModelConfig(BaseModelConfig):
     offload: OffloadMode = "optimizer"
     """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
 
+    offload_overlap_forward: bool = False
+    """With ``offload = "optimizer"`` and AdamW, run the optimizer step's state copies and updates alongside the next forward instead of waiting for them: each FSDP module waits only for the chunks holding its own parameters before its all-gather, and weight broadcasts wait for the whole step first. The math is unchanged; the step's gradients stay allocated until their chunk has updated. Off by default until it has been exercised in RL runs."""
+
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
@@ -480,13 +483,19 @@ class MuonConfig(BaseOptimizerConfig):
     """Nesterov momentum for the Muon updates."""
 
     betas1: float = Field(0.9, ge=0)
-    """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+    """β1 for the AdamW sub-optimizer used on non-Muon params."""
 
     betas2: float = Field(0.95, ge=0)
-    """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+    """β2 for the AdamW sub-optimizer used on non-Muon params."""
 
     eps: float = Field(1e-8, gt=0)
-    """Epsilon for the AdamW sub-optimizer used on non-Muon params."""
+    """Epsilon for the AdamW sub-optimizer used on non-Muon params, and for the Newton-Schulz normalization."""
+
+    update_rms: float = Field(0.2, gt=0)
+    """RMS of each Muon update matrix, so Muon reuses the AdamW learning rate. DeepSeek-V4.1 uses 0.18."""
+
+    newton_schulz: Literal["default", "deepseek_v4", "polar_express", "step3p5"] = "default"
+    """Newton-Schulz schedule. ``default``: 5 quintic steps with per-step coefficients. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1. ``polar_express``: 5 steps of Polar Express (arXiv 2505.16932) in bf16, with its 1.01 safety factor. ``step3p5``: 6 Polar Express steps in fp16, as in Step 3.5 Flash."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):

@@ -15,6 +15,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Context Parallelism](#context-parallelism)
   - [Activation Checkpointing and Offloading](#activation-checkpointing-and-offloading)
   - [Optimizer Offloading](#optimizer-offloading)
+  - [Muon](#muon)
   - [LM Head Chunking](#lm-head-chunking)
 - [Memory-Tight Recipe](#memory-tight-recipe)
 - [Max Trainer Throughput Recipe](#max-trainer-throughput-recipe)
@@ -165,7 +166,17 @@ Every chunk runs the MoE's EP all-to-alls, so all ranks of an EP group must run 
 
 ### Optimizer Offloading
 
-State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). With AdamW and Muon, the step streams the states through the GPU in chunks, copying one chunk in and another out while a third updates. With AdamW, set `model.offload_overlap_forward = true` to also run those copies and updates alongside the next forward, each FSDP module waiting only for its own parameters (off by default). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+
+### Muon
+
+`optim.type = "muon"` updates matrices with the orthogonalized (Newton-Schulz) Nesterov momentum and the remaining parameters with AdamW. Orthogonalization needs whole matrices, and the optimizer gets them without any setting:
+
+- Expert stacks sharded only along the expert dim (EP, or FSDP over the experts) already hold whole matrices on every rank and are orthogonalized in place, batched over the experts.
+- Matrices that FSDP shards along a row or column dim are gathered onto one rank of their shard group with uneven all-to-alls, orthogonalized there and scattered back. Ranks own matrices by Newton-Schulz FLOPs, matrices move in buckets of a few layers, and the next bucket gathers while the current one is orthogonalized. The all-to-alls run on Muon's own NCCL communicators, next to FSDP's.
+- Newton-Schulz runs in bf16, batched over all matrices of one shape, on QuACK's symmetric GEMM where available (`quack` extra, SM80+).
+
+Packed parameters (runtime fusions) are orthogonalized per logical matrix. `optim.newton_schulz` picks the iteration schedule and `optim.update_rms` the RMS of each update (0.2, which matches AdamW's learning rates).
 
 ### LM Head Chunking
 

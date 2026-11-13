@@ -1,6 +1,5 @@
 from typing import NamedTuple
 
-import dion
 import pytest
 import torch
 from torch.distributed.checkpoint import load as dcp_load
@@ -8,6 +7,8 @@ from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
 
 from prime_rl.trainer.ckpt import AppState
+from prime_rl.trainer.optim import state_offload
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 
 pytestmark = [pytest.mark.gpu]
@@ -68,7 +69,9 @@ def state_data_ptrs(optimizer: CPUOffloadOptimizer) -> dict[tuple[int, str], int
 
 
 @pytest.fixture
-def trained_pair() -> TrainedPair:
+def trained_pair(monkeypatch: pytest.MonkeyPatch) -> TrainedPair:
+    # Every parameter gets a chunk of its own, so the tests cross chunk boundaries and reuse both staging slots.
+    monkeypatch.setattr(state_offload, "CHUNK_BYTES", 0)
     reference_model = make_model(0)
     reference_optimizer = torch.optim.AdamW(reference_model.parameters(), lr=1e-2)
     run_steps(reference_model, reference_optimizer, num_steps=3, seed=1)
@@ -118,8 +121,27 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
         assert pointers_after[key] == pointer, f"state buffer reallocated for {key}"
 
 
+def test_parameter_without_grad_on_the_first_step_is_stepped_later() -> None:
+    def train(wrap: bool) -> list[torch.Tensor]:
+        model = make_model(0)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+        if wrap:
+            optimizer = CPUOffloadOptimizer(optimizer)
+        torch.manual_seed(1)
+        for step in range(3):
+            hidden = model[0](torch.randn(16, 64, device="cuda"))
+            loss = hidden.square().mean() if step == 0 else model[2](hidden).square().mean()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+        return [param.detach() for param in model.parameters()]
+
+    for reference, offloaded in zip(train(False), train(True)):
+        assert torch.equal(reference, offloaded)
+
+
 def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
-    """dion's Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
+    """Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
 
     def setup():
         model = make_model(0)
@@ -127,7 +149,7 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
             dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
             dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
         ]
-        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        optimizer = Muon(groups, lr=1e-2)
         return model, CPUOffloadOptimizer(optimizer)
 
     model, optimizer = setup()
@@ -140,3 +162,28 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
     assert [group["step"] for group in resumed_optimizer.param_groups] == [3, 3]
     run_steps(resumed_model, resumed_optimizer, num_steps=2, seed=2)
     assert_params_equal(model, resumed_model)
+
+
+@pytest.mark.parametrize("chunk_bytes", [1 << 30, 1 << 12])
+def test_chunked_muon_matches_plain_muon(monkeypatch, chunk_bytes: int) -> None:
+    """Muon steps chunk by chunk (a bucket of sharded matrices, a batch of local matrices or a whole AdamW
+    group per unit) and advances its param-group step counters once per step."""
+    monkeypatch.setattr(state_offload, "CHUNK_BYTES", chunk_bytes)
+
+    def train(wrap: bool) -> tuple[torch.nn.Module, Optimizer]:
+        model = make_model(0)
+        groups = [
+            dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
+            dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
+        ]
+        optimizer = Muon(groups, lr=1e-2)
+        if wrap:
+            optimizer = CPUOffloadOptimizer(optimizer)
+        run_steps(model, optimizer, num_steps=4, seed=1)
+        return model, optimizer
+
+    reference_model, _ = train(False)
+    offloaded_model, offloaded_optimizer = train(True)
+    assert_params_equal(reference_model, offloaded_model)
+    assert_states_offloaded(offloaded_optimizer)
+    assert [group["step"] for group in offloaded_optimizer.param_groups] == [4, 4]
