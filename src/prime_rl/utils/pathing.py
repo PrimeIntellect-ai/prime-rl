@@ -473,12 +473,26 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
             shutil.rmtree(get_step_path(directory, step))
 
 
+def exists_revalidated(path: Path) -> bool:
+    """``path.exists()`` that sees a file another host just created on a shared
+    NFS mount. NFS clients cache "not found" answers for the attribute timeout
+    (30 s by default); opening a directory forces the client to revalidate it
+    (close-to-open). The parent dir may not exist yet, so the dir above it is
+    opened too."""
+    for directory in (path.parent.parent, path.parent):
+        try:
+            os.close(os.open(directory, os.O_RDONLY | os.O_DIRECTORY))
+        except FileNotFoundError:
+            pass
+    return path.exists()
+
+
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
-        if path.exists():
+        if exists_revalidated(path):
             logger.debug(f"Found path `{path}`")
             break
         if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
@@ -492,7 +506,7 @@ async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
-        if path.exists():
+        if exists_revalidated(path):
             logger.debug(f"Found path `{path}`")
             break
         if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds

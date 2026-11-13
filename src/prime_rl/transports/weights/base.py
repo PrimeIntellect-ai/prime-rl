@@ -1,5 +1,4 @@
 import asyncio
-import os
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -13,7 +12,7 @@ from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
+from prime_rl.utils.pathing import exists_revalidated, get_all_ckpt_steps, get_broadcast_dir, get_step_path
 
 # Broadcast-dir sentinels. Every transport goes through the same four stages:
 # the trainer resets the step dir and raises ``.sender_ready``, the consumer
@@ -25,20 +24,6 @@ SENDER_READY_MARKER = ".sender_ready"
 RECEIVER_READY_MARKER = ".receiver_ready"
 STARTED_MARKER = ".started"
 FINISHED_MARKER = ".finished"
-
-
-def marker_exists(marker: Path) -> bool:
-    """``marker.exists()`` that sees a marker the other host just created on a
-    shared NFS mount. NFS clients cache "not found" answers for the attribute
-    timeout (30 s by default); opening a directory forces the client to
-    revalidate it (close-to-open). The step dir may not exist yet, so the
-    broadcast dir above it is opened too."""
-    for directory in (marker.parent.parent, marker.parent):
-        try:
-            os.close(os.open(directory, os.O_RDONLY | os.O_DIRECTORY))
-        except FileNotFoundError:
-            pass
-    return marker.exists()
 
 
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
@@ -107,7 +92,7 @@ class WeightSender(ABC):
         self.logger.debug(f"Waiting for the receiver at {ready_file}")
         start = time.monotonic()
         last_log = start
-        while not marker_exists(ready_file):
+        while not exists_revalidated(ready_file):
             now = time.monotonic()
             if now - start > self.timeout:
                 raise TimeoutError(f"No receiver joined the broadcast within {self.timeout}s ({ready_file})")
@@ -164,7 +149,7 @@ class WeightReceiver(ABC):
 
     def is_published(self, step: int) -> bool:
         """Whether the trainer has offered v{step}."""
-        return marker_exists(self.step_dir(step) / SENDER_READY_MARKER)
+        return exists_revalidated(self.step_dir(step) / SENDER_READY_MARKER)
 
     def next_version(self, current: int) -> int:
         """Newest version offered beyond ``current``; ``current`` if none."""
@@ -176,7 +161,7 @@ class WeightReceiver(ABC):
         advances ``policy.version`` — the version must never move ahead of a
         confirmed offer."""
         sender_ready = self.step_dir(step) / SENDER_READY_MARKER
-        while not marker_exists(sender_ready):
+        while not exists_revalidated(sender_ready):
             if cancelled is not None and cancelled():
                 raise asyncio.CancelledError
             await asyncio.sleep(0.1)
