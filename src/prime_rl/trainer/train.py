@@ -133,9 +133,26 @@ def train(config: SFTConfig | PretrainConfig):
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
 
     checkpoint_step = None
+    resume_dir = None
     if config.resume is not None:
         if config.resume.dir is not None:
             checkpoint_step = config.resume.dir_step
+            resume_dir = config.resume.dir
+            # resume.dir is a one-shot fork point. A relaunch of the same config (e.g. a hosted pod restart)
+            # must continue from this run's own newer complete checkpoint instead of going back to resume.dir.
+            own_step = None
+            if ckpt_manager is not None and ckpt_manager.ckpt_dir.exists():
+                try:
+                    own_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ("trainer",))
+                except FileNotFoundError:
+                    own_step = None  # only incomplete own checkpoints: keep resume.dir
+            if own_step is not None and own_step > checkpoint_step:
+                logger.info(
+                    f"resume.dir is step {checkpoint_step}, but {ckpt_manager.ckpt_dir} has a newer complete "
+                    f"checkpoint (step {own_step}); resuming from the run's own checkpoint"
+                )
+                checkpoint_step = own_step
+                resume_dir = None
         else:
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
@@ -210,7 +227,6 @@ def train(config: SFTConfig | PretrainConfig):
     progress = Progress()
 
     if checkpoint_step is not None:
-        resume_dir = config.resume.dir if config.resume else None
         skip = config.ckpt or CheckpointConfig()
         ckpt_manager.load(
             checkpoint_step,
